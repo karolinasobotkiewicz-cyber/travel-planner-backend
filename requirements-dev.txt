@@ -1,0 +1,21 @@
+# Travel Planner Backend - ETAP 1
+# Development & Testing dependencies
+
+# Testing
+pytest==7.4.4
+pytest-cov==4.1.0
+pytest-asyncio==0.23.3
+pytest-mock==3.12.0
+
+# Code quality
+black==23.12.1
+isort==5.13.2
+flake8==7.0.0
+mypy==1.8.0
+
+# Pre-commit hooks
+pre-commit==3.6.0
+
+# Type stubs
+types-requests==2.31.0.20240106
+pandas-stubs==2.1.4.231227

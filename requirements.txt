@@ -1,0 +1,26 @@
+# Travel Planner Backend - ETAP 1
+# Production dependencies
+
+# Web framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# Data validation & serialization
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# Data processing
+pandas==2.1.4
+openpyxl==3.1.2
+numpy==1.26.3
+
+# HTTP client
+requests==2.31.0
+httpx==0.26.0
+
+# Date/time
+python-dateutil==2.8.2
+
+# Environment variables
+python-dotenv==1.0.0
