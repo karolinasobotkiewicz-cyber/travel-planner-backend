@@ -2,26 +2,26 @@
 
 Backend API for travel planning application. Generates optimized single-day itineraries based on user preferences, location, and constraints.
 
-## 🎯 Project Status
+## Project Status
 
-**Stage:** ETAP 1 (Refactoring + Core API)  
-**Deadline:** 29.01.2026  
-**Version:** 1.0.0
+Stage: ETAP 1 (Refactoring + Core API)  
+Deadline: 29.01.2026  
+Version: 1.0.0
 
-## 📋 Features (ETAP 1)
+## Features (ETAP 1)
 
-- ✅ RESTful API with FastAPI
-- ✅ Intelligent single-day itinerary planning
-- ✅ Parking logic (car transport)
-- ✅ Cost estimation (tickets)
-- ✅ Mandatory lunch break (12:00-13:30)
-- ✅ All item types: parking, transit, attraction, lunch_break, free_time
-- ✅ Mock payment endpoints (Stripe interface)
-- ✅ Repository Pattern (PostgreSQL-ready)
-- ✅ 80%+ test coverage
-- ✅ Docker support
+- RESTful API with FastAPI
+- Intelligent single-day itinerary planning
+- Parking logic (car transport)
+- Cost estimation (tickets)
+- Mandatory lunch break (12:00-13:30)
+- All item types: parking, transit, attraction, lunch_break, free_time
+- Mock payment endpoints (Stripe interface)
+- Repository Pattern (PostgreSQL-ready)
+- 80%+ test coverage
+- Docker support
 
-## 🏗️ Architecture
+## Architecture
 
 Layered architecture following SOLID principles:
 
@@ -33,7 +33,7 @@ app/
 └── api/            # FastAPI routes & schemas
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -74,7 +74,7 @@ uvicorn app.api.main:app --reload
 API will be available at: `http://localhost:8000`  
 Swagger docs: `http://localhost:8000/docs`
 
-## 🧪 Testing
+## Testing
 
 Run tests with coverage:
 ```bash
@@ -91,7 +91,7 @@ View coverage report:
 open htmlcov/index.html
 ```
 
-## 🛠️ Development
+## Development
 
 ### Code Quality
 
@@ -116,14 +116,14 @@ Linting:
 flake8 app/
 ```
 
-## 🐳 Docker
+## Docker
 
 Build and run with Docker:
 ```bash
 docker-compose up --build
 ```
 
-## 📚 API Endpoints
+## ## API Endpoints
 
 ### Plan Management
 - `POST /api/v1/plan/preview` - Preview plan before payment
@@ -137,13 +137,13 @@ docker-compose up --build
 ### Content
 - `GET /api/v1/content/home` - Homepage data
 
-## 📖 Documentation
+## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) - System architecture & design decisions
 - [API Documentation](docs/API.md) - Detailed API specifications
 - [Deployment](docs/DEPLOYMENT.md) - Railway.app deployment guide
 
-## 🔧 Configuration
+## Configuration
 
 Key environment variables (see `.env.example`):
 
@@ -153,7 +153,7 @@ Key environment variables (see `.env.example`):
 - `DEBUG` - Enable debug mode
 - `LOG_LEVEL` - Logging level
 
-## 📦 Tech Stack
+## Tech Stack
 
 - **Framework:** FastAPI 0.109+
 - **Validation:** Pydantic 2.5+
@@ -162,7 +162,7 @@ Key environment variables (see `.env.example`):
 - **Code Quality:** Black, isort, mypy, flake8
 - **Deployment:** Docker, Railway.app
 
-## 🎯 ETAP 1 Scope
+## ETAP 1 Scope
 
 ### Included:
 - Single-day planning (1 day only)
@@ -180,16 +180,16 @@ Key environment variables (see `.env.example`):
 - Email notifications
 - Advanced parking logic
 
-## 👥 Team
+## Team
 
 **Developer:** Mateusz Zurowski (ngencode.dev@gmail.com)  
 **Client:** Karolina Sobotkiewicz
 
-## 📄 License
+## License
 
 Proprietary - All rights reserved
 
-## 🔗 Links
+## Links
 
 - **Repository:** [GitHub URL will be added]
 - **Production:** [Railway URL will be added]

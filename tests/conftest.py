@@ -1,50 +1,36 @@
 """Test configuration and fixtures."""
 
 import pytest
-from typing import Generator
 
 
 @pytest.fixture
 def sample_trip_input() -> dict:
-    """Sample TripInput data for testing."""
+    """Sample trip input for testing.
+    
+    TODO: add more test cases for different group types
+    """
     return {
         "location": {
             "query": "Kraków",
             "location_id": "krakow",
             "type": "city",
-            "country": "PL"
+            "country": "PL",
         },
-        "group": {
-            "type": "couple"
-        },
+        "group": {"type": "couple"},
         "travel_style": "cultural",
         "interests": ["museums", "castles"],
-        "trip_length": {
-            "days": 1,
-            "start_date": "2026-01-25"
-        },
-        "daily_time_window": {
-            "start": "10:00",
-            "end": "19:00"
-        },
-        "budget": {
-            "level": "standard",
-            "currency": "PLN"
-        },
+        "trip_length": {"days": 1, "start_date": "2026-01-25"},
+        "daily_time_window": {"start": "10:00", "end": "19:00"},
+        "budget": {"level": "standard", "currency": "PLN"},
         "transport_modes": ["car", "walk"],
-        "start_point": {
-            "type": "city_center"
-        },
-        "meta": {
-            "language": "pl",
-            "timezone": "Europe/Warsaw"
-        }
+        "start_point": {"type": "city_center"},
+        "meta": {"language": "pl", "timezone": "Europe/Warsaw"},
     }
 
 
 @pytest.fixture
 def sample_poi() -> dict:
-    """Sample POI data for testing."""
+    # Basic POI structure for tests
     return {
         "name": "Wawel Castle",
         "lat": 50.054,
@@ -65,5 +51,5 @@ def sample_poi() -> dict:
         "parking_lat": 50.053,
         "parking_lng": 19.934,
         "weather_dependent": False,
-        "seasonal_availability": "all"
+        "seasonal_availability": "all",
     }
