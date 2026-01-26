@@ -1,0 +1,124 @@
+{
+  "destinations": [
+    {
+      "id": "zakopane",
+      "name": "Zakopane",
+      "region": "Tatry",
+      "description_short": "Stolica Tatr - góry, kultura góralska, Krupówki",
+      "image_key": "destination_zakopane.jpg",
+      "typical_duration_days": 3,
+      "best_season": ["winter", "summer"],
+      "highlights": [
+        "Gubałówka",
+        "Krupówki",
+        "Morskie Oko",
+        "Termy"
+      ]
+    },
+    {
+      "id": "krakow",
+      "name": "Kraków",
+      "region": "Małopolska",
+      "description_short": "Królewskie miasto - Wawel, Rynek, Kazimierz",
+      "image_key": "destination_krakow.jpg",
+      "typical_duration_days": 2,
+      "best_season": ["spring", "summer", "autumn"],
+      "highlights": [
+        "Wawel",
+        "Rynek Główny",
+        "Kazimierz",
+        "Sukiennice"
+      ]
+    },
+    {
+      "id": "gdansk",
+      "name": "Gdańsk",
+      "region": "Pomorze",
+      "description_short": "Bursztynowe miasto nad Bałtykiem",
+      "image_key": "destination_gdansk.jpg",
+      "typical_duration_days": 2,
+      "best_season": ["summer"],
+      "highlights": [
+        "Długi Targ",
+        "Żuraw",
+        "Plaża w Sopocie",
+        "Molo"
+      ]
+    },
+    {
+      "id": "warszawa",
+      "name": "Warszawa",
+      "region": "Mazowsze",
+      "description_short": "Stolica Polski - historia, nowoczesność, kultura",
+      "image_key": "destination_warszawa.jpg",
+      "typical_duration_days": 2,
+      "best_season": ["spring", "summer", "autumn"],
+      "highlights": [
+        "Stare Miasto",
+        "Pałac Kultury",
+        "Łazienki",
+        "Wilanów"
+      ]
+    },
+    {
+      "id": "wroclaw",
+      "name": "Wrocław",
+      "region": "Dolny Śląsk",
+      "description_short": "Miasto krasnali i mostów nad Odrą",
+      "image_key": "destination_wroclaw.jpg",
+      "typical_duration_days": 2,
+      "best_season": ["spring", "summer", "autumn"],
+      "highlights": [
+        "Rynek",
+        "Ostrów Tumski",
+        "Krasnale",
+        "Hala Stulecia"
+      ]
+    },
+    {
+      "id": "poznan",
+      "name": "Poznań",
+      "region": "Wielkopolska",
+      "description_short": "Kolebka państwa polskiego - koziołki na Ratuszu",
+      "image_key": "destination_poznan.jpg",
+      "typical_duration_days": 1,
+      "best_season": ["spring", "summer", "autumn"],
+      "highlights": [
+        "Stary Rynek",
+        "Ostrów Tumski",
+        "Malta",
+        "Cytadela"
+      ]
+    },
+    {
+      "id": "torun",
+      "name": "Toruń",
+      "region": "Kujawsko-Pomorskie",
+      "description_short": "Gotyckie miasto Kopernika i pierników",
+      "image_key": "destination_torun.jpg",
+      "typical_duration_days": 1,
+      "best_season": ["spring", "summer", "autumn"],
+      "highlights": [
+        "Ratusz",
+        "Dom Kopernika",
+        "Piernikowe muzeum",
+        "Bulwary Wiślane"
+      ]
+    },
+    {
+      "id": "lublin",
+      "name": "Lublin",
+      "region": "Lubelskie",
+      "description_short": "Wschodni szlak - Stare Miasto, Zamek, kultura",
+      "image_key": "destination_lublin.jpg",
+      "typical_duration_days": 1,
+      "best_season": ["spring", "summer", "autumn"],
+      "highlights": [
+        "Brama Grodzka",
+        "Zamek",
+        "Stare Miasto",
+        "Majdanek"
+      ]
+    }
+  ]
+}
