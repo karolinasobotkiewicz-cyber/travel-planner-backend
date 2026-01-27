@@ -1,104 +1,150 @@
-# Travel Planner Backend - ETAP 1
+# Travel Planner Backend
 
-Backend API for travel planning application. Generates optimized single-day itineraries based on user preferences, location, and constraints.
+Backend API do planowania jednodniowych wycieczek po Polsce. Projekt dla Karoliny Sobotkiewicz.
 
-## Project Status
+## Status
 
-Stage: ETAP 1 (Refactoring + Core API)  
-Deadline: 29.01.2026  
-Version: 1.0.0
+**ETAP 1: COMPLETED** (29.01.2026)  
+**Live API:** https://travel-planner-backend-xbsp.onrender.com  
+**Docs:** https://travel-planner-backend-xbsp.onrender.com/docs
 
-## Features (ETAP 1)
+## Co działa
 
-- RESTful API with FastAPI
-- Intelligent single-day itinerary planning
-- Parking logic (car transport)
-- Cost estimation (tickets)
-- Mandatory lunch break (12:00-13:30)
-- All item types: parking, transit, attraction, lunch_break, free_time
-- Mock payment endpoints (Stripe interface)
-- Repository Pattern (PostgreSQL-ready)
-- 80%+ test coverage
-- Docker support
+### API Endpoints (7/7)
+- `GET /health` - Health check
+- `GET /` - Root info
+- `POST /plan/preview` - Generowanie planu dnia
+- `GET /plan/{id}` - Pobieranie gotowego planu
+- `GET /content/home` - Lista 8 destynacji
+- `GET /poi/{id}` - Szczegóły atrakcji
+- `POST /payment/create-checkout-session` - Mock Stripe checkout
+- `POST /payment/stripe/webhook` - Mock Stripe webhook
+
+### Logika biznesowa
+- Parking: 15 minut na start (tylko dla car mode)
+- Lunch break: ZAWSZE 12:00-13:30 (per client requirement)
+- Cost estimation: (2×bilet_normalny) + (2×bilet_ulgowy) dla rodzin
+- Day structure: 09:00 start → parking → atrakcje → lunch → koniec 18:00
+
+### Dane
+- 32 POI z zakopane.xlsx (Muzeum Oscypka, Gubałówka, Termy, etc.)
+- 8 destynacji z destinations.json (Zakopane, Kraków, Gdańsk, Warszawa, Wrocław, Poznań, Toruń, Lublin)
+- Repository Pattern (gotowy na PostgreSQL w ETAPIE 2)
+
+### Testy
+38/38 GREEN:
+- 22 unit tests (scoring, time utils)
+- 7 API tests (wszystkie endpointy)
+- 3 repository tests (POI, Plan, Destinations)
+- 2 business logic tests (parking, lunch, cost)
+- 4 content tests (images, destinations)
+
+## Tech Stack
+
+- Python 3.11
+- FastAPI 0.109.0
+- Pydantic 2.5.3
+- Uvicorn
+- Docker
+- Render.com (deployment)
 
 ## Architecture
 
-Layered architecture following SOLID principles:
-
 ```
 app/
-├── domain/          # Business logic & entities
-├── application/     # Use cases & services
-├── infrastructure/  # External APIs & persistence
-└── api/            # FastAPI routes & schemas
+├── domain/                 # Business logic
+│   ├── models/            # Pydantic models (POI, Plan, TripInput)
+│   ├── scoring/           # Scoring functions (family, budget, crowd, body_state)
+│   └── planner/           # Engine + time utils
+├── application/           # Use cases
+│   └── services/          # PlanService, TripMapper
+├── infrastructure/        # External world
+│   ├── repositories/      # POI, Plan, Destinations (in-memory ETAP 1)
+│   ├── external/          # OpenWeather, Geocoding APIs
+│   └── config/            # Settings, env variables
+└── api/                   # FastAPI
+    ├── routes/            # Endpoints (plan, payment, content, poi)
+    └── schemas/           # Request/Response models
 ```
 
-## Quick Start
+Layered architecture, SOLID principles, Repository Pattern.
 
-### Prerequisites
+## Environment Variables
 
-- Python 3.11+
-- pip
+Backend używa tych zmiennych (ustawione na Render):
 
-### Installation
+```env
+ENVIRONMENT=production
+DEBUG=false
+OPENWEATHER_API_KEY=xxx
+GEOCODING_API_KEY=xxx
+CORS_ORIGINS=*
+API_HOST=0.0.0.0
+API_PORT=8000
+```
 
-1. Clone the repository:
+## Deployment
+
+Backend jest deployed na **Render.com** (FREE tier).
+
+**WAŻNE:** Free tier "zasypia" po 15 min nieaktywności. Cold start trwa ~30-50s. Do testów OK, do produkcji lepiej Railway ($5/miesiąc).
+
+Szczegóły deployment → [DEPLOYMENT.md](DEPLOYMENT.md)
+
+## Testing API
+
+### Swagger UI (recommended)
+Otwórz: https://travel-planner-backend-xbsp.onrender.com/docs
+
+Kliknij endpoint → "Try it out" → wypełnij dane → "Execute"
+
+### Przykład: POST /plan/preview
+
+```json
+{
+  "date": "2026-02-15",
+  "destination_id": "zakopane",
+  "traveler_group": "family_kids",
+  "transport_modes": ["car"],
+  "crowd_tolerance": 2,
+  "budget_level": 2
+}
+```
+
+Response: Plan dnia z parking (15min), atrakcjami, lunch (12:00-13:30), przejściami.
+
+### Przykład: GET /content/home
+
 ```bash
-git clone <repo-url>
-cd travel-planner-backend
+curl https://travel-planner-backend-xbsp.onrender.com/content/home
 ```
 
-2. Create virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-```
+Response: 8 destynacji z image_key, description, highlights.
 
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
-```
+## Known Issues / TODO
 
-4. Setup environment variables:
-```bash
-cp .env.example .env
-# Edit .env with your API keys
-```
-
-5. Run the application:
-```bash
-uvicorn app.api.main:app --reload
-```
-
-API will be available at: `http://localhost:8000`  
-Swagger docs: `http://localhost:8000/docs`
-
-## Testing
-
-Run tests with coverage:
-```bash
-pytest
-```
-
-Run tests with detailed coverage report:
-```bash
-pytest --cov=app --cov-report=html
-```
-
-View coverage report:
-```bash
-open htmlcov/index.html
-```
+- [ ] Frontend URL dla CORS (teraz wildcard *)
+- [ ] Railway migration (gdy klientka będzie gotowa na paid tier)
+- [ ] PostgreSQL (ETAP 2)
+- [ ] Multi-day planning (ETAP 2+)
+- [ ] Real Stripe integration (ETAP 2+)
 
 ## Development
 
-### Code Quality
+Repo: https://github.com/karolinasobotkiewicz-cyber/travel-planner-backend
 
-Install pre-commit hooks:
-```bash
-pre-commit install
-```
+Latest commits:
+- `a13a2b7` - Docker + Render deployment setup
+- `d2f1e8c` - ETAP 1 core functionality (API, repositories, business logic)
+
+## Support
+
+Issues? Contact: ngencode.dev@gmail.com
+
+---
+
+Projekt wykonany przez NextGenCode.dev dla Karoliny Sobotkiewicz  
+Deadline ETAP 1: 29.01.2026 ✅
 
 Format code:
 ```bash
