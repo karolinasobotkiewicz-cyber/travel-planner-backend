@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: travel-planner-api
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - DEBUG=false
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
+      - GEOCODING_API_KEY=${GEOCODING_API_KEY}
+      - CORS_ORIGINS=*
+    volumes:
+      # Mount data and static for development
+      - ./data:/app/data:ro
+      - ./static:/app/static:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+networks:
+  default:
+    name: travel-planner-network
