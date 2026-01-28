@@ -131,6 +131,10 @@ class TripInput(BaseModel):
         default_factory=list,
         description="Preferencje użytkownika (tags, typy atrakcji)",
     )
+    travel_style: Optional[str] = Field(
+        default=None,
+        description="Styl podróży: cultural, adventure, relax, balanced",
+    )
 
     @field_validator("transport_modes")
     @classmethod
@@ -141,6 +145,18 @@ class TripInput(BaseModel):
                 raise ValueError(
                     f"Transport mode must be in {allowed}, got: {mode}"
                 )
+        return v
+
+    @field_validator("travel_style")
+    @classmethod
+    def validate_travel_style(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        allowed = ["cultural", "adventure", "relax", "balanced"]
+        if v not in allowed:
+            raise ValueError(
+                f"Travel style must be one of {allowed}, got: {v}"
+            )
         return v
 
     class Config:
@@ -162,5 +178,6 @@ class TripInput(BaseModel):
                 "budget": {"level": 2, "daily_limit": 500},
                 "transport_modes": ["car"],
                 "preferences": ["outdoor", "family"],
+                "travel_style": "adventure",
             }
         }

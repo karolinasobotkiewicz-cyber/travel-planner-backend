@@ -32,12 +32,12 @@ Backend API do planowania jednodniowych wycieczek po Polsce. Projekt dla Karolin
 - Repository Pattern (gotowy na PostgreSQL w ETAPIE 2)
 
 ### Testy
-38/38 GREEN:
-- 22 unit tests (scoring, time utils)
-- 7 API tests (wszystkie endpointy)
-- 3 repository tests (POI, Plan, Destinations)
-- 2 business logic tests (parking, lunch, cost)
-- 4 content tests (images, destinations)
+48/48 GREEN (ETAP 1 rozszerzony):
+- 9 unit tests: preferences scoring
+- 12 unit tests: travel_style scoring
+- 15 unit tests: stare scoring modules (family, budget, crowd, body_state)
+- 7 unit tests: time utils
+- 5 integration tests: preferences + travel_style w pełnym planie
 
 ## Tech Stack
 
@@ -54,7 +54,7 @@ Backend API do planowania jednodniowych wycieczek po Polsce. Projekt dla Karolin
 app/
 ├── domain/                 # Business logic
 │   ├── models/            # Pydantic models (POI, Plan, TripInput)
-│   ├── scoring/           # Scoring functions (family, budget, crowd, body_state)
+│   ├── scoring/           # Scoring functions (family, budget, crowd, body_state, preferences, travel_style)
 │   └── planner/           # Engine + time utils
 ├── application/           # Use cases
 │   └── services/          # PlanService, TripMapper
@@ -107,9 +107,15 @@ Kliknij endpoint → "Try it out" → wypełnij dane → "Execute"
   "traveler_group": "family_kids",
   "transport_modes": ["car"],
   "crowd_tolerance": 2,
-  "budget_level": 2
+  "budget_level": 2,
+  "preferences": ["outdoor", "hiking", "nature"],
+  "travel_style": "adventure"
 }
 ```
+
+**Nowe w ETAP 1 (rozszerzenie):**
+- `preferences` (optional): Lista preferencji użytkownika (np. ["outdoor", "museums", "culture"]). Scoring system dodaje +5 punktów za każdy matching tag między user preferences a POI tags.
+- `travel_style` (optional): Styl podróży - "cultural", "adventure", "relax", "balanced" (default). Scoring system dopasowuje do POI activity_style: adventure→active (+6), relax→relax (+6), cultural→balanced (+6), partial matches (+3).
 
 Response: Plan dnia z parking (15min), atrakcjami, lunch (12:00-13:30), przejściami.
 

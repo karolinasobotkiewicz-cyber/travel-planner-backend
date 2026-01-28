@@ -9,6 +9,8 @@ from app.domain.scoring import (
     calculate_body_transition_score,
     get_next_body_state,
 )
+from app.domain.scoring.preferences import calculate_preference_score
+from app.domain.scoring.travel_style import calculate_travel_style_score
 
 # =========================
 # Config
@@ -295,6 +297,10 @@ def score_poi(
     score += calculate_family_score(p, user)
     score += calculate_budget_score(p, user)
     score += calculate_crowd_score(p, user)
+
+    # ETAP 1 ROZSZERZONY - preferences + travel_style
+    score += calculate_preference_score(p, user)
+    score += calculate_travel_style_score(p, user)
 
     # POI ROLE LOGIC
     role = p.get("poi_role", "FILLER")
