@@ -83,12 +83,13 @@ class PlanService:
             context["date"] = dates[day_num]
             
             # Wywołaj engine.build_day()
-            # Argumenty: (pois, user, context) - tylko 3!
-            # FIXME: engine zwraca dict, musimy przekonwertować na items
+            # Argumenty: (pois, user, context, day_start, day_end)
             engine_result = build_day(
                 all_pois_dict,  # POIs jako dict, nie Pydantic
                 user,
-                context
+                context,
+                day_start,  # User-provided start time
+                day_end     # User-provided end time
             )
             
             # Konwersja engine result → PlanResponse items

@@ -362,16 +362,30 @@ def score_poi(
 # =========================
 
 
-def build_day(pois, user, context):
+def build_day(pois, user, context, day_start=None, day_end=None):
+    """
+    Build daily plan from POIs.
+    
+    Args:
+        pois: List of POI dicts
+        user: User dict (preferences, target_group, etc.)
+        context: Context dict (season, date, weather, etc.)
+        day_start: Start time string "HH:MM" (default: DAY_START global)
+        day_end: End time string "HH:MM" (default: DAY_END global)
+    """
     ctx = _get_context(context)
 
-    now = time_to_minutes(DAY_START)
-    end = time_to_minutes(DAY_END)
+    # Use user-provided times or fallback to global defaults
+    start_time_str = day_start or DAY_START
+    end_time_str = day_end or DAY_END
+    
+    now = time_to_minutes(start_time_str)
+    end = time_to_minutes(end_time_str)
 
     if ctx["daylight_end"]:
         end = min(end, time_to_minutes(ctx["daylight_end"]))
 
-    plan = [{"type": "accommodation_start", "time": DAY_START}]
+    plan = [{"type": "accommodation_start", "time": start_time_str}]
 
     energy = GROUP_DAILY_ENERGY[user["target_group"]]
     fatigue = 0
@@ -428,7 +442,7 @@ def build_day(pois, user, context):
             if start_time >= end:
                 continue
 
-            duration = choose_duration(p, start_time, end, False)
+            duration = choose_duration(p, start_time, end, lunch_done)
             if duration <= 0:
                 continue
 
