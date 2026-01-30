@@ -1,5 +1,6 @@
 # type: ignore
 import math
+from math import radians, sin, cos, sqrt, atan2
 
 from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
 from app.domain.planner.opening_hours_parser import is_poi_open_at_time
@@ -104,20 +105,26 @@ def distance_km(a, b):
 
 
 def travel_time_minutes(a, b, context):
+    """Calculate travel time between two POIs using haversine distance and realistic driving speeds."""
     if not a or not b:
         return 0
-
-    dist = distance_km(a, b)
-    transport = context.get("transport", "car")
-
-    if transport == "walk":
-        speed = 4
-    elif transport == "public":
-        speed = 18
-    else:
-        speed = 40
-
-    return int((dist / speed) * 60)
+    
+    # Use haversine distance calculation for accurate GPS-based distance
+    has_car = context.get("has_car", True)
+    if not has_car:
+        return 0
+    
+    lat1, lng1 = a.get("lat"), a.get("lng")
+    lat2, lng2 = b.get("lat"), b.get("lng")
+    
+    if not all([lat1, lng1, lat2, lng2]):
+        return 10  # fallback minimum
+    
+    distance_km = haversine_distance(lat1, lng1, lat2, lng2)
+    
+    # Mountain roads: 45 km/h average + 5 min parking/finding spot
+    drive_time = (distance_km / 45) * 60 + 5
+    return max(int(drive_time), 10)  # minimum 10 minutes
 
 
 # =========================
@@ -141,7 +148,61 @@ def _get_context(context):
         "wind": safe_float(weather.get("wind"), 0),
         "transport": safe_str(context.get("transport")) or "car",
         "daylight_end": context.get("daylight_end"),
+        "date": context.get("date"),  # CRITICAL FIX: Add date for opening_hours validation
     }
+
+
+# =========================
+# Distance calculation
+# =========================
+
+
+def haversine_distance(lat1, lng1, lat2, lng2):
+    """
+    Calculate distance in km between two GPS points using Haversine formula.
+    """
+    R = 6371  # Earth radius in km
+    
+    lat1_rad = radians(lat1)
+    lat2_rad = radians(lat2)
+    dlat = radians(lat2 - lat1)
+    dlng = radians(lng2 - lng1)
+    
+    a = sin(dlat / 2)**2 + cos(lat1_rad) * cos(lat2_rad) * sin(dlng / 2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    
+    return R * c
+
+
+def calculate_drive_time(poi_from, poi_to, has_car=True):
+    """
+    Calculate driving time between two POIs in minutes.
+    
+    Args:
+        poi_from: POI dict with lat/lng
+        poi_to: POI dict with lat/lng
+        has_car: Whether user has car
+    
+    Returns:
+        Driving time in minutes (minimum 10 min for nearby, +5 for parking)
+    """
+    if not has_car:
+        return 0
+    
+    lat1 = poi_from.get('lat')
+    lng1 = poi_from.get('lng')
+    lat2 = poi_to.get('lat')
+    lng2 = poi_to.get('lng')
+    
+    if not all([lat1, lng1, lat2, lng2]):
+        return 10  # Default if no coordinates
+    
+    distance_km = haversine_distance(lat1, lng1, lat2, lng2)
+    
+    # 45 km/h average speed in mountains + 5 min parking
+    drive_time = (distance_km / 45) * 60 + 5
+    
+    return max(int(drive_time), 10)  # Minimum 10 min
 
 
 # =========================
@@ -214,8 +275,16 @@ def is_open(p, now, duration, season, context=None):
         day_end = time_to_minutes("20:00")
         return (now >= day_start) and (now < day_end)
     
-    # Parse context date
-    year, month, day, weekday = context["date"]
+    # Parse context date - handle both datetime objects and tuples
+    date_obj = context["date"]
+    if hasattr(date_obj, 'year'):
+        # It's a datetime object
+        year, month, day = date_obj.year, date_obj.month, date_obj.day
+        weekday = date_obj.weekday()
+    else:
+        # It's a tuple (year, month, day, weekday)
+        year, month, day, weekday = date_obj
+    
     current_date = (year, month, day)
     
     # Use opening_hours_parser for proper validation

@@ -71,9 +71,15 @@ def calculate_time_of_day_score(poi, user, context, current_time_minutes):
          (recommended == "afternoon" and current_period == "midday"):
         score += 3
     
-    # Strong mismatch = penalty (e.g., evening attraction in morning)
+    # Strong mismatch = severe penalty (e.g., evening attraction in morning)
+    # Increased from -5 to -45 to enforce time_of_day recommendations strongly
     elif (recommended == "evening" and current_period in ["morning", "early_morning"]) or \
          (recommended in ["morning", "early_morning"] and current_period == "evening"):
-        score -= 5
+        score -= 45
+    
+    # Moderate mismatch = moderate penalty
+    elif (recommended == "afternoon" and current_period in ["morning", "early_morning"]) or \
+         (recommended == "morning" and current_period in ["afternoon", "evening"]):
+        score -= 25
     
     return score

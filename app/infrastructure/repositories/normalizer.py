@@ -455,6 +455,8 @@ def normalize_poi(p, index):
     return {
         "id": f"poi_{index}",
         "name": _safe_str(p.get("Name")),
+        "description_short": _safe_str(p.get("Description_short")),
+        "address": _safe_str(p.get("Address")),
         "lat": _safe_float(p.get("Lat")),
         "lng": _safe_float(p.get("Lng")),
         "time_min": int(_safe_float(p.get("time_min"), 30)),
