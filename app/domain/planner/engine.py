@@ -835,11 +835,17 @@ def fill_plan_gaps(plan, pois, used_poi_ids, ctx):
     Post-process plan to fill gaps >20 min between attractions.
     Client requirement: gaps should be filled with soft POI or free_time (max 40 min).
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"[GAP FILLING] Starting with {len(plan)} items")
+    
     filled_plan = []
     last_end_time = None  # Track end time of previous item for transfers
     
     for i, item in enumerate(plan):
         filled_plan.append(item)
+        
+        logger.info(f"[GAP FILLING] Item {i}: type={item['type']}")
         
         # Check for gap before next item
         if i < len(plan) - 1:
@@ -875,6 +881,8 @@ def fill_plan_gaps(plan, pois, used_poi_ids, ctx):
             # Remember this for next transfer
             last_end_time = current_end
             
+            logger.info(f"[GAP FILLING]   current_end={current_end}, last_end_time={last_end_time}")
+            
             if current_end is None:
                 continue
             
@@ -882,23 +890,30 @@ def fill_plan_gaps(plan, pois, used_poi_ids, ctx):
             next_start = None
             if next_item["type"] == "attraction":
                 next_start = time_to_minutes(next_item["start_time"])
+                logger.info(f"[GAP FILLING]   next attraction at {next_start}")
             elif next_item["type"] == "lunch_break":
                 next_start = time_to_minutes(next_item["start_time"])
+                logger.info(f"[GAP FILLING]   next lunch at {next_start}")
             elif next_item["type"] in ["transfer", "transit"]:
                 # No gap before transfer/transit - they happen immediately
+                logger.info(f"[GAP FILLING]   next is transfer/transit - skipping")
                 continue
             elif next_item["type"] == "accommodation_end":
                 # No gap before day end
+                logger.info(f"[GAP FILLING]   next is day_end - skipping")
                 continue
             
             if next_start is None:
+                logger.info(f"[GAP FILLING]   next_start is None - skipping")
                 continue
             
             # Calculate gap
             gap_minutes = next_start - current_end
+            logger.info(f"[GAP FILLING]   GAP DETECTED: {gap_minutes} min (current_end={current_end}, next_start={next_start})")
             
             # Fill gaps >20 min
             if gap_minutes > 20:
+                logger.info(f"[GAP FILLING]   Gap >20 min - trying to fill...")
                 # Try to find soft POI to fill gap
                 soft_filled = False
                 for p in pois:
@@ -948,6 +963,7 @@ def fill_plan_gaps(plan, pois, used_poi_ids, ctx):
                 # If still gap >20 min and no soft POI, add free_time (max 40 min)
                 if not soft_filled and gap_minutes > 20:
                     free_duration = min(40, gap_minutes)
+                    logger.info(f"[GAP FILLING]   No soft POI - adding free_time ({free_duration} min)")
                     filled_plan.append({
                         "type": "free_time",
                         "start_time": minutes_to_time(current_end),
@@ -955,5 +971,8 @@ def fill_plan_gaps(plan, pois, used_poi_ids, ctx):
                         "duration_min": free_duration,
                         "description": "Czas wolny: spacer, kawa, odpoczynek"
                     })
+                else:
+                    logger.info(f"[GAP FILLING]   Gap filled with soft POI or gap now <20 min")
     
+    logger.info(f"[GAP FILLING] Finished - returning {len(filled_plan)} items")
     return filled_plan
