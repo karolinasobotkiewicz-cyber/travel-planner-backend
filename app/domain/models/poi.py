@@ -142,8 +142,8 @@ class POI(BaseModel):
     # TARGET GROUP (INTERNAL)
     # =========================
 
-    target_group: str = Field(
-        default="",
+    target_group: List[str] = Field(
+        default_factory=list,
         alias="Target group",
         description="Grupa docelowa - INTERNAL",
     )
@@ -186,7 +186,7 @@ class POI(BaseModel):
 
     pro_tip: str = Field(default="", alias="Pro_tip")
     priority_level: str = Field(default="", alias="priority_level")
-    tags: str = Field(default="", alias="Tags")
+    tags: List[str] = Field(default_factory=list, alias="Tags")
 
     class Config:
         populate_by_name = True
