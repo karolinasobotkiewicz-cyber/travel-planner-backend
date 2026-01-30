@@ -530,6 +530,13 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                 continue
 
             travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
+            
+            # BUGFIX: For first POI with car, add parking (15 min) + walk_time
+            if not last_poi and ctx.get("has_car", True):
+                parking_duration = 15
+                walk_time = p.get("parking_walk_time_min", 5)
+                travel = parking_duration + walk_time
+            
             start_time = now + travel
 
             # jezeli po transferze nie ma juz czasu – pomijamy POI
@@ -583,40 +590,54 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                     if poi_id(p) in used:
                         continue
                     
-                    # Soft POI criteria
-                    if p.get("intensity") != "low":
-                        continue
-                    if p.get("time_min", 60) > 30:  # Max 30 min
-                        continue
-                    if p.get("must_see", 0) > 2:  # Low priority
+                    # Soft POI criteria (client requirements)
+                    intensity = p.get("intensity", "").lower()
+                    if intensity not in ["low", "medium"]:  # low priority, sometimes medium if very short
                         continue
                     
-                    travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
-                    start_time = now + travel
+                    time_min = p.get("time_min", 60)
+                    if time_min > 30 or time_min < 10:  # 10-30 min range
+                        continue
+                    
+                    must_see = p.get("must_see", 0)
+                    if must_see > 2:  # Low must_see score (0-2)
+                        continue
+                    
+                    # Calculate travel time
+                    soft_travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
+                    
+                    # For first soft POI with car, add parking + walk
+                    if not last_poi and ctx.get("has_car", True):
+                        parking_duration = 15
+                        walk_time = p.get("parking_walk_time_min", 5)
+                        soft_travel = parking_duration + walk_time
+                    
+                    start_time = now + soft_travel
                     
                     if start_time >= end:
                         continue
                     
-                    duration = min(p.get("time_min", 15), remaining_time - travel)
+                    duration = min(time_min, remaining_time - soft_travel)
                     if duration < 10:  # Too short
                         continue
                     
                     if not is_open(p, start_time, duration, ctx["season"], ctx):
                         continue
                     
-                    # Simple scoring for soft POI
-                    score = 10 - travel * 0.5  # Prefer nearby
+                    # Simple scoring for soft POI (prefer nearby, quick visits)
+                    score = 10 - soft_travel * 0.5 + (30 - time_min) * 0.2
                     
                     if score > soft_score:
                         soft_best = p
                         soft_score = score
                         soft_duration = duration
+                        soft_travel_time = soft_travel  # Store travel time
                 
                 if soft_best:
                     # Found soft POI - add it
                     best = soft_best
                     best_score = soft_score
-                    best_travel = travel_time_minutes(last_poi, best, ctx) if last_poi else 0
+                    best_travel = soft_travel_time  # Use stored travel time
                     best_duration = soft_duration
                 else:
                     # No soft POI - add free_time (max 40 min)
