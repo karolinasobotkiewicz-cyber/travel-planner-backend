@@ -11,6 +11,11 @@ from app.domain.scoring import (
 )
 from app.domain.scoring.preferences import calculate_preference_score
 from app.domain.scoring.travel_style import calculate_travel_style_score
+from app.domain.scoring.space_scoring import calculate_space_score
+from app.domain.scoring.weather_scoring import calculate_weather_dependency_score
+from app.domain.scoring.type_matching import calculate_type_matching_score
+from app.domain.scoring.time_of_day_scoring import calculate_time_of_day_score
+from app.domain.filters.seasonality import filter_by_season
 
 # =========================
 # Config
@@ -185,11 +190,11 @@ def is_open(p, now, duration, season, context=None):
     
     # If opening_hours is string (new format after validators), simplify logic
     if isinstance(oh, str):
-        # Simple check: POI open during typical day hours (09:00-18:00)
-        # In ETAP 2, parse string format like "09:30-18:00"
+        # QUICKFIX: Accept POI if they can start before 19:00 (day_end from user input)
+        # This prevents 2h gaps caused by overly restrictive 18:00 limit
         day_start = time_to_minutes("09:00")
-        day_end = time_to_minutes("18:00")
-        return (now >= day_start) and (now + duration <= day_end)
+        day_end = time_to_minutes("20:00")  # Extended to 20:00 to allow activities ending at 19:00
+        return (now >= day_start) and (now < day_end)
     
     # Legacy dict format (if still present in old code)
     if not isinstance(oh, dict):
@@ -258,16 +263,21 @@ def choose_duration(p, now, end, lunch_done):
     lunch_target = time_to_minutes(LUNCH_TARGET)
     lunch_latest = time_to_minutes(LUNCH_LATEST)
 
-    # jesli lunch nie zrobiony, nie pozwol przeskoczyc lunchu
+    # jesli lunch nie zrobiony, sprawdź czy POI zmieści tmin przed lunchem
     if not lunch_done and now < lunch_latest:
         max_before_lunch = (
             lunch_target - now if now < lunch_target else lunch_latest - now
         )
+        # BLOCK POI jeśli jego tmin przekroczyłby lunch
         if max_before_lunch < tmin:
             return 0
-        return min(tmax, max_before_lunch)
 
-    return min(tmax, end - now)
+    # Wybierz rozsądny duration: około 70% zakresu (tmin → tmax)
+    # Przykład: tmin=60, tmax=150 → preferred = 60 + 0.7*(90) = 123
+    # To daje bardziej realistyczne czasy niż zawsze max
+    preferred_duration = tmin + int(0.7 * (tmax - tmin))
+    
+    return min(preferred_duration, end - now)
 
 
 # =========================
@@ -293,14 +303,20 @@ def score_poi(
     score += safe_float(p.get("must_see")) * 2.0
     score += safe_float(p.get("priority"))
 
-    # dopasowanie - using new modules
+    # dopasowanie - existing modules
     score += calculate_family_score(p, user)
     score += calculate_budget_score(p, user)
-    score += calculate_crowd_score(p, user)
+    score += calculate_crowd_score(p, user, current_time_minutes=now)  # Added current_time for peak_hours
 
     # ETAP 1 ROZSZERZONY - preferences + travel_style
     score += calculate_preference_score(p, user)
     score += calculate_travel_style_score(p, user)
+    
+    # ETAP 1 ENHANCEMENT (29.01.2026) - New scoring modules
+    score += calculate_space_score(p, user, context)  # indoor/outdoor vs weather
+    score += calculate_weather_dependency_score(p, user, context)  # weather dependency
+    score += calculate_type_matching_score(p, user, context)  # type + group/style matching
+    score += calculate_time_of_day_score(p, user, context, now)  # recommended_time_of_day
 
     # POI ROLE LOGIC
     role = p.get("poi_role", "FILLER")
@@ -374,6 +390,12 @@ def build_day(pois, user, context, day_start=None, day_end=None):
         day_end: End time string "HH:MM" (default: DAY_END global)
     """
     ctx = _get_context(context)
+    
+    # SEASONALITY HARD FILTER (ETAP 1 enhancement - 29.01.2026)
+    # Exclude POI outside current season BEFORE scoring
+    current_date = context.get("date")
+    if current_date:
+        pois = filter_by_season(pois, current_date)
 
     # Use user-provided times or fallback to global defaults
     start_time_str = day_start or DAY_START
@@ -470,9 +492,16 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                 best_score = score
                 best_travel = travel
                 best_duration = duration
+        
+        # Check if POI was selected
 
         if not best:
-            break
+            # FALLBACK: Jeśli nie znaleziono POI, przesuń czas o 15 min i spróbuj ponownie
+            now += 15
+            # Jeśli zostało mniej niż 30 min do końca dnia, zakończ
+            if now + 30 >= end:
+                break
+            continue
 
         transfer_time = (
             max(best_travel, MIN_TRANSFER_MIN) if last_poi else 0

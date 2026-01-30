@@ -334,7 +334,8 @@ class PlanService:
             parking=ParkingInfo(
                 name=poi_dict.get("parking_name") or "Brak parkingu",
                 walk_time_min=5  # FIXME: oblicz z odległości?
-            )
+            ),
+            pro_tip=poi_dict.get("pro_tip")  # ADD pro_tip from POI
         )
 
     def _estimate_cost(self, poi_dict: Dict[str, Any], group_type: str) -> int:

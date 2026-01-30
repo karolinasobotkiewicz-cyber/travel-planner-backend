@@ -153,6 +153,9 @@ class AttractionItem(BaseModel):
     parking: ParkingInfo = Field(
         ..., description="Parking (powtarza się dla każdej atrakcji)"
     )
+    pro_tip: str | None = Field(
+        default=None, description="Pro tip z bazy POI (jeśli dostępne)"
+    )
 
 
 class LunchBreakItem(BaseModel):
