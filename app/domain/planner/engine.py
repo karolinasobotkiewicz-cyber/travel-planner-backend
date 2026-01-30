@@ -275,12 +275,18 @@ def is_open(p, now, duration, season, context=None):
         day_end = time_to_minutes("20:00")
         return (now >= day_start) and (now < day_end)
     
-    # Parse context date - handle both datetime objects and tuples
+    # Parse context date - handle datetime objects, tuples, and strings
     date_obj = context["date"]
     if hasattr(date_obj, 'year'):
         # It's a datetime object
         year, month, day = date_obj.year, date_obj.month, date_obj.day
         weekday = date_obj.weekday()
+    elif isinstance(date_obj, str):
+        # It's a string "YYYY-MM-DD"
+        from datetime import datetime
+        dt = datetime.strptime(date_obj, "%Y-%m-%d")
+        year, month, day = dt.year, dt.month, dt.day
+        weekday = dt.weekday()
     else:
         # It's a tuple (year, month, day, weekday)
         year, month, day, weekday = date_obj
