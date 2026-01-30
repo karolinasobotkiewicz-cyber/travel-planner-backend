@@ -598,8 +598,8 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                     if time_min > 30 or time_min < 10:  # 10-30 min range
                         continue
                     
-                    must_see_score = p.get("must_see_score", 0)
-                    if must_see_score > 2:  # Low priority (0-2)
+                    must_see_score = p.get("must_see", p.get("must_see_score", 10))
+                    if must_see_score > 7:  # Allow POI with must_see up to 7
                         continue
                     
                     # Calculate travel time
@@ -755,8 +755,8 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                     if time_min > 30 or time_min < 10:
                         continue
                     
-                    must_see_score = p.get("must_see_score", 0)
-                    if must_see_score > 2:
+                    must_see_score = p.get("must_see", p.get("must_see_score", 10))
+                    if must_see_score > 7:  # Allow POI with must_see up to 7
                         continue
                     
                     soft_travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
@@ -910,8 +910,8 @@ def fill_plan_gaps(plan, pois, used_poi_ids, ctx):
                     if time_min > 30 or time_min < 10:
                         continue
                     
-                    must_see_score = p.get("must_see_score", 0)
-                    if must_see_score > 2:
+                    must_see_score = p.get("must_see", p.get("must_see_score", 10))
+                    if must_see_score > 7:  # Allow POI with must_see up to 7
                         continue
                     
                     # Check if POI fits in gap
