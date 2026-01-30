@@ -187,6 +187,26 @@ class POI(BaseModel):
     pro_tip: str = Field(default="", alias="Pro_tip")
     priority_level: str = Field(default="", alias="priority_level")
     tags: List[str] = Field(default_factory=list, alias="Tags")
+    
+    @field_validator("tags", mode="before")
+    @classmethod
+    def parse_tags(cls, v):
+        """Convert comma-separated string to list"""
+        if isinstance(v, str):
+            if not v or v.lower() == 'nan':
+                return []
+            return [x.strip().lower() for x in v.split(",") if x.strip()]
+        return v if v else []
+    
+    @field_validator("target_group", mode="before")
+    @classmethod
+    def parse_target_group(cls, v):
+        """Convert comma-separated string to list"""
+        if isinstance(v, str):
+            if not v or v.lower() == 'nan':
+                return []
+            return [x.strip().lower() for x in v.split(",") if x.strip()]
+        return v if v else []
 
     class Config:
         populate_by_name = True
