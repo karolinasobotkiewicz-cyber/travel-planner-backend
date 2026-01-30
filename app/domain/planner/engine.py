@@ -185,12 +185,12 @@ def is_open(p, now, duration, season, context=None):
     """
     Check if POI is open at given time.
     
-    Uses opening_hours_parser to validate:
-    - Seasonal date ranges (e.g., "date_from": "06-01", "date_to": "09-30")
-    - Weekday hours (e.g., mon:9:00-17:00, Sat:15:30-18:00)
+    NEW FORMAT (30.01.2026) - Uses opening_hours_parser to validate:
+    - opening_hours: JSON dict {"mon": "08:00-16:00", ...}
+    - opening_hours_seasonal: JSON dict {"date_from": "05-01", "date_to": "09-30"}
     
     Args:
-        p: POI dict with "opening_hours" field
+        p: POI dict with "opening_hours" and "opening_hours_seasonal" fields
         now: Start time in minutes since midnight
         duration: Visit duration in minutes
         season: Season string (unused, kept for compatibility)
@@ -200,10 +200,11 @@ def is_open(p, now, duration, season, context=None):
         True if POI is open and visit fits within hours
         False otherwise (including off-season)
     """
-    oh = p.get("opening_hours", "")
+    oh = p.get("opening_hours")
+    oh_seasonal = p.get("opening_hours_seasonal")
     
-    # If no opening_hours or empty string, assume always open
-    if not oh or (isinstance(oh, str) and oh.strip() == ""):
+    # If no opening_hours specified, assume always open
+    if not oh:
         return True
     
     # Extract date info from context
@@ -219,7 +220,8 @@ def is_open(p, now, duration, season, context=None):
     
     # Use opening_hours_parser for proper validation
     return is_poi_open_at_time(
-        opening_hours_str=oh,
+        opening_hours=oh,
+        opening_hours_seasonal=oh_seasonal,
         current_date=current_date,
         weekday=weekday,
         start_time_minutes=now,

@@ -1,7 +1,68 @@
 # type: ignore
 # Oryginalny load_zakopane.py - refaktoryzacja type hints w ETAP 3
 import pandas as pd
+import re
+from typing import Optional, Dict
 from app.infrastructure.repositories.normalizer import normalize_pois
+
+
+def _convert_opening_hours_to_json(opening_hours_str: str) -> Optional[Dict[str, str]]:
+    """
+    Convert string format to JSON dict format.
+    
+    Input: "mon:8:00-20:00,tue:8:00-20:00,..." or "Sat:15:30-18:00"
+    Output: {"mon": "08:00-20:00", "tue": "08:00-20:00", ...} or {"sat": "15:30-18:00"}
+    
+    Returns None if empty or invalid.
+    """
+    if not opening_hours_str or not opening_hours_str.strip():
+        return None
+    
+    result = {}
+    
+    # Pattern: mon:8:00-20:00 or Mon:8:00-20:00 (case insensitive)
+    pattern = r'(mon|tue|wed|thu|fri|sat|sun)\s*:\s*(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})'
+    
+    for match in re.finditer(pattern, opening_hours_str, re.IGNORECASE):
+        day_name = match.group(1).lower()
+        start_time = match.group(2)
+        end_time = match.group(3)
+        
+        # Normalize time format to HH:MM
+        start_parts = start_time.split(":")
+        end_parts = end_time.split(":")
+        
+        start_normalized = f"{int(start_parts[0]):02d}:{start_parts[1]}"
+        end_normalized = f"{int(end_parts[0]):02d}:{end_parts[1]}"
+        
+        result[day_name] = f"{start_normalized}-{end_normalized}"
+    
+    return result if result else None
+
+
+def _convert_seasonal_to_json(seasonal_str: str) -> Optional[Dict[str, str]]:
+    """
+    Convert string format to JSON dict format.
+    
+    Input: '"date_from": "06-01","date_to": "09-30"' or similar
+    Output: {"date_from": "06-01", "date_to": "09-30"}
+    
+    Returns None if empty or invalid.
+    """
+    if not seasonal_str or not seasonal_str.strip():
+        return None
+    
+    # Pattern: "date_from": "06-01" and "date_to": "09-30"
+    date_from_match = re.search(r'"date_from"\s*:\s*"(\d{2}-\d{2})"', seasonal_str)
+    date_to_match = re.search(r'"date_to"\s*:\s*"(\d{2}-\d{2})"', seasonal_str)
+    
+    if date_from_match and date_to_match:
+        return {
+            "date_from": date_from_match.group(1),
+            "date_to": date_to_match.group(1)
+        }
+    
+    return None
 
 
 def load_zakopane_poi(path: str):
@@ -12,16 +73,22 @@ def load_zakopane_poi(path: str):
     pois = []
 
     for _, row in df.iterrows():
+        # Convert opening_hours from string to JSON dict
+        opening_hours_raw = str(row.get("Opening hours", "")).strip()
+        opening_hours_json = _convert_opening_hours_to_json(opening_hours_raw)
+        
+        # Convert opening_hours_seasonal from string to JSON dict
+        seasonal_raw = str(row.get("opening_hours_seasonal", "")).strip()
+        seasonal_json = _convert_seasonal_to_json(seasonal_raw)
+        
         poi = {
             "ID": str(row.get("ID", "")).strip(),
             "Name": str(row.get("Name", "")).strip(),
             "Description_short": str(row.get("Description_short", "")).strip(),
             "Description_long": str(row.get("Description_long", "")).strip(),
             "Why visit": str(row.get("Why visit", "")).strip(),
-            "Opening hours": str(row.get("Opening hours", "")).strip(),
-            "opening_hours_seasonal": str(
-                row.get("opening_hours_seasonal", "")
-            ).strip(),
+            "Opening hours": opening_hours_json,  # Now JSON dict
+            "opening_hours_seasonal": seasonal_json,  # Now JSON dict
             "time_min": row.get("time_min"),
             "time_max": row.get("time_max"),
             "Price": row.get("Price"),

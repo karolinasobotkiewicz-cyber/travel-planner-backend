@@ -1,0 +1,25 @@
+{
+  "location": {
+    "city": "zakopane",
+    "country": "Poland"
+  },
+  "trip_length": {
+    "days": 1,
+    "start_date": "2026-01-29"
+  },
+  "group": {
+    "type": "family_kids",
+    "size": 4
+  },
+  "budget": {
+    "total_budget": 1000,
+    "budget_flexibility": "moderate"
+  },
+  "travel_style": "adventure",
+  "preferences": ["outdoor"],
+  "daily_time_window": {
+    "start": "09:00",
+    "end": "19:00"
+  },
+  "transport_modes": ["car"]
+}

@@ -1,0 +1,25 @@
+{
+  "location": {
+    "city": "zakopane",
+    "country": "Poland"
+  },
+  "trip_length": {
+    "days": 1,
+    "start_date": "2026-02-14"
+  },
+  "group": {
+    "type": "couples",
+    "size": 2
+  },
+  "budget": {
+    "total_budget": 500,
+    "budget_flexibility": "moderate"
+  },
+  "travel_style": "cultural",
+  "preferences": ["museums"],
+  "daily_time_window": {
+    "start": "10:00",
+    "end": "18:00"
+  },
+  "transport_modes": ["car"]
+}

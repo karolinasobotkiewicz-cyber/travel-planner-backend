@@ -441,16 +441,11 @@ def normalize_poi(p, index):
     poi_category = normalize_poi_category(p)
     wow = compute_wow_score(priority, must_see, poi_category)
 
-    opening_hours_text = parse_opening_hours(
-        p.get("Opening hours"), p.get("opening_hours_seasonal")
-    )
+    # NEW FORMAT (30.01.2026): Opening hours already converted to JSON dict in load_zakopane
+    # Just pass through the JSON dict directly, no parsing needed
+    opening_hours_json = p.get("Opening hours")  # dict or None
+    opening_hours_seasonal_json = p.get("opening_hours_seasonal")  # dict or None
 
-    opening_hours_calendar = parse_opening_calendar(p)
-
-    opening_hours = {
-        "text": opening_hours_text,
-        "calendar": opening_hours_calendar,
-    }
     experience_role = normalize_experience_role(p)
     activity_style = normalize_activity_style(p.get("Activity_style"))
     poi_role = normalize_poi_role(
@@ -494,7 +489,9 @@ def normalize_poi(p, index):
             p.get("recommended_time_of_day")
         ),
         "kids_only": _safe_lower(p.get("kids_only")) == "true",
-        "opening_hours": opening_hours,
+        # NEW FORMAT (30.01.2026): Opening hours as JSON dict
+        "opening_hours": opening_hours_json,
+        "opening_hours_seasonal": opening_hours_seasonal_json,
         # BUGFIX: Add ticket prices for UI
         "ticket_normal": int(_safe_float(p.get("ticket_normal"), 0)),
         "ticket_reduced": int(_safe_float(p.get("ticket_reduced"), 0)),

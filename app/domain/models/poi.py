@@ -59,15 +59,15 @@ class POI(BaseModel):
     # OPENING HOURS (INTERNAL)
     # =========================
 
-    opening_hours: str = Field(
-        default="",
+    opening_hours: Optional[Dict[str, str]] = Field(
+        default=None,
         alias="Opening hours",
-        description="Godziny otwarcia - INTERNAL",
+        description="Godziny otwarcia - JSON dict {'mon': '08:00-16:00', ...}",
     )
-    opening_hours_seasonal: str = Field(
-        default="",
+    opening_hours_seasonal: Optional[Dict[str, str]] = Field(
+        default=None,
         alias="opening_hours_seasonal",
-        description="Godziny sezonowe - INTERNAL",
+        description="Godziny sezonowe - JSON dict {'date_from': '05-01', 'date_to': '09-30'}",
     )
     link_hours: str = Field(
         default="",
@@ -211,22 +211,22 @@ class POI(BaseModel):
     # VALIDATORS (Excel type coercion)
     # =========================
 
-    @field_validator('opening_hours', mode='before')
+    @field_validator('opening_hours', 'opening_hours_seasonal', mode='before')
     @classmethod
     def validate_opening_hours(cls, v):
-        """Convert dict/complex types to string for opening_hours."""
+        """Ensure opening_hours is dict or None."""
+        if v is None or v == "":
+            return None
         if isinstance(v, dict):
-            # Excel provides: {'text': {'all': (930, 1080)}, 'calendar': []}
-            # Convert to simple string representation
-            if 'text' in v and isinstance(v['text'], dict):
-                times = v['text'].get('all', '')
-                if isinstance(times, tuple) and len(times) == 2:
-                    # Convert minutes to HH:MM format
-                    start_h, start_m = divmod(times[0], 60)
-                    end_h, end_m = divmod(times[1], 60)
-                    return f"{start_h:02d}:{start_m:02d}-{end_h:02d}:{end_m:02d}"
-            return str(v)
-        return str(v) if v is not None else ""
+            return v
+        # If string, try to parse as JSON (for backward compatibility)
+        if isinstance(v, str):
+            try:
+                import json
+                return json.loads(v)
+            except (json.JSONDecodeError, ValueError):
+                return None
+        return None
 
     @field_validator('crowd_level', mode='before')
     @classmethod
