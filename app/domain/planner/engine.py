@@ -836,6 +836,7 @@ def fill_plan_gaps(plan, pois, used_poi_ids, ctx):
     Client requirement: gaps should be filled with soft POI or free_time (max 40 min).
     """
     filled_plan = []
+    last_end_time = None  # Track end time of previous item for transfers
     
     for i, item in enumerate(plan):
         filled_plan.append(item)
@@ -851,18 +852,28 @@ def fill_plan_gaps(plan, pois, used_poi_ids, ctx):
             elif item["type"] == "attraction":
                 current_end = time_to_minutes(item["end_time"])
             elif item["type"] in ["transfer", "transit"]:
-                # Transfer/transit end time from end_time field or start + duration
+                # Transfer in raw plan has no start_time/end_time, only duration_min
+                # Calculate end time from last_end_time + duration
                 if "end_time" in item:
                     current_end = time_to_minutes(item["end_time"])
                 elif "start_time" in item:
                     current_end = time_to_minutes(item["start_time"]) + item["duration_min"]
+                elif last_end_time is not None:
+                    # Raw transfer: calculate from previous item's end
+                    current_end = last_end_time + item["duration_min"]
                 else:
-                    # Skip if we can't determine end time
+                    # Can't determine end time
                     continue
             elif item["type"] == "lunch_break":
                 current_end = time_to_minutes(item["end_time"])
             elif item["type"] == "free_time":
                 current_end = time_to_minutes(item["end_time"])
+            
+            if current_end is None:
+                continue
+            
+            # Remember this for next transfer
+            last_end_time = current_end
             
             if current_end is None:
                 continue
