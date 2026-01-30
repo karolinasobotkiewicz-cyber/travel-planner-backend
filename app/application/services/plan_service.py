@@ -267,7 +267,7 @@ class PlanService:
                     start_time=item.get("start_time", "12:00"),
                     end_time=item.get("end_time", "12:30"),
                     duration_min=item.get("duration_min", 30),
-                    description=item.get("description", "Czas wolny")
+                    label=item.get("description", "Czas wolny")
                 )
                 items.append(free_time_item)
         
