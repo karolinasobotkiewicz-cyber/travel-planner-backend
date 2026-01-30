@@ -591,16 +591,15 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                         continue
                     
                     # Soft POI criteria (client requirements)
-                    intensity = p.get("intensity", "").lower()
-                    if intensity not in ["low", "medium"]:  # low priority, sometimes medium if very short
-                        continue
+                    # Since all Zakopane POI have intensity='medium', accept medium intensity
+                    # Focus on: short duration (10-30 min) + low must_see_score (0-2)
                     
                     time_min = p.get("time_min", 60)
                     if time_min > 30 or time_min < 10:  # 10-30 min range
                         continue
                     
-                    must_see = p.get("must_see", 0)
-                    if must_see > 2:  # Low must_see score (0-2)
+                    must_see_score = p.get("must_see_score", 0)
+                    if must_see_score > 2:  # Low priority (0-2)
                         continue
                     
                     # Calculate travel time
