@@ -161,14 +161,20 @@ class PlanService:
                 break
         
         if has_car and first_attraction:
+            # BUGFIX: Parking musi kończyć się PRZED pierwszą atrakcją
+            # attraction_start = parking_end + walk_time
+            first_attr_start = first_attraction.get("start_time", day_start)
+            
             parking_item = self._generate_parking_item(
                 first_attraction,
-                day_start
+                day_start,
+                first_attr_start  # Pass first attraction start time
             )
             items.append(parking_item)
         
         # 3. KONWERTUJ ITEMS Z ENGINE
         lunch_added = False  # Track czy engine dodał lunch
+        first_attraction_index = 0  # Track first attraction for timing correction
         
         for item in engine_result:
             item_type = item.get("type")
@@ -199,9 +205,25 @@ class PlanService:
             
             elif item_type == "attraction":
                 # 5. ATTRACTION (4.11 - z cost estimation)
+                
+                # BUGFIX: Correct first attraction timing if parking exists
+                attr_start_time = item.get("start_time")
+                if first_attraction_index == 0 and has_car and first_attraction:
+                    # First attraction with parking - adjust start time
+                    # parking duration: 15 min, walk time: from POI
+                    from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+                    
+                    parking_duration = 15
+                    walk_time = first_attraction.get("poi", {}).get("parking_walk_time_min", 5)
+                    
+                    # Calculate corrected start time: day_start + parking + walk
+                    corrected_start_min = time_to_minutes(day_start) + parking_duration + walk_time
+                    attr_start_time = minutes_to_time(corrected_start_min)
+                    first_attraction_index += 1
+                
                 attraction_item = self._generate_attraction_item(
                     item.get("poi"),
-                    item.get("start_time"),
+                    attr_start_time,
                     user,
                     trip_input.group.type
                 )
@@ -237,6 +259,17 @@ class PlanService:
                     to_location=item.get("to")
                 )
                 items.append(transit_item)
+            
+            elif item_type == "free_time":
+                # 7. FREE_TIME - from engine fallback for gaps >20 min
+                free_time_item = FreeTimeItem(
+                    type=ItemType.FREE_TIME,
+                    start_time=item.get("start_time", "12:00"),
+                    end_time=item.get("end_time", "12:30"),
+                    duration_min=item.get("duration_min", 30),
+                    description=item.get("description", "Czas wolny")
+                )
+                items.append(free_time_item)
         
         # KRYTYCZNE (klientka 26.01): Lunch ZAWSZE musi być obecny!
         # Jeśli engine nie dodał, dodajemy ręcznie 12:00-13:30
@@ -267,28 +300,53 @@ class PlanService:
     def _generate_parking_item(
         self,
         poi_dict: Dict[str, Any],  # POI jako dict z engine
-        start_time: str
+        parking_start: str,
+        attraction_start: str  # First attraction start time
     ) -> ParkingItem:
         """
         4.10: Parking logic - 1 parking na start dnia.
         
-        - Z pierwszej atrakcji (parking_name, parking_lat, parking_lng)
-        - Stały czas: 15 minut
-        - Tylko dla transport_modes = car
+        BUGFIX: Parking timing corrected:
+        - parking_start to parking_end: 15 min parking time
+        - parking_end to attraction_start: walk_time
+        - attraction starts AFTER parking + walk
+        
+        Example:
+        - parking: 09:00-09:15 (15 min)
+        - walk: 09:15-09:20 (5 min)
+        - attraction: 09:20-... (starts AFTER walk)
         """
-        # Stały czas: 15 minut
-        end_time = self._add_minutes(start_time, 15)
+        from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+        
+        # Fixed parking duration: 15 minutes
+        PARKING_DURATION = 15
+        
+        # Walk time from POI data
+        walk_time = poi_dict.get("parking_walk_time_min", 5)
+        
+        # Calculate parking end: start + 15 min
+        parking_start_min = time_to_minutes(parking_start)
+        parking_end_min = parking_start_min + PARKING_DURATION
+        parking_end = minutes_to_time(parking_end_min)
+        
+        # Verify: attraction should start at parking_end + walk_time
+        # If not, log warning (but don't block - engine controls timing)
+        expected_attr_start = minutes_to_time(parking_end_min + walk_time)
+        if expected_attr_start != attraction_start:
+            # This is expected if engine scheduled attraction differently
+            # We still create parking item but timing may look odd
+            pass
         
         return ParkingItem(
             type=ItemType.PARKING,
-            start_time=start_time,
-            end_time=end_time,
+            start_time=parking_start,
+            end_time=parking_end,
             name=poi_dict.get("parking_name") or "Parking",
             address=poi_dict.get("parking_address", ""),
             lat=poi_dict.get("parking_lat") or poi_dict.get("lat", 0.0),
             lng=poi_dict.get("parking_lng") or poi_dict.get("lng", 0.0),
-            parking_type=ParkingType.PAID,  # FIXME: z POI?
-            walk_time_min=5  # FIXME: oblicz z odległości?
+            parking_type=ParkingType.PAID,  # FIXME: z POI parking_type?
+            walk_time_min=walk_time
         )
 
     def _generate_attraction_item(

@@ -2,6 +2,7 @@
 import math
 
 from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+from app.domain.planner.opening_hours_parser import is_poi_open_at_time
 from app.domain.scoring import (
     calculate_family_score,
     calculate_budget_score,
@@ -182,54 +183,48 @@ def is_finale(p):
 
 def is_open(p, now, duration, season, context=None):
     """
-    ETAP 1 simplification: opening_hours is now a string from Excel.
-    We skip complex calendar logic and assume POI is always open during day hours.
-    TODO ETAP 2: Implement proper opening hours parsing from string format.
-    """
-    oh = p.get("opening_hours")
+    Check if POI is open at given time.
     
-    # If opening_hours is string (new format after validators), simplify logic
-    if isinstance(oh, str):
-        # QUICKFIX: Accept POI if they can start before 19:00 (day_end from user input)
-        # This prevents 2h gaps caused by overly restrictive 18:00 limit
+    Uses opening_hours_parser to validate:
+    - Seasonal date ranges (e.g., "date_from": "06-01", "date_to": "09-30")
+    - Weekday hours (e.g., mon:9:00-17:00, Sat:15:30-18:00)
+    
+    Args:
+        p: POI dict with "opening_hours" field
+        now: Start time in minutes since midnight
+        duration: Visit duration in minutes
+        season: Season string (unused, kept for compatibility)
+        context: Context dict with "date" = (year, month, day, weekday)
+    
+    Returns:
+        True if POI is open and visit fits within hours
+        False otherwise (including off-season)
+    """
+    oh = p.get("opening_hours", "")
+    
+    # If no opening_hours or empty string, assume always open
+    if not oh or (isinstance(oh, str) and oh.strip() == ""):
+        return True
+    
+    # Extract date info from context
+    if not context or "date" not in context:
+        # No date context - use legacy simple validation
         day_start = time_to_minutes("09:00")
-        day_end = time_to_minutes("20:00")  # Extended to 20:00 to allow activities ending at 19:00
+        day_end = time_to_minutes("20:00")
         return (now >= day_start) and (now < day_end)
     
-    # Legacy dict format (if still present in old code)
-    if not isinstance(oh, dict):
-        oh = {}
-
-    # 1) Kalendarz (najwyższy priorytet)
-    cal = oh.get("calendar") or []
-    if cal and context and "date" in context:
-        y, m, d, dow = context["date"]  # dow = 0..6 (Mon..Sun)
-
-        for rule in cal:
-            (fm, fd) = rule["date_from"]
-            (tm, td) = rule["date_to"]
-
-            if (m, d) < (fm, fd) or (m, d) > (tm, td):
-                continue
-
-            hours = rule["hours"]
-            if dow not in hours:
-                return False
-
-            start, end = hours[dow]
-            return (now >= start) and (now + duration <= end)
-
-        return False  # w kalendarzu jest zakres, ale nie pasuje
-
-    # 2) Sezonowe / tekstowe fallback
-    text = oh.get("text") or {}
-
-    if season in text:
-        start, end = text[season]
-    else:
-        start, end = text.get("all", (0, 1440))
-
-    return (now >= start) and (now + duration <= end)
+    # Parse context date
+    year, month, day, weekday = context["date"]
+    current_date = (year, month, day)
+    
+    # Use opening_hours_parser for proper validation
+    return is_poi_open_at_time(
+        opening_hours_str=oh,
+        current_date=current_date,
+        weekday=weekday,
+        start_time_minutes=now,
+        duration_minutes=duration
+    )
 
 
 # =========================
@@ -496,11 +491,79 @@ def build_day(pois, user, context, day_start=None, day_end=None):
         # Check if POI was selected
 
         if not best:
-            # FALLBACK: Jeśli nie znaleziono POI, przesuń czas o 15 min i spróbuj ponownie
-            now += 15
-            # Jeśli zostało mniej niż 30 min do końca dnia, zakończ
-            if now + 30 >= end:
-                break
+            # FALLBACK for gaps >20 min: Try soft POI or add free_time
+            # Client requirement: gaps >20 min should have soft POI or free_time
+            
+            remaining_time = end - now
+            
+            if remaining_time >= 20:  # Only handle gaps >20 min
+                # Try to find soft POI: low intensity, short duration, low must_see
+                soft_best = None
+                soft_score = -9999
+                soft_duration = 0
+                
+                for p in pois:
+                    if poi_id(p) in used:
+                        continue
+                    
+                    # Soft POI criteria
+                    if p.get("intensity") != "low":
+                        continue
+                    if p.get("time_min", 60) > 30:  # Max 30 min
+                        continue
+                    if p.get("must_see", 0) > 2:  # Low priority
+                        continue
+                    
+                    travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
+                    start_time = now + travel
+                    
+                    if start_time >= end:
+                        continue
+                    
+                    duration = min(p.get("time_min", 15), remaining_time - travel)
+                    if duration < 10:  # Too short
+                        continue
+                    
+                    if not is_open(p, start_time, duration, ctx["season"], ctx):
+                        continue
+                    
+                    # Simple scoring for soft POI
+                    score = 10 - travel * 0.5  # Prefer nearby
+                    
+                    if score > soft_score:
+                        soft_best = p
+                        soft_score = score
+                        soft_duration = duration
+                
+                if soft_best:
+                    # Found soft POI - add it
+                    best = soft_best
+                    best_score = soft_score
+                    best_travel = travel_time_minutes(last_poi, best, ctx) if last_poi else 0
+                    best_duration = soft_duration
+                else:
+                    # No soft POI - add free_time (max 40 min)
+                    free_duration = min(40, remaining_time)
+                    
+                    plan.append({
+                        "type": "free_time",
+                        "start_time": minutes_to_time(now),
+                        "end_time": minutes_to_time(now + free_duration),
+                        "duration_min": free_duration,
+                        "description": "Czas wolny: spacer, kawa, odpoczynek"
+                    })
+                    
+                    now += free_duration
+                    continue
+            else:
+                # Gap <20 min or not enough time - just advance time
+                now += 15
+                if now + 30 >= end:
+                    break
+                continue
+        
+        # POI selected (either normal or soft) - add to plan
+        if not best:
             continue
 
         transfer_time = (

@@ -495,6 +495,17 @@ def normalize_poi(p, index):
         ),
         "kids_only": _safe_lower(p.get("kids_only")) == "true",
         "opening_hours": opening_hours,
+        # BUGFIX: Add ticket prices for UI
+        "ticket_normal": int(_safe_float(p.get("ticket_normal"), 0)),
+        "ticket_reduced": int(_safe_float(p.get("ticket_reduced"), 0)),
+        "pro_tip": _safe_str(p.get("Pro_tip")),
+        # Add parking info for parking items
+        "parking_name": _safe_str(p.get("parking_name")),
+        "parking_address": _safe_str(p.get("parking_address")),
+        "parking_lat": _safe_float(p.get("parking_lat")),
+        "parking_lng": _safe_float(p.get("parking_lng")),
+        "parking_type": _safe_str(p.get("parking_type")),
+        "parking_walk_time_min": int(_safe_float(p.get("parking_walk_time_min"), 5)),
     }
 
 
