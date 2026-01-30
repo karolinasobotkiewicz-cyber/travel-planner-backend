@@ -102,6 +102,18 @@ class PlanService:
                 trip_input
             )
             
+            # CRITICAL: Fill gaps >20 min AFTER transit times are calculated
+            # This must run here because:
+            # 1. Parking shifts first attraction time
+            # 2. Transit start/end times are calculated in _convert_engine_result_to_items
+            # 3. Gaps only appear after these adjustments
+            day_items = self._fill_gaps_in_items(
+                day_items,
+                all_pois_dict,
+                context,
+                user
+            )
+            
             day_plan = DayPlan(
                 day=day_num + 1,
                 items=day_items
@@ -458,6 +470,95 @@ class PlanService:
             to_lat=to_poi.lat,
             to_lng=to_poi.lng
         )
+
+    def _fill_gaps_in_items(
+        self,
+        items: List[Any],
+        all_pois: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        user: Dict[str, Any]
+    ) -> List[Any]:
+        """
+        Fill gaps >20 min between items with soft POI or free_time.
+        
+        This runs AFTER _convert_engine_result_to_items so all items have
+        proper start_time/end_time including transit items.
+        
+        Args:
+            items: List of PlanResponse items (Pydantic models)
+            all_pois: All available POIs
+            context: Trip context
+            user: User preferences
+            
+        Returns:
+            Updated list of items with gaps filled
+        """
+        from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+        from app.domain.models.plan_response import FreeTimeItem, ItemType
+        
+        print("[GAP FILLING] Checking items AFTER PlanService conversion")
+        
+        result = []
+        last_end_min = None
+        
+        for i, item in enumerate(items):
+            result.append(item)
+            item_dict = item.dict()
+            item_type = item_dict['type']
+            
+            # Get end time of current item
+            current_end = None
+            if item_type in ['attraction', 'transit', 'lunch_break', 'parking']:
+                if 'end_time' in item_dict:
+                    current_end = time_to_minutes(item_dict['end_time'])
+                    # Add walk_time for parking
+                    if item_type == 'parking' and 'walk_time_min' in item_dict:
+                        current_end += item_dict['walk_time_min']
+            elif item_type == 'day_start':
+                if 'time' in item_dict:
+                    current_end = time_to_minutes(item_dict['time'])
+            
+            if current_end is None:
+                continue
+            
+            # Check gap to next item
+            if i < len(items) - 1:
+                next_item = items[i + 1].dict()
+                next_type = next_item['type']
+                
+                # Get next start time
+                next_start = None
+                if next_type in ['attraction', 'lunch_break']:
+                    if 'start_time' in next_item:
+                        next_start = time_to_minutes(next_item['start_time'])
+                
+                if next_start is not None:
+                    gap = next_start - current_end
+                    
+                    print(f"[GAP FILLING] {item_type} ends {current_end} → {next_type} starts {next_start} = GAP {gap} min")
+                    
+                    if gap > 20:
+                        # Found gap! Fill with free_time
+                        gap_duration = min(gap, 40)  # Max 40 min free time
+                        free_time_start = minutes_to_time(current_end)
+                        free_time_end = minutes_to_time(current_end + gap_duration)
+                        
+                        print(f"[GAP FILLING] ✓ FILLING {gap} min gap with free_time ({free_time_start}-{free_time_end})")
+                        
+                        free_time_item = FreeTimeItem(
+                            type=ItemType.FREE_TIME,
+                            start_time=free_time_start,
+                            end_time=free_time_end,
+                            duration_min=gap_duration,
+                            label="Czas wolny"
+                        )
+                        
+                        result.append(free_time_item)
+            
+            last_end_min = current_end
+        
+        print(f"[GAP FILLING] Final: {len(items)} → {len(result)} items")
+        return result
 
     def _add_minutes(self, time_str: str, minutes: int) -> str:
         """Helper: dodaje minuty do czasu HH:MM."""

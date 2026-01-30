@@ -824,8 +824,8 @@ def build_day(pois, user, context, day_start=None, day_end=None):
 
     plan.append({"type": "accommodation_end", "time": minutes_to_time(end)})
     
-    # POST-PROCESS: Fill gaps >20 min between attractions
-    plan = fill_plan_gaps(plan, pois, used, ctx)
+    # NOTE: Gap filling moved to PlanService (after parking/transit timing adjustments)
+    # This ensures gaps are detected AFTER all time shifts from parking
     
     return plan
 
@@ -836,6 +836,17 @@ def fill_plan_gaps(plan, pois, used_poi_ids, ctx):
     Client requirement: gaps should be filled with soft POI or free_time (max 40 min).
     """
     print(f"[GAP FILLING DEBUG] Starting with {len(plan)} items", flush=True)
+    print(f"[GAP FILLING DEBUG] RAW PLAN DUMP:", flush=True)
+    for i, item in enumerate(plan):
+        item_type = item.get('type')
+        if item_type == 'attraction':
+            print(f"  {i}. {item_type}: {item.get('name')} | start={item.get('start_time')} end={item.get('end_time')}", flush=True)
+        elif item_type == 'transfer':
+            print(f"  {i}. {item_type}: {item.get('from')} -> {item.get('to')} | duration={item.get('duration_min')} | HAS start_time={('start_time' in item)} HAS end_time={('end_time' in item)}", flush=True)
+        elif item_type in ['lunch_break', 'free_time']:
+            print(f"  {i}. {item_type}: start={item.get('start_time')} end={item.get('end_time')}", flush=True)
+        else:
+            print(f"  {i}. {item_type}: {item.get('time', 'N/A')}", flush=True)
     
     filled_plan = []
     last_end_time = None  # Track end time of previous item for transfers
