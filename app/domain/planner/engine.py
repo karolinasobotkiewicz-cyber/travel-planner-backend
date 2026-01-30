@@ -850,10 +850,15 @@ def fill_plan_gaps(plan, pois, used_poi_ids, ctx):
                 current_end = time_to_minutes(item["time"])
             elif item["type"] == "attraction":
                 current_end = time_to_minutes(item["end_time"])
-            elif item["type"] == "transfer":
-                # Transfer doesn't have end_time, but we know duration
-                # This is handled by next item's start_time
-                continue
+            elif item["type"] in ["transfer", "transit"]:
+                # Transfer/transit end time from end_time field or start + duration
+                if "end_time" in item:
+                    current_end = time_to_minutes(item["end_time"])
+                elif "start_time" in item:
+                    current_end = time_to_minutes(item["start_time"]) + item["duration_min"]
+                else:
+                    # Skip if we can't determine end time
+                    continue
             elif item["type"] == "lunch_break":
                 current_end = time_to_minutes(item["end_time"])
             elif item["type"] == "free_time":
@@ -868,8 +873,8 @@ def fill_plan_gaps(plan, pois, used_poi_ids, ctx):
                 next_start = time_to_minutes(next_item["start_time"])
             elif next_item["type"] == "lunch_break":
                 next_start = time_to_minutes(next_item["start_time"])
-            elif next_item["type"] == "transfer":
-                # No gap before transfer
+            elif next_item["type"] in ["transfer", "transit"]:
+                # No gap before transfer/transit - they happen immediately
                 continue
             elif next_item["type"] == "accommodation_end":
                 # No gap before day end
