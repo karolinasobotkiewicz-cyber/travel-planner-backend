@@ -708,6 +708,110 @@ def build_day(pois, user, context, day_start=None, day_end=None):
         # update kultur
         if is_culture(best):
             culture_streak += 1
+        
+        # GAP FILLING: Check if next POI creates gap >20 min
+        # Look ahead to see when next POI would start
+        remaining = end - now
+        if remaining > 20:  # Only if enough time left
+            # Try to find next POI to calculate potential gap
+            next_poi_time = None
+            next_best_travel = 999
+            
+            for p in pois:
+                if poi_id(p) in used:
+                    continue
+                
+                travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
+                test_start = now + travel
+                
+                if test_start >= end:
+                    continue
+                
+                test_duration = choose_duration(p, test_start, end, lunch_done)
+                if test_duration <= 0:
+                    continue
+                
+                if not is_open(p, test_start, test_duration, ctx["season"], ctx):
+                    continue
+                
+                # Found potential next POI
+                if travel < next_best_travel:
+                    next_best_travel = travel
+                    next_poi_time = test_start
+                    break  # Use first viable POI for gap check
+            
+            # Check if there's a gap before next POI
+            if next_poi_time and (next_poi_time - now) > 20:
+                gap_duration = next_poi_time - now
+                
+                # Try to fill gap with soft POI
+                soft_filled = False
+                for p in pois:
+                    if poi_id(p) in used:
+                        continue
+                    
+                    # Soft POI criteria
+                    time_min = p.get("time_min", 60)
+                    if time_min > 30 or time_min < 10:
+                        continue
+                    
+                    must_see_score = p.get("must_see_score", 0)
+                    if must_see_score > 2:
+                        continue
+                    
+                    soft_travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
+                    soft_start = now + soft_travel
+                    
+                    if soft_start >= next_poi_time or soft_start >= end:
+                        continue
+                    
+                    soft_duration = min(time_min, gap_duration - soft_travel, next_poi_time - soft_start)
+                    if soft_duration < 10:
+                        continue
+                    
+                    if not is_open(p, soft_start, soft_duration, ctx["season"], ctx):
+                        continue
+                    
+                    # Add soft POI to fill gap
+                    if soft_travel > 0:
+                        plan.append({
+                            "type": "transfer",
+                            "from": poi_name(last_poi),
+                            "to": poi_name(p),
+                            "duration_min": soft_travel,
+                        })
+                        now += soft_travel
+                    
+                    plan.append({
+                        "type": "attraction",
+                        "poi": p,
+                        "name": poi_name(p),
+                        "start_time": minutes_to_time(now),
+                        "end_time": minutes_to_time(now + soft_duration),
+                        "meta": {
+                            "experience_role": "filler",  # Mark as gap filler
+                            "is_culture": bool(is_culture(p)),
+                            "body_state_after": get_next_body_state(p, body_state),
+                        },
+                    })
+                    
+                    now += soft_duration
+                    used.add(poi_id(p))
+                    last_poi = p
+                    soft_filled = True
+                    break  # Fill one soft POI per gap
+                
+                # If no soft POI fits, add free_time (max 40 min)
+                if not soft_filled and gap_duration > 20:
+                    free_duration = min(40, gap_duration)
+                    plan.append({
+                        "type": "free_time",
+                        "start_time": minutes_to_time(now),
+                        "end_time": minutes_to_time(now + free_duration),
+                        "duration_min": free_duration,
+                        "description": "Czas wolny: spacer, kawa, odpoczynek"
+                    })
+                    now += free_duration
         else:
             culture_streak = 0
 
