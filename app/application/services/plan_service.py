@@ -494,7 +494,7 @@ class PlanService:
             Updated list of items with gaps filled
         """
         from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
-        from app.domain.models.plan_response import FreeTimeItem, ItemType
+        from app.domain.models.plan import FreeTimeItem, ItemType
         
         print("[GAP FILLING] Checking items AFTER PlanService conversion")
         
