@@ -177,8 +177,13 @@ class PlanService:
             # attraction_start = parking_end + walk_time
             first_attr_start = first_attraction.get("start_time", day_start)
             
+            # BUGFIX (31.01.2026 - Problem #2): Pass POI dict, not engine attraction item
+            # first_attraction = {"type": "attraction", "poi": {...}, "start_time": "..."}
+            # parking_item needs POI data for parking_address, parking_lat, parking_lng
+            first_poi = first_attraction.get("poi", {})
+            
             parking_item = self._generate_parking_item(
-                first_attraction,
+                first_poi,  # Pass POI dict with parking data
                 day_start,
                 first_attr_start  # Pass first attraction start time
             )
@@ -261,12 +266,30 @@ class PlanService:
                 end_minutes = start_minutes + duration
                 end_time = minutes_to_time(end_minutes)
                 
+                # BUGFIX (31.01.2026 - Problem #5): Determine transit mode based on duration
+                # Walk only for <10 min, car for ≥10 min (when user has car)
+                has_car = "car" in (trip_input.transport_modes or [])
+                
+                if has_car and duration >= 10:
+                    mode = TransitMode.CAR
+                elif has_car and duration < 10:
+                    mode = TransitMode.WALK
+                else:
+                    # No car - use context transport or walk
+                    transport = context.get('transport', 'walk')
+                    mode_map = {
+                        'walk': TransitMode.WALK,
+                        'car': TransitMode.CAR,
+                        'bus': TransitMode.BUS,
+                    }
+                    mode = mode_map.get(transport, TransitMode.WALK)
+                
                 transit_item = TransitItem(
                     type=ItemType.TRANSIT,
                     start_time=start_time,
                     end_time=end_time,
                     duration_min=duration,
-                    mode=item.get("mode", "walk"),
+                    mode=mode,
                     from_location=item.get("from"),
                     to_location=item.get("to")
                 )
@@ -318,6 +341,10 @@ class PlanService:
         """
         4.10: Parking logic - 1 parking na start dnia.
         
+        BUGFIX (31.01.2026 - Problem #2): Use POI parking data or fallback to POI location
+        - parking_address: Use POI parking_address or fallback to POI address
+        - parking_lat/lng: Use POI parking_lat/lng or fallback to POI lat/lng
+        
         BUGFIX: Parking timing corrected:
         - parking_start to parking_end: 15 min parking time
         - parking_end to attraction_start: walk_time
@@ -349,14 +376,28 @@ class PlanService:
             # We still create parking item but timing may look odd
             pass
         
+        # BUGFIX (31.01.2026 - Problem #2): Proper fallback for parking location
+        # Use parking_address or fallback to POI address
+        parking_address = poi_dict.get("parking_address", "") or poi_dict.get("address", "")
+        
+        # Use parking_lat/lng or fallback to POI lat/lng
+        # NOTE: parking_lat can be 0.0 (valid), use None check
+        parking_lat = poi_dict.get("parking_lat")
+        if parking_lat is None or parking_lat == 0.0:
+            parking_lat = poi_dict.get("lat", 0.0)
+        
+        parking_lng = poi_dict.get("parking_lng")
+        if parking_lng is None or parking_lng == 0.0:
+            parking_lng = poi_dict.get("lng", 0.0)
+        
         return ParkingItem(
             type=ItemType.PARKING,
             start_time=parking_start,
             end_time=parking_end,
             name=poi_dict.get("parking_name") or "Parking",
-            address=poi_dict.get("parking_address", ""),
-            lat=poi_dict.get("parking_lat") or poi_dict.get("lat", 0.0),
-            lng=poi_dict.get("parking_lng") or poi_dict.get("lng", 0.0),
+            address=parking_address,
+            lat=parking_lat,
+            lng=parking_lng,
             parking_type=ParkingType.PAID,  # FIXME: z POI parking_type?
             walk_time_min=walk_time
         )
@@ -415,6 +456,9 @@ class PlanService:
         - ticket_normal jako baseline
         - family_kids: (2×normal + 2×reduced)
         - free_entry: 0
+        
+        BUGFIX (31.01.2026 - Problem #1):
+        - Gdy ticket_normal=0 I ticket_reduced=0 I NIE free_entry → fallback 50 PLN
         """
         free_entry = poi_dict.get("free_entry", False)
         
@@ -423,6 +467,15 @@ class PlanService:
         
         ticket_normal = poi_dict.get("ticket_normal", 0) or 0
         ticket_reduced = poi_dict.get("ticket_reduced", 0) or 0
+        
+        # BUGFIX: Fallback for POI without price data (like DINO PARK with "brak danych")
+        if ticket_normal == 0 and ticket_reduced == 0 and not free_entry:
+            # Use reasonable default: 50 PLN per person
+            # For family_kids: 4 persons × 50 = 200 PLN
+            default_price = 50
+            if group_type == "family_kids":
+                return 4 * default_price  # 2 adults + 2 kids
+            return default_price
         
         if group_type == "family_kids":
             # Zakładamy: 2 dorosłych + 2 dzieci
@@ -479,7 +532,16 @@ class PlanService:
         user: Dict[str, Any]
     ) -> List[Any]:
         """
-        Fill gaps >20 min between items with soft POI or free_time.
+        Fill gaps >20 min between items with POI or free_time.
+        
+        BUGFIX (31.01.2026 - Problem #4): ACTIVE gap filling
+        Philosophy: "Najlepiej jakby w ogóle nie było luk czasowych, szczególnie jak atrakcje są otwarte"
+        
+        NEW LOGIC:
+        1. Detect gap >20 min
+        2. TRY: Find available POI that fits in gap (is_open, duration fits)
+        3. TRY: Prefer shorter, nearby POI
+        4. LAST RESORT: Add free_time only if NO POI available
         
         This runs AFTER _convert_engine_result_to_items so all items have
         proper start_time/end_time including transit items.
@@ -494,12 +556,18 @@ class PlanService:
             Updated list of items with gaps filled
         """
         from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+        from app.domain.planner.engine import travel_time_minutes, is_open
         from app.domain.models.plan import FreeTimeItem, ItemType
         
-        print("[GAP FILLING] Checking items AFTER PlanService conversion")
+        print("[GAP FILLING] ACTIVE mode - try POI first, free_time LAST RESORT")
         
         result = []
-        last_end_min = None
+        used_poi_ids = set()  # Track POIs already in plan
+        
+        # Collect POIs already used in plan
+        for item in items:
+            if hasattr(item, 'poi_id'):
+                used_poi_ids.add(item.poi_id)
         
         for i, item in enumerate(items):
             result.append(item)
@@ -521,6 +589,14 @@ class PlanService:
             if current_end is None:
                 continue
             
+            # Get last POI location for travel time calculation
+            last_poi_location = None
+            if item_type == 'attraction':
+                last_poi_location = {
+                    'lat': item_dict.get('lat', 0),
+                    'lng': item_dict.get('lng', 0)
+                }
+            
             # Check gap to next item
             if i < len(items) - 1:
                 next_item = items[i + 1].dict()
@@ -537,13 +613,110 @@ class PlanService:
                     
                     print(f"[GAP FILLING] {item_type} ends {current_end} → {next_type} starts {next_start} = GAP {gap} min")
                     
+                    # BUGFIX (31.01.2026 - Problem #3): Skip gap filling before lunch if gap <60 min
+                    # Lunch can start earlier instead of adding unnecessary free_time
+                    if next_type == 'lunch_break' and gap < 60:
+                        print(f"[GAP FILLING] ✗ SKIP filling {gap} min gap before lunch (lunch can start earlier)")
+                        continue
+                    
                     if gap > 20:
-                        # Found gap! Fill with free_time
+                        # BUGFIX (31.01.2026 - Problem #4): TRY find POI first before free_time
+                        poi_found = False
+                        best_poi = None
+                        best_score = -9999
+                        best_duration = 0
+                        best_travel = 0
+                        
+                        for poi in all_pois:
+                            poi_id = poi.get('id', '')
+                            
+                            # Skip if already used
+                            if poi_id in used_poi_ids:
+                                continue
+                            
+                            # Calculate travel time
+                            travel = 0
+                            if last_poi_location:
+                                travel = travel_time_minutes(last_poi_location, poi, context)
+                            else:
+                                # First POI - no travel
+                                travel = 0
+                            
+                            # Check if POI fits in gap (travel + duration)
+                            poi_duration = poi.get('time_min', 30)
+                            if travel + poi_duration > gap:
+                                continue  # Too long
+                            
+                            # Check if POI is open at this time
+                            poi_start = current_end + travel
+                            poi_start_str = minutes_to_time(int(poi_start))
+                            
+                            if not is_open(poi, int(poi_start), poi_duration, context.get('season'), context):
+                                continue  # Closed
+                            
+                            # Simple scoring: prefer nearby, short duration
+                            # Shorter = better (fits in gaps)
+                            # Closer = better (less travel)
+                            score = 100 - travel * 0.5 - poi_duration * 0.2
+                            
+                            if score > best_score:
+                                best_poi = poi
+                                best_score = score
+                                best_duration = poi_duration
+                                best_travel = travel
+                                poi_found = True
+                        
+                        if poi_found and best_poi:
+                            # Add POI to fill gap!
+                            print(f"[GAP FILLING] ✓ FILLING {gap} min gap with POI: {best_poi.get('name')}")
+                            
+                            # Add transit if needed
+                            if best_travel > 0:
+                                transit_start = minutes_to_time(current_end)
+                                transit_end = minutes_to_time(current_end + best_travel)
+                                
+                                # Map transport string to TransitMode enum
+                                transport = context.get('transport', 'car')
+                                mode_map = {
+                                    'walk': TransitMode.WALK,
+                                    'car': TransitMode.CAR,
+                                    'bus': TransitMode.BUS,
+                                }
+                                mode = mode_map.get(transport, TransitMode.CAR)
+                                
+                                transit_item = TransitItem(
+                                    type=ItemType.TRANSIT,
+                                    start_time=transit_start,
+                                    end_time=transit_end,
+                                    duration_min=best_travel,
+                                    mode=mode,
+                                    from_location="Previous location",
+                                    to_location=best_poi.get('name', 'Attraction')
+                                )
+                                result.append(transit_item)
+                            
+                            # Add attraction
+                            attr_start = minutes_to_time(current_end + best_travel)
+                            
+                            attraction_item = self._generate_attraction_item(
+                                best_poi,
+                                attr_start,
+                                user,
+                                user.get('target_group', 'family_kids')
+                            )
+                            result.append(attraction_item)
+                            
+                            # Mark as used
+                            used_poi_ids.add(best_poi.get('id', ''))
+                            
+                            continue  # Skip free_time - POI added instead
+                        
+                        # NO POI FOUND - add free_time as LAST RESORT
                         gap_duration = min(gap, 40)  # Max 40 min free time
                         free_time_start = minutes_to_time(current_end)
                         free_time_end = minutes_to_time(current_end + gap_duration)
                         
-                        print(f"[GAP FILLING] ✓ FILLING {gap} min gap with free_time ({free_time_start}-{free_time_end})")
+                        print(f"[GAP FILLING] ⚠ LAST RESORT: No available POI, adding free_time ({free_time_start}-{free_time_end})")
                         
                         free_time_item = FreeTimeItem(
                             type=ItemType.FREE_TIME,
@@ -554,8 +727,6 @@ class PlanService:
                         )
                         
                         result.append(free_time_item)
-            
-            last_end_min = current_end
         
         print(f"[GAP FILLING] Final: {len(items)} → {len(result)} items")
         return result

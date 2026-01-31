@@ -563,8 +563,11 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                 finale_done=finale_done,
             )
 
-            # kara za dojazdy
-            score -= travel * 0.1
+            # BUGFIX (31.01.2026 - Problem #7): Increased travel penalty from 0.1 to 0.5
+            # Prefer closer POI - e.g., Termy Zakopiańskie (closer) over Gorący Potok (farther)
+            # Old: 22 min = -2.2 penalty (too weak)
+            # New: 22 min = -11 penalty (strong preference for nearby)
+            score -= travel * 0.5
 
             if score > best_score:
                 best = p

@@ -451,6 +451,11 @@ def normalize_poi(p, index):
     poi_role = normalize_poi_role(
         p, experience_role, activity_style, poi_category
     )
+    
+    # BUGFIX (31.01.2026 - Problem #1): Detect free_entry from Price field
+    # If Price contains "wstęp bezpłatny" or "bezpłatny" → free_entry=True
+    price_text = _safe_lower(p.get("Price"))
+    free_entry = "bezpłatny" in price_text or "free" in price_text
 
     return {
         "id": f"poi_{index}",
@@ -494,9 +499,10 @@ def normalize_poi(p, index):
         # NEW FORMAT (30.01.2026): Opening hours as JSON dict
         "opening_hours": opening_hours_json,
         "opening_hours_seasonal": opening_hours_seasonal_json,
-        # BUGFIX: Add ticket prices for UI
+        # BUGFIX (31.01.2026 - Problem #1): Add ticket prices + free_entry for cost estimation
         "ticket_normal": int(_safe_float(p.get("ticket_normal"), 0)),
         "ticket_reduced": int(_safe_float(p.get("ticket_reduced"), 0)),
+        "free_entry": free_entry,  # Derived from Price field
         "pro_tip": _safe_str(p.get("Pro_tip")),
         # Add parking info for parking items
         "parking_name": _safe_str(p.get("parking_name")),
