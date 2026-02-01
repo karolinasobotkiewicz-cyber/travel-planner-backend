@@ -23,7 +23,8 @@ from app.domain.models.plan import (
     ParkingType,  # Dodano dla parking_type
 )
 from app.application.services.trip_mapper import trip_input_to_engine_params
-from app.domain.planner.engine import build_day
+from app.domain.planner.engine import build_day, travel_time_minutes, is_open
+from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
 from app.infrastructure.repositories import POIRepository
 
 
@@ -555,10 +556,6 @@ class PlanService:
         Returns:
             Updated list of items with gaps filled
         """
-        from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
-        from app.domain.planner.engine import travel_time_minutes, is_open
-        from app.domain.models.plan import FreeTimeItem, ItemType
-        
         print("[GAP FILLING] ACTIVE mode - try POI first, free_time LAST RESORT")
         
         result = []
@@ -651,7 +648,11 @@ class PlanService:
                             poi_start = current_end + travel
                             poi_start_str = minutes_to_time(int(poi_start))
                             
-                            if not is_open(poi, int(poi_start), poi_duration, context.get('season'), context):
+                            # Ensure context has 'date' field before calling is_open
+                            if not context.get('date'):
+                                # Skip is_open check if no date in context
+                                pass
+                            elif not is_open(poi, int(poi_start), poi_duration, context.get('season', 'all'), context):
                                 continue  # Closed
                             
                             # Simple scoring: prefer nearby, short duration
