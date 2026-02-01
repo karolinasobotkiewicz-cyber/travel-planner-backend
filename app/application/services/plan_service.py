@@ -631,6 +631,16 @@ class PlanService:
                             if poi_id in used_poi_ids:
                                 continue
                             
+                            # BUGFIX (01.02.2026): Skip POI with invalid data (NaN values)
+                            poi_name = poi.get('name', '')
+                            if not poi_name or str(poi_name).lower() == 'nan':
+                                continue  # Invalid POI data
+                            
+                            poi_lat = poi.get('lat', 0)
+                            poi_lng = poi.get('lng', 0)
+                            if poi_lat == 0 or poi_lng == 0:
+                                continue  # Missing location data
+                            
                             # Calculate travel time
                             travel = 0
                             if last_poi_location:
