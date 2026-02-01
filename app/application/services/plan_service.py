@@ -281,7 +281,8 @@ class PlanService:
                     mode_map = {
                         'walk': TransitMode.WALK,
                         'car': TransitMode.CAR,
-                        'bus': TransitMode.BUS,
+                        'bus': TransitMode.PUBLIC_TRANSPORT,
+                        'public_transport': TransitMode.PUBLIC_TRANSPORT,
                     }
                     mode = mode_map.get(transport, TransitMode.WALK)
                 
@@ -507,7 +508,8 @@ class PlanService:
         mode_map = {
             "walk": TransitMode.WALK,
             "car": TransitMode.CAR,
-            "bus": TransitMode.BUS,
+            "bus": TransitMode.PUBLIC_TRANSPORT,
+            "public_transport": TransitMode.PUBLIC_TRANSPORT,
         }
         mode = mode_map.get(transport, TransitMode.WALK)
         
@@ -691,7 +693,8 @@ class PlanService:
                                 mode_map = {
                                     'walk': TransitMode.WALK,
                                     'car': TransitMode.CAR,
-                                    'bus': TransitMode.BUS,
+                                    'bus': TransitMode.PUBLIC_TRANSPORT,
+                                    'public_transport': TransitMode.PUBLIC_TRANSPORT,
                                 }
                                 mode = mode_map.get(transport, TransitMode.CAR)
                                 
