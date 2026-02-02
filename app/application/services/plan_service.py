@@ -660,10 +660,12 @@ class PlanService:
                             free_duration = min(gap, 40)  # Max 40 min free time
                             
                             result.append(FreeTimeItem(
+                                type=ItemType.FREE_TIME,
                                 start_time=free_time_start,
                                 end_time=minutes_to_time(current_end + free_duration),
                                 duration_min=free_duration,
-                                description="Czas wolny: spacer, kawa, odpoczynek"
+                                label="Czas wolny",
+                                description="Spacer, kawa, odpoczynek"
                             ))
                             continue
                         
