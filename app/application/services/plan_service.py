@@ -232,7 +232,9 @@ class PlanService:
                     from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
                     
                     parking_duration = 15
-                    walk_time = first_attraction.get("poi", {}).get("parking_walk_time_min", 5)
+                    # BUGFIX (02.02.2026): Use actual POI parking_walk_time_min, not default 5
+                    walk_time_raw = first_attraction.get("poi", {}).get("parking_walk_time_min")
+                    walk_time = int(walk_time_raw) if walk_time_raw and walk_time_raw > 0 else 5
                     
                     # Calculate corrected start time: day_start + parking + walk
                     corrected_start_min = time_to_minutes(day_start) + parking_duration + walk_time
@@ -362,8 +364,9 @@ class PlanService:
         # Fixed parking duration: 15 minutes
         PARKING_DURATION = 15
         
-        # Walk time from POI data
-        walk_time = poi_dict.get("parking_walk_time_min", 5)
+        # BUGFIX (02.02.2026): Walk time from POI data - use actual value if exists
+        walk_time_raw = poi_dict.get("parking_walk_time_min")
+        walk_time = int(walk_time_raw) if walk_time_raw and walk_time_raw > 0 else 5
         
         # Calculate parking end: start + 15 min
         parking_start_min = time_to_minutes(parking_start)
@@ -617,6 +620,20 @@ class PlanService:
                     if next_type == 'lunch_break' and gap < 60:
                         print(f"[GAP FILLING] ✗ SKIP filling {gap} min gap before lunch (lunch can start earlier)")
                         continue
+                    
+                    # BUGFIX (02.02.2026 - FIX #2): Skip free_time if next attraction opens soon
+                    # Check if gap is caused by waiting for opening hours
+                    if next_type == 'attraction' and gap > 0:
+                        next_poi = next_item.get('poi')
+                        if next_poi and context.get('date'):
+                            # Check if POI is already open or opens within gap
+                            poi_start_time = current_end
+                            poi_duration = next_poi.get('time_min', 30)
+                            
+                            # If POI is open now, don't add free_time - attraction can start earlier
+                            if is_open(next_poi, int(poi_start_time), poi_duration, context.get('season', 'all'), context):
+                                print(f"[GAP FILLING] ✗ SKIP filling {gap} min gap - next attraction is already open, can start earlier")
+                                continue
                     
                     if gap > 20:
                         # BUGFIX (31.01.2026 - Problem #4): TRY find POI first before free_time
