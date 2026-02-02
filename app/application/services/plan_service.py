@@ -568,13 +568,23 @@ class PlanService:
         """
         print("[GAP FILLING] ACTIVE mode - try POI first, free_time LAST RESORT")
         
+        # HOTFIX (02.02.2026): Get attraction limits for target group
+        from ..domain.planner.engine import GROUP_ATTRACTION_LIMITS
+        target_group = user.get("target_group", "solo")
+        limits = GROUP_ATTRACTION_LIMITS.get(target_group, {"hard": 8})
+        hard_limit = limits["hard"]
+        
         result = []
         used_poi_ids = set()  # Track POIs already in plan
+        attraction_count = 0  # Count attractions to enforce limit
         
-        # Collect POIs already used in plan
+        # Collect POIs already used in plan and count attractions
         for item in items:
             if hasattr(item, 'poi_id'):
                 used_poi_ids.add(item.poi_id)
+                attraction_count += 1
+        
+        print(f"[GAP FILLING] Current attractions: {attraction_count}/{hard_limit}")
         
         for i, item in enumerate(items):
             result.append(item)
@@ -641,6 +651,22 @@ class PlanService:
                                 continue
                     
                     if gap > 20:
+                        # HOTFIX (02.02.2026): Check if attraction limit reached
+                        if attraction_count >= hard_limit:
+                            print(f"[GAP FILLING] ✗ SKIP - attraction limit reached ({attraction_count}/{hard_limit})")
+                            # Add free_time instead of POI
+                            free_time_start = minutes_to_time(current_end)
+                            free_time_end = minutes_to_time(min(current_end + gap, next_start))
+                            free_duration = min(gap, 40)  # Max 40 min free time
+                            
+                            result.append(FreeTimeItem(
+                                start_time=free_time_start,
+                                end_time=minutes_to_time(current_end + free_duration),
+                                duration_min=free_duration,
+                                description="Czas wolny: spacer, kawa, odpoczynek"
+                            ))
+                            continue
+                        
                         # BUGFIX (31.01.2026 - Problem #4): TRY find POI first before free_time
                         poi_found = False
                         best_poi = None
@@ -744,6 +770,10 @@ class PlanService:
                             
                             # Mark as used
                             used_poi_ids.add(best_poi.get('id', ''))
+                            
+                            # HOTFIX (02.02.2026): Increment attraction counter
+                            attraction_count += 1
+                            print(f"[GAP FILLING] Attraction count after fill: {attraction_count}/{hard_limit}")
                             
                             continue  # Skip free_time - POI added instead
                         
