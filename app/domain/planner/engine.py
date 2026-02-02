@@ -832,6 +832,10 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                     if poi_id(p) in used:
                         continue
                     
+                    # FIX #7 (02.02.2026): Check hard limit before adding soft POI
+                    if attraction_count >= limits["hard"]:
+                        break  # Stop gap filling if limit reached
+                    
                     # Soft POI criteria
                     time_min = p.get("time_min", 60)
                     if time_min > 30 or time_min < 10:
