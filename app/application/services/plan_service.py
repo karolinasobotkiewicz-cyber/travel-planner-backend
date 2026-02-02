@@ -115,6 +115,11 @@ class PlanService:
                 user
             )
             
+            # FIX #3 (02.02.2026): Update transit destinations after gap filling
+            # Gap filling inserts new POI between transit and its original destination
+            # This causes "to" field to point to wrong POI
+            day_items = self._update_transit_destinations(day_items)
+            
             day_plan = DayPlan(
                 day=day_num + 1,
                 items=day_items
@@ -771,3 +776,63 @@ class PlanService:
         
         total_min = time_to_minutes(time_str) + minutes
         return minutes_to_time(total_min)
+
+    def _update_transit_destinations(self, items: List[Any]) -> List[Any]:
+        """
+        FIX #3 (02.02.2026): Update transit 'to_location' after gap filling.
+        
+        Problem:
+        - Gap filling inserts new POI between transit and its original destination
+        - Transit "to" field still points to old destination
+        - Example:
+          1. Engine generates: [Transit to DINO, DINO Park]
+          2. Gap filling inserts: [Transit to DINO, **Dom do góry nogami**, DINO Park]
+          3. Transit "to" should be "Dom do góry nogami", not "DINO Park"!
+        
+        Solution:
+        - Iterate through items
+        - For each transit, find NEXT attraction (skip lunch/free_time/etc)
+        - Update transit.to_location to match next attraction's name
+        
+        Also fixes:
+        - FIX #4: Transit "from" after lunch should be last attraction before lunch
+        
+        Args:
+            items: List of PlanResponse items (after gap filling)
+            
+        Returns:
+            Updated list with correct transit destinations
+        """
+        for i, item in enumerate(items):
+            # Skip non-transit items
+            if item.type != ItemType.TRANSIT:
+                continue
+            
+            # Find NEXT attraction after this transit
+            next_attraction = None
+            for j in range(i + 1, len(items)):
+                if items[j].type == ItemType.ATTRACTION:
+                    next_attraction = items[j]
+                    break
+            
+            # Update "to" to match next attraction
+            if next_attraction:
+                item.to_location = next_attraction.name
+                print(f"[TRANSIT FIX] Updated transit destination: '{item.from_location}' → '{item.to_location}'")
+            else:
+                # No attraction after transit - shouldn't happen, but log it
+                print(f"[TRANSIT FIX] ⚠ Transit has no next attraction: '{item.from_location}' → '{item.to_location}' (kept as is)")
+            
+            # FIX #4: Update "from" to match PREVIOUS attraction
+            # Find last attraction BEFORE this transit
+            prev_attraction = None
+            for j in range(i - 1, -1, -1):
+                if items[j].type == ItemType.ATTRACTION:
+                    prev_attraction = items[j]
+                    break
+            
+            if prev_attraction:
+                item.from_location = prev_attraction.name
+                print(f"[TRANSIT FIX] Updated transit origin: '{item.from_location}' ← '{prev_attraction.name}'")
+        
+        return items

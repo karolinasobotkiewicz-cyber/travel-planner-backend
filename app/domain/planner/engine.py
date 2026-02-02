@@ -49,6 +49,46 @@ GROUP_DAILY_ENERGY = {
     "seniors": 55,
 }
 
+# FIX #7 (02.02.2026): Attraction limits per target_group
+# Client requirements:
+# - family_kids: 4-6 attractions (max 7), 1-2 core, 2-3 light, 1 long
+# - seniors: 3-5 attractions (max 5), 1 must-see, 2-3 calm
+# - solo: 5-7 attractions (max 8), 2 core, 3-4 secondary
+# - couples: 5-6 attractions (max 6), 1-2 must-see, 2-3 scenic
+# - friends: 6-8 attractions (max 8), 2 core, 3-4 active, 1-2 evening
+GROUP_ATTRACTION_LIMITS = {
+    "family_kids": {
+        "soft": 6,  # Start penalty after 6
+        "hard": 7,  # Absolute max
+        "core_min": 1,  # Minimum core POI
+        "core_max": 2,  # Maximum core POI
+    },
+    "seniors": {
+        "soft": 5,
+        "hard": 5,  # Hard stop at 5
+        "core_min": 1,
+        "core_max": 1,
+    },
+    "solo": {
+        "soft": 7,
+        "hard": 8,
+        "core_min": 2,
+        "core_max": 2,
+    },
+    "couples": {
+        "soft": 6,
+        "hard": 6,
+        "core_min": 1,
+        "core_max": 2,
+    },
+    "friends": {
+        "soft": 8,
+        "hard": 8,
+        "core_min": 2,
+        "core_max": 2,
+    },
+}
+
 
 # =========================
 # Safe casting
@@ -489,6 +529,16 @@ def build_day(pois, user, context, day_start=None, day_end=None):
     used = set()
     last_poi = None
 
+    # FIX #7 (02.02.2026): Track attraction counts for limits
+    attraction_count = 0
+    core_attraction_count = 0
+    limits = GROUP_ATTRACTION_LIMITS.get(user["target_group"], {
+        "soft": 7,
+        "hard": 8,
+        "core_min": 1,
+        "core_max": 2,
+    })
+
     # HUMAN STATE
     culture_streak = 0
     body_state = "neutral"
@@ -522,6 +572,11 @@ def build_day(pois, user, context, day_start=None, day_end=None):
         # swiety final
         if finale_done:
             break
+        
+        # FIX #7 (02.02.2026): Hard stop if attraction limit reached
+        if attraction_count >= limits["hard"]:
+            print(f"[LIMITS] Hard stop: {attraction_count}/{limits['hard']} attractions reached")
+            break
 
         best = None
         best_score = -9999
@@ -531,6 +586,11 @@ def build_day(pois, user, context, day_start=None, day_end=None):
         for p in pois:
             if poi_id(p) in used:
                 continue
+            
+            # FIX #7: Check core POI limit
+            is_core = str(p.get("priority_level", "")).strip().lower() == "core"
+            if is_core and core_attraction_count >= limits["core_max"]:
+                continue  # Skip - too many core POI already
 
             travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
             
@@ -568,6 +628,15 @@ def build_day(pois, user, context, day_start=None, day_end=None):
 
             # BUGFIX (31.01.2026 - Problem #7): Increased travel penalty from 0.1 to 0.5
             # Prefer closer POI - e.g., Termy Zakopiańskie (closer) over Gorący Potok (farther)
+            # Old: 22 min = -2.2 penalty (too weak)
+            # New: 22 min = -11 penalty (strong preference for nearby)
+            score -= travel * 0.5
+            
+            # FIX #7 (02.02.2026): Soft limit penalty
+            # After soft limit, heavily penalize additional attractions
+            if attraction_count >= limits["soft"]:
+                score -= 50  # Strong penalty to discourage exceeding soft limit
+                print(f"[LIMITS] Soft limit penalty: {attraction_count}/{limits['soft']} attractions, -50 score")
             # Old: 22 min = -2.2 penalty (too weak)
             # New: 22 min = -11 penalty (strong preference for nearby)
             score -= travel * 0.5
@@ -710,6 +779,13 @@ def build_day(pois, user, context, day_start=None, day_end=None):
         fatigue += 1
         used.add(poi_id(best))
         last_poi = best
+        
+        # FIX #7 (02.02.2026): Update attraction counters
+        attraction_count += 1
+        is_core_poi = str(best.get("priority_level", "")).strip().lower() == "core"
+        if is_core_poi:
+            core_attraction_count += 1
+        print(f"[LIMITS] Added attraction: {attraction_count}/{limits['hard']} total, {core_attraction_count}/{limits['core_max']} core")
 
         # update kultur
         if is_culture(best):
@@ -804,6 +880,14 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                     now += soft_duration
                     used.add(poi_id(p))
                     last_poi = p
+                    
+                    # FIX #7 (02.02.2026): Update counters for soft POI too
+                    attraction_count += 1
+                    is_core_soft = str(p.get("priority_level", "")).strip().lower() == "core"
+                    if is_core_soft:
+                        core_attraction_count += 1
+                    print(f"[LIMITS] Added soft POI: {attraction_count}/{limits['hard']} total, {core_attraction_count}/{limits['core_max']} core")
+                    
                     soft_filled = True
                     break  # Fill one soft POI per gap
                 
