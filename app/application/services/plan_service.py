@@ -569,7 +569,7 @@ class PlanService:
         print("[GAP FILLING] ACTIVE mode - try POI first, free_time LAST RESORT")
         
         # HOTFIX (02.02.2026): Get attraction limits for target group
-        from ..domain.planner.engine import GROUP_ATTRACTION_LIMITS
+        from ...domain.planner.engine import GROUP_ATTRACTION_LIMITS
         target_group = user.get("target_group", "solo")
         limits = GROUP_ATTRACTION_LIMITS.get(target_group, {"hard": 8})
         hard_limit = limits["hard"]
