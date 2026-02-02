@@ -47,3 +47,43 @@ def calculate_preference_score(poi: dict, user: dict) -> float:
     score += len(matches) * 5.0
 
     return score
+
+
+def calculate_priority_bonus(poi: dict, user: dict) -> float:
+    """
+    Bonus za priority_level POI (FIX #6 - 02.02.2026).
+
+    Args:
+        poi: POI dictionary z polem "priority_level" (core/secondary/optional)
+        user: User dictionary (nie wykorzystywane, ale zgodne z konwencją)
+
+    Returns:
+        Score bonus za priority_level
+
+    Logic:
+        - core: +30 punktów (kluczowe atrakcje)
+        - secondary: +10 punktów (ważne, ale nie must-see)
+        - optional: 0 punktów (wypełniacze)
+        - brak/unknown: 0 punktów
+
+    Examples:
+        >>> poi = {"priority_level": "core"}
+        >>> calculate_priority_bonus(poi, {})
+        30.0
+
+        >>> poi = {"priority_level": "secondary"}
+        >>> calculate_priority_bonus(poi, {})
+        10.0
+
+        >>> poi = {"priority_level": "optional"}
+        >>> calculate_priority_bonus(poi, {})
+        0.0
+    """
+    priority = str(poi.get("priority_level", "")).strip().lower()
+    
+    if priority == "core":
+        return 30.0
+    elif priority == "secondary":
+        return 10.0
+    else:
+        return 0.0  # optional lub brak

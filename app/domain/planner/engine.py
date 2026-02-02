@@ -11,7 +11,7 @@ from app.domain.scoring import (
     calculate_body_transition_score,
     get_next_body_state,
 )
-from app.domain.scoring.preferences import calculate_preference_score
+from app.domain.scoring.preferences import calculate_preference_score, calculate_priority_bonus
 from app.domain.scoring.travel_style import calculate_travel_style_score
 from app.domain.scoring.space_scoring import calculate_space_score
 from app.domain.scoring.weather_scoring import calculate_weather_dependency_score
@@ -383,6 +383,9 @@ def score_poi(
     # ETAP 1 ROZSZERZONY - preferences + travel_style
     score += calculate_preference_score(p, user)
     score += calculate_travel_style_score(p, user)
+    
+    # FIX #6 (02.02.2026): Priority_level bonus (core: +30, secondary: +10, optional: 0)
+    score += calculate_priority_bonus(p, user)
     
     # ETAP 1 ENHANCEMENT (29.01.2026) - New scoring modules
     score += calculate_space_score(p, user, context)  # indoor/outdoor vs weather

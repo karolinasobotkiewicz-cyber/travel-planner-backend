@@ -11,10 +11,16 @@ from app.domain.scoring.body_state import (
 
 class TestFamilyFitScore:
     def test_non_family_group_returns_zero(self):
+        """
+        FIX #8 (02.02.2026): Zmiana logiki - solo vs family_kids POI = mismatch penalty (-10)
+        Poprzednio: 0 (ignorowano wszystkie inne grupy)
+        Teraz: -10 (penalty za mismatch target_group)
+        """
         poi = {"kids_only": False, "target_groups": ["family_kids"]}
         user = {"target_group": "solo"}
 
-        assert calculate_family_score(poi, user) == 0.0
+        # FIX #8: solo user vs family_kids POI = mismatch = -10
+        assert calculate_family_score(poi, user) == -10.0
 
     def test_kids_only_poi_high_score(self):
         poi = {"kids_only": True}
