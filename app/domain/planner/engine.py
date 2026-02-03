@@ -601,10 +601,12 @@ def build_day(pois, user, context, day_start=None, day_end=None):
             # FEEDBACK KLIENTKI (03.02.2026) - HARD FILTERS
             # STEP 1: Target group hard filter
             if should_exclude_by_target_group(p, user):
+                print(f"[FILTER] EXCLUDED by target_group: {p.get('Name', 'Unknown')} (poi_id={poi_id(p)}) - user={user.target_group}, poi_groups={p.get('target_groups', [])}, kids_only={p.get('kids_only', False)}")
                 continue  # EXCLUDE - target group mismatch
             
             # STEP 2: Intensity hard filter
             if should_exclude_by_intensity(p, user):
+                print(f"[FILTER] EXCLUDED by intensity: {p.get('Name', 'Unknown')} (poi_id={poi_id(p)}) - user={user.target_group}, poi_intensity={p.get('intensity', 'unknown')}")
                 continue  # EXCLUDE - intensity conflict
             
             # FIX #7: Check core POI limit

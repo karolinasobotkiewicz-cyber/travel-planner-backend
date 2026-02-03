@@ -50,13 +50,18 @@ def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
         False
     """
     user_group = _safe_str(user.get("target_group", ""))
+    poi_name = poi.get("Name", "Unknown")
+    
+    print(f"[DEBUG TARGET] Checking POI: {poi_name} | user_group={user_group} | poi.target_groups={poi.get('target_groups')} | kids_only={poi.get('kids_only')}")
     
     # Brak grupy użytkownika → neutralne
     if not user_group:
+        print(f"[DEBUG TARGET] → ALLOW (no user_group)")
         return False
     
     # Kids_only = hard exclude dla grup nie-family
     if bool(poi.get("kids_only")) and user_group not in ["family_kids", "family"]:
+        print(f"[DEBUG TARGET] → EXCLUDE (kids_only={poi.get('kids_only')} and user_group={user_group})")
         return True
     
     # Sprawdź target_groups POI
@@ -64,6 +69,7 @@ def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
     
     # POI bez target_groups → neutralne, dostępne dla wszystkich
     if not target_groups:
+        print(f"[DEBUG TARGET] → ALLOW (no target_groups)")
         return False
     
     # Normalizacja do set
@@ -71,8 +77,10 @@ def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
     
     # Jeśli user_group NIE jest w target_groups POI → EXCLUDE
     if user_group not in tg:
+        print(f"[DEBUG TARGET] → EXCLUDE (user_group={user_group} NOT IN target_groups={tg})")
         return True
     
+    print(f"[DEBUG TARGET] → ALLOW (user_group={user_group} IN target_groups={tg})")
     return False
 
 
