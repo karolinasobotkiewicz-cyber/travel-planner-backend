@@ -60,8 +60,12 @@ def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
         return False
     
     # Kids_only = hard exclude dla grup nie-family
-    if bool(poi.get("kids_only")) and user_group not in ["family_kids", "family"]:
-        print(f"[DEBUG TARGET] → EXCLUDE (kids_only={poi.get('kids_only')} and user_group={user_group})")
+    # HOTFIX #7: bool("false") = True w Pythonie! Sprawdzamy wartość prawdziwie boolean
+    kids_only_val = poi.get("kids_only")
+    is_kids_only = kids_only_val is True or (isinstance(kids_only_val, str) and kids_only_val.lower() in ["true", "1", "yes"])
+    
+    if is_kids_only and user_group not in ["family_kids", "family"]:
+        print(f"[DEBUG TARGET] → EXCLUDE (kids_only={kids_only_val} parsed as {is_kids_only} and user_group={user_group})")
         return True
     
     # Sprawdź target_groups POI
