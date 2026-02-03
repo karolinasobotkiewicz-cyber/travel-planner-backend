@@ -687,6 +687,19 @@ class PlanService:
                             if poi_id in used_poi_ids:
                                 continue
                             
+                            # HOTFIX #9 (03.02.2026): Gap filling MUST respect target_group and intensity filters
+                            # Import filter functions from scoring modules
+                            from app.domain.scoring.family_fit import should_exclude_by_target_group
+                            from app.domain.scoring.intensity_scoring import should_exclude_by_intensity
+                            
+                            # STEP 1: Target group hard filter
+                            if should_exclude_by_target_group(poi, user):
+                                continue  # EXCLUDE - target group mismatch
+                            
+                            # STEP 2: Intensity hard filter
+                            if should_exclude_by_intensity(poi, user):
+                                continue  # EXCLUDE - intensity conflict
+                            
                             # BUGFIX (01.02.2026): Skip POI with invalid data (NaN values)
                             poi_name = poi.get('name', '')
                             if not poi_name or str(poi_name).lower() == 'nan':
