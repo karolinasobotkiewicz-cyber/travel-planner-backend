@@ -63,9 +63,13 @@ class PlanService:
         # Load POIs z repository
         all_pois = self.poi_repo.get_all()
         
-        # WAŻNE: Engine expects dict, nie Pydantic models
-        # Konwersja POI → dict
-        all_pois_dict = [poi.model_dump() for poi in all_pois]
+        # HOTFIX #8 (03.02.2026): Engine expects normalized dicts z kluczami: 
+        # "target_groups", "kids_only", "name", etc.
+        # POI model ma inne field names (target_group singular, brak kids_only property)
+        # Zamiast POI.model_dump() używamy RAW dict z normalizer
+        from app.infrastructure.repositories.load_zakopane import load_zakopane_poi
+        
+        all_pois_dict = load_zakopane_poi(self.poi_repo.excel_path)
         
         if not all_pois_dict:
             # FIXME: graceful handling gdy brak POI
