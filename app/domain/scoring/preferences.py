@@ -51,7 +51,7 @@ def calculate_preference_score(poi: dict, user: dict) -> float:
 
 def calculate_priority_bonus(poi: dict, user: dict) -> float:
     """
-    Bonus za priority_level POI (FIX #6 - 02.02.2026).
+    Bonus za priority_level POI (FIX #6 + Feedback 03.02.2026).
 
     Args:
         poi: POI dictionary z polem "priority_level" (core/secondary/optional)
@@ -60,16 +60,21 @@ def calculate_priority_bonus(poi: dict, user: dict) -> float:
     Returns:
         Score bonus za priority_level
 
-    Logic:
-        - core: +30 punktów (kluczowe atrakcje)
-        - secondary: +10 punktów (ważne, ale nie must-see)
-        - optional: 0 punktów (wypełniacze)
+    Logic (wzmocnione po feedbacku klientki):
+        - core: +25 punktów (MUST-SEE atrakcje - Wielka Krokiew, Muzeum Tatrzańskie)
+        - secondary: +10 punktów (ważne atrakcje)
+        - optional: 0 punktów (wypełniacze, gap filling)
         - brak/unknown: 0 punktów
+
+    Limity dzienne (enforced in engine.py):
+        - core: 1-2 per day (core_min, core_max)
+        - secondary: 2-4 per day
+        - optional: fallback only
 
     Examples:
         >>> poi = {"priority_level": "core"}
         >>> calculate_priority_bonus(poi, {})
-        30.0
+        25.0
 
         >>> poi = {"priority_level": "secondary"}
         >>> calculate_priority_bonus(poi, {})
@@ -82,7 +87,7 @@ def calculate_priority_bonus(poi: dict, user: dict) -> float:
     priority = str(poi.get("priority_level", "")).strip().lower()
     
     if priority == "core":
-        return 30.0
+        return 25.0  # Changed from 30 to 25 (klientka)
     elif priority == "secondary":
         return 10.0
     else:

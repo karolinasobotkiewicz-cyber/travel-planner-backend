@@ -1,9 +1,79 @@
 # type: ignore
-"""Family scoring logic + Target Group Matching (FIX #8 - 02.02.2026)"""
+"""
+Target Group Matching - Hard Filter + Scoring.
+
+Feedback klientki (03.02.2026):
+- Target group powinno działać jako HARD FILTER, nie tylko soft scoring
+- Jeśli user.group NOT IN poi.target_group → EXCLUDE
+"""
 
 
 def _safe_str(x):
     return str(x).strip().lower() if x is not None else ""
+
+
+def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
+    """
+    Hard filter: Czy POI powinno być wykluczone z powodu target_group mismatch?
+    
+    Logic (Feedback klientki - 03.02.2026):
+    - Jeśli POI ma target_groups określone, a user.group NIE jest w liście → EXCLUDE
+    - Jeśli POI nie ma target_groups → ALLOW (neutralne dla wszystkich)
+    
+    Przykłady wykluczeń:
+    - seniors → brak kids_only attractions
+    - friends → brak kids_only attractions
+    - couple → brak atrakcji stricte dziecięcych
+    - solo → brak kids_only attractions
+    
+    Args:
+        poi: POI dict z "target_groups" (list) i "kids_only" (bool)
+        user: User dict z "target_group" (string)
+    
+    Returns:
+        True jeśli POI powinno być wykluczone, False w przeciwnym razie
+    
+    Examples:
+        >>> poi = {"kids_only": True, "target_groups": ["family_kids"]}
+        >>> user = {"target_group": "seniors"}
+        >>> should_exclude_by_target_group(poi, user)
+        True
+        
+        >>> poi = {"target_groups": ["solo", "couples"]}
+        >>> user = {"target_group": "seniors"}
+        >>> should_exclude_by_target_group(poi, user)
+        True
+        
+        >>> poi = {"target_groups": ["seniors", "solo", "couples"]}
+        >>> user = {"target_group": "seniors"}
+        >>> should_exclude_by_target_group(poi, user)
+        False
+    """
+    user_group = _safe_str(user.get("target_group", ""))
+    
+    # Brak grupy użytkownika → neutralne
+    if not user_group:
+        return False
+    
+    # Kids_only = hard exclude dla grup nie-family
+    if bool(poi.get("kids_only")) and user_group not in ["family_kids", "family"]:
+        return True
+    
+    # Sprawdź target_groups POI
+    target_groups = poi.get("target_groups")
+    
+    # POI bez target_groups → neutralne, dostępne dla wszystkich
+    if not target_groups:
+        return False
+    
+    # Normalizacja do set
+    tg = set([_safe_str(x) for x in target_groups])
+    
+    # Jeśli user_group NIE jest w target_groups POI → EXCLUDE
+    if user_group not in tg:
+        return True
+    
+    return False
 
 
 def calculate_family_score(poi, user):

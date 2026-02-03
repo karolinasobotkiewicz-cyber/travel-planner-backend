@@ -11,6 +11,8 @@ from app.domain.scoring import (
     calculate_body_transition_score,
     get_next_body_state,
 )
+from app.domain.scoring.family_fit import should_exclude_by_target_group
+from app.domain.scoring.intensity_scoring import should_exclude_by_intensity, calculate_intensity_score
 from app.domain.scoring.preferences import calculate_preference_score, calculate_priority_bonus
 from app.domain.scoring.travel_style import calculate_travel_style_score
 from app.domain.scoring.space_scoring import calculate_space_score
@@ -424,8 +426,11 @@ def score_poi(
     score += calculate_preference_score(p, user)
     score += calculate_travel_style_score(p, user)
     
-    # FIX #6 (02.02.2026): Priority_level bonus (core: +30, secondary: +10, optional: 0)
+    # FIX #6 (02.02.2026): Priority_level bonus (core: +25, secondary: +10, optional: 0)
     score += calculate_priority_bonus(p, user)
+    
+    # FEEDBACK KLIENTKI (03.02.2026): Intensity soft scoring
+    score += calculate_intensity_score(p, user)
     
     # ETAP 1 ENHANCEMENT (29.01.2026) - New scoring modules
     score += calculate_space_score(p, user, context)  # indoor/outdoor vs weather
@@ -546,6 +551,12 @@ def build_day(pois, user, context, day_start=None, day_end=None):
     lunch_done = False
 
     while now < end:
+        # FEEDBACK KLIENTKI (03.02.2026): Enforce core_min POI
+        # If we're in second half of day and no core POI yet, boost core POI heavily
+        half_day = (end + time_to_minutes(start_time_str)) // 2
+        if now > half_day and core_attraction_count < limits.get("core_min", 1):
+            print(f"[CORE POI] Mid-day checkpoint: {core_attraction_count} core POI, boosting core attractions")
+        
         # === LUNCH CHECKPOINT ===
         if not lunch_done:
             lunch_target = time_to_minutes(LUNCH_TARGET)
@@ -587,6 +598,15 @@ def build_day(pois, user, context, day_start=None, day_end=None):
             if poi_id(p) in used:
                 continue
             
+            # FEEDBACK KLIENTKI (03.02.2026) - HARD FILTERS
+            # STEP 1: Target group hard filter
+            if should_exclude_by_target_group(p, user):
+                continue  # EXCLUDE - target group mismatch
+            
+            # STEP 2: Intensity hard filter
+            if should_exclude_by_intensity(p, user):
+                continue  # EXCLUDE - intensity conflict
+            
             # FIX #7: Check core POI limit
             is_core = str(p.get("priority_level", "")).strip().lower() == "core"
             if is_core and core_attraction_count >= limits["core_max"]:
@@ -625,6 +645,12 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                 body_state=body_state,
                 finale_done=finale_done,
             )
+            
+            # FEEDBACK KLIENTKI (03.02.2026): Boost core POI if core_min not met
+            # If we need core POI and this is core, add massive bonus
+            if core_attraction_count < limits.get("core_min", 1) and is_core:
+                score += 50  # Huge bonus to ensure core POI gets selected
+                print(f"[CORE POI] Boosting {p.get('Name')} (core) by +50 to meet core_min")
 
             # BUGFIX (31.01.2026 - Problem #7): Increased travel penalty from 0.1 to 0.5
             # Prefer closer POI - e.g., Termy Zakopiańskie (closer) over Gorący Potok (farther)
@@ -637,9 +663,6 @@ def build_day(pois, user, context, day_start=None, day_end=None):
             if attraction_count >= limits["soft"]:
                 score -= 50  # Strong penalty to discourage exceeding soft limit
                 print(f"[LIMITS] Soft limit penalty: {attraction_count}/{limits['soft']} attractions, -50 score")
-            # Old: 22 min = -2.2 penalty (too weak)
-            # New: 22 min = -11 penalty (strong preference for nearby)
-            score -= travel * 0.5
 
             if score > best_score:
                 best = p
