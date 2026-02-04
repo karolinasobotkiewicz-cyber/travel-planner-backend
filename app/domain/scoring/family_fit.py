@@ -50,7 +50,7 @@ def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
         False
     """
     user_group = _safe_str(user.get("target_group", ""))
-    poi_name = poi.get("Name", "Unknown")
+    poi_name = poi.get("name", "Unknown")  # HOTFIX #10.2: Changed "Name" → "name" (normalized POI format)
     
     print(f"[DEBUG TARGET] Checking POI: {poi_name} | user_group={user_group} | poi.target_groups={poi.get('target_groups')} | kids_only={poi.get('kids_only')}")
     
