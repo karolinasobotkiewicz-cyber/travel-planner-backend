@@ -693,8 +693,17 @@ class PlanService:
                             from app.domain.scoring.intensity_scoring import should_exclude_by_intensity
                             
                             # STEP 1: Target group hard filter
-                            if should_exclude_by_target_group(poi, user):
-                                continue  # EXCLUDE - target group mismatch
+                            try:
+                                should_exclude_target = should_exclude_by_target_group(poi, user)
+                                print(f"[GAP FILLING DEBUG] POI {poi.get('name')} target filter result: {should_exclude_target}")
+                                if should_exclude_target:
+                                    print(f"[GAP FILLING] ❌ EXCLUDED by target_group: {poi.get('name')} (poi_id={poi_id})")
+                                    continue  # EXCLUDE - target group mismatch
+                            except Exception as e:
+                                print(f"[GAP FILLING] ⚠️ EXCEPTION in target filter for {poi.get('name')}: {e}")
+                                import traceback
+                                traceback.print_exc()
+                                continue  # Exclude on error (safer)
                             
                             # STEP 2: Intensity hard filter
                             if should_exclude_by_intensity(poi, user):
