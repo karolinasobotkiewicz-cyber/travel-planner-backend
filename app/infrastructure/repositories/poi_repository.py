@@ -22,9 +22,9 @@ class POIRepository(IPOIRepository):
         self._cache: Optional[List[POI]] = None
         self._initialized = False
 
-    def _load_if_needed(self):
-        """Lazy loading - wczytaj Excel tylko raz."""
-        if self._initialized:
+    def _load_if_needed(self, force_reload: bool = False):
+        """Lazy loading - wczytaj Excel tylko raz (chyba że force_reload=True)."""
+        if self._initialized and not force_reload:
             return
 
         if not os.path.exists(self.excel_path):
@@ -59,6 +59,13 @@ class POIRepository(IPOIRepository):
 
         self._initialized = True
         print(f"POI Repository: loaded {len(self._cache)} POIs from Excel")
+
+    def reload(self):
+        """Force reload Excel data - useful after Excel file changes."""
+        print("POI Repository: FORCE RELOAD triggered")
+        self._initialized = False
+        self._cache = None
+        self._load_if_needed(force_reload=True)
 
     def get_all(self) -> List[POI]:
         """Zwraca wszystkie POI."""

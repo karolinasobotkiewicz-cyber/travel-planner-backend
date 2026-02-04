@@ -29,6 +29,15 @@ app.include_router(content.router, prefix="/content", tags=["content"])
 app.include_router(poi.router, prefix="/poi", tags=["poi"])
 
 
+@app.on_event("startup")
+async def startup_event():
+    """Force reload POI data on application startup to ensure fresh Excel data."""
+    from app.api.dependencies import get_poi_repository
+    poi_repo = get_poi_repository()
+    poi_repo.reload()
+    print("🔄 POI Repository reloaded on startup")
+
+
 @app.get("/health")
 def health_check():
     """Health check endpoint for Railway deployment."""
