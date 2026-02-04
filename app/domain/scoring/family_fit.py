@@ -77,7 +77,13 @@ def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
         return False
     
     # Normalizacja do set
-    tg = set([_safe_str(x) for x in target_groups])
+    try:
+        tg = set([_safe_str(x) for x in target_groups])
+    except Exception as e:
+        print(f"[DEBUG TARGET] ⚠️ ERROR normalizing target_groups={target_groups}: {e}")
+        # Jeśli błąd w target_groups → exclude (safer default)
+        print(f"[DEBUG TARGET] → EXCLUDE (error in target_groups)")
+        return True
     
     # Jeśli user_group NIE jest w target_groups POI → EXCLUDE
     if user_group not in tg:
