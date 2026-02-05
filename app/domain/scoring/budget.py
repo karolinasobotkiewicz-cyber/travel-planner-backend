@@ -95,6 +95,11 @@ def calculate_budget_score(poi, user):
     """
     Compare user budget with POI using perceived cost (not raw price).
     
+    CLIENT REQUIREMENT (04.02.2026): Strengthened budget scoring weights
+    - Base penalty increased from -6.0 to -10.0 per budget level delta
+    - Perceived cost penalties increased from -3/-2 to -5/-3
+    - Better personalization for budget-conscious users
+    
     Args:
         poi: POI dict
         user: User dict with 'budget' (0-4 scale or total_budget)
@@ -107,21 +112,23 @@ def calculate_budget_score(poi, user):
 
     delta = poi_budget - user_budget
 
-    # Base score from budget level delta
-    score = -6.0 * delta
+    # CLIENT REQUIREMENT (04.02.2026): Increased base penalty from -6.0 to -10.0
+    # Stronger budget matching for better personalization
+    score = -10.0 * delta
     
     # Additional adjustment based on perceived cost
-    # If perceived cost is high (multiplier applied), apply small additional penalty
+    # If perceived cost is high (multiplier applied), apply additional penalty
     perceived_cost = calculate_perceived_cost(poi)
     base_price = _safe_float(poi.get("ticket_price", 0), 0)
     
     if base_price > 0:
         cost_ratio = perceived_cost / base_price
         
+        # CLIENT REQUIREMENT (04.02.2026): Increased penalties from -3/-2 to -5/-3
         # If cost is perceived as much higher (1.4x+), apply extra penalty for budget-conscious users
         if cost_ratio >= 1.4 and user_budget <= 2:  # Low/medium budget users
-            score -= 3
+            score -= 5  # Was -3
         elif cost_ratio >= 1.3 and user_budget == 1:  # Low budget users
-            score -= 2
+            score -= 3  # Was -2
     
     return score
