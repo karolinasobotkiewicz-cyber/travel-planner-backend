@@ -690,6 +690,13 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                     if poi_id(p) in used:
                         continue
                     
+                    # HOTFIX #10.8: Apply hard filters (target_group + intensity) to soft POI selection
+                    if should_exclude_by_target_group(p, user):
+                        continue  # EXCLUDE - target group mismatch
+                    
+                    if should_exclude_by_intensity(p, user):
+                        continue  # EXCLUDE - intensity conflict
+                    
                     # Soft POI criteria (client requirements)
                     # Since all Zakopane POI have intensity='medium', accept medium intensity
                     # Focus on: short duration (10-30 min) + low must_see_score (0-2)
@@ -860,6 +867,13 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                     if poi_id(p) in used:
                         continue
                     
+                    # HOTFIX #10.8: Apply hard filters (target_group + intensity) to soft POI selection
+                    if should_exclude_by_target_group(p, user):
+                        continue  # EXCLUDE - target group mismatch
+                    
+                    if should_exclude_by_intensity(p, user):
+                        continue  # EXCLUDE - intensity conflict
+                    
                     # FIX #7 (02.02.2026): Check hard limit before adding soft POI
                     if attraction_count >= limits["hard"]:
                         break  # Stop gap filling if limit reached
@@ -952,10 +966,11 @@ def build_day(pois, user, context, day_start=None, day_end=None):
     return plan
 
 
-def fill_plan_gaps(plan, pois, used_poi_ids, ctx):
+def fill_plan_gaps(plan, pois, used_poi_ids, ctx, user):
     """
     Post-process plan to fill gaps >20 min between attractions.
     Client requirement: gaps should be filled with soft POI or free_time (max 40 min).
+    HOTFIX #10.8: Added user parameter to apply hard filters (target_group + intensity).
     """
     print(f"[GAP FILLING DEBUG] Starting with {len(plan)} items", flush=True)
     print(f"[GAP FILLING DEBUG] RAW PLAN DUMP:", flush=True)
@@ -1050,6 +1065,13 @@ def fill_plan_gaps(plan, pois, used_poi_ids, ctx):
                 for p in pois:
                     if poi_id(p) in used_poi_ids:
                         continue
+                    
+                    # HOTFIX #10.8: Apply hard filters (target_group + intensity) to soft POI selection
+                    if should_exclude_by_target_group(p, user):
+                        continue  # EXCLUDE - target group mismatch
+                    
+                    if should_exclude_by_intensity(p, user):
+                        continue  # EXCLUDE - intensity conflict
                     
                     # Soft POI criteria
                     time_min = p.get("time_min", 60)
