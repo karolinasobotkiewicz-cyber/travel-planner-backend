@@ -213,6 +213,9 @@ def parse_children_age(age_raw):
 def normalize_list(raw):
     if not raw:
         return []
+    # CLIENT DATA UPDATE (05.02.2026): Handle list input without converting to string
+    if isinstance(raw, list):
+        return [x.strip().lower() if isinstance(x, str) else str(x).lower() for x in raw]
     return [x.strip().lower() for x in str(raw).split(",") if x.strip()]
 
 
@@ -456,10 +459,22 @@ def normalize_poi(p, index):
     # If Price contains "wstęp bezpłatny" or "bezpłatny" → free_entry=True
     price_text = _safe_lower(p.get("Price"))
     free_entry = "bezpłatny" in price_text or "free" in price_text
+    
+    # CLIENT DATA UPDATE (05.02.2026): Use ID from loader if available, otherwise generate
+    poi_id = p.get("id") or p.get("ID") or f"poi_{index}"
+    
+    # CLIENT DATA UPDATE (05.02.2026): Preserve tags list from loader
+    tags_list = p.get("tags", [])
+    if not isinstance(tags_list, list):
+        # Fallback: parse from Tags string
+        tags_list = normalize_list(p.get("Tags"))
+    
+    # CLIENT DATA UPDATE (05.02.2026): Get ticket_price for budget scoring
+    ticket_price = _safe_float(p.get("ticket_price") or p.get("ticket_normal"), 0)
 
     return {
-        "id": f"poi_{index}",
-        "name": _safe_str(p.get("Name")),
+        "id": poi_id,  # CLIENT DATA UPDATE: Use loader ID
+        "name": _safe_str(p.get("name") or p.get("Name")),
         "description_short": _safe_str(p.get("Description_short")),
         "address": _safe_str(p.get("Address")),
         "lat": _safe_float(p.get("Lat")),
@@ -469,16 +484,17 @@ def normalize_poi(p, index):
         "must_see": must_see,
         "popularity": _safe_float(p.get("popularity_score")),
         "priority": priority,
-        "target_groups": normalize_list(p.get("Target group")),
+        "priority_level": priority,  # CLIENT DATA UPDATE: Both keys for compat
+        "target_groups": normalize_list(p.get("target_groups") or p.get("Target group")),
         "children_min": children_min,
         "children_max": children_max,
-        "type": _safe_lower(p.get("Type of attraction")),
-        "tags": normalize_list(p.get("Tags")),
+        "type": _safe_lower(p.get("type_of_attraction") or p.get("Type of attraction")),
+        "tags": tags_list,  # CLIENT DATA UPDATE: Use parsed list from loader
         "experience_role": experience_role,
         "poi_role": poi_role,
         "space": normalize_space(p.get("Space")),
         "intensity": normalize_intensity(p.get("Intensity")),
-        "budget_level": normalize_budget(p.get("Budget type")),
+        "budget_level": normalize_budget(p.get("budget_level") or p.get("Budget type")),
         "crowd_level": normalize_crowd(p.get("crowd_level")),
         "weather_sensitivity": normalize_weather_sensitivity(
             p.get("weather_dependency")
@@ -500,6 +516,7 @@ def normalize_poi(p, index):
         "opening_hours": opening_hours_json,
         "opening_hours_seasonal": opening_hours_seasonal_json,
         # BUGFIX (31.01.2026 - Problem #1): Add ticket prices + free_entry for cost estimation
+        "ticket_price": ticket_price,  # CLIENT DATA UPDATE: For budget scoring
         "ticket_normal": int(_safe_float(p.get("ticket_normal"), 0)),
         "ticket_reduced": int(_safe_float(p.get("ticket_reduced"), 0)),
         "free_entry": free_entry,  # Derived from Price field

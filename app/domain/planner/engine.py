@@ -19,6 +19,7 @@ from app.domain.scoring.space_scoring import calculate_space_score
 from app.domain.scoring.weather_scoring import calculate_weather_dependency_score
 from app.domain.scoring.type_matching import calculate_type_matching_score
 from app.domain.scoring.time_of_day_scoring import calculate_time_of_day_score
+from app.domain.scoring.tag_preferences import calculate_tag_preference_score  # CLIENT DATA UPDATE (05.02.2026)
 from app.domain.filters.seasonality import filter_by_season
 
 # =========================
@@ -453,6 +454,14 @@ def score_poi(
     
     # FEEDBACK KLIENTKI (03.02.2026): Intensity soft scoring
     score += calculate_intensity_score(p, user)
+    
+    # CLIENT DATA UPDATE (05.02.2026): Tag-based preference scoring
+    user_preferences = user.get("preferences", [])
+    if user_preferences:
+        tag_bonus = calculate_tag_preference_score(p, user_preferences)
+        score += tag_bonus
+        if tag_bonus > 0:
+            print(f"    [TAG BONUS] {p.get('name')}: +{tag_bonus} from preferences {user_preferences}")
     
     # ETAP 1 ENHANCEMENT (29.01.2026) - New scoring modules
     score += calculate_space_score(p, user, context)  # indoor/outdoor vs weather

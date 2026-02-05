@@ -2,6 +2,7 @@
 # Oryginalny load_zakopane.py - refaktoryzacja type hints w ETAP 3
 import pandas as pd
 import re
+import ast
 from typing import Optional, Dict
 from app.infrastructure.repositories.normalizer import normalize_pois
 
@@ -70,9 +71,39 @@ def load_zakopane_poi(path: str):
 
     print("KOLUMNY:", list(df.columns))
 
+    # CLIENT DATA UPDATE (05.02.2026): Handle zakopane2.xlsx structure
+    # Column 1 (index 1) is Name but labeled as numeric 0
+    name_col = df.columns[1] if len(df.columns) > 1 else "Name"
+
     pois = []
 
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
+        # CLIENT DATA UPDATE (05.02.2026): Generate ID if missing (all NaN in new file)
+        poi_id = str(row.get("ID", "")).strip()
+        if not poi_id or poi_id == "nan":
+            poi_id = f"poi_{int(idx) + 1}"  # poi_1, poi_2, ... poi_36 (1-indexed)
+        
+        # CLIENT DATA UPDATE (05.02.2026): Get name from column 1
+        poi_name = str(row.get(name_col, "")).strip()
+        
+        # CLIENT DATA UPDATE (05.02.2026): Parse Tags (comma-separated string)
+        tags_str = str(row.get("Tags", "")).strip()
+        tags_list = []
+        if tags_str and tags_str != "nan":
+            # Split by comma, strip whitespace, filter empty strings
+            tags_list = [t.strip() for t in tags_str.split(",") if t.strip()]
+        
+        # CLIENT DATA UPDATE (05.02.2026): Parse Target group to list
+        target_group_raw = str(row.get("Target group", "")).strip()
+        target_groups_list = []
+        if target_group_raw and target_group_raw != "nan":
+            # Split by comma, strip whitespace
+            target_groups_list = [
+                t.strip() 
+                for t in target_group_raw.split(",") 
+                if t.strip() and t.strip() != "nan"
+            ]
+        
         # Convert opening_hours from string to JSON dict
         opening_hours_raw = str(row.get("Opening hours", "")).strip()
         opening_hours_json = _convert_opening_hours_to_json(opening_hours_raw)
@@ -81,9 +112,16 @@ def load_zakopane_poi(path: str):
         seasonal_raw = str(row.get("opening_hours_seasonal", "")).strip()
         seasonal_json = _convert_seasonal_to_json(seasonal_raw)
         
+        # CLIENT DATA UPDATE (05.02.2026): Normalize priority_level (handle "\nsecondary\n" variants)
+        priority_raw = str(row.get("priority_level", "optional")).strip().lower()
+        priority_level = priority_raw if priority_raw else "optional"
+        
         poi = {
-            "ID": str(row.get("ID", "")).strip(),
-            "Name": str(row.get("Name", "")).strip(),
+            "id": poi_id,  # Lowercase for consistency
+            "ID": poi_id,  # Keep uppercase for backward compat
+            "name": poi_name,  # Lowercase for consistency
+            "Name": poi_name,  # Keep uppercase for backward compat
+            "tags": tags_list,  # CLIENT DATA UPDATE: New field - list of tags
             "Description_short": str(row.get("Description_short", "")).strip(),
             "Description_long": str(row.get("Description_long", "")).strip(),
             "Why visit": str(row.get("Why visit", "")).strip(),
@@ -92,6 +130,7 @@ def load_zakopane_poi(path: str):
             "time_min": row.get("time_min"),
             "time_max": row.get("time_max"),
             "Price": row.get("Price"),
+            "ticket_price": row.get("ticket_normal"),  # CLIENT DATA UPDATE: For budget scoring
             "ticket_normal": row.get("ticket_normal"),
             "ticket_reduced": row.get("ticket_reduced"),
             "Address": str(row.get("Address", "")).strip(),
@@ -112,14 +151,17 @@ def load_zakopane_poi(path: str):
                 row.get("recommended_time_of_day", "")
             ).strip(),
             "City": str(row.get("City", "")).strip(),
-            "Target group": str(row.get("Target group", "")).strip(),
+            "Target group": target_groups_list,  # CLIENT DATA UPDATE: Now list
+            "target_groups": target_groups_list,  # Normalized key - list
             "Children's age": str(row.get("Children's age", "")).strip(),
             "Type of attraction": str(
                 row.get("Type of attraction", "")
             ).strip(),
+            "type_of_attraction": str(row.get("Type of attraction", "")).strip(),  # Normalized
             "Activity_style": str(row.get("Activity_style", "")).strip(),
             "crowd_level": str(row.get("crowd_level", "")).strip(),
             "Budget type": str(row.get("Budget type", "")).strip(),
+            "budget_level": str(row.get("Budget type", "")).strip(),  # For scoring
             "Seasonality of attractions": str(
                 row.get("Seasonality of attractions", "")
             ).strip(),
@@ -130,9 +172,9 @@ def load_zakopane_poi(path: str):
             "parking_lng": row.get("parking_lng"),
             "parking_type": str(row.get("parking_type", "")).strip(),
             "parking_walk_time_min": row.get("parking_walk_time_min"),
-            "priority_level": str(row.get("priority_level", "")).strip(),
+            "priority_level": priority_level,  # CLIENT DATA UPDATE: Normalized
             "kids_only": str(row.get("kids_only", "")).strip(),
-            "Tags": str(row.get("Tags", "")).strip(),
+            "Tags": tags_str,  # Original string for backward compat
         }
 
         pois.append(poi)

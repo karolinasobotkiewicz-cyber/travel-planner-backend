@@ -105,7 +105,12 @@ def calculate_type_matching_score(poi, user, context):
     poi_type = poi.get("type", "").lower()
     group_type = user.get("target_group", "").lower()
     travel_style_raw = user.get("travel_style")
-    travel_style = travel_style_raw.lower() if travel_style_raw else ""
+    
+    # CLIENT DATA UPDATE (05.02.2026): Handle travel_style as list or string
+    if isinstance(travel_style_raw, list):
+        travel_style = travel_style_raw[0].lower() if travel_style_raw else ""
+    else:
+        travel_style = travel_style_raw.lower() if travel_style_raw else ""
     
     # Apply group type matching
     if group_type in TYPE_MATCHING_MATRIX:
