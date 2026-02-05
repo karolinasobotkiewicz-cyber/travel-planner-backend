@@ -699,11 +699,97 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                 score -= 50  # Strong penalty to discourage exceeding soft limit
                 print(f"[LIMITS] Soft limit penalty: {attraction_count}/{limits['soft']} attractions, -50 score")
 
+            # CLIENT REQUIREMENT (04.02.2026): Collect candidates within 1% of best score for variety
+            # This prevents always selecting same POI, adds diversity to plans
             if score > best_score:
                 best = p
                 best_score = score
                 best_travel = travel
                 best_duration = duration
+        
+        # CLIENT REQUIREMENT (04.02.2026): Randomize core POI within 1% of top score
+        # Collect all POI within 1% threshold to add variety to plans
+        if best:
+            threshold = best_score * 0.99  # 1% tolerance
+            candidates = []
+            
+            # Re-scan to find all POI within 1% of best score
+            for p in pois:
+                if poi_id(p) in used:
+                    continue
+                
+                # Apply same filters as before
+                if should_exclude_by_target_group(p, user):
+                    continue
+                if should_exclude_by_intensity(p, user):
+                    continue
+                
+                is_core = str(p.get("priority_level", "")).strip().lower() == "core"
+                if is_core and core_attraction_count >= limits["core_max"]:
+                    continue
+                
+                # CLIENT REQUIREMENT (04.02.2026): Max 1 kids-focused POI per day for non-family
+                user_group = user.get("target_group", "")
+                if user_group in ['solo', 'couples', 'friends', 'seniors']:
+                    if is_kids_focused_poi(p) and kids_focused_count >= 1:
+                        continue
+                
+                travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
+                if not last_poi and ctx.get("has_car", True):
+                    parking_duration = 15
+                    walk_time = p.get("parking_walk_time_min", 5)
+                    travel = parking_duration + walk_time
+                
+                start_time = now + travel
+                if start_time >= end:
+                    continue
+                
+                duration = choose_duration(p, start_time, end, lunch_done)
+                if duration <= 0:
+                    continue
+                
+                if not is_open(p, start_time, duration, ctx["season"], ctx):
+                    continue
+                
+                # Calculate same score
+                score = score_poi(
+                    p=p, user=user, fatigue=fatigue, used=used, now=start_time,
+                    energy_left=energy, context=ctx, culture_streak=culture_streak,
+                    body_state=body_state, finale_done=finale_done,
+                )
+                
+                if core_attraction_count < limits.get("core_min", 1) and is_core:
+                    score += 50
+                
+                score -= travel * 0.5
+                
+                if attraction_count >= limits["soft"]:
+                    score -= 50
+                
+                # Collect candidates within 1% threshold
+                if score >= threshold:
+                    candidates.append({
+                        "poi": p,
+                        "score": score,
+                        "travel": travel,
+                        "duration": duration
+                    })
+            
+            # Randomize selection from top candidates
+            if len(candidates) > 1:
+                import random
+                selected = random.choice(candidates)
+                best = selected["poi"]
+                best_score = selected["score"]
+                best_travel = selected["travel"]
+                best_duration = selected["duration"]
+                print(f"[VARIETY] Selected from {len(candidates)} candidates within 1% of top score: {poi_name(best)} (score={best_score:.1f})")
+            elif len(candidates) == 1:
+                # Only one candidate, use it (same as before)
+                best = candidates[0]["poi"]
+                best_score = candidates[0]["score"]
+                best_travel = candidates[0]["travel"]
+                best_duration = candidates[0]["duration"]
         
         # Check if POI was selected
 
