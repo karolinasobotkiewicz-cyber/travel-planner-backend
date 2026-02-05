@@ -97,6 +97,14 @@ class PlanService:
                 day_end     # User-provided end time
             )
             
+            # HOTFIX #10.5: Debug logging - track POI IDs from engine
+            engine_poi_ids = []
+            for item in engine_result:
+                if item.get("type") == "attraction" and item.get("poi"):
+                    poi = item.get("poi", {})
+                    engine_poi_ids.append(poi.get("id", "UNKNOWN"))
+            print(f"[ENGINE OUTPUT] Day {day_num + 1} - POI IDs from engine: {engine_poi_ids}")
+            
             # Konwersja engine result → PlanResponse items
             day_items = self._convert_engine_result_to_items(
                 engine_result,
@@ -118,6 +126,13 @@ class PlanService:
                 context,
                 user
             )
+            
+            # HOTFIX #10.5: Debug logging - track POI IDs after gap filling
+            after_gap_filling_poi_ids = []
+            for item in day_items:
+                if hasattr(item, 'poi_id') and item.poi_id:
+                    after_gap_filling_poi_ids.append(item.poi_id)
+            print(f"[AFTER GAP FILLING] Day {day_num + 1} - POI IDs in result: {after_gap_filling_poi_ids}")
             
             # FIX #3 (02.02.2026): Update transit destinations after gap filling
             # Gap filling inserts new POI between transit and its original destination
@@ -439,6 +454,11 @@ class PlanService:
         # 4.11: Cost estimation
         estimated_cost = self._estimate_cost(poi_dict, group_type)
         
+        # HOTFIX #10.5: Debug logging - track POI ID in attraction item creation
+        poi_id_from_dict = poi_dict.get("id", "")
+        poi_name_from_dict = poi_dict.get("name", "")
+        print(f"[ATTRACTION ITEM] Creating item: poi_id={poi_id_from_dict}, name={poi_name_from_dict}")
+        
         return AttractionItem(
             type=ItemType.ATTRACTION,
             start_time=start_time,
@@ -758,6 +778,11 @@ class PlanService:
                         if poi_found and best_poi:
                             # Add POI to fill gap!
                             print(f"[GAP FILLING] ✓ FILLING {gap} min gap with POI: {best_poi.get('name')}")
+                            
+                            # HOTFIX #10.5: Debug logging - track POI ID being added in gap filling
+                            gap_filling_poi_id = best_poi.get('id', 'UNKNOWN')
+                            gap_filling_poi_name = best_poi.get('name', 'UNKNOWN')
+                            print(f"[GAP FILLING] Adding POI: id={gap_filling_poi_id}, name={gap_filling_poi_name}")
                             
                             # Add transit if needed
                             if best_travel > 0:
