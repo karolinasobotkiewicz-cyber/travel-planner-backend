@@ -799,6 +799,9 @@ def build_day(pois, user, context, day_start=None, day_end=None):
             }
         )
 
+        # HOTFIX #10.7: Debug logging - track which POI engine adds
+        print(f"[ENGINE SELECTION] ✓ ADDED POI: id={poi_id(best)}, name={poi_name(best)}, time={minutes_to_time(now)}")
+
         now += best_duration
         energy -= energy_cost(best, best_duration, ctx)
         fatigue += 1
