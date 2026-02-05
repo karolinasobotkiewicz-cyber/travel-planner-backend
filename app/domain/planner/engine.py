@@ -118,6 +118,28 @@ def safe_float(x, default=0.0):
         return default
 
 
+def is_kids_focused_poi(poi):
+    """
+    Check if POI is kids-focused (only family_kids in target_groups).
+    
+    CLIENT REQUIREMENT (04.02.2026): Kids-focused POI should have daily limit
+    for non-family groups (max 1 per day).
+    
+    Args:
+        poi: POI dict
+        
+    Returns:
+        bool: True if POI is kids-focused (only family_kids)
+    """
+    target_groups = poi.get("target_groups") or []
+    if not target_groups:
+        return False
+    
+    # Kids-focused = POI with ONLY family_kids (not multi-group)
+    tg = set([str(x).strip().lower() for x in target_groups])
+    return len(tg) == 1 and "family_kids" in tg
+
+
 def safe_int(x, default=0):
     return int(round(safe_float(x, default)))
 
@@ -537,6 +559,10 @@ def build_day(pois, user, context, day_start=None, day_end=None):
     # FIX #7 (02.02.2026): Track attraction counts for limits
     attraction_count = 0
     core_attraction_count = 0
+    
+    # CLIENT REQUIREMENT (04.02.2026): Track kids-focused POI for daily limit
+    kids_focused_count = 0  # Max 1/day for non-family groups
+    
     limits = GROUP_ATTRACTION_LIMITS.get(user["target_group"], {
         "soft": 7,
         "hard": 8,
@@ -613,6 +639,13 @@ def build_day(pois, user, context, day_start=None, day_end=None):
             is_core = str(p.get("priority_level", "")).strip().lower() == "core"
             if is_core and core_attraction_count >= limits["core_max"]:
                 continue  # Skip - too many core POI already
+            
+            # CLIENT REQUIREMENT (04.02.2026): Max 1 kids-focused POI per day for non-family
+            user_group = user.get("target_group", "")
+            if user_group in ['solo', 'couples', 'friends', 'seniors']:
+                if is_kids_focused_poi(p) and kids_focused_count >= 1:
+                    print(f"[LIMITS] Skip kids-focused POI: {poi_name(p)} (already have {kids_focused_count}/1)")
+                    continue  # Skip - already have 1 kids-focused POI today
 
             travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
             
@@ -696,6 +729,12 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                     
                     if should_exclude_by_intensity(p, user):
                         continue  # EXCLUDE - intensity conflict
+                    
+                    # CLIENT REQUIREMENT (04.02.2026): Max 1 kids-focused POI per day for non-family
+                    user_group = user.get("target_group", "")
+                    if user_group in ['solo', 'couples', 'friends', 'seniors']:
+                        if is_kids_focused_poi(p) and kids_focused_count >= 1:
+                            continue  # Skip - already have 1 kids-focused POI today
                     
                     # Soft POI criteria (client requirements)
                     # Since all Zakopane POI have intensity='medium', accept medium intensity
@@ -821,6 +860,13 @@ def build_day(pois, user, context, day_start=None, day_end=None):
         if is_core_poi:
             core_attraction_count += 1
         print(f"[LIMITS] Added attraction: {attraction_count}/{limits['hard']} total, {core_attraction_count}/{limits['core_max']} core")
+        
+        # CLIENT REQUIREMENT (04.02.2026): Increment kids-focused counter for non-family
+        user_group = user.get("target_group", "")
+        if user_group in ['solo', 'couples', 'friends', 'seniors']:
+            if is_kids_focused_poi(best):
+                kids_focused_count += 1
+                print(f"[LIMITS] Kids-focused POI added: {kids_focused_count}/1 for today")
 
         # update kultur
         if is_culture(best):
@@ -873,6 +919,12 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                     
                     if should_exclude_by_intensity(p, user):
                         continue  # EXCLUDE - intensity conflict
+                    
+                    # CLIENT REQUIREMENT (04.02.2026): Max 1 kids-focused POI per day for non-family
+                    user_group = user.get("target_group", "")
+                    if user_group in ['solo', 'couples', 'friends', 'seniors']:
+                        if is_kids_focused_poi(p) and kids_focused_count >= 1:
+                            continue  # Skip - already have 1 kids-focused POI today
                     
                     # FIX #7 (02.02.2026): Check hard limit before adding soft POI
                     if attraction_count >= limits["hard"]:
@@ -933,6 +985,13 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                     if is_core_soft:
                         core_attraction_count += 1
                     print(f"[LIMITS] Added soft POI: {attraction_count}/{limits['hard']} total, {core_attraction_count}/{limits['core_max']} core")
+                    
+                    # CLIENT REQUIREMENT (04.02.2026): Increment kids-focused counter for non-family
+                    user_group = user.get("target_group", "")
+                    if user_group in ['solo', 'couples', 'friends', 'seniors']:
+                        if is_kids_focused_poi(p):
+                            kids_focused_count += 1
+                            print(f"[LIMITS] Kids-focused POI added (soft): {kids_focused_count}/1 for today")
                     
                     soft_filled = True
                     break  # Fill one soft POI per gap
@@ -1072,6 +1131,21 @@ def fill_plan_gaps(plan, pois, used_poi_ids, ctx, user):
                     
                     if should_exclude_by_intensity(p, user):
                         continue  # EXCLUDE - intensity conflict
+                    
+                    # CLIENT REQUIREMENT (04.02.2026): Max 1 kids-focused POI per day for non-family
+                    # Note: fill_plan_gaps doesn't have kids_focused_count, so this check is approximate
+                    # (will be enforced in main loop, this is additional safety)
+                    user_group = user.get("target_group", "")
+                    if user_group in ['solo', 'couples', 'friends', 'seniors']:
+                        if is_kids_focused_poi(p):
+                            # Check if plan already has kids-focused POI
+                            has_kids_focused = any(
+                                is_kids_focused_poi(item.get("poi", {}))
+                                for item in filled_plan
+                                if item.get("type") == "attraction"
+                            )
+                            if has_kids_focused:
+                                continue  # Skip - already have kids-focused POI
                     
                     # Soft POI criteria
                     time_min = p.get("time_min", 60)

@@ -105,6 +105,7 @@ def calculate_family_score(poi, user):
     - family_kids: Poprzednia logika (kids_only +8, matching +6, -4 za brak)
     - Inne grupy (seniors, solo, couples, friends):
         * Perfect match: +20
+        * Kids-focused POI (only family_kids): -50 (CLIENT REQUIREMENT 04.02.2026)
         * Mismatch/brak: -10
         * Neutral (brak target_groups): 0
     
@@ -147,9 +148,17 @@ def calculate_family_score(poi, user):
     # Normalizacja POI target_groups do set
     tg = set([_safe_str(x) for x in target_groups])
     
+    # CLIENT REQUIREMENT (04.02.2026): Kids-focused POI penalty for non-family groups
+    # Kids-focused = POI with ONLY family_kids in target_groups (not multi-group POI)
+    is_kids_focused = (len(tg) == 1 and "family_kids" in tg)
+    if is_kids_focused and user_group in ['solo', 'couples', 'friends', 'seniors']:
+        # Strong penalty for kids-focused attractions
+        return -50.0
+    
     # Perfect match: +20
     if user_group in tg:
         return 20.0
     
     # Mismatch: -10 (POI ma inne grupy, nie pasuje)
     return -10.0
+
