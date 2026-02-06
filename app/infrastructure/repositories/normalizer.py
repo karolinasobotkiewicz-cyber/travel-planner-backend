@@ -482,6 +482,7 @@ def normalize_poi(p, index):
         "time_min": int(_safe_float(p.get("time_min"), 30)),
         "time_max": int(_safe_float(p.get("time_max"), 60)),
         "must_see": must_see,
+        "must_see_score": must_see,  # BUGFIX (06.02.2026): POI model uses must_see_score
         "popularity": _safe_float(p.get("popularity_score")),
         "priority": priority,
         "priority_level": priority,  # CLIENT DATA UPDATE: Both keys for compat
