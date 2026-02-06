@@ -3,7 +3,7 @@
 import pandas as pd
 import re
 import ast
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from app.infrastructure.repositories.normalizer import normalize_pois
 
 
@@ -43,6 +43,9 @@ def _convert_opening_hours_to_json(opening_hours_str: str) -> Optional[Dict[str,
 
 def _convert_seasonal_to_json(seasonal_str: str) -> Optional[Dict[str, str]]:
     """
+    DEPRECATED - kept for backward compatibility.
+    Use _parse_seasonal_list() for new format.
+    
     Convert string format to JSON dict format.
     
     Input: '"date_from": "06-01","date_to": "09-30"' or similar
@@ -64,6 +67,80 @@ def _convert_seasonal_to_json(seasonal_str: str) -> Optional[Dict[str, str]]:
         }
     
     return None
+
+
+def _parse_seasonal_list(seasonal_str: str) -> Optional[List[Dict[str, str]]]:
+    """
+    Parse new multi-season format (06.02.2026).
+    
+    Handles pseudo-JSON list format:
+    [
+      {
+        date_from: 01-01,
+        date_to: 03-30,
+        mon: 08:00-16:00,
+        tue: 08:00-16:00,
+        ...
+      }
+    ]
+    
+    Features:
+    - No quotes around keys
+    - Missing commas between key:value pairs
+    - Single time (14:00) vs range (08:00-16:00)
+    - "closed" values
+    
+    Returns:
+    [
+      {
+        "date_from": "01-01",
+        "date_to": "03-30",
+        "mon": "08:00-16:00",
+        ...
+      }
+    ]
+    """
+    if not seasonal_str or not seasonal_str.strip():
+        return None
+    
+    seasonal_str = seasonal_str.strip()
+    
+    # Check if it's a list format (starts with '[')
+    if not seasonal_str.startswith('['):
+        return None
+    
+    seasons = []
+    
+    # Extract individual season objects (split by '},{')
+    # Pattern: Find content between { and }
+    season_pattern = r'\{([^{}]+)\}'
+    season_matches = re.findall(season_pattern, seasonal_str, re.DOTALL)
+    
+    for season_content in season_matches:
+        season_dict = {}
+        
+        # Extract key:value pairs
+        # Pattern: key: value with newline or comma as separator
+        # Simpler approach: match any key:value where value ends at newline or comma
+        # This handles:
+        # - mon:08:00-16:00\ntue:08:00-16:00 (no comma, newline separator)
+        # - date_from: 01-01, (comma separator)
+        # - leading spaces:    mon:08:00-16:00
+        # - time colons: 08:00-16:00 (value contains ':')
+        pair_pattern = r'([a-z_]+)\s*:\s*([^\n,]+)'
+        
+        for match in re.finditer(pair_pattern, season_content, re.IGNORECASE):
+            key = match.group(1).strip()
+            value = match.group(2).strip().rstrip(',')
+            
+            # Clean up value
+            if value and value != 'nan':
+                season_dict[key] = value
+        
+        if season_dict:
+            seasons.append(season_dict)
+    
+    return seasons if seasons else None
 
 
 def load_zakopane_poi(path: str):
@@ -108,9 +185,16 @@ def load_zakopane_poi(path: str):
         opening_hours_raw = str(row.get("Opening hours", "")).strip()
         opening_hours_json = _convert_opening_hours_to_json(opening_hours_raw)
         
-        # Convert opening_hours_seasonal from string to JSON dict
+        # CLIENT DATA UPDATE (06.02.2026): Parse opening_hours_seasonal 
+        # Try new list format first, fallback to old dict format
         seasonal_raw = str(row.get("opening_hours_seasonal", "")).strip()
-        seasonal_json = _convert_seasonal_to_json(seasonal_raw)
+        seasonal_json = _parse_seasonal_list(seasonal_raw)  # New format (list)
+        
+        if seasonal_json is None:
+            # Backward compatibility - try old format (single dict)
+            old_format = _convert_seasonal_to_json(seasonal_raw)
+            if old_format:
+                seasonal_json = [old_format]  # Convert dict to list for consistency
         
         # CLIENT DATA UPDATE (05.02.2026): Normalize priority_level (handle "\nsecondary\n" variants)
         priority_raw = str(row.get("priority_level", "optional")).strip().lower()
@@ -179,7 +263,7 @@ def load_zakopane_poi(path: str):
 
         pois.append(poi)
 
-    print(f"ZAŁADOWANO POI: {len(pois)}")
+    print(f"ZALADOWANO POI: {len(pois)}")
 
     pois = normalize_pois(pois)
 

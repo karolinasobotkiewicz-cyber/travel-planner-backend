@@ -3,7 +3,7 @@ Pydantic model dla POI (Point of Interest).
 Struktura z zakopane.xlsx + rozróżnienie internal/response fields.
 """
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 
 
 class POI(BaseModel):
@@ -64,10 +64,10 @@ class POI(BaseModel):
         alias="Opening hours",
         description="Godziny otwarcia - JSON dict {'mon': '08:00-16:00', ...}",
     )
-    opening_hours_seasonal: Optional[Dict[str, str]] = Field(
+    opening_hours_seasonal: Optional[Union[List[Dict[str, str]], Dict[str, str]]] = Field(
         default=None,
         alias="opening_hours_seasonal",
-        description="Godziny sezonowe - JSON dict {'date_from': '05-01', 'date_to': '09-30'}",
+        description="Godziny sezonowe - NEW (06.02.2026): List[Dict] multi-season lub Dict (old format)",
     )
     link_hours: str = Field(
         default="",

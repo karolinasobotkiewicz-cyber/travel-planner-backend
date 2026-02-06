@@ -1,15 +1,19 @@
 """
 Opening hours parser and validator.
-NEW FORMAT (30.01.2026) - Client decision:
+NEW FORMAT (06.02.2026) - Multi-season support:
+- opening_hours_seasonal: List of season dicts [{"date_from": "01-01", "date_to": "03-30", "mon": "08:00-16:00", ...}]
+- Each season has its own opening hours for weekdays
+
+OLD FORMAT (30.01.2026) - kept for backward compatibility:
 - opening_hours: JSON dict with weekdays {"mon": "08:00-16:00", "tue": "08:00-16:00", ...}
 - opening_hours_seasonal: JSON dict {"date_from": "05-01", "date_to": "09-30"}
 
 Validation logic:
-1. Check seasonal (hard filter)
+1. Find matching season (from list)
 2. Check day of week
 3. Check hours
 """
-from typing import Optional, Tuple, Union, Dict, Any
+from typing import Optional, Tuple, Union, Dict, Any, List
 
 
 # Day of week mapping
@@ -34,17 +38,30 @@ def _time_to_minutes(time_str: str) -> int:
 
 def _parse_time_range(time_range: str) -> Optional[Tuple[int, int]]:
     """
-    Parse time range string like "08:00-16:00" into (start_min, end_min).
+    Parse time range string like "08:00-16:00" or single time "14:00" into (start_min, end_min).
+    
+    NEW (06.02.2026): Support single time format (e.g., "14:00" for shows/events)
+    - Single time "14:00" → (840, 900) meaning 14:00-15:00 (1 hour slot)
+    
     Returns None if closed or invalid.
     """
     if not time_range or time_range.lower() in ["closed", "none", ""]:
         return None
     
-    if "-" not in time_range:
-        return None
+    time_range_clean = time_range.strip()
     
+    # CLIENT DATA UPDATE (06.02.2026): Single time format support
+    if "-" not in time_range_clean:
+        # Single time format (e.g., "14:00" for show/event)
+        # Treat as 1-hour slot: 14:00 becomes 14:00-15:00
+        single_time = _time_to_minutes(time_range_clean)
+        if single_time is None:
+            return None
+        return (single_time, single_time + 60)  # Add 1 hour
+    
+    # Range format (e.g., "08:00-16:00")
     try:
-        start_str, end_str = time_range.split("-")
+        start_str, end_str = time_range_clean.split("-")
         start_min = _time_to_minutes(start_str.strip())
         end_min = _time_to_minutes(end_str.strip())
         
@@ -104,6 +121,9 @@ def is_date_in_season(
     seasonal: Optional[Union[Dict[str, str], str]]
 ) -> bool:
     """
+    DEPRECATED - kept for backward compatibility.
+    Use find_current_season() for new list format.
+    
     Check if current date is within seasonal range.
     
     Args:
@@ -158,9 +178,69 @@ def is_date_in_season(
         return current >= season_from or current <= season_to
 
 
+def find_current_season(
+    current_date: Tuple[int, int, int],
+    seasonal_list: Optional[List[Dict[str, str]]]
+) -> Optional[Dict[str, str]]:
+    """
+    Find the season that matches current date from list of seasons.
+    
+    NEW FORMAT (06.02.2026): Multi-season support
+    
+    Args:
+        current_date: (year, month, day) tuple, e.g. (2026, 2, 15)
+        seasonal_list: [{"date_from": "01-01", "date_to": "03-30", "mon": "08:00-16:00", ...}, ...]
+    
+    Returns:
+        Season dict with opening hours for matching season
+        None if no matching season found or no seasons provided
+    
+    Example:
+        current_date = (2026, 2, 15)  # February 15
+        seasonal_list = [
+            {"date_from": "01-01", "date_to": "03-30", "mon": "08:00-16:00"},
+            {"date_from": "04-01", "date_to": "08-30", "mon": "07:00-20:00"}
+        ]
+        Returns: {"date_from": "01-01", "date_to": "03-30", "mon": "08:00-16:00"}
+    """
+    if not seasonal_list:
+        return None
+    
+    year, month, day = current_date
+    current = (month, day)
+    
+    for season in seasonal_list:
+        date_from = season.get("date_from")
+        date_to = season.get("date_to")
+        
+        if not date_from or not date_to:
+            continue  # Skip invalid season
+        
+        try:
+            from_month, from_day = map(int, date_from.split("-"))
+            to_month, to_day = map(int, date_to.split("-"))
+        except (ValueError, AttributeError):
+            continue  # Skip invalid format
+        
+        season_from = (from_month, from_day)
+        season_to = (to_month, to_day)
+        
+        # Check if current date is in this season
+        if season_from <= season_to:
+            # Normal season (e.g., 04-01 to 08-30)
+            if season_from <= current <= season_to:
+                return season
+        else:
+            # Year-crossing season (e.g., 12-01 to 03-31)
+            if current >= season_from or current <= season_to:
+                return season
+    
+    return None  # No matching season found
+
+
 def is_poi_open_at_time(
     opening_hours: Union[Dict[str, str], str, None],
-    opening_hours_seasonal: Union[Dict[str, str], str, None],
+    opening_hours_seasonal: Union[List[Dict[str, str]], Dict[str, str], str, None],
     current_date: Tuple[int, int, int],
     weekday: int,
     start_time_minutes: int,
@@ -169,33 +249,82 @@ def is_poi_open_at_time(
     """
     Check if POI is open at given time.
     
-    NEW FORMAT (30.01.2026):
-    - opening_hours: JSON dict with weekdays
-    - opening_hours_seasonal: JSON dict with date range
+    NEW FORMAT (06.02.2026): Multi-season support
+    - opening_hours: DEPRECATED - kept for backward compatibility
+    - opening_hours_seasonal: List[Dict] with seasons or single Dict (old format)
+    
+    Format examples:
+    
+    NEW (List of seasons):
+    [
+        {"date_from": "01-01", "date_to": "03-30", "mon": "08:00-16:00", "tue": "08:00-16:00", ...},
+        {"date_from": "04-01", "date_to": "08-30", "mon": "07:00-20:00", "tue": "07:00-20:00", ...}
+    ]
+    
+    OLD (Single season):
+    {"date_from": "05-01", "date_to": "09-30", "opening_hours": {"mon": "08:00-16:00", ...}}
     
     Validation logic:
-    1. Check seasonal (hard filter)
-    2. Check day of week
-    3. Check hours
+    1. Find matching season for current date
+    2. Check if POI open on this day of week
+    3. Check if visit fits within opening hours
     
     Args:
-        opening_hours: {"mon": "08:00-16:00", ...} or None
-        opening_hours_seasonal: {"date_from": "05-01", "date_to": "09-30"} or None
-        current_date: (year, month, day) tuple
+        opening_hours: DEPRECATED - old format, kept for backward compatibility
+        opening_hours_seasonal: List[Dict] with seasons or Dict (old format) or None
+        current_date: (year, month, day) tuple, e.g. (2026, 2, 15)
         weekday: 0=Monday, 6=Sunday
-        start_time_minutes: Start time in minutes since midnight
-        duration_minutes: Duration of visit
+        start_time_minutes: Start time in minutes since midnight (e.g. 540 for 09:00)
+        duration_minutes: Duration of visit (e.g. 60 for 1 hour)
     
     Returns:
         True if POI is open and visit fits within hours
         False otherwise
     """
-    # 1. Check seasonal restriction (hard filter)
-    if not is_date_in_season(current_date, opening_hours_seasonal):
+    # CLIENT DATA UPDATE (06.02.2026): Multi-season support
+    # Convert old format to new format for backward compatibility
+    seasonal_list = None
+    
+    if isinstance(opening_hours_seasonal, list):
+        # NEW format: List of seasons
+        seasonal_list = opening_hours_seasonal
+    elif isinstance(opening_hours_seasonal, dict):
+        # OLD format: Single season dict - convert to list
+        seasonal_list = [opening_hours_seasonal]
+    elif opening_hours_seasonal is None:
+        # No seasonal data
+        seasonal_list = None
+    else:
+        # String or other - invalid format, assume closed
         return False
     
-    # 2. Parse weekday hours
-    weekday_hours = parse_opening_hours_json(opening_hours)
+    # 1. Find matching season for current date
+    current_season = find_current_season(current_date, seasonal_list)
+    
+    if current_season is None:
+        # No matching season found - POI closed in this period
+        return False
+    
+    # 2. Get opening hours from season dict
+    # NEW format: hours directly in season dict (mon, tue, wed, ...)
+    # OLD format: hours in nested "opening_hours" key
+    
+    weekday_hours_dict = None
+    
+    # Try NEW format first (hours directly in season)
+    weekday_names = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    if any(day in current_season for day in weekday_names):
+        # NEW format: hours in season dict
+        weekday_hours_dict = current_season
+    elif "opening_hours" in current_season:
+        # OLD format: hours in nested dict
+        weekday_hours_dict = current_season["opening_hours"]
+    else:
+        # Fallback to deprecated opening_hours parameter
+        weekday_hours_dict = opening_hours if isinstance(opening_hours, dict) else None
+    
+    # Parse weekday hours
+    weekday_hours = parse_opening_hours_json(weekday_hours_dict)
     
     # If no weekday hours specified, assume open all day
     if not weekday_hours:
