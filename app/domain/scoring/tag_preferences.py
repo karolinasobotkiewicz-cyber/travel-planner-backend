@@ -166,6 +166,14 @@ USER_PREFERENCES_TO_TAGS = {
         ],
         "tag_bonus": 15,
     },
+    "must_see_only": {
+        "type_match": [],  # No specific type - applies to all POI
+        "type_bonus": 0,
+        "tags": [
+            "must_see",  # Must-see attractions marked in POI data
+        ],
+        "tag_bonus": 20,  # Higher bonus (20 vs 15) for must-see filtering
+    },
 }
 
 
