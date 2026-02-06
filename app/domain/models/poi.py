@@ -185,7 +185,7 @@ class POI(BaseModel):
     # =========================
 
     pro_tip: str = Field(default="", alias="Pro_tip")
-    priority_level: str = Field(default="", alias="priority_level")
+    priority_level: Optional[Union[str, int]] = Field(default=None, alias="priority_level")
     tags: List[str] = Field(default_factory=list, alias="Tags")
     
     @field_validator("tags", mode="before")
