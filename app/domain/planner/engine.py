@@ -663,11 +663,14 @@ def build_day(pois, user, context, day_start=None, day_end=None):
             
             # STEP 3: Budget hard filter (FIX 07.02.2026)
             # If daily_limit is set, check if adding this POI would exceed budget
+            # FIX (07.02.2026 v2): daily_limit is per GROUP, so multiply ticket_price by group_size
             if daily_limit is not None:
-                poi_cost = float(p.get("ticket_price", 0))
-                potential_cost = daily_cost + poi_cost
+                group_size = user.get("group_size", 1)
+                poi_cost_per_person = float(p.get("ticket_price", 0))
+                poi_cost_total = poi_cost_per_person * group_size
+                potential_cost = daily_cost + poi_cost_total
                 if potential_cost > daily_limit:
-                    print(f"[FILTER] EXCLUDED by budget: {poi_name(p)} (cost={poi_cost} PLN, current={daily_cost}/{daily_limit} PLN)")
+                    print(f"[FILTER] EXCLUDED by budget: {poi_name(p)} (cost={poi_cost_per_person}×{group_size}={poi_cost_total} PLN, current={daily_cost}/{daily_limit} PLN)")
                     continue  # EXCLUDE - would exceed daily budget limit
 
             travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
@@ -758,9 +761,11 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                         continue
                 
                 # BUDGET HARD FILTER (FIX 07.02.2026): Apply to candidate collection
+                # FIX (07.02.2026 v2): Multiply by group_size for per-group budget
                 if daily_limit is not None:
-                    poi_cost = float(p.get("ticket_price", 0))
-                    if daily_cost + poi_cost > daily_limit:
+                    group_size = user.get("group_size", 1)
+                    poi_cost_total = float(p.get("ticket_price", 0)) * group_size
+                    if daily_cost + poi_cost_total > daily_limit:
                         continue  # EXCLUDE - would exceed daily budget limit
                 
                 travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
@@ -852,9 +857,11 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                             continue  # Skip - already have 1 kids-focused POI today
                     
                     # BUDGET HARD FILTER (FIX 07.02.2026): Apply to soft POI too
+                    # FIX (07.02.2026 v2): Multiply by group_size for per-group budget
                     if daily_limit is not None:
-                        poi_cost = float(p.get("ticket_price", 0))
-                        if daily_cost + poi_cost > daily_limit:
+                        group_size = user.get("group_size", 1)
+                        poi_cost_total = float(p.get("ticket_price", 0)) * group_size
+                        if daily_cost + poi_cost_total > daily_limit:
                             continue  # EXCLUDE - would exceed daily budget limit
                     
                     # Soft POI criteria (client requirements)
@@ -970,10 +977,13 @@ def build_day(pois, user, context, day_start=None, day_end=None):
         print(f"[ENGINE SELECTION] ✓ ADDED POI: id={poi_id(best)}, name={poi_name(best)}, time={minutes_to_time(now)}")
         
         # BUDGET TRACKING (FIX 07.02.2026): Update daily cost
-        poi_cost = float(best.get("ticket_price", 0))
-        daily_cost += poi_cost
+        # FIX (07.02.2026 v2): Multiply by group_size for per-group budget
+        group_size = user.get("group_size", 1)
+        poi_cost_per_person = float(best.get("ticket_price", 0))
+        poi_cost_total = poi_cost_per_person * group_size
+        daily_cost += poi_cost_total
         if daily_limit is not None:
-            print(f"[BUDGET] POI cost: {poi_cost} PLN, daily total: {daily_cost}/{daily_limit} PLN")
+            print(f"[BUDGET] POI cost: {poi_cost_per_person}×{group_size}={poi_cost_total} PLN, daily total: {daily_cost}/{daily_limit} PLN")
 
         now += best_duration
         energy -= energy_cost(best, best_duration, ctx)

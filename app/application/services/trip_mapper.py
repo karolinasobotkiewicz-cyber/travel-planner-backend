@@ -42,6 +42,7 @@ def trip_input_to_engine_params(
         "crowd_tolerance": trip_input.group.crowd_tolerance,
         "budget": trip_input.budget.level,
         "daily_limit": trip_input.budget.daily_limit,  # FIX (07.02.2026): Pass daily budget limit to engine
+        "group_size": trip_input.group.size,  # FIX (07.02.2026): Pass group size for cost calculation
         "preferences": trip_input.preferences or [],
         "travel_style": trip_input.travel_style or "balanced",
     }
