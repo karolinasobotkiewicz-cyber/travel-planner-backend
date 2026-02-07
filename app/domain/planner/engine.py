@@ -584,6 +584,11 @@ def build_day(pois, user, context, day_start=None, day_end=None):
     body_state = "neutral"
     finale_done = False
     lunch_done = False
+    
+    # BUDGET TRACKING (FIX 07.02.2026)
+    # Track daily cost to enforce daily_limit hard constraint
+    daily_cost = 0  # Sum of ticket_price for all POI added today
+    daily_limit = user.get("daily_limit")  # None or int (PLN)
 
     while now < end:
         # FEEDBACK KLIENTKI (03.02.2026): Enforce core_min POI
@@ -655,6 +660,15 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                 if is_kids_focused_poi(p) and kids_focused_count >= 1:
                     print(f"[LIMITS] Skip kids-focused POI: {poi_name(p)} (already have {kids_focused_count}/1)")
                     continue  # Skip - already have 1 kids-focused POI today
+            
+            # STEP 3: Budget hard filter (FIX 07.02.2026)
+            # If daily_limit is set, check if adding this POI would exceed budget
+            if daily_limit is not None:
+                poi_cost = float(p.get("ticket_price", 0))
+                potential_cost = daily_cost + poi_cost
+                if potential_cost > daily_limit:
+                    print(f"[FILTER] EXCLUDED by budget: {poi_name(p)} (cost={poi_cost} PLN, current={daily_cost}/{daily_limit} PLN)")
+                    continue  # EXCLUDE - would exceed daily budget limit
 
             travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
             
@@ -743,6 +757,12 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                     if is_kids_focused_poi(p) and kids_focused_count >= 1:
                         continue
                 
+                # BUDGET HARD FILTER (FIX 07.02.2026): Apply to candidate collection
+                if daily_limit is not None:
+                    poi_cost = float(p.get("ticket_price", 0))
+                    if daily_cost + poi_cost > daily_limit:
+                        continue  # EXCLUDE - would exceed daily budget limit
+                
                 travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
                 if not last_poi and ctx.get("has_car", True):
                     parking_duration = 15
@@ -830,6 +850,12 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                     if user_group in ['solo', 'couples', 'friends', 'seniors']:
                         if is_kids_focused_poi(p) and kids_focused_count >= 1:
                             continue  # Skip - already have 1 kids-focused POI today
+                    
+                    # BUDGET HARD FILTER (FIX 07.02.2026): Apply to soft POI too
+                    if daily_limit is not None:
+                        poi_cost = float(p.get("ticket_price", 0))
+                        if daily_cost + poi_cost > daily_limit:
+                            continue  # EXCLUDE - would exceed daily budget limit
                     
                     # Soft POI criteria (client requirements)
                     # Since all Zakopane POI have intensity='medium', accept medium intensity
@@ -942,6 +968,12 @@ def build_day(pois, user, context, day_start=None, day_end=None):
 
         # HOTFIX #10.7: Debug logging - track which POI engine adds
         print(f"[ENGINE SELECTION] ✓ ADDED POI: id={poi_id(best)}, name={poi_name(best)}, time={minutes_to_time(now)}")
+        
+        # BUDGET TRACKING (FIX 07.02.2026): Update daily cost
+        poi_cost = float(best.get("ticket_price", 0))
+        daily_cost += poi_cost
+        if daily_limit is not None:
+            print(f"[BUDGET] POI cost: {poi_cost} PLN, daily total: {daily_cost}/{daily_limit} PLN")
 
         now += best_duration
         energy -= energy_cost(best, best_duration, ctx)
