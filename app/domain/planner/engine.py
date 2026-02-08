@@ -1,5 +1,6 @@
 # type: ignore
 import math
+import random
 from math import radians, sin, cos, sqrt, atan2
 
 from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
@@ -22,6 +23,21 @@ from app.domain.scoring.type_matching import calculate_type_matching_score
 from app.domain.scoring.time_of_day_scoring import calculate_time_of_day_score
 from app.domain.scoring.tag_preferences import calculate_tag_preference_score  # CLIENT DATA UPDATE (05.02.2026)
 from app.domain.filters.seasonality import filter_by_season
+
+# =========================
+# Helper Functions
+# =========================
+
+def is_core_poi(poi):
+    """
+    Check if POI is a core attraction.
+    Core POI have priority_level = 12 (highest priority).
+    CLIENT REQUIREMENT (08.02.2026): Used for core POI rotation logic.
+    """
+    try:
+        return int(poi.get("priority_level", 0)) == 12
+    except (ValueError, TypeError):
+        return False
 
 # =========================
 # Config
@@ -652,7 +668,7 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                 continue  # EXCLUDE - intensity conflict
             
             # FIX #7: Check core POI limit
-            is_core = str(p.get("priority_level", "")).strip().lower() == "core"
+            is_core = is_core_poi(p)
             if is_core and core_attraction_count >= limits["core_max"]:
                 continue  # Skip - too many core POI already
             
@@ -735,97 +751,188 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                 best_travel = travel
                 best_duration = duration
         
-        # CLIENT REQUIREMENT (04.02.2026): Randomize core POI within 1% of top score
-        # Collect all POI within 1% threshold to add variety to plans
+        # CLIENT REQUIREMENT (08.02.2026): CORE POI ROTATION
+        # Special handling when we need core POI: collect ALL viable core candidates
+        # (not just 1% threshold) to enable rotation among top core POI
+        # This prevents always selecting same high-scoring core (e.g., Morskie Oko)
         if best:
-            threshold = best_score * 0.99  # 1% tolerance
-            candidates = []
-            
-            # Re-scan to find all POI within 1% of best score
-            for p in pois:
-                if poi_id(p) in used:
-                    continue
+            # Check if we need to select a core POI
+            if core_attraction_count < limits.get("core_min", 1):
+                # CORE POI ROTATION LOGIC
+                # Collect ALL viable core POI candidates to enable rotation
+                core_candidates = []
                 
-                # Apply same filters as before
-                if should_exclude_by_target_group(p, user):
-                    continue
-                if should_exclude_by_intensity(p, user):
-                    continue
-                
-                is_core = str(p.get("priority_level", "")).strip().lower() == "core"
-                if is_core and core_attraction_count >= limits["core_max"]:
-                    continue
-                
-                # CLIENT REQUIREMENT (04.02.2026): Max 1 kids-focused POI per day for non-family
-                user_group = user.get("target_group", "")
-                if user_group in ['solo', 'couples', 'friends', 'seniors']:
-                    if is_kids_focused_poi(p) and kids_focused_count >= 1:
+                for p in pois:
+                    if poi_id(p) in used:
                         continue
-                
-                # BUDGET HARD FILTER (FIX 07.02.2026): Apply to candidate collection
-                # FIX (07.02.2026 v2): Multiply by group_size for per-group budget
-                if daily_limit is not None:
-                    group_size = user.get("group_size", 1)
-                    poi_cost_total = float(p.get("ticket_price", 0)) * group_size
-                    if daily_cost + poi_cost_total > daily_limit:
-                        continue  # EXCLUDE - would exceed daily budget limit
-                
-                travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
-                if not last_poi and ctx.get("has_car", True):
-                    parking_duration = 15
-                    walk_time = p.get("parking_walk_time_min", 5)
-                    travel = parking_duration + walk_time
-                
-                start_time = now + travel
-                if start_time >= end:
-                    continue
-                
-                duration = choose_duration(p, start_time, end, lunch_done)
-                if duration <= 0:
-                    continue
-                
-                if not is_open(p, start_time, duration, ctx["season"], ctx):
-                    continue
-                
-                # Calculate same score
-                score = score_poi(
-                    p=p, user=user, fatigue=fatigue, used=used, now=start_time,
-                    energy_left=energy, context=ctx, culture_streak=culture_streak,
-                    body_state=body_state, finale_done=finale_done,
-                )
-                
-                if core_attraction_count < limits.get("core_min", 1) and is_core:
-                    score += 50
-                
-                score -= travel * 0.5
-                
-                if attraction_count >= limits["soft"]:
-                    score -= 50
-                
-                # Collect candidates within 1% threshold
-                if score >= threshold:
-                    candidates.append({
+                    
+                    # Only collect core POI for rotation
+                    is_core = is_core_poi(p)
+                    if not is_core:
+                        continue
+                    
+                    # Apply same filters as main loop
+                    if should_exclude_by_target_group(p, user):
+                        continue
+                    if should_exclude_by_intensity(p, user):
+                        continue
+                    
+                    if is_core and core_attraction_count >= limits["core_max"]:
+                        continue
+                    
+                    # CLIENT REQUIREMENT (04.02.2026): Max 1 kids-focused POI per day for non-family
+                    user_group = user.get("target_group", "")
+                    if user_group in ['solo', 'couples', 'friends', 'seniors']:
+                        if is_kids_focused_poi(p) and kids_focused_count >= 1:
+                            continue
+                    
+                    # BUDGET HARD FILTER
+                    if daily_limit is not None:
+                        group_size = user.get("group_size", 1)
+                        poi_cost_total = float(p.get("ticket_price", 0)) * group_size
+                        if daily_cost + poi_cost_total > daily_limit:
+                            continue
+                    
+                    travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
+                    if not last_poi and ctx.get("has_car", True):
+                        parking_duration = 15
+                        walk_time = p.get("parking_walk_time_min", 5)
+                        travel = parking_duration + walk_time
+                    
+                    start_time = now + travel
+                    if start_time >= end:
+                        continue
+                    
+                    duration = choose_duration(p, start_time, end, lunch_done)
+                    if duration <= 0:
+                        continue
+                    
+                    if not is_open(p, start_time, duration, ctx["season"], ctx):
+                        continue
+                    
+                    # Calculate score with core boost
+                    score = score_poi(
+                        p=p, user=user, fatigue=fatigue, used=used, now=start_time,
+                        energy_left=energy, context=ctx, culture_streak=culture_streak,
+                        body_state=body_state, finale_done=finale_done,
+                    )
+                    
+                    score += 50  # Core boost (same as main loop)
+                    score -= travel * 0.5
+                    
+                    if attraction_count >= limits["soft"]:
+                        score -= 50
+                    
+                    core_candidates.append({
                         "poi": p,
                         "score": score,
                         "travel": travel,
                         "duration": duration
                     })
+                
+                # Sort by score and select randomly from top 4-5 core POI
+                if core_candidates:
+                    core_candidates.sort(key=lambda x: x["score"], reverse=True)
+                    top_core = core_candidates[:5]  # Top 5 core POI
+                    
+                    # Random selection from top core POI for variety
+                    selected = random.choice(top_core)
+                    best = selected["poi"]
+                    best_score = selected["score"]
+                    best_travel = selected["travel"]
+                    best_duration = selected["duration"]
+                    print(f"[CORE ROTATION] Selected from {len(top_core)} top core POI: {poi_name(best)} (score={best_score:.1f})")
             
-            # Randomize selection from top candidates
-            if len(candidates) > 1:
-                import random
-                selected = random.choice(candidates)
-                best = selected["poi"]
-                best_score = selected["score"]
-                best_travel = selected["travel"]
-                best_duration = selected["duration"]
-                print(f"[VARIETY] Selected from {len(candidates)} candidates within 1% of top score: {poi_name(best)} (score={best_score:.1f})")
-            elif len(candidates) == 1:
-                # Only one candidate, use it (same as before)
-                best = candidates[0]["poi"]
-                best_score = candidates[0]["score"]
-                best_travel = candidates[0]["travel"]
-                best_duration = candidates[0]["duration"]
+            else:
+                # NORMAL VARIETY LOGIC (when core_min already met or for non-core POI)
+                # CLIENT REQUIREMENT (04.02.2026): Randomize within 1% of top score
+                threshold = best_score * 0.99  # 1% tolerance
+                candidates = []
+                
+                # Re-scan to find all POI within 1% of best score
+                for p in pois:
+                    if poi_id(p) in used:
+                        continue
+                    
+                    # Apply same filters as before
+                    if should_exclude_by_target_group(p, user):
+                        continue
+                    if should_exclude_by_intensity(p, user):
+                        continue
+                    
+                    is_core = is_core_poi(p)
+                    if is_core and core_attraction_count >= limits["core_max"]:
+                        continue
+                    
+                    # CLIENT REQUIREMENT (04.02.2026): Max 1 kids-focused POI per day for non-family
+                    user_group = user.get("target_group", "")
+                    if user_group in ['solo', 'couples', 'friends', 'seniors']:
+                        if is_kids_focused_poi(p) and kids_focused_count >= 1:
+                            continue
+                    
+                    # BUDGET HARD FILTER (FIX 07.02.2026): Apply to candidate collection
+                    # FIX (07.02.2026 v2): Multiply by group_size for per-group budget
+                    if daily_limit is not None:
+                        group_size = user.get("group_size", 1)
+                        poi_cost_total = float(p.get("ticket_price", 0)) * group_size
+                        if daily_cost + poi_cost_total > daily_limit:
+                            continue  # EXCLUDE - would exceed daily budget limit
+                    
+                    travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
+                    if not last_poi and ctx.get("has_car", True):
+                        parking_duration = 15
+                        walk_time = p.get("parking_walk_time_min", 5)
+                        travel = parking_duration + walk_time
+                    
+                    start_time = now + travel
+                    if start_time >= end:
+                        continue
+                    
+                    duration = choose_duration(p, start_time, end, lunch_done)
+                    if duration <= 0:
+                        continue
+                    
+                    if not is_open(p, start_time, duration, ctx["season"], ctx):
+                        continue
+                    
+                    # Calculate same score
+                    score = score_poi(
+                        p=p, user=user, fatigue=fatigue, used=used, now=start_time,
+                        energy_left=energy, context=ctx, culture_streak=culture_streak,
+                        body_state=body_state, finale_done=finale_done,
+                    )
+                    
+                    if core_attraction_count < limits.get("core_min", 1) and is_core:
+                        score += 50
+                    
+                    score -= travel * 0.5
+                    
+                    if attraction_count >= limits["soft"]:
+                        score -= 50
+                    
+                    # Collect candidates within 1% threshold
+                    if score >= threshold:
+                        candidates.append({
+                            "poi": p,
+                            "score": score,
+                            "travel": travel,
+                            "duration": duration
+                        })
+                
+                # Randomize selection from top candidates
+                if len(candidates) > 1:
+                    selected = random.choice(candidates)
+                    best = selected["poi"]
+                    best_score = selected["score"]
+                    best_travel = selected["travel"]
+                    best_duration = selected["duration"]
+                    print(f"[VARIETY] Selected from {len(candidates)} candidates within 1% of top score: {poi_name(best)} (score={best_score:.1f})")
+                elif len(candidates) == 1:
+                    # Only one candidate, use it (same as before)
+                    best = candidates[0]["poi"]
+                    best_score = candidates[0]["score"]
+                    best_travel = candidates[0]["travel"]
+                    best_duration = candidates[0]["duration"]
         
         # Check if POI was selected
 
@@ -995,8 +1102,8 @@ def build_day(pois, user, context, day_start=None, day_end=None):
         
         # FIX #7 (02.02.2026): Update attraction counters
         attraction_count += 1
-        is_core_poi = str(best.get("priority_level", "")).strip().lower() == "core"
-        if is_core_poi:
+        is_core_attraction = is_core_poi(best)
+        if is_core_attraction:
             core_attraction_count += 1
         print(f"[LIMITS] Added attraction: {attraction_count}/{limits['hard']} total, {core_attraction_count}/{limits['core_max']} core")
         
@@ -1120,7 +1227,7 @@ def build_day(pois, user, context, day_start=None, day_end=None):
                     
                     # FIX #7 (02.02.2026): Update counters for soft POI too
                     attraction_count += 1
-                    is_core_soft = str(p.get("priority_level", "")).strip().lower() == "core"
+                    is_core_soft = is_core_poi(p)
                     if is_core_soft:
                         core_attraction_count += 1
                     print(f"[LIMITS] Added soft POI: {attraction_count}/{limits['hard']} total, {core_attraction_count}/{limits['core_max']} core")
