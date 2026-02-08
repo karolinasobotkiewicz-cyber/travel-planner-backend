@@ -513,6 +513,7 @@ def normalize_poi(p, index):
             p.get("recommended_time_of_day")
         ),
         "kids_only": _safe_lower(p.get("kids_only")) == "true",
+        "premium_experience": bool(p.get("premium_experience", False)),  # CLIENT REQUIREMENT (08.02.2026): Premium experiences flag
         # NEW FORMAT (30.01.2026): Opening hours as JSON dict
         "opening_hours": opening_hours_json,
         "opening_hours_seasonal": opening_hours_seasonal_json,

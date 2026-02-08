@@ -258,6 +258,7 @@ def load_zakopane_poi(path: str):
             "parking_walk_time_min": row.get("parking_walk_time_min"),
             "priority_level": priority_level,  # CLIENT DATA UPDATE: Normalized
             "kids_only": str(row.get("kids_only", "")).strip(),
+            "premium_experience": bool(row.get("premium_experience", False)),  # CLIENT REQUIREMENT (08.02.2026): Premium experiences flag
             "Tags": tags_str,  # Original string for backward compat
         }
 

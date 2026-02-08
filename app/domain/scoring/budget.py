@@ -132,3 +132,59 @@ def calculate_budget_score(poi, user):
             score -= 3  # Was -2
     
     return score
+
+
+def calculate_premium_penalty(poi, user):
+    """
+    Apply additional penalty for premium experiences at budget/standard levels.
+    
+    CLIENT REQUIREMENT (08.02.2026): Premium experiences (KULIGI, helikopter, etc.) 
+    should appear rarely at budget/standard levels but normally at high budget levels.
+    
+    Premium experiences are expensive attractions (typically 150+ PLN/person) that offer 
+    unique, high-end experiences like horse-drawn sleigh rides (kuligi), helicopter tours, 
+    extreme sports, or luxury spa treatments.
+    
+    Penalty logic:
+    - Budget level 1 (budget): -40 points → Almost excluded (very rare)
+    - Budget level 2 (standard): -20 points → Occasionally suggested
+    - Budget level 3+ (high/luxury): 0 points → Normally suggested
+    
+    Args:
+        poi: POI dict with 'premium_experience' (bool)
+        user: User dict with 'budget' (1-3 scale)
+    
+    Returns:
+        int: Score adjustment (negative penalty or 0)
+    
+    Examples:
+        >>> poi = {"premium_experience": True}
+        >>> user = {"budget": 1}  # Budget level
+        >>> calculate_premium_penalty(poi, user)
+        -40  # Heavy penalty
+        
+        >>> user = {"budget": 2}  # Standard level
+        >>> calculate_premium_penalty(poi, user)
+        -20  # Moderate penalty
+        
+        >>> user = {"budget": 3}  # High budget
+        >>> calculate_premium_penalty(poi, user)
+        0  # No penalty
+    """
+    # Check if POI is marked as premium experience
+    is_premium = poi.get("premium_experience", False)
+    
+    if not is_premium:
+        return 0  # Not premium, no penalty
+    
+    # Get user budget level (1=budget, 2=standard, 3=high, 4=luxury)
+    user_budget = _safe_int(user.get("budget"), 2)  # Default to standard (2)
+    
+    # Apply penalty based on budget level
+    if user_budget == 1:  # Budget level
+        return -40  # Heavy penalty - almost exclude
+    elif user_budget == 2:  # Standard level  
+        return -20  # Moderate penalty - occasionally suggest
+    else:  # High (3) or Luxury (4) level
+        return 0  # No penalty - suggest normally
+

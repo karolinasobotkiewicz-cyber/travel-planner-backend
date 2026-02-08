@@ -7,6 +7,7 @@ from app.domain.planner.opening_hours_parser import is_poi_open_at_time
 from app.domain.scoring import (
     calculate_family_score,
     calculate_budget_score,
+    calculate_premium_penalty,
     calculate_crowd_score,
     calculate_body_transition_score,
     get_next_body_state,
@@ -443,6 +444,7 @@ def score_poi(
     # dopasowanie - existing modules
     score += calculate_family_score(p, user)
     score += calculate_budget_score(p, user)
+    score += calculate_premium_penalty(p, user)  # CLIENT REQUIREMENT (08.02.2026): Premium experience penalty at budget/standard levels
     score += calculate_crowd_score(p, user, current_time_minutes=now)  # Added current_time for peak_hours
 
     # ETAP 1 ROZSZERZONY - preferences + travel_style
