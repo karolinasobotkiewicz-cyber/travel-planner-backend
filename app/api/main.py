@@ -31,7 +31,12 @@ app.include_router(poi.router, prefix="/poi", tags=["poi"])
 
 @app.on_event("startup")
 async def startup_event():
-    """Force reload POI data on application startup to ensure fresh Excel data."""
+    """
+    Application startup tasks:
+    1. Reload POI data from Excel
+    2. Test database connection (ETAP 2)
+    """
+    # POI reload
     print("[STARTUP] Starting POI reload...")
     try:
         from app.api.dependencies import get_poi_repository
@@ -41,15 +46,44 @@ async def startup_event():
         poi_repo.reload()
         print("🔄 POI Repository reloaded on startup - SUCCESS")
     except Exception as e:
-        print(f"❌ [STARTUP] ERROR: {e}")
+        print(f"❌ [STARTUP] POI ERROR: {e}")
         import traceback
         traceback.print_exc()
+    
+    # Database connection test (ETAP 2)
+    print("[STARTUP] Testing database connection...")
+    try:
+        from app.infrastructure.database.connection import test_connection
+        if test_connection():
+            print("✅ Database connection verified")
+        else:
+            print("⚠️ Database connection failed (but starting anyway)")
+    except Exception as e:
+        print(f"⚠️ Database connection test skipped: {e}")
 
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint for Railway deployment."""
-    return {"status": "ok", "service": "travel-planner-api"}
+    """
+    Health check endpoint for deployment monitoring.
+    
+    ETAP 2: Includes database connectivity check.
+    """
+    response = {
+        "status": "ok",
+        "service": "travel-planner-api",
+        "version": "2.0.0",  # ETAP 2
+    }
+    
+    # Try database connection (don't fail if DB is down)
+    try:
+        from app.infrastructure.database.connection import test_connection
+        db_ok = test_connection()
+        response["database"] = "connected" if db_ok else "unavailable"
+    except Exception as e:
+        response["database"] = f"error: {str(e)[:50]}"
+    
+    return response
 
 
 @app.post("/admin/reload-poi")

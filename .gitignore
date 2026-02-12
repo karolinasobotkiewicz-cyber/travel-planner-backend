@@ -47,6 +47,9 @@ htmlcov/
 .env.local
 .env.*.local
 
+# Migration SQL exports (generated files, not source code)
+migration.sql
+
 # Logs
 *.log
 logs/

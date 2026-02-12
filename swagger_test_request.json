@@ -1,0 +1,26 @@
+{
+  "location": {
+    "city": "Zakopane",
+    "country": "Poland",
+    "region_type": "mountain"
+  },
+  "group": {
+    "type": "couples",
+    "size": 2,
+    "crowd_tolerance": 1
+  },
+  "trip_length": {
+    "days": 3,
+    "start_date": "2026-06-15"
+  },
+  "daily_time_window": {
+    "start": "09:00",
+    "end": "19:00"
+  },
+  "budget": {
+    "level": 2
+  },
+  "transport_modes": ["car"],
+  "preferences": ["nature", "hiking", "mountain_views"],
+  "travel_style": "adventure"
+}
