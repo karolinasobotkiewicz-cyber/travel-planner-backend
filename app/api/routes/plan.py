@@ -4,23 +4,32 @@ Plan endpoints - preview, status, get plan.
 from fastapi import APIRouter, HTTPException, status, Depends
 from typing import List, Dict, Any
 from pydantic import BaseModel
-import uuid
 
 from app.domain.models.trip_input import TripInput
 from app.domain.models.plan import PlanResponse
-from app.infrastructure.repositories import PlanRepository, POIRepository, PlanVersionRepository
+from app.infrastructure.repositories import (
+    PlanRepository,
+    POIRepository,
+    PlanVersionRepository
+)
 from app.api.dependencies import (
     get_plan_repository,
     get_poi_repository,
-    get_version_repository
+    get_version_repository,
+    get_plan_editor
 )
 from app.application.services.plan_service import PlanService
+from app.application.services.plan_editor import PlanEditor
 
 
 router = APIRouter()
 
 
-@router.post("/preview", response_model=PlanResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/preview",
+    response_model=PlanResponse,
+    status_code=status.HTTP_200_OK
+)
 def preview_plan(
     trip_input: TripInput,
     plan_repo: PlanRepository = Depends(get_plan_repository),
@@ -60,7 +69,7 @@ def preview_plan(
             plan_id=plan.plan_id,
             days_json=days_json,
             change_type="generated",
-            change_summary=f"Initial plan generation (version 1)"
+            change_summary="Initial plan generation (version 1)"
         )
     except Exception as e:
         # Log error but don't fail request (version is secondary)
@@ -136,7 +145,8 @@ def list_plan_versions(
     Lists all versions of a plan (metadata only).
     
     Returns version history sorted by version_number DESC.
-    Each version includes: version_number, created_at, change_type, change_summary.
+    Each version includes: version_number, created_at, change_type,
+    change_summary.
     
     ETAP 2: Version tracking for edit history and rollback.
     """
@@ -157,7 +167,10 @@ def list_plan_versions(
         )
 
 
-@router.get("/{plan_id}/versions/{version_number}", response_model=Dict[str, Any])
+@router.get(
+    "/{plan_id}/versions/{version_number}",
+    response_model=Dict[str, Any]
+)
 def get_plan_version(
     plan_id: str,
     version_number: int,
@@ -220,7 +233,10 @@ def rollback_plan(
         if not version:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Target version {target_version} not found for plan {plan_id}"
+                detail=(
+                    f"Target version {target_version} not found "
+                    f"for plan {plan_id}"
+                )
             )
         
         # Perform rollback (creates new version)
@@ -239,7 +255,11 @@ def rollback_plan(
         return {
             "success": True,
             "message": f"Rolled back to version {target_version}",
-            "new_version_number": latest_version["version_number"] if latest_version else None,
+            "new_version_number": (
+                latest_version["version_number"]
+                if latest_version
+                else None
+            ),
             "rolled_back_to": target_version
         }
     
@@ -250,3 +270,253 @@ def rollback_plan(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Rollback failed: {str(e)}"
         )
+
+# ============================================================================
+# EDITING ENDPOINTS (ETAP 2 - Day 7)
+# ============================================================================
+
+
+class RemoveItemRequest(BaseModel):
+    """Request model for removing an item from a day plan."""
+    item_id: str
+    avoid_cooldown_hours: int = 24
+
+
+class ReplaceItemRequest(BaseModel):
+    """Request model for replacing an item in a day plan."""
+    item_id: str
+    strategy: str = "SMART_REPLACE"
+    preferences: Dict[str, Any] = {}
+
+
+@router.post(
+    "/{plan_id}/days/{day_number}/remove",
+    response_model=PlanResponse
+)
+def remove_item_from_day(
+    plan_id: str,
+    day_number: int,
+    request: RemoveItemRequest,
+    plan_repo: PlanRepository = Depends(get_plan_repository),
+    version_repo: PlanVersionRepository = Depends(get_version_repository),
+    poi_repo: POIRepository = Depends(get_poi_repository),
+    editor: PlanEditor = Depends(get_plan_editor)
+):
+    """
+    Remove an item from a specific day and save as new version.
+    
+    Flow:
+    1. Load current plan
+    2. Apply remove_item() edit
+    3. Recalculate times (reflow)
+    4. Save as new version
+    5. Return updated plan
+    
+    Args:
+        plan_id: UUID of the plan
+        day_number: Day number (1-indexed)
+        request: RemoveItemRequest with item_id and avoid_cooldown_hours
+        
+    Returns:
+        Updated PlanResponse with item removed, gap filled, times recalculated
+        
+    ETAP 2 Day 7: Editing API with versioning.
+    """
+    try:
+        # Load current plan
+        plan = plan_repo.get_by_id(plan_id)
+        if plan is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Plan {plan_id} not found"
+            )
+        
+        # Find target day
+        if day_number < 1 or day_number > len(plan.days):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid day_number {day_number}. "
+                    f"Plan has {len(plan.days)} days."
+                )
+            )
+        
+        day_plan = plan.days[day_number - 1]
+        
+        # Get all POIs for gap filling
+        all_pois = poi_repo.get_all()
+        all_pois_dicts = [poi.model_dump(by_alias=True) for poi in all_pois]
+        
+        # Create context for editing
+        context = {
+            "season": "winter",  # TODO: extract from plan or use current date
+            "weather": "sunny",
+            "transport": "car"
+        }
+        
+        # Create user preferences (from plan metadata or defaults)
+        user = {
+            "group_type": "couples",
+            "budget_level": 2,
+            "preferences": ["hiking"]
+        }
+        
+        # Apply edit
+        updated_day = editor.remove_item(
+            day_plan=day_plan,
+            item_id=request.item_id,
+            all_pois=all_pois_dicts,
+            context=context,
+            user=user,
+            avoid_cooldown_hours=request.avoid_cooldown_hours
+        )
+        
+        # Update plan with edited day
+        plan.days[day_number - 1] = updated_day
+        
+        # Save updated plan
+        plan_repo.save(plan)
+        
+        # Save new version
+        try:
+            days_json = {
+                "days": [day.dict() for day in plan.days]
+            }
+            version_repo.save_version(
+                plan_id=plan.plan_id,
+                days_json=days_json,
+                change_type="remove_item",
+                change_summary=(
+                    f"Removed item {request.item_id} "
+                    f"from day {day_number}"
+                )
+            )
+        except Exception as e:
+            print(f"Warning: Failed to save version: {e}")
+        
+        return plan
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to remove item: {str(e)}"
+        )
+
+
+@router.post(
+    "/{plan_id}/days/{day_number}/replace",
+    response_model=PlanResponse
+)
+def replace_item_in_day(
+    plan_id: str,
+    day_number: int,
+    request: ReplaceItemRequest,
+    plan_repo: PlanRepository = Depends(get_plan_repository),
+    version_repo: PlanVersionRepository = Depends(get_version_repository),
+    poi_repo: POIRepository = Depends(get_poi_repository),
+    editor: PlanEditor = Depends(get_plan_editor)
+):
+    """
+    Replace an item in a specific day with similar POI and save as new version.
+    
+    Flow:
+    1. Load current plan
+    2. Apply replace_item() with SMART_REPLACE
+    3. Recalculate times (reflow)
+    4. Save as new version
+    5. Return updated plan
+    
+    Args:
+        plan_id: UUID of the plan
+        day_number: Day number (1-indexed)
+        request: ReplaceItemRequest with item_id, strategy, preferences
+        
+    Returns:
+        Updated PlanResponse with item replaced, times recalculated
+        
+    ETAP 2 Day 7: Editing API with SMART_REPLACE.
+    """
+    try:
+        # Load current plan
+        plan = plan_repo.get_by_id(plan_id)
+        if plan is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Plan {plan_id} not found"
+            )
+        
+        # Find target day
+        if day_number < 1 or day_number > len(plan.days):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid day_number {day_number}. "
+                    f"Plan has {len(plan.days)} days."
+                )
+            )
+        
+        day_plan = plan.days[day_number - 1]
+        
+        # Get all POIs for replacement
+        all_pois = poi_repo.get_all()
+        all_pois_dicts = [poi.model_dump(by_alias=True) for poi in all_pois]
+        
+        # Create context for editing
+        context = {
+            "season": "winter",
+            "weather": "sunny",
+            "transport": "car"
+        }
+        
+        # Create user preferences
+        user = {
+            "group_type": "couples",
+            "budget_level": 2,
+            "preferences": ["hiking"]
+        }
+        
+        # Apply edit
+        updated_day = editor.replace_item(
+            day_plan=day_plan,
+            item_id=request.item_id,
+            all_pois=all_pois_dicts,
+            context=context,
+            user=user,
+            strategy=request.strategy
+        )
+        
+        # Update plan with edited day
+        plan.days[day_number - 1] = updated_day
+        
+        # Save updated plan
+        plan_repo.save(plan)
+        
+        # Save new version
+        try:
+            days_json = {
+                "days": [day.dict() for day in plan.days]
+            }
+            version_repo.save_version(
+                plan_id=plan.plan_id,
+                days_json=days_json,
+                change_type="replace_item",
+                change_summary=(
+                    f"Replaced item {request.item_id} in day {day_number} "
+                    f"using {request.strategy}"
+                )
+            )
+        except Exception as e:
+            print(f"Warning: Failed to save version: {e}")
+        
+        return plan
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to replace item: {str(e)}"
+        )
+

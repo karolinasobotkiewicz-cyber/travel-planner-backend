@@ -14,6 +14,7 @@ from app.infrastructure.repositories import (
     PlanVersionRepository,
 )
 from app.infrastructure.database import get_session
+from app.application.services.plan_editor import PlanEditor
 
 
 # Singleton instances (for stateless repositories)
@@ -78,3 +79,14 @@ def get_version_repository(db: Session = Depends(get_session)) -> PlanVersionRep
     Note: Not cached - creates new instance per request with session.
     """
     return PlanVersionRepository(db)
+
+
+def get_plan_editor(poi_repo: POIRepository = Depends(get_poi_repository)) -> PlanEditor:
+    """
+    Returns PlanEditor service instance.
+    
+    ETAP 2 Day 7: Editing service for remove/replace operations.
+    
+    Note: Creates new instance per request with POI repository.
+    """
+    return PlanEditor(poi_repo)
