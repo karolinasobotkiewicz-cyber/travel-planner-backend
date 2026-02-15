@@ -2,9 +2,9 @@
 
 **Start:** 12.02.2026 (środa)  
 **Koniec:** 05.03.2026 (tydzień 2) + 12.03.2026 (tydzień 3 - poprawki)  
-**Status:** � Week 2 In Progress (Days 8-9 ✅)  
+**Status:** 🎉 Week 2 Complete (Days 8-12 ✅)  
 **Deadline:** 12.03.2026  
-**Last Updated:** 19.02.2026 23:45 PM
+**Last Updated:** 23.02.2026 18:00 PM
 
 ## 📊 PROGRESS TRACKER
 
@@ -18,9 +18,12 @@
 - ✅ **Day 8 (19.02):** Regenerate Time Range with Pinned - COMPLETED
 - ✅ **Day 9 (19.02):** SMART_REPLACE Enhancement - COMPLETED
 - ✅ **Day 10 (20.02):** Integration Testing (E2E) - COMPLETED
+- ✅ **Day 11-12 (22-23.02):** Documentation - COMPLETED
 
 **🎉 WEEK 1 EXTENDED:** 7 days completed on 15.02.2026 (accelerated progress) ✅
-**🚀 WEEK 2 PROGRESS:** Days 8-10 completed on 19-20.02.2026 ✅
+**🚀 WEEK 2 COMPLETE:** Days 8-12 completed on 19-23.02.2026 ✅
+
+**📝 Next Steps:** Week 3 - Comprehensive Testing + Bugfixes (Days 13-18)
 
 ---
 
@@ -1200,27 +1203,55 @@ Generated 3 single-day plans with same parameters:
 
 ---
 
-### **Dzień 11-12 (Weekend 22-23.02) - Documentation**
-- [ ] Update `README.md`:
-  - Database setup instructions (PostgreSQL + Alembic)
-  - Multi-day planning usage
-  - Editing API examples
-  - Versioning examples
-- [ ] API docs w Swagger:
-  - Descriptions dla nowych endpoints
-  - Request/response examples
-  - Error codes + handling
-- [ ] Utwórz `ETAP2_FEATURES.md`:
-  - Co zostało zaimplementowane
-  - Jak używać każdej funkcji
-  - Test scenarios + expected behavior
-- [ ] Code comments:
-  - Docstrings dla `plan_multiple_days()`
-  - Docstrings dla `PlanEditor` methods
-  - In-line comments w kluczowych miejscach
-- [ ] Commit: "docs: Etap 2 features + API documentation"
+### **Dzień 11-12 (Weekend 22-23.02) - Documentation** ✅ COMPLETED
 
-**Output:** Dokumentacja kompletna, łatwe onboarding
+**Status:** DONE (23.02.2026)  
+**Commit:** `386d93d` - "docs: Etap 2 features + API documentation"
+
+**Completed:**
+- ✅ **README.md updated** (595 insertions, 184 deletions):
+  * ETAP 2 status section (completion 15.02.2026)
+  * API endpoints: 7→14 (added editing workflow)
+  * Business logic: multi-day planning + version control
+  * Database setup: PostgreSQL local + Render deployment
+  * Tech stack: added PostgreSQL, Alembic, psycopg2
+  * Testing examples: multi-day (5 days) + editing workflow (remove/replace/regenerate/rollback)
+  * TODO section: marked ETAP 2 items as DONE
+  * Commit history: updated with ETAP 2 commits
+  
+- ✅ **ETAP2_FEATURES.md created** (new file, 312 lines):
+  * 8 sections: Multi-day, Editing (Remove/Replace/Regenerate), Version Control, PostgreSQL, Gap Fill, Time Reflow, Testing
+  * Live test results: 3 scenarios PASSED on Render (71.4% uniqueness, 12 versions, 0 regressions)
+  * Implementation details: algorithms, logic, code references
+  * Known limitations: auto-versioning, gap fill quality, cross-day energy
+  * Future improvements: ML recommendations, weather integration, traffic
+
+- ✅ **Swagger API descriptions updated** (app/api/routes/plan.py):
+  * `POST /plan/preview`: Multi-day planning (1-5 days, uniqueness, core rotation, energy)
+  * `POST /plan/{id}/days/{day}/remove`: Remove POI + gap fill logic
+  * `POST /plan/{id}/days/{day}/replace`: SMART_REPLACE scoring algorithm
+  * `POST /plan/{id}/days/{day}/regenerate`: Time range regeneration (already had good docs)
+  * `POST /plan/{id}/rollback`: Version rollback (already had good docs)
+  * Added: Example payloads, error codes (404/400/500), response descriptions
+
+- ✅ **Code docstrings** (existing docs verified, already comprehensive):
+  * `plan_multiple_days()`: Args, Returns, ETAP 2 context
+  * `PlanEditor.remove_item()`: Args, Returns, Logic flow
+  * `PlanEditor.replace_item()`: SMART_REPLACE strategy
+  * `PlanEditor.regenerate_time_range()`: Pinned items logic
+  * Google-style format with Args/Returns sections
+
+**Files Changed:**
+- `README.md` (595 insertions, 184 deletions)
+- `ETAP2_FEATURES.md` (312 lines, new file)
+- `app/api/routes/plan.py` (Swagger descriptions enhanced)
+
+**Documentation Style:**
+- Concise, developer-friendly (no AI fluff)
+- Technical focus: algorithms, code references, examples
+- User voice: direct, practical, project-essential info only
+
+**Output:** ✅ Documentation complete, onboarding ready, klientka can now test via Swagger UI
 
 ---
 
