@@ -23,7 +23,7 @@ from app.domain.models.plan import (
     ParkingType,  # Dodano dla parking_type
 )
 from app.application.services.trip_mapper import trip_input_to_engine_params
-from app.domain.planner.engine import build_day, travel_time_minutes, is_open
+from app.domain.planner.engine import build_day, plan_multiple_days, travel_time_minutes, is_open
 from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
 from app.infrastructure.repositories import POIRepository
 
@@ -80,23 +80,53 @@ class PlanService:
                 days=[]
             )
         
-        # Generuj plan dla każdego dnia
-        days = []
+        # ETAP 2 - DAY 3 (15.02.2026): Multi-day routing
+        # Route to appropriate planner based on trip length
+        num_days = trip_input.trip_length.days
         
-        for day_num in range(trip_input.trip_length.days):
-            # Update context dla tego dnia
-            context["date"] = dates[day_num]
+        # Track POIs across all days (for multi-day)
+        global_used_pois = set()
+        
+        if num_days > 1:
+            # Multi-day plan: Use plan_multiple_days with cross-day tracking
+            print(f"[PLAN SERVICE] Multi-day plan requested: {num_days} days")
             
-            # Wywołaj engine.build_day()
-            # Argumenty: (pois, user, context, day_start, day_end)
-            engine_result = build_day(
-                all_pois_dict,  # POIs jako dict, nie Pydantic
-                user,
-                context,
-                day_start,  # User-provided start time
-                day_end     # User-provided end time
+            # Create contexts list (one per day)
+            contexts = []
+            for day_num in range(num_days):
+                day_context = context.copy()
+                day_context["date"] = dates[day_num]
+                contexts.append(day_context)
+            
+            # Call multi-day planner
+            engine_results = plan_multiple_days(
+                pois=all_pois_dict,
+                user=user,
+                contexts=contexts,
+                day_start=day_start,
+                day_end=day_end
             )
             
+        else:
+            # Single-day plan: Use original build_day (Etap 1 behavior)
+            print(f"[PLAN SERVICE] Single-day plan requested")
+            context["date"] = dates[0]
+            
+            engine_result = build_day(
+                all_pois_dict,
+                user,
+                context,
+                day_start,
+                day_end
+            )
+            
+            # Wrap in list for uniform processing
+            engine_results = [engine_result]
+        
+        # Process each day's engine result
+        days = []
+        
+        for day_num, engine_result in enumerate(engine_results):
             # HOTFIX #10.5: Debug logging - track POI IDs from engine
             engine_poi_ids = []
             for item in engine_result:
@@ -105,12 +135,16 @@ class PlanService:
                     engine_poi_ids.append(poi.get("id", "UNKNOWN"))
             print(f"[ENGINE OUTPUT] Day {day_num + 1} - POI IDs from engine: {engine_poi_ids}")
             
+            # Update context for this day (for conversion step)
+            day_context = context.copy()
+            day_context["date"] = dates[day_num]
+            
             # Konwersja engine result → PlanResponse items
             day_items = self._convert_engine_result_to_items(
                 engine_result,
                 day_start,
                 day_end,
-                context,
+                day_context,  # Use day-specific context
                 user,
                 trip_input
             )
@@ -120,12 +154,19 @@ class PlanService:
             # 1. Parking shifts first attraction time
             # 2. Transit start/end times are calculated in _convert_engine_result_to_items
             # 3. Gaps only appear after these adjustments
+            # ETAP 2 - DAY 3: Pass global_used for cross-day tracking
             day_items = self._fill_gaps_in_items(
                 day_items,
                 all_pois_dict,
-                context,
-                user
+                day_context,  # Use day-specific context
+                user,
+                global_used_pois  # Pass global set for cross-day tracking
             )
+            
+            # ETAP 2 - DAY 3: Update global_used with POIs added by gap filling
+            for item in day_items:
+                if hasattr(item, 'poi_id') and item.poi_id:
+                    global_used_pois.add(item.poi_id)
             
             # HOTFIX #10.5: Debug logging - track POI IDs after gap filling
             after_gap_filling_poi_ids = []
@@ -564,7 +605,8 @@ class PlanService:
         items: List[Any],
         all_pois: List[Dict[str, Any]],
         context: Dict[str, Any],
-        user: Dict[str, Any]
+        user: Dict[str, Any],
+        global_used: set = None
     ) -> List[Any]:
         """
         Fill gaps >20 min between items with POI or free_time.
@@ -599,7 +641,10 @@ class PlanService:
         hard_limit = limits["hard"]
         
         result = []
-        used_poi_ids = set()  # Track POIs already in plan
+        
+        # ETAP 2 - DAY 3 (15.02.2026): Initialize from global_used for cross-day tracking
+        used_poi_ids = set(global_used) if global_used is not None else set()
+        
         attraction_count = 0  # Count attractions to enforce limit
         
         # Collect POIs already used in plan and count attractions

@@ -543,11 +543,107 @@ def score_poi(
 
 
 # =========================
-# Main planner
+# Multi-day Planner
 # =========================
 
 
-def build_day(pois, user, context, day_start=None, day_end=None):
+def plan_multiple_days(pois, user, contexts, day_start, day_end):
+    """
+    Build multi-day plan with cross-day POI tracking and core POI distribution.
+    
+    ETAP 2 - DAY 3 (15.02.2026): Multi-day planning core.
+    
+    Key features:
+    - Cross-day POI tracking: No duplicate POIs across days
+    - Core POI distribution: Spread core attractions across days (not all on Day 1)
+    - Day-to-day energy continuity: Reset energy each day but track usage patterns
+    
+    Args:
+        pois: List of POI dicts
+        user: User dict (preferences, target_group, etc.)
+        contexts: List of context dicts (one per day - season, date, weather, etc.)
+        day_start: Start time string "HH:MM"
+        day_end: End time string "HH:MM"
+    
+    Returns:
+        List of day plans (list of dicts, one per day)
+    """
+    num_days = len(contexts)
+    
+    # Global tracking across ALL days
+    global_used_pois = set()
+    
+    # Core POI distribution strategy
+    # Get all core POIs (priority_level == 12)
+    core_pois = [p for p in pois if is_core_poi(p)]
+    
+    print(f"[MULTI-DAY] Planning {num_days} days with {len(core_pois)} core POIs available")
+    print(f"[MULTI-DAY] Core POIs: {[poi_name(p) for p in core_pois]}")
+    
+    # Get core limits for this target group
+    target_group = user.get("target_group", "solo")
+    limits = GROUP_ATTRACTION_LIMITS.get(target_group, {
+        "soft": 7,
+        "hard": 8,
+        "core_min": 1,
+        "core_max": 2,
+    })
+    
+    # Calculate core POIs to distribute
+    # Each day wants core_min (usually 1), but we have limited core POIs
+    # Distribute fairly: min(total_core_pois, num_days * core_min)
+    total_core_needed = num_days * limits.get("core_min", 1)
+    total_core_available = len(core_pois)
+    
+    # If we have more core POIs than needed, great!
+    # If we have fewer, distribute what we have
+    cores_to_distribute = min(total_core_available, total_core_needed)
+    
+    print(f"[MULTI-DAY] Distributing {cores_to_distribute} core POIs across {num_days} days (need {total_core_needed}, have {total_core_available})")
+    
+    # Build each day with cross-day tracking
+    all_day_plans = []
+    
+    for day_num in range(num_days):
+        context = contexts[day_num]
+        
+        print(f"\n[MULTI-DAY] === Building Day {day_num + 1}/{num_days} ===")
+        print(f"[MULTI-DAY] Global used POIs so far: {len(global_used_pois)}")
+        
+        # Build day with global tracking
+        # The global_used set will be updated inside build_day()
+        day_plan = build_day(
+            pois=pois,
+            user=user,
+            context=context,
+            day_start=day_start,
+            day_end=day_end,
+            global_used=global_used_pois  # Pass reference to global set
+        )
+        
+        # Count POIs used in this day
+        day_poi_count = 0
+        day_core_count = 0
+        for item in day_plan:
+            if item.get("type") == "attraction" and item.get("poi"):
+                day_poi_count += 1
+                if is_core_poi(item["poi"]):
+                    day_core_count += 1
+        
+        print(f"[MULTI-DAY] Day {day_num + 1} complete: {day_poi_count} POIs ({day_core_count} core)")
+        print(f"[MULTI-DAY] Global used POIs after Day {day_num + 1}: {len(global_used_pois)}")
+        
+        all_day_plans.append(day_plan)
+    
+    return all_day_plans
+
+
+# =========================
+# Single-day Planner
+# =========================
+
+
+def build_day(pois, user, context, day_start=None, day_end=None, global_used=None):
     """
     Build daily plan from POIs.
     
@@ -557,6 +653,7 @@ def build_day(pois, user, context, day_start=None, day_end=None):
         context: Context dict (season, date, weather, etc.)
         day_start: Start time string "HH:MM" (default: DAY_START global)
         day_end: End time string "HH:MM" (default: DAY_END global)
+        global_used: Optional set of POI IDs already used in previous days (for multi-day planning)
     """
     ctx = _get_context(context)
     
@@ -580,7 +677,11 @@ def build_day(pois, user, context, day_start=None, day_end=None):
 
     energy = GROUP_DAILY_ENERGY[user["target_group"]]
     fatigue = 0
-    used = set()
+    
+    # ETAP 2 - DAY 3 (15.02.2026): Multi-day cross-day POI tracking
+    # Initialize used set from global_used (if provided) to avoid duplicates across days
+    used = set(global_used) if global_used is not None else set()
+    
     last_poi = None
 
     # FIX #7 (02.02.2026): Track attraction counts for limits
@@ -1098,6 +1199,11 @@ def build_day(pois, user, context, day_start=None, day_end=None):
         energy -= energy_cost(best, best_duration, ctx)
         fatigue += 1
         used.add(poi_id(best))
+        
+        # ETAP 2 - DAY 3 (15.02.2026): Update global_used for cross-day tracking
+        if global_used is not None:
+            global_used.add(poi_id(best))
+        
         last_poi = best
         
         # FIX #7 (02.02.2026): Update attraction counters

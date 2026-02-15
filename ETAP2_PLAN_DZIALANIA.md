@@ -2,15 +2,15 @@
 
 **Start:** 12.02.2026 (środa)  
 **Koniec:** 05.03.2026 (tydzień 2) + 12.03.2026 (tydzień 3 - poprawki)  
-**Status:** 🟢 In Progress - Day 1 COMPLETED ✅  
+**Status:** 🟢 In Progress - Day 2 COMPLETED ✅  
 **Deadline:** 12.03.2026  
-**Last Updated:** 12.02.2026 11:52 AM
+**Last Updated:** 15.02.2026 07:09 AM
 
 ## 📊 PROGRESS TRACKER
 
 - ✅ **Day 1 (12.02):** PostgreSQL Setup - COMPLETED
-- ⏸️ **Day 2 (13.02):** Repository Migration - PENDING
-- ⏸️ **Day 3 (14.02):** Multi-day Planning Core - PENDING
+- ✅ **Day 2 (15.02):** Repository Migration - COMPLETED
+- ⏸️ **Day 3 (TBD):** Multi-day Planning Core - PENDING
 
 ---
 
@@ -131,25 +131,79 @@ Wszystkie funkcje Etap 1 MUSZĄ działać po zmianach:
 
 ---
 
-### **Dzień 2 (Czwartek 13.02) - Repository Migration**
-- [ ] Backup istniejących repositories (in-memory)
-- [ ] Utwórz `app/infrastructure/database/`
-  - `connection.py` (SQLAlchemy engine setup)
-  - `models.py` (SQLAlchemy ORM models)
-- [ ] Update `PlanRepository`:
-  - Zmień z in-memory dict na PostgreSQL
-  - Zachowaj interface (metody save/get/list bez zmian)
-  - Dependency injection via FastAPI Depends
-- [ ] Update `POIRepository`:
-  - Opcjonalnie cache zakopane.xlsx w DB
-  - LUB zostaw Excel loader (szybsza implementacja)
-- [ ] Test Etap 1 features:
-  - `POST /plan/preview` musi działać identycznie
-  - Premium Experience penalties працują
-  - Core POI rotation працює
-- [ ] Commit: "feat: migrate PlanRepository to PostgreSQL"
+### **Dzień 2 (Sobota 15.02) - Repository Migration** ✅ COMPLETED
 
-**Output:** Etap 1 działa z PostgreSQL, zero regressji
+- [x] Backup istniejących repositories (in-memory) → plan_repository_inmemory.py ✅
+- [x] ~~Utwórz `app/infrastructure/database/`~~ → **Already done in Day 1** ✅
+  - ~~`connection.py` (SQLAlchemy engine setup)~~ ✅
+  - ~~`models.py` (SQLAlchemy ORM models)~~ ✅
+- [x] Update `PlanRepository`: ✅
+  - ~~Zmień z in-memory dict na PostgreSQL~~ → **Aliased to PostgreSQL implementation** ✅
+  - ~~Zachowaj interface (metody save/get/list bez zmian)~~ → **Interface preserved** ✅
+  - Dependency injection via FastAPI Depends ✅
+- [x] Update `POIRepository`: → **Stayed on Excel (as planned)** ✅
+  - ~~Opcjonalnie cache zakopane.xlsx w DB~~ → **Deferred to Phase 3**
+  - ~~LUB zostaw Excel loader (szybsza implementacja)~~ → **Keep Excel ✅**
+- [x] Test Etap 1 features: ✅
+  - `POST /plan/preview` musi działać identycznie ✅
+  - Premium Experience penalties працują ✅
+  - Core POI rotation працює ✅
+- [x] Commit: "feat(etap2-day2): migrate PlanRepository to PostgreSQL" ✅
+
+**✅ Output:** Etap 1 działa z PostgreSQL, zero regressji
+
+**⏱️ Time Spent:** ~2 hours (3 dni delay przez brak dostępu - done on 15.02)
+
+**📝 NOTATKI - DZIEŃ 2:**
+
+**🔧 CO ZOSTAŁO ZROBIONE:**
+1. **Backup in-memory** - Stworzony `plan_repository_inmemory.py` (reference copy)
+2. **Redirect plan_repository.py** - Import alias do `PlanPostgreSQLRepository`
+3. **Update dependencies.py** - Session injection via `get_session()` dependency
+4. **Fix PostgreSQL repository** - Compatible z actual PlanResponse model (tylko plan_id, version, days)
+5. **Update exports** - __init__.py includes PlanVersionRepository, inmemory backup
+6. **Full testing** - POST /plan/preview, GET /plan/{id}, GET /plan/{id}/status - all working ✅
+
+**❌ PROBLEMY NAPOTKANE:**
+1. **PlanResponse model mismatch** - PostgreSQL repo oczekiwał `plan.destination`, ale PlanResponse ma tylko plan_id/version/days
+   - **Rozwiązanie:** Fixed _extract_metadata(), _reconstruct_plan_response() i save() aby używały dostępnych pól
+   - **TODO:** W przyszłości - save() should przyjmować TripInput jako optional param dla metadata
+
+**✅ CO DZIAŁA:**
+- POST /plan/preview - generuje i zapisuje do PostgreSQL ✅
+- GET /plan/{id} - odczyt z bazy z pełnymi danymi ✅
+- GET /plan/{id}/status - metadata without days_json ✅
+- Database connection test on startup ✅
+- Zero regression - Etap 1 features działają identycznie ✅
+
+**📂 PLIKI ZMIENIONE:**
+- `app/api/dependencies.py` - Session injection added
+- `app/infrastructure/repositories/plan_repository.py` - Import alias to PostgreSQL
+- `app/infrastructure/repositories/plan_repository_inmemory.py` - Backup created (NEW)
+- `app/infrastructure/repositories/plan_repository_postgresql.py` - Field mapping fixed
+- `app/infrastructure/repositories/__init__.py` - Exports updated
+- `ETAP2_PLAN_DZIALANIA.md` - Day 2 marked complete
+- `DZIEN_1_PODSUMOWANIE_FINALNE.md` - Created comprehensive Day 1 report
+
+**🎯 TESTED SCENARIOS:**
+1. **Single-day plan generation** (couples, budget=2, hiking) ✅
+   - Generated plan ID: 74471831-592c-4107-8742-f47204c12142
+   - 13 items in day (attractions, transit, parking)
+   - First attraction: Rusinowa Polana
+2. **Plan retrieval** - GET /plan/{id} returned identical data ✅
+3. **Metadata endpoint** - GET /plan/{id}/status returned proper timestamps ✅
+
+**📚 LESSONS LEARNED:**
+1. Always verify domain model fields before using them in repositories
+2. PostgreSQL save() will need TripInput metadata in future for proper location/group/budget storage
+3. Backward compatible changes are key - keep interface signatures same
+4. Test end-to-end after integration (not just unit tests)
+
+**🎯 GOTOWOŚĆ DO DAY 3:**
+- ✅ PostgreSQL fully integrated with API
+- ✅ All Etap 1 features working
+- ✅ Backup of in-memory implementation preserved
+- ⏭️ **Next:** Multi-day planning core (Day 3)
 
 ---
 
