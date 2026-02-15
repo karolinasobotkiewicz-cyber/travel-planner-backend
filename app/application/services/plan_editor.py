@@ -222,6 +222,360 @@ class PlanEditor:
         # Reconstruct DayPlan
         return self._reconstruct_day_plan(day_plan.day, items, day_plan.quality_badges)
     
+    def regenerate_time_range(
+        self,
+        day_plan: DayPlan,
+        from_time: str,
+        to_time: str,
+        pinned_items: List[str],
+        all_pois: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        user: Dict[str, Any]
+    ) -> DayPlan:
+        """
+        Regenerate POIs in time range while keeping pinned items.
+        
+        Args:
+            day_plan: DayPlan to edit
+            from_time: Start of regeneration range (HH:MM)
+            to_time: End of regeneration range (HH:MM)
+            pinned_items: List of poi_ids to keep (locked)
+            all_pois: List of all available POIs
+            context: Context dict
+            user: User preferences dict
+            
+        Returns:
+            Updated DayPlan with regenerated range
+            
+        Logic:
+        1. Extract items in time range
+        2. Keep pinned items (mark as locked)
+        3. Remove unpinned attractions from range
+        4. Re-run mini planning for available time slots
+        5. Merge before + new range + after
+        6. Recalculate all times
+        """
+        # Convert to mutable (use mode='json' to serialize enums as strings)
+        items = [item.model_dump(mode='json') if hasattr(item, 'model_dump') else item 
+                 for item in day_plan.items]
+        
+        from_minutes = time_to_minutes(from_time)
+        to_minutes = time_to_minutes(to_time)
+        
+        # Separate items into: before range, in range, after range
+        before_range = []
+        in_range = []
+        after_range = []
+        
+        for item in items:
+            item_start = time_to_minutes(
+                item.get("start_time", item.get("time", "00:00"))
+            )
+            
+            if item_start < from_minutes:
+                before_range.append(item)
+            elif item_start < to_minutes:
+                in_range.append(item)
+            else:
+                after_range.append(item)
+        
+        # Collect used POI IDs (from entire day)
+        used_poi_ids = {
+            item.get("poi_id") 
+            for item in items 
+            if item.get("type") == "attraction" and item.get("poi_id")
+        }
+        
+        # Separate in-range items: pinned vs unpinned
+        pinned_set = set(pinned_items)
+        kept_items = []
+        removed_items = []
+        
+        for item in in_range:
+            item_type = item.get("type")
+            poi_id = item.get("poi_id")
+            
+            # Always keep non-attraction items (day_start, day_end, etc.)
+            if item_type in ["day_start", "day_end", "lunch_break"]:
+                kept_items.append(item)
+                continue
+            
+            # Keep pinned attractions
+            if item_type == "attraction" and poi_id in pinned_set:
+                kept_items.append(item)
+                continue
+            
+            # Remove unpinned attractions and adjacent transit
+            if item_type in ["attraction", "transit", "parking", "free_time"]:
+                removed_items.append(item)
+                if poi_id:
+                    used_poi_ids.discard(poi_id)  # Free up for reuse
+        
+        # Calculate available time slots for new POIs
+        # Sort kept items by start time
+        kept_items.sort(
+            key=lambda x: time_to_minutes(
+                x.get("start_time", x.get("time", "00:00"))
+            )
+        )
+        
+        # Build time slots: gaps between kept items
+        time_slots = []
+        current_slot_start = from_minutes
+        
+        for item in kept_items:
+            item_start = time_to_minutes(
+                item.get("start_time", item.get("time", "00:00"))
+            )
+            item_end = time_to_minutes(
+                item.get("end_time", item.get("time", "00:00"))
+            )
+            
+            # If gap before this item, add slot
+            if current_slot_start < item_start:
+                time_slots.append({
+                    "start": current_slot_start,
+                    "end": item_start,
+                    "duration": item_start - current_slot_start
+                })
+            
+            # Move to end of this item
+            current_slot_start = max(current_slot_start, item_end)
+        
+        # Final slot: from last kept item to range end
+        if current_slot_start < to_minutes:
+            time_slots.append({
+                "start": current_slot_start,
+                "end": to_minutes,
+                "duration": to_minutes - current_slot_start
+            })
+        
+        # Fill each time slot with new POIs
+        new_items = []
+        
+        for slot in time_slots:
+            slot_items = self._fill_time_slot(
+                start_time=slot["start"],
+                end_time=slot["end"],
+                all_pois=all_pois,
+                used_poi_ids=used_poi_ids,
+                context=context,
+                user=user,
+                last_poi=new_items[-1] if new_items else None
+            )
+            
+            new_items.extend(slot_items)
+            
+            # Track used POIs
+            for item in slot_items:
+                if item.get("type") == "attraction" and item.get("poi_id"):
+                    used_poi_ids.add(item.get("poi_id"))
+        
+        # Merge: before + kept (pinned) + new + after
+        # Sort by start time to interleave pinned and new items
+        range_items = kept_items + new_items
+        range_items.sort(
+            key=lambda x: time_to_minutes(
+                x.get("start_time", x.get("time", "00:00"))
+            )
+        )
+        
+        merged_items = before_range + range_items + after_range
+        
+        # Recalculate all times (full reflow)
+        merged_items = self._recalculate_times(merged_items, context)
+        
+        # Reconstruct DayPlan
+        return self._reconstruct_day_plan(
+            day_plan.day, merged_items, day_plan.quality_badges
+        )
+    
+    def _fill_time_slot(
+        self,
+        start_time: int,
+        end_time: int,
+        all_pois: List[Dict[str, Any]],
+        used_poi_ids: Set[str],
+        context: Dict[str, Any],
+        user: Dict[str, Any],
+        last_poi: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Fill time slot with POIs (mini build_day).
+        
+        Args:
+            start_time: Start time in minutes
+            end_time: End time in minutes
+            all_pois: Available POIs
+            used_poi_ids: Set of already used POI IDs
+            context: Context dict
+            user: User preferences dict
+            last_poi: Previous POI (for transit calculation)
+            
+        Returns:
+            List of items to fill slot
+        """
+        from app.domain.planner.engine import (
+            score_poi, choose_duration, travel_time_minutes
+        )
+        from app.domain.scoring.family_fit import should_exclude_by_target_group
+        from app.domain.scoring.intensity_scoring import should_exclude_by_intensity
+        
+        items = []
+        current_time = start_time
+        available_duration = end_time - start_time
+        
+        # Need at least 45 min for a POI (30 min + 15 min transit)
+        if available_duration < 45:
+            # Add free time if gap too small
+            if available_duration >= 15:
+                items.append({
+                    "type": "free_time",
+                    "start_time": minutes_to_time(start_time),
+                    "end_time": minutes_to_time(end_time),
+                    "duration_min": available_duration,
+                    "label": "Czas wolny",
+                    "description": "Krótka przerwa"
+                })
+            return items
+        
+        # Try to add 1-2 POIs in slot
+        max_attempts = 2
+        attempts = 0
+        
+        while current_time + 30 < end_time and attempts < max_attempts:
+            attempts += 1
+            
+            # Find best POI for this slot
+            best_poi = None
+            best_score = -9999
+            best_duration = 0
+            best_travel = 0
+            
+            for poi in all_pois:
+                poi_id = poi.get("ID")
+                
+                # Skip used POIs
+                if poi_id in used_poi_ids:
+                    continue
+                
+                # Hard filters
+                if should_exclude_by_target_group(poi, user):
+                    continue
+                if should_exclude_by_intensity(poi, user):
+                    continue
+                
+                # Calculate travel time
+                travel = 0
+                if last_poi:
+                    travel = travel_time_minutes(last_poi, poi, context)
+                elif context.get("has_car", True):
+                    # First POI - add parking
+                    travel = 15 + poi.get("parking_walk_time_min", 5)
+                
+                poi_start = current_time + travel
+                
+                # Check if fits in slot
+                if poi_start >= end_time:
+                    continue
+                
+                duration = choose_duration(
+                    poi, poi_start, end_time * 60, False
+                )
+                if duration <= 0:
+                    continue
+                
+                # Check opening hours
+                if not is_open(poi, poi_start, duration, context.get("season", "summer"), context):
+                    continue
+                
+                # Score POI
+                score = score_poi(
+                    p=poi,
+                    user=user,
+                    fatigue=0,  # Simplified for mini planning
+                    used=used_poi_ids,
+                    now=poi_start,
+                    energy_left=100,  # Simplified
+                    context=context,
+                    culture_streak=0,
+                    body_state="neutral",
+                    finale_done=False
+                )
+                
+                # Travel penalty
+                score -= travel * 0.5
+                
+                if score > best_score:
+                    best_poi = poi
+                    best_score = score
+                    best_duration = duration
+                    best_travel = travel
+            
+            # If found POI, add it
+            if best_poi:
+                # Add transit if needed
+                if best_travel > 0 and last_poi:
+                    items.append({
+                        "type": "transit",
+                        "start_time": minutes_to_time(current_time),
+                        "end_time": minutes_to_time(current_time + best_travel),
+                        "duration_min": best_travel,
+                        "mode": context.get("transport", "car"),
+                        "from": last_poi.get("name", ""),
+                        "to": best_poi.get("Name", "")
+                    })
+                    current_time += best_travel
+                
+                # Add POI
+                poi_item = {
+                    "type": "attraction",
+                    "poi_id": best_poi.get("ID"),
+                    "name": best_poi.get("Name", ""),
+                    "start_time": minutes_to_time(current_time),
+                    "end_time": minutes_to_time(current_time + best_duration),
+                    "duration_min": best_duration,
+                    "description_short": best_poi.get("Description_short", ""),
+                    "lat": best_poi.get("Lat", 0.0),
+                    "lng": best_poi.get("Lng", 0.0),
+                    "address": best_poi.get("Address", ""),
+                    "cost_estimate": 0,
+                    "ticket_info": {
+                        "ticket_normal": best_poi.get("ticket_price", 0),
+                        "ticket_reduced": 0,
+                        "free_entry": False
+                    },
+                    "parking": {
+                        "name": best_poi.get("parking", "Brak parkingu"),
+                        "walk_time_min": best_poi.get("parking_walk_time_min", 5)
+                    },
+                    "pro_tip": best_poi.get("Pro_tip"),
+                    "why_selected": [],
+                    "quality_badges": []
+                }
+                
+                items.append(poi_item)
+                current_time += best_duration
+                last_poi = poi_item
+                used_poi_ids.add(best_poi.get("ID"))
+            else:
+                # No POI found, break
+                break
+        
+        # Fill remaining gap with free time if significant
+        if current_time + 15 < end_time:
+            gap_duration = end_time - current_time
+            items.append({
+                "type": "free_time",
+                "start_time": minutes_to_time(current_time),
+                "end_time": minutes_to_time(end_time),
+                "duration_min": gap_duration,
+                "label": "Czas wolny",
+                "description": "Przerwa"
+            })
+        
+        return items
+    
     def _recalculate_times(
         self,
         items: List[Dict[str, Any]],
