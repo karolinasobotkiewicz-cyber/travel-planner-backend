@@ -518,8 +518,7 @@ class PlanService:
         
         # HOTFIX #10.5: Debug logging - track POI ID in attraction item creation
         poi_id_from_dict = poi_dict.get("id", "")
-        poi_name_from_dict = poi_dict.get("name", "")
-        print(f"[ATTRACTION ITEM] Creating item: poi_id={poi_id_from_dict}, name={poi_name_from_dict}")
+        print(f"[ATTRACTION ITEM] Creating item: poi_id={poi_id_from_dict}")
         
         # ETAP 2 Day 5: Generate explainability and quality badges
         if context is None:
@@ -753,7 +752,7 @@ class PlanService:
                 if next_start is not None:
                     gap = next_start - current_end
                     
-                    print(f"[GAP FILLING] {item_type} ends {current_end} → {next_type} starts {next_start} = GAP {gap} min")
+                    print(f"[GAP FILLING] {item_type} ends {current_end} -> {next_type} starts {next_start} = GAP {gap} min")
                     
                     # BUGFIX (31.01.2026 - Problem #3): Skip gap filling before lunch if gap <60 min
                     # Lunch can start earlier instead of adding unnecessary free_time
@@ -816,12 +815,12 @@ class PlanService:
                             # STEP 1: Target group hard filter
                             try:
                                 should_exclude_target = should_exclude_by_target_group(poi, user)
-                                print(f"[GAP FILLING DEBUG] POI {poi.get('name')} target filter result: {should_exclude_target}")
+                                print(f"[GAP FILLING DEBUG] POI {poi.get('id', 'unknown')} target filter result: {should_exclude_target}")
                                 if should_exclude_target:
-                                    print(f"[GAP FILLING] ❌ EXCLUDED by target_group: {poi.get('name')} (poi_id={poi_id})")
+                                    print(f"[GAP FILLING] EXCLUDED by target_group: POI_ID={poi_id}")
                                     continue  # EXCLUDE - target group mismatch
                             except Exception as e:
-                                print(f"[GAP FILLING] ⚠️ EXCEPTION in target filter for {poi.get('name')}: {e}")
+                                print(f"[GAP FILLING] WARNING: EXCEPTION in target filter for POI_ID={poi.get('id', 'unknown')}: {e}")
                                 import traceback
                                 traceback.print_exc()
                                 continue  # Exclude on error (safer)
@@ -878,12 +877,11 @@ class PlanService:
                         
                         if poi_found and best_poi:
                             # Add POI to fill gap!
-                            print(f"[GAP FILLING] ✓ FILLING {gap} min gap with POI: {best_poi.get('name')}")
+                            print(f"[GAP FILLING] FILLING {gap} min gap with POI_ID: {best_poi.get('id', 'unknown')}")
                             
                             # HOTFIX #10.5: Debug logging - track POI ID being added in gap filling
                             gap_filling_poi_id = best_poi.get('id', 'UNKNOWN')
-                            gap_filling_poi_name = best_poi.get('name', 'UNKNOWN')
-                            print(f"[GAP FILLING] Adding POI: id={gap_filling_poi_id}, name={gap_filling_poi_name}")
+                            print(f"[GAP FILLING] Adding POI: id={gap_filling_poi_id}")
                             
                             # Add transit if needed
                             if best_travel > 0:
@@ -937,7 +935,7 @@ class PlanService:
                         free_time_start = minutes_to_time(current_end)
                         free_time_end = minutes_to_time(current_end + gap_duration)
                         
-                        print(f"[GAP FILLING] ⚠ LAST RESORT: No available POI, adding free_time ({free_time_start}-{free_time_end})")
+                        print(f"[GAP FILLING] WARNING: LAST RESORT: No available POI, adding free_time ({free_time_start}-{free_time_end})")
                         
                         free_time_item = FreeTimeItem(
                             type=ItemType.FREE_TIME,
@@ -949,7 +947,7 @@ class PlanService:
                         
                         result.append(free_time_item)
         
-        print(f"[GAP FILLING] Final: {len(items)} → {len(result)} items")
+        print(f"[GAP FILLING] Final: {len(items)} -> {len(result)} items")
         return result
 
     def _add_minutes(self, time_str: str, minutes: int) -> str:
@@ -1003,10 +1001,10 @@ class PlanService:
             # Update "to" to match next attraction
             if next_attraction:
                 item.to_location = next_attraction.name
-                print(f"[TRANSIT FIX] Updated transit destination: '{item.from_location}' → '{item.to_location}'")
+                print(f"[TRANSIT FIX] Updated transit destination: '{item.from_location}' -> '{item.to_location}'")
             else:
                 # No attraction after transit - shouldn't happen, but log it
-                print(f"[TRANSIT FIX] ⚠ Transit has no next attraction: '{item.from_location}' → '{item.to_location}' (kept as is)")
+                print(f"[TRANSIT FIX] WARNING: Transit has no next attraction: '{item.from_location}' -> '{item.to_location}' (kept as is)")
             
             # FIX #4: Update "from" to match PREVIOUS attraction
             # Find last attraction BEFORE this transit

@@ -53,13 +53,13 @@ def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
     check_id = random.randint(1000, 9999)  # Unique ID for this check
     
     user_group = _safe_str(user.get("target_group", ""))
-    poi_name = poi.get("name", "Unknown")  # HOTFIX #10.2: Changed "Name" → "name" (normalized POI format)
+    poi_id_val = poi.get("id", "unknown")  # Use ID instead of name to avoid Unicode errors
     
-    print(f"[DEBUG TARGET #{check_id}] Checking POI: {poi_name} | user_group={user_group} | poi.target_groups={poi.get('target_groups')} | kids_only={poi.get('kids_only')}")
+    print(f"[DEBUG TARGET #{check_id}] Checking POI ID: {poi_id_val} | user_group={user_group} | poi.target_groups={poi.get('target_groups')} | kids_only={poi.get('kids_only')}")
     
-    # Brak grupy użytkownika → neutralne
+    # Brak grupy użytkownika -> neutralne
     if not user_group:
-        print(f"[DEBUG TARGET #{check_id}] → ALLOW (no user_group)")
+        print(f"[DEBUG TARGET #{check_id}] -> ALLOW (no user_group)")
         return False
     
     # Kids_only = hard exclude dla grup nie-family
@@ -68,32 +68,32 @@ def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
     is_kids_only = kids_only_val is True or (isinstance(kids_only_val, str) and kids_only_val.lower() in ["true", "1", "yes"])
     
     if is_kids_only and user_group not in ["family_kids", "family"]:
-        print(f"[DEBUG TARGET #{check_id}] → EXCLUDE (kids_only={kids_only_val} parsed as {is_kids_only} and user_group={user_group})")
+        print(f"[DEBUG TARGET #{check_id}] -> EXCLUDE (kids_only={kids_only_val} parsed as {is_kids_only} and user_group={user_group})")
         return True
     
     # Sprawdź target_groups POI
     target_groups = poi.get("target_groups")
     
-    # POI bez target_groups → neutralne, dostępne dla wszystkich
+    # POI bez target_groups -> neutralne, dostępne dla wszystkich
     if not target_groups:
-        print(f"[DEBUG TARGET #{check_id}] → ALLOW (no target_groups)")
+        print(f"[DEBUG TARGET #{check_id}] -> ALLOW (no target_groups)")
         return False
     
     # Normalizacja do set
     try:
         tg = set([_safe_str(x) for x in target_groups])
     except Exception as e:
-        print(f"[DEBUG TARGET #{check_id}] ⚠️ ERROR normalizing target_groups={target_groups}: {e}")
-        # Jeśli błąd w target_groups → exclude (safer default)
-        print(f"[DEBUG TARGET #{check_id}] → EXCLUDE (error in target_groups)")
+        print(f"[DEBUG TARGET #{check_id}] WARNING: ERROR normalizing target_groups={target_groups}: {e}")
+        # Jeśli błąd w target_groups -> exclude (safer default)
+        print(f"[DEBUG TARGET #{check_id}] -> EXCLUDE (error in target_groups)")
         return True
     
-    # Jeśli user_group NIE jest w target_groups POI → EXCLUDE
+    # Jeśli user_group NIE jest w target_groups POI -> EXCLUDE
     if user_group not in tg:
-        print(f"[DEBUG TARGET #{check_id}] → EXCLUDE (user_group={user_group} NOT IN target_groups={tg})")
+        print(f"[DEBUG TARGET #{check_id}] -> EXCLUDE (user_group={user_group} NOT IN target_groups={tg})")
         return True
     
-    print(f"[DEBUG TARGET #{check_id}] → ALLOW (user_group={user_group} IN target_groups={tg})")
+    print(f"[DEBUG TARGET #{check_id}] -> ALLOW (user_group={user_group} IN target_groups={tg})")
     return False
 
 

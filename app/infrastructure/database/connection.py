@@ -71,8 +71,8 @@ def test_connection():
         from sqlalchemy import text
         with engine.connect() as conn:
             result = conn.execute(text("SELECT 1"))
-            print("✅ Database connection successful!")
+            print("[DB] Database connection successful!")
             return True
     except Exception as e:
-        print(f"❌ Database connection failed: {e}")
+        print(f"[DB] Database connection failed: {e}")
         return False

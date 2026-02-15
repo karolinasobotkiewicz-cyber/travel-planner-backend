@@ -44,9 +44,9 @@ async def startup_event():
         poi_repo = get_poi_repository()
         print("[STARTUP] Repository instance obtained")
         poi_repo.reload()
-        print("🔄 POI Repository reloaded on startup - SUCCESS")
+        print("[STARTUP] POI Repository reloaded on startup - SUCCESS")
     except Exception as e:
-        print(f"❌ [STARTUP] POI ERROR: {e}")
+        print(f"[STARTUP] POI ERROR: {e}")
         import traceback
         traceback.print_exc()
     
@@ -55,11 +55,11 @@ async def startup_event():
     try:
         from app.infrastructure.database.connection import test_connection
         if test_connection():
-            print("✅ Database connection verified")
+            print("[STARTUP] Database connection verified")
         else:
-            print("⚠️ Database connection failed (but starting anyway)")
+            print("[STARTUP] Database connection failed (but starting anyway)")
     except Exception as e:
-        print(f"⚠️ Database connection test skipped: {e}")
+        print(f"[STARTUP] Database connection test skipped: {e}")
 
 
 @app.get("/health")

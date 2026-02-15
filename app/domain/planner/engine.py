@@ -578,7 +578,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
     core_pois = [p for p in pois if is_core_poi(p)]
     
     print(f"[MULTI-DAY] Planning {num_days} days with {len(core_pois)} core POIs available")
-    print(f"[MULTI-DAY] Core POIs: {[poi_name(p) for p in core_pois]}")
+    print(f"[MULTI-DAY] Core POI IDs: {[p.get('poi_id', 'unknown') for p in core_pois]}")
     
     # Get core limits for this target group
     target_group = user.get("target_group", "solo")
@@ -777,7 +777,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             user_group = user.get("target_group", "")
             if user_group in ['solo', 'couples', 'friends', 'seniors']:
                 if is_kids_focused_poi(p) and kids_focused_count >= 1:
-                    print(f"[LIMITS] Skip kids-focused POI: {poi_name(p)} (already have {kids_focused_count}/1)")
+                    print(f"[LIMITS] Skip kids-focused POI ID: {poi_id(p)} (already have {kids_focused_count}/1)")
                     continue  # Skip - already have 1 kids-focused POI today
             
             # STEP 3: Budget hard filter (FIX 07.02.2026)
@@ -789,7 +789,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 poi_cost_total = poi_cost_per_person * group_size
                 potential_cost = daily_cost + poi_cost_total
                 if potential_cost > daily_limit:
-                    print(f"[FILTER] EXCLUDED by budget: {poi_name(p)} (cost={poi_cost_per_person}×{group_size}={poi_cost_total} PLN, current={daily_cost}/{daily_limit} PLN)")
+                    print(f"[FILTER] EXCLUDED by budget: POI_ID={poi_id(p)} (cost={poi_cost_per_person}x{group_size}={poi_cost_total} PLN, current={daily_cost}/{daily_limit} PLN)")
                     continue  # EXCLUDE - would exceed daily budget limit
 
             travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
@@ -942,7 +942,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     best_score = selected["score"]
                     best_travel = selected["travel"]
                     best_duration = selected["duration"]
-                    print(f"[CORE ROTATION] Selected from {len(top_core)} top core POI: {poi_name(best)} (score={best_score:.1f})")
+                    print(f"[CORE ROTATION] Selected from {len(top_core)} top core POI: POI_ID={poi_id(best)} (score={best_score:.1f})")
             
             else:
                 # NORMAL VARIETY LOGIC (when core_min already met or for non-core POI)
@@ -1027,7 +1027,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     best_score = selected["score"]
                     best_travel = selected["travel"]
                     best_duration = selected["duration"]
-                    print(f"[VARIETY] Selected from {len(candidates)} candidates within 1% of top score: {poi_name(best)} (score={best_score:.1f})")
+                    print(f"[VARIETY] Selected from {len(candidates)} candidates within 1% of top score: POI_ID={poi_id(best)} (score={best_score:.1f})")
                 elif len(candidates) == 1:
                     # Only one candidate, use it (same as before)
                     best = candidates[0]["poi"]
@@ -1184,7 +1184,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         )
 
         # HOTFIX #10.7: Debug logging - track which POI engine adds
-        print(f"[ENGINE SELECTION] ✓ ADDED POI: id={poi_id(best)}, name={poi_name(best)}, time={minutes_to_time(now)}")
+        print(f"[ENGINE SELECTION] ADDED POI: id={poi_id(best)}, time={minutes_to_time(now)}")
         
         # BUDGET TRACKING (FIX 07.02.2026): Update daily cost
         # FIX (07.02.2026 v2): Multiply by group_size for per-group budget
