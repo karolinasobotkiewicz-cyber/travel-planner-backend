@@ -12,6 +12,7 @@ from app.domain.models.plan import (
 )
 from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
 from app.domain.planner.engine import travel_time_minutes, is_open
+from app.domain.planner import similarity
 
 
 class PlanEditor:
@@ -180,12 +181,12 @@ class PlanEditor:
             if item.get("type") == "attraction" and item.get("poi_id")
         }
         
-        # Find similar POI
-        similar_poi = self._find_similar_poi(
-            target_poi=target_poi,
+        # Find similar POI using enhanced similarity module (Day 9)
+        similar_poi = similarity.find_similar_poi(
+            removed_poi=target_poi,
             candidates=all_pois,
             used_poi_ids=used_poi_ids,
-            user=user,
+            user_preferences=user,
             target_time=target_item.get("start_time"),
             context=context
         )
