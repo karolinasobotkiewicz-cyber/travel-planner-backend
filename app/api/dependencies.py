@@ -1,20 +1,22 @@
 """
 Dependency injection for FastAPI.
-Singleton instances of repositories.
+Provides repository instances with proper lifecycle management.
 """
 import os
 from functools import lru_cache
+from fastapi import Depends
+from sqlalchemy.orm import Session
 
 from app.infrastructure.repositories import (
     POIRepository,
     PlanRepository,
     DestinationsRepository,
 )
+from app.infrastructure.database import get_session
 
 
-# Singleton instances
+# Singleton instances (for stateless repositories)
 _poi_repo = None
-_plan_repo = None
 _destinations_repo = None
 
 
@@ -24,7 +26,7 @@ def get_poi_repository() -> POIRepository:
     Returns singleton POI repository.
     
     ETAP 1: Excel-based in-memory cache.
-    ETAP 2: PostgreSQL + Redis cache.
+    ETAP 2: PostgreSQL + Redis cache (deferred).
     """
     global _poi_repo
     
@@ -36,20 +38,16 @@ def get_poi_repository() -> POIRepository:
     return _poi_repo
 
 
-@lru_cache()
-def get_plan_repository() -> PlanRepository:
+def get_plan_repository(db: Session = Depends(get_session)) -> PlanRepository:
     """
-    Returns singleton Plan repository.
+    Returns Plan repository with database session.
     
-    ETAP 1: In-memory dict storage.
-    ETAP 2: PostgreSQL persistence.
+    ETAP 1: In-memory dict storage (deprecated).
+    ETAP 2: PostgreSQL persistence (current).
+    
+    Note: Not cached - creates new instance per request with session.
     """
-    global _plan_repo
-    
-    if _plan_repo is None:
-        _plan_repo = PlanRepository()
-    
-    return _plan_repo
+    return PlanRepository(db)
 
 
 @lru_cache()
@@ -58,7 +56,7 @@ def get_destinations_repository() -> DestinationsRepository:
     Returns singleton Destinations repository.
     
     ETAP 1: JSON file.
-    ETAP 2: PostgreSQL destinations table.
+    ETAP 2: PostgreSQL destinations table (deferred).
     """
     global _destinations_repo
     

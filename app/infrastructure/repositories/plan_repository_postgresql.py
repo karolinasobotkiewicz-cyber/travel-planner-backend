@@ -83,12 +83,14 @@ class PlanPostgreSQLRepository(IPlanRepository):
                 
             else:
                 # INSERT new plan
+                # Note: PlanResponse doesn't have location/group/budget fields
+                # These would need to come from TripInput (future improvement)
                 new_plan = Plan(
                     id=uuid.UUID(plan_id),
-                    location=plan.destination,
-                    group_type=plan.group_type,
+                    location="Unknown",  # TODO: pass from TripInput
+                    group_type="unknown",  # TODO: pass from TripInput
                     days_count=len(plan.days),
-                    budget_level=plan.budget_level,
+                    budget_level=2,  # TODO: pass from TripInput
                     trip_metadata=self._extract_metadata(plan)
                 )
                 self.db.add(new_plan)
@@ -101,7 +103,7 @@ class PlanPostgreSQLRepository(IPlanRepository):
                     change_type='initial',
                     parent_version_id=None,
                     days_json=self._serialize_days(plan.days),
-                    change_summary=f"Initial plan created for {plan.destination}"
+                    change_summary=f"Initial plan created (version 1)"
                 )
                 self.db.add(initial_version)
             
@@ -252,13 +254,12 @@ class PlanPostgreSQLRepository(IPlanRepository):
 
     def _extract_metadata(self, plan: PlanResponse) -> Dict[str, Any]:
         """Extracts metadata from PlanResponse for trip_metadata JSON column."""
+        # PlanResponse only has plan_id, version, days
+        # Store available data, rest will come from TripInput in future
         return {
-            "destination": plan.destination,
-            "group_type": plan.group_type,
-            "budget_level": plan.budget_level,
             "version": plan.version,
+            "days_count": len(plan.days),
             "status": "ready",
-            # Add any custom fields from plan
         }
 
     def _serialize_days(self, days: list[DayPlan]) -> Dict[str, Any]:
@@ -273,16 +274,11 @@ class PlanPostgreSQLRepository(IPlanRepository):
         days_data = version.days_json.get("days", [])
         days = [DayPlan(**day_data) for day_data in days_data]
         
-        # Build PlanResponse
+        # Build PlanResponse (only contains plan_id, version, days)
         return PlanResponse(
             plan_id=str(plan.id),
-            destination=plan.location,
-            group_type=plan.group_type,
-            budget_level=plan.budget_level,
-            days=days,
             version=version.version_number,
-            total_cost=self._calculate_total_cost(days),
-            highlights=self._extract_highlights(days)
+            days=days
         )
 
     def _calculate_total_cost(self, days: list[DayPlan]) -> float:

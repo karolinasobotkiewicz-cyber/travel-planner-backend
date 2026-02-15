@@ -2,8 +2,15 @@
 
 **Start:** 12.02.2026 (środa)  
 **Koniec:** 05.03.2026 (tydzień 2) + 12.03.2026 (tydzień 3 - poprawki)  
-**Status:** Ready to start  
-**Deadline:** 12.03.2026
+**Status:** 🟢 In Progress - Day 1 COMPLETED ✅  
+**Deadline:** 12.03.2026  
+**Last Updated:** 12.02.2026 11:52 AM
+
+## 📊 PROGRESS TRACKER
+
+- ✅ **Day 1 (12.02):** PostgreSQL Setup - COMPLETED
+- ⏸️ **Day 2 (13.02):** Repository Migration - PENDING
+- ⏸️ **Day 3 (14.02):** Multi-day Planning Core - PENDING
 
 ---
 
@@ -41,20 +48,86 @@ Wszystkie funkcje Etap 1 MUSZĄ działać po zmianach:
 
 ## 📅 TYDZIEŃ 1: FOUNDATION (12-16.02.2026)
 
-### **Dzień 1 (Środa 12.02) - PostgreSQL Setup**
-- [ ] Zainstaluj PostgreSQL lokalnie (Windows)
-- [ ] Setup psycopg2-binary / asyncpg
-- [ ] Zainstaluj Alembic dla migracji
-- [ ] Utwórz database `travel_planner_dev`
-- [ ] Stwórz schema migrations w `alembic/versions/`
-- [ ] Zdefiniuj tabele:
-  - `plans` (id, location, group_type, days_count, created_at, metadata)
-  - `plan_versions` (id, plan_id, version_number, days_json, created_at, change_type, parent_version_id)
-  - `poi_cache` (kopia zakopane.xlsx dla szybszego dostępu)
-- [ ] Test connection + podstawowe INSERT/SELECT
-- [ ] Commit: "feat: PostgreSQL setup + Alembic migrations"
+### **Dzień 1 (Środa 12.02) - PostgreSQL Setup** ✅ COMPLETED
 
-**Output:** Database działa lokalnie, tabele utworzone
+- [x] ~~Zainstaluj PostgreSQL lokalnie~~ → **Supabase Cloud (Europa/Frankfurt)**
+- [x] Setup psycopg2-binary (v2.9.9) ✅
+- [x] Zainstaluj Alembic dla migracji (v1.13.1) ✅
+- [x] ~~Utwórz database lokalnie~~ → **Supabase: travel-planner-prod** ✅
+- [x] Stwórz schema migrations w `alembic/versions/` ✅
+- [x] Zdefiniuj tabele: ✅
+  - `plans` (id UUID, location, group_type, days_count, budget_level, created_at, updated_at, trip_metadata JSON)
+  - `plan_versions` (id UUID, plan_id FK, version_number UNIQUE per plan, days_json, created_at, change_type, parent_version_id, change_summary)
+  - ~~`poi_cache`~~ → **Deferred (Excel loader wystarczy)**
+- [x] Test connection + podstawowe INSERT/SELECT ✅
+- [x] **BONUS:** PlanPostgreSQLRepository + PlanVersionRepository implemented ✅
+- [x] **BONUS:** Health endpoint with DB check ✅
+- [x] Commit: "feat(etap2): PostgreSQL setup - models, migrations, repositories" ✅
+
+**✅ Output:** Database działa w produkcji (Render), tabele utworzone, connection pooler working
+
+**⏱️ Time Spent:** ~8 hours (including troubleshooting IPv6/pooler issues)
+
+**📝 NOTATKI - DZIEŃ 1:**
+
+**🔧 TECHNICZNE DECYZJE:**
+1. **Supabase zamiast lokalnego PostgreSQL** - łatwiejsze dla klientki, bez lokalnej instalacji
+2. **Transaction Pooler (port 6543)** - IPv4 compatibility (Windows + Render nie wspierają IPv6)
+3. **Manual migration execution** - Alembic autogenerate nie działało lokalnie przez brak IPv6
+4. **SQLAlchemy 2.0.25 + NullPool** - serverless-friendly configuration dla Render Free
+5. **dotenv loading w connection.py** - automatyczne ładowanie .env dla lokalnego developmentu
+
+**❌ PROBLEMY NAPOTKANE:**
+1. **IPv6 connectivity** - Direct connection (db.*.supabase.co:5432) nie działa na Windows/Render
+   - **Rozwiązanie:** Transaction Pooler (aws-1-eu-west-1.pooler.supabase.com:6543)
+2. **Pooler "Tenant not found" errors** - niepoprawny format username/password
+   - **Rozwiązanie:** Format `postgres.{project_ref}:{password}@pooler:6543`
+3. **ConfigParser interpolation error** - `%` w URL-encoded password konflikt z Alembic ini parser
+   - **Rozwiązanie:** Używać `create_engine()` bezpośrednio w env.py zamiast `set_main_option()`
+4. **SQLAlchemy reserved keywords** - `metadata` kolumna konflikt z `Base.metadata`
+   - **Rozwiązanie:** Renamed to `trip_metadata`
+5. **`__table_args__` syntax error** - defined as class instead of tuple
+   - **Rozwiązanie:** `__table_args__ = (UniqueConstraint(...),)` not `class __table_args__:`
+
+**✅ CO DZIAŁA:**
+- Production health endpoint: `https://travel-planner-backend-xbsp.onrender.com/health`
+- Response: `{"status":"ok","database":"connected","version":"2.0.0"}` ✅
+- Tables in Supabase: `plans`, `plan_versions`, `alembic_version` ✅
+- Connection string (working): `postgresql://postgres.usztzcigcnsyyatguxay:%40ManTrav%2197@aws-1-eu-west-1.pooler.supabase.com:6543/postgres`
+
+**📂 PLIKI UTWORZONE:**
+- `app/infrastructure/database/models.py` - Plan + PlanVersion ORM models
+- `app/infrastructure/database/connection.py` - SQLAlchemy engine + session factory
+- `app/infrastructure/database/__init__.py` - Module exports
+- `app/infrastructure/repositories/plan_repository_postgresql.py` - PostgreSQL repository implementation
+- `app/infrastructure/repositories/plan_version_repository.py` - Version management repository
+- `alembic/` - Migration framework directory
+- `alembic/versions/360e3cae0377_*.py` - Initial schema migration
+- `migration_manual.sql` - Manual SQL for Supabase (executed ✅)
+- `DZIEN_1_RAPORT_PROBLEMOW.md` - Troubleshooting documentation
+
+**🚀 DEPLOYMENT:**
+- GitHub: Pushed commit `566d10b` ✅
+- Render: Auto-deployed, DATABASE_URL configured ✅
+- Supabase: Tables created via SQL Editor ✅
+
+**⚠️ KNOWN ISSUES:**
+- RLS (Row Level Security) warnings w Supabase - **OK to ignore** (backend ma pełny dostęp przez credentials)
+- Local connection nie działa (IPv6 issue) - **OK, rozwój będzie na Render/cloud**
+
+**📚 LESSONS LEARNED:**
+1. Zawsze sprawdzaj czy cloud provider wspiera IPv6 (większość free tiers = NIE)
+2. Supabase pooler wymaga specyficznego formatu `postgres.{ref}:password@pooler:port`
+3. URL-encoding hasła krytyczne dla connection strings (@→%40, !→%21)
+4. ConfigParser w Pythonie ma issues z % characters (używać raw strings lub unikać set_main_option)
+5. NullPool recommended dla serverless/short-lived connections (Render Free, Supabase pooler)
+
+**🎯 GOTOWOŚĆ DO DAY 2:**
+- ✅ Database ready
+- ✅ Repositories implemented (PlanPostgreSQLRepository, PlanVersionRepository)
+- ✅ Production deployment verified
+- ✅ Health check passing
+- ⏭️ **Next:** Integrate repositories with FastAPI endpoints (Day 2)
 
 ---
 
