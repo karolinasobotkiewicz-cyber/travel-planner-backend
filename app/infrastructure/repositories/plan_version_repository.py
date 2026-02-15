@@ -30,6 +30,62 @@ class PlanVersionRepository:
         """
         self.db = db
 
+    def save_version(
+        self,
+        plan_id: str,
+        days_json: Dict[str, Any],
+        change_type: str = "generated",
+        change_summary: Optional[str] = None,
+        parent_version_id: Optional[str] = None
+    ) -> int:
+        """
+        Saves a new version snapshot of a plan.
+        
+        Args:
+            plan_id: UUID string
+            days_json: Full plan data (days with items)
+            change_type: Type of change (generated, edited, rollback, etc.)
+            change_summary: Optional description of what changed
+            parent_version_id: Optional UUID of parent version (for lineage tracking)
+            
+        Returns:
+            Version number of newly created version
+            
+        Raises:
+            Exception: Database operation failed
+        """
+        try:
+            # Get current latest version number
+            latest = self.db.query(PlanVersion).filter(
+                PlanVersion.plan_id == uuid.UUID(plan_id)
+            ).order_by(PlanVersion.version_number.desc()).first()
+            
+            next_version_number = (latest.version_number + 1) if latest else 1
+            
+            # Create new version
+            new_version = PlanVersion(
+                id=uuid.uuid4(),
+                plan_id=uuid.UUID(plan_id),
+                version_number=next_version_number,
+                change_type=change_type,
+                parent_version_id=uuid.UUID(parent_version_id) if parent_version_id else None,
+                days_json=days_json,
+                change_summary=change_summary or f"{change_type.capitalize()} plan (version {next_version_number})"
+            )
+            self.db.add(new_version)
+            
+            # Update Plan.updated_at
+            plan = self.db.query(Plan).filter(Plan.id == uuid.UUID(plan_id)).first()
+            if plan:
+                plan.updated_at = datetime.utcnow()
+            
+            self.db.commit()
+            return next_version_number
+            
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            raise Exception(f"Failed to save version: {str(e)}")
+
     def list_versions(self, plan_id: str) -> List[Dict[str, Any]]:
         """
         Lists all versions of a plan (metadata only, no full days_json).

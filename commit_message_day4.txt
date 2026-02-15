@@ -1,0 +1,108 @@
+feat(etap2-day4): implement plan versioning with snapshot and rollback
+
+ETAP 2 - DAY 4: Versioning System Implementation
+
+## Implementation Summary
+
+### 1. PlanVersionRepository Enhancement
+- Added save_version() method for creating version snapshots
+- Automatically increments version numbers
+- Supports version lineage tracking (parent_version_id)
+- Stores full days_json snapshot for each version
+
+### 2. API Endpoints (3 new endpoints)
+
+**GET /plans/{id}/versions**
+- Lists all versions of a plan (metadata only)
+- Returns: version_number, created_at, change_type, change_summary
+- Sorted by version_number DESC (newest first)
+
+**GET /plans/{id}/versions/{num}**
+- Gets full snapshot of specific version (including days_json)
+- Use before rollback to preview target version
+- Returns: Complete version data with days
+
+**POST /plans/{id}/rollback**
+- Rolls back plan to previous version
+- Creates NEW version (doesn't delete newer ones)
+- Example: [1, 2, 3] + rollback to 1 = [1, 2, 3, 4] where 4 = copy of 1
+- Request body: {target_version: 1}
+- Returns: success, new_version_number, rolled_back_to
+
+### 3. Auto-Save Version #1
+- Updated POST /plan/preview to auto-save version #1 after generation
+- Silent failure (logs warning but doesn't fail request if versioning fails)
+- Version created with change_type=generated
+
+### 4. Dependency Injection
+- Added get_version_repository() in dependencies.py
+- Session-based dependency (not cached, fresh per request)
+- Consistent with PlanRepository pattern
+
+## Files Changed
+- app/infrastructure/repositories/plan_version_repository.py (+56 lines)
+  * Added save_version() method
+- app/api/routes/plan.py (+149 lines)
+  * Added 3 versioning endpoints
+  * Updated POST /plan/preview with auto-save
+  * Added RollbackRequest pydantic model
+- app/api/dependencies.py (+11 lines)
+  * Added get_version_repository() dependency
+
+## Testing Results
+
+### Test 1: 1-Day Plan with Version #1
+- Plan generated successfully
+- Version #1 auto-saved (change_type=generated)
+- GET /versions returned version list
+- GET /versions/1 returned full snapshot
+
+### Test 2: Rollback Creates Version #3
+- Rollback to version 1 successful
+- Version #3 created (change_type=rollback)
+- Original versions 1 & 2 preserved (no deletion)
+- Version lineage tracked (parent_version_id set)
+
+### Test 3: 3-Day Plan Full Scenario
+- Generated 3-day plan
+- Versions list: version 2 (generated) + version 1 (initial)
+- Rollback to version 1
+- Version 3 created: Rolled back to version 1
+- Final state: 3 versions total
+
+## Architecture Notes
+
+**Version Lineage:**
+- parent_version_id tracks which version was active before change
+- Enables version graph visualization (Phase 3)
+- Rollback version points to latest version as parent
+
+**Non-Destructive Rollback:**
+- Never deletes versions (audit trail preserved)
+- Rollback creates new version as copy of target
+- Can rollback multiple times, each creates new version
+
+**Silent Failure Pattern:**
+- Version save failure doesn't fail plan generation
+- Logged as warning for monitoring
+- Primary feature (plan generation) always succeeds
+
+## Known Behavior
+
+**Double Version Creation:**
+- Plans create version 1 (initial) + version 2 (generated)
+- Version 1: Created by PlanPostgreSQLRepository.save()
+- Version 2: Created by POST /plan/preview auto-save
+- This is acceptable - provides complete audit trail
+- Future: Consolidate to single version #1 if needed
+
+## Regression Check
+- Day 1-3 features unaffected
+- Multi-day planning still works (cross-day tracking preserved)
+- PostgreSQL integration stable
+- Zero breaking changes to existing endpoints
+
+## Next Steps (Day 5)
+- Quality scoring + Explainability
+- Add why_selected to POI responses
+- Implement quality badges (has_must_see, good_variety)

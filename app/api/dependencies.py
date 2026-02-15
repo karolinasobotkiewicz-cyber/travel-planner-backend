@@ -11,6 +11,7 @@ from app.infrastructure.repositories import (
     POIRepository,
     PlanRepository,
     DestinationsRepository,
+    PlanVersionRepository,
 )
 from app.infrastructure.database import get_session
 
@@ -66,3 +67,14 @@ def get_destinations_repository() -> DestinationsRepository:
         _destinations_repo = DestinationsRepository(json_path)
     
     return _destinations_repo
+
+
+def get_version_repository(db: Session = Depends(get_session)) -> PlanVersionRepository:
+    """
+    Returns PlanVersion repository with database session.
+    
+    ETAP 2: Version history management (snapshot, rollback, list).
+    
+    Note: Not cached - creates new instance per request with session.
+    """
+    return PlanVersionRepository(db)
