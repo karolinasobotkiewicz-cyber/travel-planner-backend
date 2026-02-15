@@ -27,6 +27,10 @@ from app.domain.planner.engine import build_day, plan_multiple_days, travel_time
 from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
 from app.infrastructure.repositories import POIRepository
 
+# ETAP 2 Day 5: Quality + Explainability
+from app.domain.planner.quality_checker import validate_day_quality, check_poi_quality
+from app.domain.planner.explainability import explain_poi_selection
+
 
 class PlanService:
     """
@@ -180,9 +184,22 @@ class PlanService:
             # This causes "to" field to point to wrong POI
             day_items = self._update_transit_destinations(day_items)
             
+            # ETAP 2 Day 5: Calculate day quality badges
+            # Convert day_items to simple dict structure for validate_day_quality
+            day_items_dict = []
+            for item in day_items:
+                if hasattr(item, 'model_dump'):
+                    day_items_dict.append(item.model_dump())
+                elif isinstance(item, dict):
+                    day_items_dict.append(item)
+            
+            day_plan_for_validation = {"items": day_items_dict}
+            day_quality_badges = validate_day_quality(day_plan_for_validation, all_pois_dict)
+            
             day_plan = DayPlan(
                 day=day_num + 1,
-                items=day_items
+                items=day_items,
+                quality_badges=day_quality_badges  # ETAP 2 Day 5
             )
             
             days.append(day_plan)
@@ -310,7 +327,8 @@ class PlanService:
                     item.get("poi"),
                     attr_start_time,
                     user,
-                    trip_input.group.type
+                    trip_input.group.type,
+                    context  # ETAP 2 Day 5: Pass context for explainability
                 )
                 items.append(attraction_item)
             
@@ -477,10 +495,13 @@ class PlanService:
         poi_dict: Dict[str, Any],  # POI jako dict z engine
         start_time: str,
         user: Dict[str, Any],
-        group_type: str
+        group_type: str,
+        context: Dict[str, Any] = None  # ETAP 2 Day 5: Add context for explainability
     ) -> AttractionItem:
         """
         Generuje AttractionItem z cost estimation (4.11).
+        
+        ETAP 2 Day 5: Dodano explainability (why_selected) i quality badges.
         
         Cost estimation (4.11):
         - ticket_normal jako baseline
@@ -499,6 +520,39 @@ class PlanService:
         poi_id_from_dict = poi_dict.get("id", "")
         poi_name_from_dict = poi_dict.get("name", "")
         print(f"[ATTRACTION ITEM] Creating item: poi_id={poi_id_from_dict}, name={poi_name_from_dict}")
+        
+        # ETAP 2 Day 5: Generate explainability and quality badges
+        if context is None:
+            context = {}  # Fallback to empty context if not provided
+        
+        # Calculate time_of_day from start_time
+        hour = int(start_time.split(":")[0])
+        if hour < 12:
+            time_of_day = "morning"
+        elif hour < 17:
+            time_of_day = "afternoon"
+        else:
+            time_of_day = "evening"
+        
+        enriched_context = {
+            **context,
+            "time_of_day": time_of_day,
+            "current_time": start_time
+        }
+        
+        # Generate why_selected (top 3 reasons)
+        why_selected = explain_poi_selection(
+            poi=poi_dict,
+            context=enriched_context,
+            user=user
+        )
+        
+        # Generate quality badges for this POI
+        quality_badges = check_poi_quality(
+            poi=poi_dict,
+            context=enriched_context,
+            user=user
+        )
         
         return AttractionItem(
             type=ItemType.ATTRACTION,
@@ -521,7 +575,9 @@ class PlanService:
                 name=poi_dict.get("parking_name") or "Brak parkingu",
                 walk_time_min=5  # FIXME: oblicz z odległości?
             ),
-            pro_tip=poi_dict.get("pro_tip")  # ADD pro_tip from POI
+            pro_tip=poi_dict.get("pro_tip"),  # ADD pro_tip from POI
+            why_selected=why_selected,  # ETAP 2 Day 5
+            quality_badges=quality_badges  # ETAP 2 Day 5
         )
 
     def _estimate_cost(self, poi_dict: Dict[str, Any], group_type: str) -> int:
@@ -862,7 +918,8 @@ class PlanService:
                                 best_poi,
                                 attr_start,
                                 user,
-                                user.get('target_group', 'family_kids')
+                                user.get('target_group', 'family_kids'),
+                                context  # ETAP 2 Day 5: Pass context for explainability
                             )
                             result.append(attraction_item)
                             

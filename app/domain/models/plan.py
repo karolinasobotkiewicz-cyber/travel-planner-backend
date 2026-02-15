@@ -157,6 +157,16 @@ class AttractionItem(BaseModel):
         default=None, description="Pro tip z bazy POI (jeśli dostępne)"
     )
 
+    # ETAP 2 Day 5: Quality + Explainability
+    why_selected: List[str] = Field(
+        default_factory=list,
+        description="Top 3 reasons why this POI was selected (natural language)",
+    )
+    quality_badges: List[str] = Field(
+        default_factory=list,
+        description="Quality badges (must_see, perfect_timing, weather_resistant, etc.)",
+    )
+
 
 class LunchBreakItem(BaseModel):
     """
@@ -219,6 +229,12 @@ class DayPlan(BaseModel):
     day: int = Field(..., ge=1, description="Numer dnia (1-indexed)")
     items: List[PlanItem] = Field(
         default_factory=list, description="Lista items (7 typów)"
+    )
+
+    # ETAP 2 Day 5: Quality + Explainability
+    quality_badges: List[str] = Field(
+        default_factory=list,
+        description="Quality badges for the day (has_must_see, good_variety, realistic_timing, balanced_intensity)",
     )
 
     class Config:
