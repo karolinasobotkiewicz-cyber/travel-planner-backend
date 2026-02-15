@@ -28,7 +28,40 @@ router = APIRouter()
 @router.post(
     "/preview",
     response_model=PlanResponse,
-    status_code=status.HTTP_200_OK
+    status_code=status.HTTP_200_OK,
+    summary="Generate multi-day travel plan",
+    description="""
+    **ETAP 2 - Multi-Day Planning**
+    
+    Generates 1-5 day travel plan with POI uniqueness >70% across days.
+    
+    **Features:**
+    - Multi-day planning (1-5 days supported)
+    - Cross-day POI uniqueness (>70%)
+    - Core POI rotation (Morskie Oko not always day 1)
+    - Energy system (day 1 = heavy hiking OK, later days lighter)
+    - Budget penalties for premium POI (termy)
+    - Version #1 auto-saved to database
+    
+    **Example Request:**
+    ```json
+    {
+        "location": {"city": "Zakopane", "country": "Poland", "region_type": "mountain"},
+        "group": {"type": "couples", "size": 2, "crowd_tolerance": 1},
+        "trip_length": {"days": 5, "start_date": "2026-03-15"},
+        "daily_time_window": {"start": "09:00", "end": "19:00"},
+        "budget": {"level": 2},
+        "transport_modes": ["car"],
+        "travel_style": "balanced"
+    }
+    ```
+    
+    **Response:** PlanResponse with 5 days, ~28 POI, 71.4% uniqueness
+    
+    **Error Codes:**
+    - 400: Invalid trip_input (validation failed)
+    - 500: Plan generation failed
+    """
 )
 def preview_plan(
     trip_input: TripInput,
@@ -36,21 +69,6 @@ def preview_plan(
     poi_repo: POIRepository = Depends(get_poi_repository),
     version_repo: PlanVersionRepository = Depends(get_version_repository)
 ):
-    """
-    Generuje podglad planu przed platnoscia.
-    
-    ETAP 1: Zwraca prawdziwy plan z silnika.
-    Klient widzi co dostanie przed zaplaceniem.
-    
-    ETAP 2: Auto-save version #1 after generation.
-    
-    Flow:
-    1. TripInput validation (Pydantic)
-    2. PlanService.generate_plan() - używa engine.py
-    3. Plan zapisany w repository
-    4. Version #1 auto-saved (ETAP 2)
-    5. Zwrot PlanResponse
-    """
     # Utworz service z POI repository
     plan_service = PlanService(poi_repo)
     
@@ -291,7 +309,37 @@ class ReplaceItemRequest(BaseModel):
 
 @router.post(
     "/{plan_id}/days/{day_number}/remove",
-    response_model=PlanResponse
+    response_model=PlanResponse,
+    summary="Remove POI from day plan",
+    description="""
+    **ETAP 2 - Remove POI with Gap Fill**
+    
+    Removes attraction from day plan, fills gap with new POI, recalculates times.
+    
+    **Logic:**
+    1. Find target attraction by poi_id
+    2. Remove item + adjacent transits
+    3. Calculate gap (start_time, duration)
+    4. Score available POI for gap fill (time fit, category, group match)
+    5. Insert best POI with transit
+    6. Reflow all times in day
+    7. Create new version (change_type='remove_item')
+    
+    **Example Request:**
+    ```json
+    {
+        "item_id": "poi_30",
+        "avoid_cooldown_hours": 24
+    }
+    ```
+    
+    **Result:** POI removed, gap filled (if possible), times recalculated, new version created
+    
+    **Error Codes:**
+    - 404: Plan not found
+    - 400: Invalid day_number or item_id not found
+    - 500: Remove operation failed
+    """
 )
 def remove_item_from_day(
     plan_id: str,
@@ -302,26 +350,6 @@ def remove_item_from_day(
     poi_repo: POIRepository = Depends(get_poi_repository),
     editor: PlanEditor = Depends(get_plan_editor)
 ):
-    """
-    Remove an item from a specific day and save as new version.
-    
-    Flow:
-    1. Load current plan
-    2. Apply remove_item() edit
-    3. Recalculate times (reflow)
-    4. Save as new version
-    5. Return updated plan
-    
-    Args:
-        plan_id: UUID of the plan
-        day_number: Day number (1-indexed)
-        request: RemoveItemRequest with item_id and avoid_cooldown_hours
-        
-    Returns:
-        Updated PlanResponse with item removed, gap filled, times recalculated
-        
-    ETAP 2 Day 7: Editing API with versioning.
-    """
     try:
         # Load current plan
         plan = plan_repo.get_by_id(plan_id)
@@ -407,7 +435,44 @@ def remove_item_from_day(
 
 @router.post(
     "/{plan_id}/days/{day_number}/replace",
-    response_model=PlanResponse
+    response_model=PlanResponse,
+    summary="Replace POI with similar attraction",
+    description="""
+    **ETAP 2 - SMART_REPLACE Strategy**
+    
+    Replaces attraction with best matching POI using similarity scoring.
+    
+    **Scoring algorithm:**
+    - Category match: +50 points (same category = wielka_krokiew → wielka_krokiew)
+    - Duration similarity: -(abs difference in minutes)
+    - Target group match: +30 points
+    - Same subcategory: +20 points
+    - Cost similarity: -(abs difference in PLN)
+    
+    **Logic:**
+    1. Find target POI to replace
+    2. Score all available POI (exclude already used)
+    3. Select top scoring candidate
+    4. Replace POI in place
+    5. Recalculate times (preserve structure)
+    6. Create new version (change_type='replace_item')
+    
+    **Example Request:**
+    ```json
+    {
+        "item_id": "poi_20",
+        "strategy": "SMART_REPLACE",
+        "preferences": {}
+    }
+    ```
+    
+    **Result:** POI replaced with similar attraction, times recalculated, new version created
+    
+    **Error Codes:**
+    - 404: Plan not found
+    - 400: Invalid day_number or item_id not found
+    - 500: Replace operation failed
+    """
 )
 def replace_item_in_day(
     plan_id: str,
@@ -418,26 +483,6 @@ def replace_item_in_day(
     poi_repo: POIRepository = Depends(get_poi_repository),
     editor: PlanEditor = Depends(get_plan_editor)
 ):
-    """
-    Replace an item in a specific day with similar POI and save as new version.
-    
-    Flow:
-    1. Load current plan
-    2. Apply replace_item() with SMART_REPLACE
-    3. Recalculate times (reflow)
-    4. Save as new version
-    5. Return updated plan
-    
-    Args:
-        plan_id: UUID of the plan
-        day_number: Day number (1-indexed)
-        request: ReplaceItemRequest with item_id, strategy, preferences
-        
-    Returns:
-        Updated PlanResponse with item replaced, times recalculated
-        
-    ETAP 2 Day 7: Editing API with SMART_REPLACE.
-    """
     try:
         # Load current plan
         plan = plan_repo.get_by_id(plan_id)

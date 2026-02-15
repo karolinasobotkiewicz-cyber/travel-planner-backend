@@ -5,48 +5,114 @@ Backend API do planowania jednodniowych wycieczek po Polsce. Projekt dla Karolin
 ## Status
 
 **ETAP 1: COMPLETED** (29.01.2026)  
+**ETAP 2: COMPLETED** (15.02.2026)  
 **Live API:** https://travel-planner-backend-xbsp.onrender.com  
 **Docs:** https://travel-planner-backend-xbsp.onrender.com/docs
 
 ## Co działa
 
-### API Endpoints (7/7)
-- `GET /health` - Health check
-- `GET /` - Root info
-- `POST /plan/preview` - Generowanie planu dnia
-- `GET /plan/{id}` - Pobieranie gotowego planu
+### API Endpoints (14 total)
+
+**Plan Management:**
+- `POST /plan/preview` - Generowanie planu (1-5 dni)
+- `GET /plan/{id}` - Pobieranie planu
+- `GET /plan/{id}/status` - Status generowania
+- `GET /plan/{id}/versions` - Historia wersji
+- `GET /plan/{id}/versions/{num}` - Konkretna wersja
+
+**Plan Editing (ETAP 2):**
+- `POST /plan/{id}/days/{day}/remove` - Usuń POI z dnia
+- `POST /plan/{id}/days/{day}/replace` - Zamień POI (SMART_REPLACE)
+- `POST /plan/{id}/days/{day}/regenerate` - Regeneruj przedział czasowy
+- `POST /plan/{id}/rollback` - Wróć do poprzedniej wersji
+
+**Content & Payment:**
 - `GET /content/home` - Lista 8 destynacji
 - `GET /poi/{id}` - Szczegóły atrakcji
-- `POST /payment/create-checkout-session` - Mock Stripe checkout
-- `POST /payment/stripe/webhook` - Mock Stripe webhook
+- `POST /payment/create-checkout-session` - Mock Stripe
+- `POST /payment/stripe/webhook` - Mock webhook
+- `GET /health` - Health check
 
-### Logika biznesowa
-- Parking: 15 minut na start (tylko dla car mode)
-- Lunch break: ZAWSZE 12:00-13:30 (per client requirement)
-- Cost estimation: (2×bilet_normalny) + (2×bilet_ulgowy) dla rodzin
-- Day structure: 09:00 start → parking → atrakcje → lunch → koniec 18:00
+### Logika biznesowa (ETAP 1 + 2)
+
+**Single Day:**
+- Parking: 15 minut na start (tylko car mode)
+- Lunch break: ZAWSZE 12:00-13:30
+- Cost: (2×normalny) + (2×ulgowy) dla rodzin
+- Timing: 09:00 → 18:00/19:00
+
+**Multi-Day (ETAP 2):**
+- Plan na 1-5 dni
+- Cross-day uniqueness: POI się nie powtarzają (dopuszczalne max 2x)
+- Core POI rotation: Morskie Oko nie zawsze pierwszy dzień
+- Energy system: Dzień 1 = heavy hiking OK, dzień 2-3 = lighter
+
+**Version Control (ETAP 2):**
+- Każda zmiana = nowa wersja w DB
+- Rollback do dowolnej wersji
+- Historia zachowana (immutable)
 
 ### Dane
+
+**POI Database:**
 - 32 POI z zakopane.xlsx (Muzeum Oscypka, Gubałówka, Termy, etc.)
+- Repository Pattern → PostgreSQL (ETAP 2)
+
+**Destinations:**
 - 8 destynacji z destinations.json (Zakopane, Kraków, Gdańsk, Warszawa, Wrocław, Poznań, Toruń, Lublin)
-- Repository Pattern (gotowy na PostgreSQL w ETAPIE 2)
+
+**Database (ETAP 2):**
+- PostgreSQL na Render
+- Alembic migrations
+- Tables: `plans`, `plan_versions`, `poi` (read-only)
+- Version tracking system
 
 ### Testy
-48/48 GREEN (ETAP 1 rozszerzony):
-- 9 unit tests: preferences scoring
-- 12 unit tests: travel_style scoring
-- 15 unit tests: stare scoring modules (family, budget, crowd, body_state)
-- 7 unit tests: time utils
-- 5 integration tests: preferences + travel_style w pełnym planie
+
+**ETAP 1:** 48/48 GREEN
+**ETAP 2:** 3 E2E scenarios PASSED (live na Render)
+- Multi-day planning (5 dni, 71.4% uniqueness, core rotation)
+- Editing workflow (remove, replace, regenerate, rollback) 
+- Regression testing (budget penalties, zero regresji Etap 1)
 
 ## Tech Stack
 
 - Python 3.11
 - FastAPI 0.109.0
 - Pydantic 2.5.3
+- **PostgreSQL** (ETAP 2)
+- **Alembic** (migrations)
+- **psycopg2** (DB driver)
 - Uvicorn
 - Docker
 - Render.com (deployment)
+
+## Database Setup
+
+**Local Development:**
+
+```bash
+# 1. Zainstaluj PostgreSQL lokalnie
+# macOS: brew install postgresql
+# Windows: Download from postgresql.org
+
+# 2. Utwórz bazę
+createdb travel_planner
+
+# 3. Set env variable
+export DATABASE_URL="postgresql://user:pass@localhost:5432/travel_planner"
+
+# 4. Run migrations
+alembic upgrade head
+
+# 5. Load POI data (opcjonalnie)
+python scripts/seed_poi.py
+```
+
+**Render Deployment:**
+- Database → Render Postgres (FREE)
+- Migrations auto-run on deploy via `render.yaml`
+- Connection string w env variable `DATABASE_URL`
 
 ## Architecture
 
@@ -98,31 +164,99 @@ Otwórz: https://travel-planner-backend-xbsp.onrender.com/docs
 
 Kliknij endpoint → "Try it out" → wypełnij dane → "Execute"
 
-### Przykład: POST /plan/preview
+---
 
+### 1. Multi-Day Planning (ETAP 2)
+
+**Endpoint:** `POST /plan/preview`
+
+**Payload (5-day plan):**
 ```json
 {
-  "date": "2026-02-15",
-  "destination_id": "zakopane",
-  "traveler_group": "family_kids",
+  "location": {
+    "city": "Zakopane",
+    "country": "Poland",
+    "region_type": "mountain"
+  },
+  "group": {
+    "type": "couples",
+    "size": 2,
+    "crowd_tolerance": 1
+  },
+  "trip_length": {
+    "days": 5,
+    "start_date": "2026-03-15"
+  },
+  "daily_time_window": {
+    "start": "09:00",
+    "end": "19:00"
+  },
+  "budget": {
+    "level": 2
+  },
   "transport_modes": ["car"],
-  "crowd_tolerance": 2,
-  "budget_level": 2,
-  "preferences": ["outdoor", "hiking", "nature"],
-  "travel_style": "adventure"
+  "preferences": [],
+  "travel_style": "balanced"
 }
 ```
 
-**Nowe w ETAP 1 (rozszerzenie):**
-- `preferences` (optional): Lista preferencji użytkownika (np. ["outdoor", "museums", "culture"]). Scoring system dodaje +5 punktów za każdy matching tag między user preferences a POI tags.
-- `travel_style` (optional): Styl podróży - "cultural", "adventure", "relax", "balanced" (default). Scoring system dopasowuje do POI activity_style: adventure→active (+6), relax→relax (+6), cultural→balanced (+6), partial matches (+3).
+**Response:** Plan z 5 dniami, POI się nie powtarzają (>70% uniqueness), core POI rotują.
 
-Response: Plan dnia z parking (15min), atrakcjami, lunch (12:00-13:30), przejściami.
+---
 
-### Przykład: GET /content/home
+### 2. Editing Workflow (ETAP 2)
 
+**Usuń POI:**
 ```bash
-curl https://travel-planner-backend-xbsp.onrender.com/content/home
+POST /plan/{plan_id}/days/1/remove
+{
+  "item_id": "poi_30",
+  "avoid_cooldown_hours": 24
+}
+```
+
+**Zamień POI (SMART_REPLACE):**
+```bash
+POST /plan/{plan_id}/days/1/replace
+{
+  "item_id": "poi_20",
+  "strategy": "SMART_REPLACE",
+  "preferences": {}
+}
+```
+
+**Regeneruj przedział czasowy:**
+```bash
+POST /plan/{plan_id}/days/1/regenerate
+{
+  "from_time": "15:00",
+  "to_time": "18:00",
+  "pinned_items": ["poi_35"]
+}
+```
+
+**Rollback do wersji:**
+```bash
+POST /plan/{plan_id}/rollback
+{
+  "target_version": 3
+}
+```
+
+**Historia wersji:**
+```bash
+GET /plan/{plan_id}/versions
+```
+
+Response: Lista wszystkich wersji z change_type, change_summary, created_at.
+
+---
+
+### 3. Content API
+
+**Destynacje:**
+```bash
+GET /content/home
 ```
 
 Response: 8 destynacji z image_key, description, highlights.
@@ -131,17 +265,28 @@ Response: 8 destynacji z image_key, description, highlights.
 
 - [ ] Frontend URL dla CORS (teraz wildcard *)
 - [ ] Railway migration (gdy klientka będzie gotowa na paid tier)
-- [ ] PostgreSQL (ETAP 2)
-- [ ] Multi-day planning (ETAP 2+)
-- [ ] Real Stripe integration (ETAP 2+)
+- [ ] Real Stripe integration (ETAP 3+)
+- [x] ~~PostgreSQL~~ ✅ DONE (ETAP 2)
+- [x] ~~Multi-day planning~~ ✅ DONE (ETAP 2)
+- [x] ~~Versioning + Rollback~~ ✅ DONE (ETAP 2)
 
 ## Development
 
 Repo: https://github.com/karolinasobotkiewicz-cyber/travel-planner-backend
 
-Latest commits:
-- `a13a2b7` - Docker + Render deployment setup
-- `d2f1e8c` - ETAP 1 core functionality (API, repositories, business logic)
+Latest commits (ETAP 2):
+- `0fdf5ad` - Live testing results (Render deployment)
+- `e28e676` - Day 10 documentation (E2E tests)
+- `b3ab38f` - E2E integration tests + Unicode fixes
+- `4d5cf0b` - Multi-day planning + editing workflow
+- `a13a2b7` - Docker + Render deployment (ETAP 1)
+
+---
+
+**ETAP 1:** 29.01.2026 ✅  
+**ETAP 2:** 15.02.2026 ✅
+
+Więcej info → [ETAP2_FEATURES.md](ETAP2_FEATURES.md)
 
 ## Support
 
@@ -150,99 +295,5 @@ Issues? Contact: ngencode.dev@gmail.com
 ---
 
 Projekt wykonany przez NextGenCode.dev dla Karoliny Sobotkiewicz  
-Deadline ETAP 1: 29.01.2026 ✅
-
-Format code:
-```bash
-black .
-isort .
-```
-
-Type checking:
-```bash
-mypy app/
-```
-
-Linting:
-```bash
-flake8 app/
-```
-
-## Docker
-
-Build and run with Docker:
-```bash
-docker-compose up --build
-```
-
-## ## API Endpoints
-
-### Plan Management
-- `POST /api/v1/plan/preview` - Preview plan before payment
-- `GET /api/v1/plan/{plan_id}/status` - Check generation status
-- `GET /api/v1/plan/{plan_id}` - Get full plan
-
-### Payment (MOCKED in ETAP 1)
-- `POST /api/v1/payment/create-checkout-session` - Create Stripe session
-- `POST /api/v1/payment/stripe/webhook` - Stripe webhook handler
-
-### Content
-- `GET /api/v1/content/home` - Homepage data
-
-## Documentation
-
-- [Architecture](docs/ARCHITECTURE.md) - System architecture & design decisions
-- [API Documentation](docs/API.md) - Detailed API specifications
-- [Deployment](docs/DEPLOYMENT.md) - Railway.app deployment guide
-
-## Configuration
-
-Key environment variables (see `.env.example`):
-
-- `OPENWEATHER_API_KEY` - OpenWeather API key
-- `GEOCODING_API_KEY` - Geocoding API key
-- `POI_DATA_PATH` - Path to POI data file (zakopane.xlsx)
-- `DEBUG` - Enable debug mode
-- `LOG_LEVEL` - Logging level
-
-## Tech Stack
-
-- **Framework:** FastAPI 0.109+
-- **Validation:** Pydantic 2.5+
-- **Data Processing:** Pandas 2.1+
-- **Testing:** Pytest 7.4+
-- **Code Quality:** Black, isort, mypy, flake8
-- **Deployment:** Docker, Railway.app
-
-## ETAP 1 Scope
-
-### Included:
-- Single-day planning (1 day only)
-- Mock Stripe payment flow
-- Repository Pattern (in-memory)
-- Parking logic (1 at start)
-- Cost estimation (ticket_normal)
-- All API endpoints functional
-
-### Deferred to ETAP 2:
-- Multi-day planning (2-7 days)
-- Real Stripe integration
-- PostgreSQL persistence
-- Plan versioning & regeneration
-- Email notifications
-- Advanced parking logic
-
-## Team
-
-**Developer:** Mateusz Zurowski (ngencode.dev@gmail.com)  
-**Client:** Karolina Sobotkiewicz
-
-## License
-
-Proprietary - All rights reserved
-
-## Links
-
-- **Repository:** [GitHub URL will be added]
-- **Production:** [Railway URL will be added]
-- **Documentation:** See `docs/` folder
+**ETAP 1:** 29.01.2026 ✅  
+**ETAP 2:** 15.02.2026 ✅
