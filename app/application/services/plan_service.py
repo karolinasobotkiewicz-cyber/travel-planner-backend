@@ -513,8 +513,8 @@ class PlanService:
         
         end_time = self._add_minutes(start_time, visit_min)
         
-        # 4.11: Cost estimation
-        estimated_cost = self._estimate_cost(poi_dict, group_type)
+        # 4.11: Cost estimation (for entire group)
+        estimated_cost = self._estimate_cost(poi_dict, user)
         
         # HOTFIX #10.5: Debug logging - track POI ID in attraction item creation
         poi_id_from_dict = poi_dict.get("id", "")
@@ -572,23 +572,37 @@ class PlanService:
             ),
             parking=ParkingInfo(
                 name=poi_dict.get("parking_name") or "Brak parkingu",
-                walk_time_min=5  # FIXME: oblicz z odległości?
+                walk_time_min=poi_dict.get("parking_walk_time_min", 5) or 5
             ),
             pro_tip=poi_dict.get("pro_tip"),  # ADD pro_tip from POI
             why_selected=why_selected,  # ETAP 2 Day 5
             quality_badges=quality_badges  # ETAP 2 Day 5
         )
 
-    def _estimate_cost(self, poi_dict: Dict[str, Any], group_type: str) -> int:
+    def _estimate_cost(self, poi_dict: Dict[str, Any], user: Dict[str, Any]) -> int:
         """
-        4.11: Cost estimation logic.
+        4.11: Cost estimation logic for ENTIRE GROUP.
         
-        - ticket_normal jako baseline
-        - family_kids: (2×normal + 2×reduced)
-        - free_entry: 0
+        BUGFIX (16.02.2026 - Client Feedback):
+        - Consistent calculation using group_size and children_age
+        - Returns total cost for entire group (not per person)
+        - Clear handling for each group type
         
-        BUGFIX (31.01.2026 - Problem #1):
-        - Gdy ticket_normal=0 I ticket_reduced=0 I NIE free_entry → fallback 50 PLN
+        Logic:
+        - free_entry POI: 0 PLN
+        - family_kids: (adults × ticket_normal) + (children × ticket_reduced)
+        - couples: group_size × ticket_normal (default: 2 adults)
+        - friends: group_size × ticket_normal
+        - seniors: group_size × ticket_reduced (assume senior discount)
+        - solo: ticket_normal (1 person)
+        - fallback (no price data): 50 PLN per person × group_size
+        
+        Args:
+            poi_dict: POI data dict with ticket_normal, ticket_reduced, free_entry
+            user: User dict with target_group, group_size, children_age
+            
+        Returns:
+            Total estimated cost in PLN for entire group
         """
         free_entry = poi_dict.get("free_entry", False)
         
@@ -598,21 +612,38 @@ class PlanService:
         ticket_normal = poi_dict.get("ticket_normal", 0) or 0
         ticket_reduced = poi_dict.get("ticket_reduced", 0) or 0
         
+        # Extract user info
+        group_type = user.get("target_group", "solo")
+        group_size = user.get("group_size", 1)
+        children_age = user.get("children_age")  # Only relevant for family_kids
+        
         # BUGFIX: Fallback for POI without price data (like DINO PARK with "brak danych")
         if ticket_normal == 0 and ticket_reduced == 0 and not free_entry:
             # Use reasonable default: 50 PLN per person
-            # For family_kids: 4 persons × 50 = 200 PLN
             default_price = 50
-            if group_type == "family_kids":
-                return 4 * default_price  # 2 adults + 2 kids
-            return default_price
+            return group_size * default_price
         
+        # Group-specific calculation
         if group_type == "family_kids":
-            # Zakładamy: 2 dorosłych + 2 dzieci
-            return (2 * ticket_normal) + (2 * ticket_reduced)
+            # Assume: 2 adults + (group_size - 2) children
+            # If group_size is 4: 2 adults + 2 children
+            # If group_size is 3: 2 adults + 1 child
+            # If group_size is 5: 2 adults + 3 children
+            adults = 2
+            children = max(0, group_size - 2)
+            return (adults * ticket_normal) + (children * ticket_reduced)
         
-        # Inne grupy: baseline
-        return ticket_normal
+        elif group_type == "seniors":
+            # Assume all group members are seniors (use reduced ticket)
+            return group_size * ticket_reduced
+        
+        elif group_type == "solo":
+            # Single person, normal ticket
+            return ticket_normal
+        
+        else:
+            # couples, friends, or any other group: group_size × ticket_normal
+            return group_size * ticket_normal
 
     def _generate_transit_item(
         self,

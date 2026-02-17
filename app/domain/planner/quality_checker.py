@@ -91,6 +91,10 @@ def check_poi_quality(poi: Dict[str, Any], context: Dict[str, Any], user: Dict[s
     """
     Checks individual POI quality and returns quality badges.
     
+    BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #6):
+    Badges are now deterministic for the same POI + user profile.
+    Removed time-dependent badges (e.g., "perfect_timing") to ensure consistency.
+    
     Args:
         poi: POI data dict
         context: Context dict (time_of_day, weather, etc.)
@@ -99,10 +103,9 @@ def check_poi_quality(poi: Dict[str, Any], context: Dict[str, Any], user: Dict[s
     Returns:
         List of quality badges for the POI
         
-    Badges:
+    Badges (all deterministic based on POI properties + user profile):
     - "must_see": Priority level >= 11 (iconic attractions)
     - "core_attraction": Priority level == 12 (core POI)
-    - "perfect_timing": Selected at optimal time of day for this POI
     - "weather_resistant": Works well in any weather (indoor or flexible)
     - "family_favorite": Especially good for families (if target_group = family_kids)
     - "budget_friendly": Low cost for budget level 1
@@ -120,11 +123,9 @@ def check_poi_quality(poi: Dict[str, Any], context: Dict[str, Any], user: Dict[s
     if priority == 12:
         badges.append("core_attraction")
     
-    # Badge: perfect_timing (time_of_day match)
-    time_of_day = context.get("time_of_day", "").lower()
-    poi_timing = poi.get("najlepszy_czas_dnia", "").lower()
-    if poi_timing and time_of_day in poi_timing:
-        badges.append("perfect_timing")
+    # BUGFIX (16.02.2026 - Problem #6): Removed "perfect_timing" badge
+    # Reason: It's time-dependent (changes based on time_of_day), causing inconsistency
+    # The same POI should have same badges regardless of when it's visited
     
     # Badge: weather_resistant (indoor or flexible)
     weather_dep = poi.get("zależność_od_pogody", "").lower()

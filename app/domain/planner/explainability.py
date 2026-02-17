@@ -59,15 +59,29 @@ def explain_poi_selection(
     elif target_group == "solo" and "solo" in poi_groups:
         reasons.append("Perfect for solo travelers")
     
-    # Preferences match
+    # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #5):
+    # Validate preferences against POI tags (not type) to avoid illogical reasons
+    # Example: "Dom do góry nogami" has type "museum_heritage" but no actual museum tags
+    
+    # Preferences match - validate against actual POI tags
     preferences = user.get("preferences", [])
-    poi_tags = str(poi.get("tags", "")).lower()
-    poi_type = poi.get("type", "").lower()
+    poi_tags_list = poi.get("tags", [])
+    
+    # Convert tags to list if string
+    if isinstance(poi_tags_list, str):
+        if poi_tags_list:
+            poi_tags_list = [t.strip().lower() for t in poi_tags_list.split(",") if t.strip()]
+        else:
+            poi_tags_list = []
+    
+    # Normalize POI tags to lowercase
+    poi_tags_normalized = [str(tag).lower() for tag in poi_tags_list]
     
     matched_prefs = []
     for pref in preferences:
         pref_lower = pref.lower()
-        if pref_lower in poi_tags or pref_lower in poi_type:
+        # Check if preference matches any POI tag (exact or substring)
+        if any(pref_lower in tag or tag in pref_lower for tag in poi_tags_normalized):
             matched_prefs.append(pref)
     
     if matched_prefs:
@@ -100,15 +114,28 @@ def explain_poi_selection(
         elif time_of_day == "evening":
             reasons.append("Most scenic at this time of day")
     
-    # Special experiences
-    poi_name = poi.get("name", "").lower()
-    if "kuligi" in poi_name:
+    # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #5):
+    # Generate special experience reasons ONLY from POI tags, not name substring matching
+    # Example: "Dom do góry nogami" has "góry" in name but is NOT a viewpoint
+    
+    # Special experiences - validate against POI tags
+    poi_tags_str = ",".join(poi_tags_normalized) if poi_tags_normalized else ""
+    poi_type = poi.get("type", "").lower()
+    
+    # Winter experiences (kuligi)
+    if "winter_experience" in poi_tags_str or "kulig" in poi_type:
         reasons.append("Unique winter experience you can't miss")
-    elif "termy" in poi_name or "spa" in poi_name:
+    
+    # Relaxation (termy/spa)
+    elif any(tag in poi_type for tag in ["termy", "spa", "wellness", "thermal"]):
         reasons.append("Perfect for relaxation after a day of exploring")
-    elif "muzeum" in poi_name:
+    
+    # Museum/cultural (validate with tags, not just name)
+    elif any(tag in poi_tags_str for tag in ["museum", "heritage", "cultural", "historical", "ethnographic"]):
         reasons.append("Cultural enrichment and local history")
-    elif "góry" in poi_name or "morskie oko" in poi_name or "kościeliska" in poi_name:
+    
+    # Mountain views (validate with tags: viewpoint/scenic/panorama)
+    elif any(tag in poi_tags_str for tag in ["viewpoint", "scenic", "panorama", "mountain_view", "nature_landscape"]):
         reasons.append("Breathtaking mountain views")
     
     # Return top 3 reasons (prioritize by order added)

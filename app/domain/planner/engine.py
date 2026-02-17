@@ -39,6 +39,237 @@ def is_core_poi(poi):
     except (ValueError, TypeError):
         return False
 
+
+def _check_time_overlap(plan, new_start_time, new_end_time):
+    """
+    Check if new item overlaps with existing items in plan.
+    
+    BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #2):
+    Validate time continuity - no overlapping events.
+    
+    Args:
+        plan: List of plan items (dicts with start_time/end_time)
+        new_start_time: Start time string "HH:MM"
+        new_end_time: End time string "HH:MM"
+    
+    Returns:
+        tuple: (overlaps: bool, conflicting_item: dict or None)
+    """
+    new_start_min = time_to_minutes(new_start_time)
+    new_end_min = time_to_minutes(new_end_time)
+    
+    for item in plan:
+        # Skip items without time range (e.g., accommodation_start)
+        if "start_time" not in item or "end_time" not in item:
+            continue
+        
+        item_start_min = time_to_minutes(item["start_time"])
+        item_end_min = time_to_minutes(item["end_time"])
+        
+        # Check overlap: new starts before existing ends AND new ends after existing starts
+        if new_start_min < item_end_min and new_end_min > item_start_min:
+            return True, item
+    
+    return False, None
+
+
+def _add_buffer_item(plan, now, buffer_type, duration_min, reason_context=None, day_end=None):
+    """
+    Add a buffer item to explain time gaps in the plan.
+    
+    BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #4):
+    Client requirement: "Oś czasu ma dziury, które nie są opisane"
+    Solution: Add explicit buffer items for parking_walk, tickets_queue, restroom, photo_stop
+    
+    BUGFIX (17.02.2026): Added day_end parameter to prevent buffers from exceeding day_end
+    
+    Args:
+        plan: List of plan items
+        now: Current time in minutes from midnight
+        buffer_type: Type of buffer ("parking_walk", "tickets_queue", "restroom", "photo_stop", "traffic_margin")
+        duration_min: Duration of buffer in minutes
+        reason_context: Optional context dict (poi_name, etc.)
+        day_end: Optional day_end in minutes - if buffer would exceed, skip or shorten it
+    
+    Returns:
+        Updated time (now + duration_min) or now if buffer skipped
+    
+    Buffer Types:
+    - parking_walk: 5-15 min (walking from parking to attraction entrance)
+    - tickets_queue: 5-20 min (waiting in line at popular attractions)
+    - restroom: 5-10 min (bathroom break after long attractions)
+    - photo_stop: 5-15 min (photo opportunity at scenic locations)
+    - traffic_margin: 5-10 min (buffer for unexpected delays)
+    """
+    if duration_min <= 0:
+        return now
+    
+    # BUGFIX (17.02.2026): Check if buffer would exceed day_end
+    if day_end is not None and now + duration_min > day_end:
+        # Calculate remaining time
+        remaining = day_end - now
+        if remaining <= 0:
+            # No time left - skip buffer
+            print(f"[SKIP BUFFER] {buffer_type} would exceed day_end ({minutes_to_time(now)} + {duration_min}min > {minutes_to_time(day_end)})")
+            return now
+        elif remaining < duration_min:
+            # Shorten buffer to fit remaining time
+            print(f"[SHORTEN BUFFER] {buffer_type} shortened from {duration_min} to {remaining}min to fit day_end")
+            duration_min = remaining
+    
+    buffer_start = minutes_to_time(now)
+    buffer_end = minutes_to_time(now + duration_min)
+    
+    # Check overlap before adding
+    overlaps, conflict = _check_time_overlap(plan, buffer_start, buffer_end)
+    if overlaps:
+        print(f"[SKIP BUFFER] {buffer_type} {buffer_start}-{buffer_end} overlaps with {conflict.get('type')}")
+        return now  # Don't add buffer if it creates overlap
+    
+    # Generate description based on buffer type
+    descriptions = {
+        "parking_walk": f"Przejscie z parkingu ({duration_min} min)",
+        "tickets_queue": f"Oczekiwanie w kolejce ({duration_min} min)",
+        "restroom": f"Przerwa sanitarna ({duration_min} min)",
+        "photo_stop": f"Sesja zdjęciowa ({duration_min} min)",
+        "traffic_margin": f"Margines na nieprzewidziane opoznienia ({duration_min} min)",
+    }
+    
+    description = descriptions.get(buffer_type, f"Buffer: {buffer_type} ({duration_min} min)")
+    
+    # Add context to description if provided
+    if reason_context:
+        poi_name = reason_context.get("poi_name")
+        if poi_name and buffer_type in ["parking_walk", "tickets_queue"]:
+            # Remove Polish characters from POI name for Windows terminal compatibility
+            poi_name_safe = poi_name.encode('ascii', errors='ignore').decode('ascii')
+            description = f"{description} - {poi_name_safe}"
+    
+    buffer_item = {
+        "type": "buffer",
+        "buffer_type": buffer_type,
+        "start_time": buffer_start,
+        "end_time": buffer_end,
+        "duration_min": duration_min,
+        "description": description,
+    }
+    
+    plan.append(buffer_item)
+    print(f"[BUFFER ADDED] {buffer_type} at {buffer_start}-{buffer_end}: {description.encode('ascii', errors='ignore').decode('ascii')}")
+    
+    return now + duration_min
+
+
+def _validate_and_fix_time_continuity(plan, day_end_str):
+    """
+    Validate time continuity in plan and fix issues.
+    
+    BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #7):
+    Client requirement: "Generator powinien automatycznie sprawdzać ciągłość czasu"
+    
+    Validates:
+    1. No unexplained gaps >10 min between items
+    2. No overlapping events
+    3. All items within day boundaries (day_start → day_end)
+    4. If last item ends before day_end with gap >30 min, add free_time
+    
+    Args:
+        plan: List of plan items
+        day_end_str: End time string "HH:MM"
+    
+    Returns:
+        tuple: (is_valid: bool, issues: list of strings, fixed_plan: list)
+    """
+    issues = []
+    fixed_plan = list(plan)  # Copy plan for modifications
+    
+    # Get day_end in minutes
+    day_end_min = time_to_minutes(day_end_str)
+    
+    # Find items with time ranges (skip accommodation_start/end)
+    timed_items = []
+    for item in fixed_plan:
+        if "start_time" in item and "end_time" in item:
+            item_copy = dict(item)
+            item_copy["start_min"] = time_to_minutes(item["start_time"])
+            item_copy["end_min"] = time_to_minutes(item["end_time"])
+            timed_items.append(item_copy)
+    
+    if not timed_items:
+        return True, [], fixed_plan  # Empty plan is valid
+    
+    # Sort by start time
+    timed_items.sort(key=lambda x: x["start_min"])
+    
+    # Check 1: Gaps between consecutive items
+    for i in range(len(timed_items) - 1):
+        current = timed_items[i]
+        next_item = timed_items[i + 1]
+        
+        gap = next_item["start_min"] - current["end_min"]
+        
+        if gap > 10:
+            # Large gap detected
+            gap_start = minutes_to_time(current["end_min"])
+            gap_end = minutes_to_time(next_item["start_min"])
+            issues.append(
+                f"GAP: {gap} min between {current.get('type')} (ends {current['end_time']}) "
+                f"and {next_item.get('type')} (starts {next_item['start_time']})"
+            )
+            print(f"[TIME CONTINUITY] WARNING: {gap} min gap {gap_start}-{gap_end}")
+        
+        elif gap < 0:
+            # Overlap detected
+            issues.append(
+                f"OVERLAP: {current.get('type')} (ends {current['end_time']}) "
+                f"overlaps with {next_item.get('type')} (starts {next_item['start_time']})"
+            )
+            print(f"[TIME CONTINUITY] ERROR: Overlap detected!")
+    
+    # Check 2: Last item vs day_end
+    last_item = timed_items[-1]
+    gap_to_day_end = day_end_min - last_item["end_min"]
+    
+    if gap_to_day_end > 30:
+        # Significant time left until day_end - add free_time
+        free_start = last_item["end_time"]
+        free_end = day_end_str
+        free_duration = gap_to_day_end
+        
+        # Check if free_time doesn't overlap with existing items
+        overlaps, _ = _check_time_overlap(fixed_plan, free_start, free_end)
+        
+        if not overlaps:
+            free_time_item = {
+                "type": "free_time",
+                "start_time": free_start,
+                "end_time": free_end,
+                "duration_min": free_duration,
+                "description": f"Czas wolny do konca dnia: kolacja, spacer, zakupy ({free_duration} min)"
+            }
+            
+            # Insert before accommodation_end (last item in plan)
+            insert_index = len(fixed_plan) - 1
+            fixed_plan.insert(insert_index, free_time_item)
+            
+            print(f"[TIME CONTINUITY] Auto-added free_time {free_start}-{free_end} ({free_duration} min) to fill gap to day_end")
+        else:
+            issues.append(f"GAP TO DAY_END: {gap_to_day_end} min after last activity (cannot add free_time - overlap)")
+    
+    elif gap_to_day_end < -10:
+        # Last item exceeds day_end
+        issues.append(
+            f"EXCEEDS DAY_END: Last item ends at {last_item['end_time']}, "
+            f"but day_end is {day_end_str} ({abs(gap_to_day_end)} min over)"
+        )
+        print(f"[TIME CONTINUITY] WARNING: Plan exceeds day_end by {abs(gap_to_day_end)} min")
+    
+    # Validation result
+    is_valid = len([i for i in issues if "OVERLAP" in i or "EXCEEDS" in i]) == 0
+    
+    return is_valid, issues, fixed_plan
+
+
 # =========================
 # Config
 # =========================
@@ -156,6 +387,32 @@ def is_kids_focused_poi(poi):
     # Kids-focused = POI with ONLY family_kids (not multi-group)
     tg = set([str(x).strip().lower() for x in target_groups])
     return len(tg) == 1 and "family_kids" in tg
+
+
+def is_termy_spa(poi):
+    """
+    Check if POI is a termy/spa/thermal bath.
+    
+    BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #9):
+    Max 1 termy/spa per day for seniors to avoid exhaustion.
+    
+    Args:
+        poi: POI dict
+        
+    Returns:
+        bool: True if POI is termy/spa/thermal bath
+    """
+    name = safe_str(poi.get("name", ""))
+    poi_type = safe_str(poi.get("type", ""))
+    tags = poi.get("tags") or []
+    tags_str = ",".join([safe_str(x) for x in tags]) if tags else ""
+    
+    # Check name, type, or tags for termy/spa/thermal keywords
+    return (
+        any(keyword in name for keyword in ["termy", "spa", "thermal", "basen termalny", "sauna"]) or
+        any(keyword in poi_type for keyword in ["termy", "spa", "thermal", "wellness"]) or
+        any(keyword in tags_str for keyword in ["relax", "spa", "thermal", "wellness"])
+    )
 
 
 def safe_int(x, default=0):
@@ -479,7 +736,9 @@ def score_poi(
         tag_bonus = calculate_tag_preference_score(p, user_preferences)
         score += tag_bonus
         if tag_bonus > 0:
-            print(f"    [TAG BONUS] {p.get('name')}: +{tag_bonus} from preferences {user_preferences}")
+            # ASCII-safe print for Windows terminal (polish characters)
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [TAG BONUS] {poi_name_safe}: +{tag_bonus} from preferences {user_preferences}")
     
     # ETAP 1 ENHANCEMENT (29.01.2026) - New scoring modules
     score += calculate_space_score(p, user, context)  # indoor/outdoor vs weather
@@ -673,7 +932,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     if ctx["daylight_end"]:
         end = min(end, time_to_minutes(ctx["daylight_end"]))
 
-    plan = [{"type": "accommodation_start", "time": start_time_str}]
+    # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #10):
+    # Standardize all items to use start_time/end_time (not "time")
+    plan = [{
+        "type": "accommodation_start",
+        "start_time": start_time_str,
+        "end_time": start_time_str  # Point-in-time event
+    }]
 
     energy = GROUP_DAILY_ENERGY[user["target_group"]]
     fatigue = 0
@@ -690,6 +955,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     
     # CLIENT REQUIREMENT (04.02.2026): Track kids-focused POI for daily limit
     kids_focused_count = 0  # Max 1/day for non-family groups
+    
+    # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #9): Track termy/spa for daily limit
+    termy_count = 0  # Max 1/day for seniors
     
     limits = GROUP_ATTRACTION_LIMITS.get(user["target_group"], {
         "soft": 7,
@@ -716,20 +984,48 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         if now > half_day and core_attraction_count < limits.get("core_min", 1):
             print(f"[CORE POI] Mid-day checkpoint: {core_attraction_count} core POI, boosting core attractions")
         
+        
         # === LUNCH CHECKPOINT ===
+        # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #8):
+        # Enforce strict lunch time window (12:00-14:30)
+        # - Insert lunch as soon as we reach 12:00
+        # - If passed 14:30, insert lunch immediately with warning
         if not lunch_done:
-            lunch_target = time_to_minutes(LUNCH_TARGET)
-            lunch_latest = time_to_minutes(LUNCH_LATEST)
+            lunch_earliest = time_to_minutes(LUNCH_EARLIEST)  # 12:00
+            lunch_target = time_to_minutes(LUNCH_TARGET)      # 13:00
+            lunch_latest = time_to_minutes(LUNCH_LATEST)      # 14:30
 
-            # jezeli po 13:00 lub przeskocym 14:30 -> lunch teraz
-            if now >= lunch_target or now + 60 > lunch_latest:
+            should_insert_lunch = False
+            is_late_lunch = False
+            
+            # Case 1: We've reached earliest lunch time (12:00)
+            if now >= lunch_earliest:
+                should_insert_lunch = True
+                
+                # Case 1a: Already past latest lunch time (14:30) - late lunch!
+                if now > lunch_latest:
+                    is_late_lunch = True
+                    print(f"[LUNCH] WARNING: Late lunch scheduled at {minutes_to_time(now)} (should be by {LUNCH_LATEST})")
+            
+            if should_insert_lunch:
+                lunch_start_time = minutes_to_time(now)
+                lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
+                
+                # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #2): Check overlap before adding lunch
+                overlaps, conflict = _check_time_overlap(plan, lunch_start_time, lunch_end_time)
+                if overlaps:
+                    print(f"[OVERLAP DETECTED] lunch_break {lunch_start_time}-{lunch_end_time} conflicts with {conflict.get('type')} {conflict.get('start_time')}-{conflict.get('end_time')}")
+                    # Adjust lunch time - move to after conflicting item
+                    conflict_end_min = time_to_minutes(conflict.get('end_time', lunch_start_time))
+                    now = conflict_end_min
+                    lunch_start_time = minutes_to_time(now)
+                    lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
+                
                 plan.append(
                     {
                         "type": "lunch_break",
-                        "start_time": minutes_to_time(now),
-                        "end_time": minutes_to_time(
-                            min(end, now + LUNCH_DURATION_MIN)
-                        ),
+                        "start_time": lunch_start_time,
+                        "end_time": lunch_end_time,
                         "duration_min": LUNCH_DURATION_MIN,
                         "suggestions": ["Lunch", "Restauracja", "Odpoczynek"],
                     }
@@ -737,6 +1033,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 now += LUNCH_DURATION_MIN
                 lunch_done = True
                 fatigue = max(0, fatigue - 2)
+                print(f"[LUNCH] Inserted lunch at {lunch_start_time}-{lunch_end_time}")
                 continue
 
         # swiety final
@@ -779,6 +1076,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if is_kids_focused_poi(p) and kids_focused_count >= 1:
                     print(f"[LIMITS] Skip kids-focused POI ID: {poi_id(p)} (already have {kids_focused_count}/1)")
                     continue  # Skip - already have 1 kids-focused POI today
+            
+            # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #9): Max 1 termy/spa per day for seniors
+            if user_group == 'seniors':
+                if is_termy_spa(p) and termy_count >= 1:
+                    print(f"[LIMITS] Skip termy/spa POI ID: {poi_id(p)} (already have {termy_count}/1 for seniors)")
+                    continue  # Skip - already have 1 termy/spa today
             
             # STEP 3: Budget hard filter (FIX 07.02.2026)
             # If daily_limit is set, check if adding this POI would exceed budget
@@ -887,6 +1190,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         if is_kids_focused_poi(p) and kids_focused_count >= 1:
                             continue
                     
+                    # BUGFIX (16.02.2026 - Problem #9): Max 1 termy/spa per day for seniors
+                    if user_group == 'seniors':
+                        if is_termy_spa(p) and termy_count >= 1:
+                            continue
+                    
                     # BUDGET HARD FILTER
                     if daily_limit is not None:
                         group_size = user.get("group_size", 1)
@@ -969,6 +1277,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     user_group = user.get("target_group", "")
                     if user_group in ['solo', 'couples', 'friends', 'seniors']:
                         if is_kids_focused_poi(p) and kids_focused_count >= 1:
+                            continue
+                    
+                    # BUGFIX (16.02.2026 - Problem #9): Max 1 termy/spa per day for seniors
+                    if user_group == 'seniors':
+                        if is_termy_spa(p) and termy_count >= 1:
                             continue
                     
                     # BUDGET HARD FILTER (FIX 07.02.2026): Apply to candidate collection
@@ -1125,11 +1438,21 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 else:
                     # No soft POI - add free_time (max 40 min)
                     free_duration = min(40, remaining_time)
+                    free_start_time = minutes_to_time(now)
+                    free_end_time = minutes_to_time(now + free_duration)
+                    
+                    # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #2): Check overlap before adding
+                    overlaps, conflict = _check_time_overlap(plan, free_start_time, free_end_time)
+                    if overlaps:
+                        print(f"[OVERLAP DETECTED] free_time {free_start_time}-{free_end_time} conflicts with {conflict.get('type')} {conflict.get('start_time')}-{conflict.get('end_time')}")
+                        # Skip this free_time, continue loop
+                        now += 15
+                        continue
                     
                     plan.append({
                         "type": "free_time",
-                        "start_time": minutes_to_time(now),
-                        "end_time": minutes_to_time(now + free_duration),
+                        "start_time": free_start_time,
+                        "end_time": free_end_time,
                         "duration_min": free_duration,
                         "description": "Czas wolny: spacer, kawa, odpoczynek"
                     })
@@ -1151,7 +1474,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             max(best_travel, MIN_TRANSFER_MIN) if last_poi else 0
         )
 
-        if now + transfer_time + best_duration > end:
+        # BUGFIX (17.02.2026): Check if POI + buffers would exceed day_end
+        # Estimate buffer time: parking_walk (~5 min) + restroom (~5-10 min) + photo_stop (~10 min) = ~20-25 min
+        # Add 30 min safety margin to account for buffers
+        estimated_buffer_time = 30
+        if now + transfer_time + best_duration + estimated_buffer_time > end:
+            poi_name_safe = str(poi_name(best)).encode('ascii', errors='ignore').decode('ascii')
+            print(f"[POI SKIP] POI {poi_name_safe} would exceed day_end with buffers ({minutes_to_time(now + transfer_time + best_duration + estimated_buffer_time)} > {minutes_to_time(end)})")
             break
 
         if last_poi:
@@ -1167,14 +1496,57 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             )
 
             now += transfer_time
+            
+            # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #4): Add parking_walk buffer after car transfer
+            # Client requirement: "Oś czasu ma dziury" - dodaj buffer parking_walk po transfer
+            if ctx.get("has_car", True):
+                parking_walk_duration = best.get("parking_walk_time_min", 5)
+                # Ensure reasonable range: 5-15 min
+                parking_walk_duration = max(5, min(15, int(parking_walk_duration)))
+                now = _add_buffer_item(
+                    plan, 
+                    now, 
+                    "parking_walk", 
+                    parking_walk_duration,
+                    reason_context={"poi_name": poi_name(best)},
+                    day_end=end
+                )
+        
+        # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #4): Add tickets_queue buffer for popular attractions
+        # Client requirement: Add buffer for waiting in line at popular places
+        popularity_score = best.get("popularity_score", 0)
+        if popularity_score >= 7:  # Popular attractions (score 7-10)
+            # Queue time: 5-20 min based on popularity
+            queue_duration = int(5 + (popularity_score - 7) * 5)  # 7→5min, 8→10min, 9→15min, 10→20min
+            queue_duration = max(5, min(20, queue_duration))
+            now = _add_buffer_item(
+                plan,
+                now,
+                "tickets_queue",
+                queue_duration,
+                reason_context={"poi_name": poi_name(best)},
+                day_end=end
+            )
+
+        # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #2): Check overlap before adding attraction
+        attraction_start_time = minutes_to_time(now)
+        attraction_end_time = minutes_to_time(now + best_duration)
+        
+        overlaps, conflict = _check_time_overlap(plan, attraction_start_time, attraction_end_time)
+        if overlaps:
+            print(f"[OVERLAP DETECTED] attraction {poi_name(best)} {attraction_start_time}-{attraction_end_time} conflicts with {conflict.get('type')} {conflict.get('start_time')}-{conflict.get('end_time')}")
+            # Skip this POI, mark as used to avoid retry, continue loop
+            used.add(poi_id(best))
+            now += 15  # Advance time slightly
+            continue
 
         plan.append(
             {
                 "type": "attraction",
                 "poi": best,  # Całe POI dla PlanService
                 "name": poi_name(best),
-                "start_time": minutes_to_time(now),
-                "end_time": minutes_to_time(now + best_duration),
+                "start_time": attraction_start_time,
+                "end_time": attraction_end_time,
                 "meta": {
                     "experience_role": best.get("experience_role"),
                     "is_culture": bool(is_culture(best)),
@@ -1204,6 +1576,36 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         if global_used is not None:
             global_used.add(poi_id(best))
         
+        # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #4): Add restroom buffer after long attractions
+        # Client requirement: Add realistic buffers for bathroom breaks
+        if best_duration >= 60:  # Long attraction (60+ min)
+            restroom_duration = min(10, max(5, int(best_duration / 60) * 5))  # 5-10 min based on duration
+            now = _add_buffer_item(
+                plan,
+                now,
+                "restroom",
+                restroom_duration,
+                reason_context={"poi_name": poi_name(best)},
+                day_end=end
+            )
+        
+        # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #4): Add photo_stop buffer at scenic locations
+        # Client requirement: Add buffer for photo opportunities at viewpoints
+        poi_tags = best.get("tags", []) or []
+        tag_list = [str(t).lower() for t in poi_tags if t]
+        is_scenic = any(tag in tag_list for tag in ["viewpoint", "scenic", "panorama", "mountain_view"])
+        
+        if is_scenic:
+            photo_duration = 10  # Standard 10 min for photo stop
+            now = _add_buffer_item(
+                plan,
+                now,
+                "photo_stop",
+                photo_duration,
+                reason_context={"poi_name": poi_name(best)},
+                day_end=end
+            )
+        
         last_poi = best
         
         # FIX #7 (02.02.2026): Update attraction counters
@@ -1219,6 +1621,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             if is_kids_focused_poi(best):
                 kids_focused_count += 1
                 print(f"[LIMITS] Kids-focused POI added: {kids_focused_count}/1 for today")
+        
+        # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #9): Increment termy counter for seniors
+        if user_group == 'seniors':
+            if is_termy_spa(best):
+                termy_count += 1
+                print(f"[LIMITS] Termy/spa POI added: {termy_count}/1 for seniors today")
 
         # update kultur
         if is_culture(best):
@@ -1278,6 +1686,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         if is_kids_focused_poi(p) and kids_focused_count >= 1:
                             continue  # Skip - already have 1 kids-focused POI today
                     
+                    # BUGFIX (16.02.2026 - Problem #9): Max 1 termy/spa per day for seniors
+                    if user_group == 'seniors':
+                        if is_termy_spa(p) and termy_count >= 1:
+                            continue  # Skip - already have 1 termy/spa today
+                    
                     # FIX #7 (02.02.2026): Check hard limit before adding soft POI
                     if attraction_count >= limits["hard"]:
                         break  # Stop gap filling if limit reached
@@ -1305,6 +1718,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         continue
                     
                     # Add soft POI to fill gap
+                    # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #2): Check overlap before adding
+                    soft_start_time = minutes_to_time(now + soft_travel)
+                    soft_end_time = minutes_to_time(now + soft_travel + soft_duration)
+                    
+                    overlaps, conflict = _check_time_overlap(plan, soft_start_time, soft_end_time)
+                    if overlaps:
+                        print(f"[OVERLAP DETECTED] soft POI {poi_name(p)} {soft_start_time}-{soft_end_time} conflicts with {conflict.get('type')} {conflict.get('start_time')}-{conflict.get('end_time')}")
+                        continue  # Skip this soft POI
+                    
                     if soft_travel > 0:
                         plan.append({
                             "type": "transfer",
@@ -1345,20 +1767,34 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             kids_focused_count += 1
                             print(f"[LIMITS] Kids-focused POI added (soft): {kids_focused_count}/1 for today")
                     
+                    # BUGFIX (16.02.2026 - Problem #9): Increment termy counter for seniors (soft POI)
+                    if user_group == 'seniors':
+                        if is_termy_spa(p):
+                            termy_count += 1
+                            print(f"[LIMITS] Termy/spa POI added (soft): {termy_count}/1 for seniors today")
+                    
                     soft_filled = True
                     break  # Fill one soft POI per gap
                 
                 # If no soft POI fits, add free_time (max 40 min)
                 if not soft_filled and gap_duration > 20:
                     free_duration = min(40, gap_duration)
-                    plan.append({
-                        "type": "free_time",
-                        "start_time": minutes_to_time(now),
-                        "end_time": minutes_to_time(now + free_duration),
-                        "duration_min": free_duration,
-                        "description": "Czas wolny: spacer, kawa, odpoczynek"
-                    })
-                    now += free_duration
+                    free_start_time = minutes_to_time(now)
+                    free_end_time = minutes_to_time(now + free_duration)
+                    
+                    # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #2): Check overlap before adding
+                    overlaps, conflict = _check_time_overlap(plan, free_start_time, free_end_time)
+                    if not overlaps:
+                        plan.append({
+                            "type": "free_time",
+                            "start_time": free_start_time,
+                            "end_time": free_end_time,
+                            "duration_min": free_duration,
+                            "description": "Czas wolny: spacer, kawa, odpoczynek"
+                        })
+                        now += free_duration
+                    else:
+                        print(f"[OVERLAP DETECTED] gap-fill free_time {free_start_time}-{free_end_time} conflicts with {conflict.get('type')} {conflict.get('start_time')}-{conflict.get('end_time')}")
         else:
             culture_streak = 0
 
@@ -1369,7 +1805,54 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         if is_finale(best):
             finale_done = True
 
-    plan.append({"type": "accommodation_end", "time": minutes_to_time(end)})
+    # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #10):
+    # Standardize all items to use start_time/end_time (not "time")
+    plan.append({
+        "type": "accommodation_end",
+        "start_time": minutes_to_time(end),
+        "end_time": minutes_to_time(end)  # Point-in-time event
+    })
+    
+    # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #7):
+    # Validate time continuity and auto-fix gaps to day_end
+    print(f"[TIME CONTINUITY] Validating plan with day_end={end_time_str}")
+    is_valid, issues, fixed_plan = _validate_and_fix_time_continuity(plan, end_time_str)
+    
+    if issues:
+        print(f"[TIME CONTINUITY] Found {len(issues)} issues:")
+        for issue in issues:
+            print(f"  - {issue}")
+    
+    if not is_valid:
+        print(f"[TIME CONTINUITY] WARNING: Plan has critical issues (overlaps or exceeds day_end)")
+    else:
+        print(f"[TIME CONTINUITY] Plan validated successfully")
+    
+    # Use fixed plan (may have auto-added free_time to day_end)
+    plan = fixed_plan
+    
+    # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #11):
+    # Detect empty/sparse days (>50% free_time) and report error
+    total_minutes = end - time_to_minutes(start_time_str)
+    free_time_minutes = sum(
+        item.get("duration_min", 0) 
+        for item in plan 
+        if item.get("type") == "free_time"
+    )
+    
+    # Count actual attractions (not buffers, transits, lunch)
+    attraction_count_final = sum(
+        1 for item in plan if item.get("type") == "attraction"
+    )
+    
+    if total_minutes > 0:
+        free_time_pct = (free_time_minutes / total_minutes) * 100
+        
+        if free_time_pct > 50 or attraction_count_final == 0:
+            print(f"\n[EMPTY DAY WARNING] Day is sparse or empty:")
+            print(f"  - Free time: {free_time_minutes}/{total_minutes} min ({free_time_pct:.1f}%)")
+            print(f"  - Attractions: {attraction_count_final}")
+            print(f"  - Suggestion: Relax filters (target_group, intensity, budget, distance)")
     
     # NOTE: Gap filling moved to PlanService (after parking/transit timing adjustments)
     # This ensures gaps are detected AFTER all time shifts from parking

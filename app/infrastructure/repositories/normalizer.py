@@ -455,10 +455,19 @@ def normalize_poi(p, index):
         p, experience_role, activity_style, poi_category
     )
     
-    # BUGFIX (31.01.2026 - Problem #1): Detect free_entry from Price field
-    # If Price contains "wstęp bezpłatny" or "bezpłatny" → free_entry=True
-    price_text = _safe_lower(p.get("Price"))
-    free_entry = "bezpłatny" in price_text or "free" in price_text
+    # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #1): Detect free_entry
+    # PRIORITY 1: Check numeric ticket columns (ETAP 1 decision - numbers are source of truth)
+    # PRIORITY 2: Fallback to Price text field only if no numeric data
+    ticket_normal_val = _safe_float(p.get("ticket_normal"), 0)
+    ticket_reduced_val = _safe_float(p.get("ticket_reduced"), 0)
+    
+    if ticket_normal_val > 0 or ticket_reduced_val > 0:
+        # Has ticket prices → NOT free entry (ignore Price text)
+        free_entry = False
+    else:
+        # No numeric prices → check Price text as fallback
+        price_text = _safe_lower(p.get("Price"))
+        free_entry = "bezpłatny" in price_text or "free" in price_text
     
     # CLIENT DATA UPDATE (05.02.2026): Use ID from loader if available, otherwise generate
     poi_id = p.get("id") or p.get("ID") or f"poi_{index}"
