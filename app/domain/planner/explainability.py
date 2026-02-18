@@ -4,7 +4,80 @@ Explainability - explains why POIs were selected (ETAP 2 Day 5).
 Converts technical scoring details into natural language explanations
 that users can understand.
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+
+
+def _generate_style_based_reason(
+    travel_style: str,
+    poi_type: str,
+    target_group: str
+) -> Optional[str]:
+    """
+    Generate dynamic reason based on travel_style + POI type + target group.
+    
+    UAT Problem #7 fix: Instead of generic "Perfect for couples seeking romantic experiences",
+    generate specific reasons like "Cultural museum experience for couples" or
+    "Relaxing spa perfect for your group".
+    
+    Args:
+        travel_style: User travel style (cultural, relax, active, balanced)
+        poi_type: POI type (museum, termy, trail, restaurant, etc.)
+        target_group: User target group (couples, family_kids, friends, etc.)
+        
+    Returns:
+        Dynamic reason string or None if no match
+    """
+    # Travel style descriptors
+    style_map = {
+        "cultural": "cultural",
+        "relax": "relaxing",
+        "active": "adventurous",
+        "balanced": "well-rounded"
+    }
+    
+    # POI type descriptors
+    type_descriptors = {
+        "museum": "museum experience",
+        "termy": "spa and wellness",
+        "spa": "spa experience",
+        "trail": "hiking adventure",
+        "restaurant": "dining experience",
+        "viewpoint": "scenic experience",
+        "winter_experience": "winter activity"
+    }
+    
+    # Target group suffixes
+    group_suffix = {
+        "couples": "for couples",
+        "family_kids": "for families",
+        "friends": "for your group",
+        "seniors": "at comfortable pace",
+        "solo": "for solo exploration"
+    }
+    
+    style_desc = style_map.get(travel_style, "")
+    type_desc = None
+    
+    # Find matching POI type
+    for poi_key, desc in type_descriptors.items():
+        if poi_key in poi_type:
+            type_desc = desc
+            break
+    
+    if not type_desc:
+        return None
+    
+    group_text = group_suffix.get(target_group, "")
+    
+    # Combine style + type + group
+    if style_desc and group_text:
+        return f"{style_desc.capitalize()} {type_desc} {group_text}"
+    elif style_desc:
+        return f"{style_desc.capitalize()} {type_desc}"
+    elif group_text:
+        return f"{type_desc.capitalize()} {group_text}"
+    
+    return None
 
 
 def explain_poi_selection(
@@ -44,24 +117,10 @@ def explain_poi_selection(
     elif priority >= 11:
         reasons.append("Highly recommended by locals")
     
-    # Target group match
-    target_group = user.get("target_group", "").lower()
-    poi_groups = str(poi.get("target_groups", "")).lower()
-    
-    if target_group == "couples" and "couples" in poi_groups:
-        reasons.append("Perfect for couples seeking romantic experiences")
-    elif target_group == " family_kids" and "family" in poi_groups:
-        reasons.append("Family-friendly with activities for kids")
-    elif target_group == "friends" and "friends" in poi_groups:
-        reasons.append("Great for groups of friends")
-    elif target_group == "seniors" and "seniors" in poi_groups:
-        reasons.append("Senior-friendly with comfortable pace")
-    elif target_group == "solo" and "solo" in poi_groups:
-        reasons.append("Perfect for solo travelers")
-    
-    # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #5):
-    # Validate preferences against POI tags (not type) to avoid illogical reasons
-    # Example: "Dom do góry nogami" has type "museum_heritage" but no actual museum tags
+    # BUGFIX (18.02.2026 - UAT Problem #7):
+    # Dynamic why_selected based on preferences + travel_style + POI characteristics
+    # BEFORE: Static "Perfect for couples seeking romantic experiences" for all POI
+    # AFTER: "Cultural experience matching your museum interests" (dynamic based on actual match)
     
     # Preferences match - validate against actual POI tags
     preferences = user.get("preferences", [])
@@ -84,10 +143,57 @@ def explain_poi_selection(
         if any(pref_lower in tag or tag in pref_lower for tag in poi_tags_normalized):
             matched_prefs.append(pref)
     
+    # Get target group and travel style for dynamic messaging
+    target_group = user.get("target_group", "").lower()
+    travel_style = user.get("travel_style", "").lower()
+    poi_type = poi.get("type", "").lower()
+    
+    # Dynamic target group + preference matching (UAT Problem #7 fix)
     if matched_prefs:
-        # Take first 2 preferences
-        prefs_text = " and ".join(matched_prefs[:2])
-        reasons.append(f"Great for {prefs_text} lovers")
+        # Generate dynamic reason based on preference match + target group
+        pref_text = matched_prefs[0].replace("_", " ")
+        
+        # Map preferences to natural language
+        pref_mapping = {
+            "museum heritage": "museum and heritage",
+            "local food experience": "local food",
+            "kids attractions": "family activities",
+            "nature landscape": "nature and scenery",
+            "mountain trails": "mountain hiking"
+        }
+        pref_text = pref_mapping.get(pref_text, pref_text)
+        
+        # Add target group context if relevant
+        if target_group == "couples":
+            reasons.append(f"Matches your {pref_text} interests - perfect for couples")
+        elif target_group == "family_kids":
+            reasons.append(f"Great {pref_text} experience for families with kids")
+        elif target_group == "friends":
+            reasons.append(f"Fun {pref_text} activity for your group")
+        elif target_group == "seniors":
+            reasons.append(f"Comfortable {pref_text} experience at relaxed pace")
+        else:
+            reasons.append(f"Matches your {pref_text} interests")
+    
+    # If no preference match, use travel style + POI type
+    elif travel_style and target_group:
+        style_poi_combo = _generate_style_based_reason(travel_style, poi_type, target_group)
+        if style_poi_combo:
+            reasons.append(style_poi_combo)
+    
+    # Fallback to target group match only if no better reason found
+    else:
+        poi_groups = str(poi.get("target_groups", "")).lower()
+        if target_group == "couples" and "couples" in poi_groups:
+            reasons.append("Well-suited for couples")
+        elif target_group == "family_kids" and "family" in poi_groups:
+            reasons.append("Family-friendly experience")
+        elif target_group == "friends" and "friends" in poi_groups:
+            reasons.append("Great for groups of friends")
+        elif target_group == "seniors" and "seniors" in poi_groups:
+            reasons.append("Senior-friendly destination")
+        elif target_group == "solo" and "solo" in poi_groups:
+            reasons.append("Perfect for solo travelers")
     
     # Budget considerations
     budget_level = user.get("budget_level", 2)
