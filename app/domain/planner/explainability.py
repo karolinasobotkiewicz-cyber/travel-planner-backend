@@ -1,81 +1,212 @@
 """
 Explainability - explains why POIs were selected (ETAP 2 Day 5).
 
+UAT Problem #7 REFINEMENT (18.02.2026):
+- BEFORE: Template-based reasons ("Perfect for couples seeking...")
+- AFTER: Scoring signal-based reasons
+  ("Matches your museum_heritage preference")
+- Client feedback: Generate from SAME scoring signals as engine.py
+  (preferences, crowd, budget, style)
+
 Converts technical scoring details into natural language explanations
 that users can understand.
 """
 from typing import List, Dict, Any, Optional
 
 
-def _generate_style_based_reason(
-    travel_style: str,
-    poi_type: str,
-    target_group: str
+def _explain_preference_match(
+    poi: Dict[str, Any], user: Dict[str, Any]
 ) -> Optional[str]:
     """
-    Generate dynamic reason based on travel_style + POI type + target group.
-    
-    UAT Problem #7 fix: Instead of generic "Perfect for couples seeking romantic experiences",
-    generate specific reasons like "Cultural museum experience for couples" or
-    "Relaxing spa perfect for your group".
+    Generate reason from preference match (scoring signal).
     
     Args:
-        travel_style: User travel style (cultural, relax, active, balanced)
-        poi_type: POI type (museum, termy, trail, restaurant, etc.)
-        target_group: User target group (couples, family_kids, friends, etc.)
+        poi: POI data dict with tags
+        user: User dict with preferences
         
     Returns:
-        Dynamic reason string or None if no match
+        Reason string if preference matches, else None
+        
+    Example:
+        "Matches your museum_heritage preference"
+        "Matches your kids_attractions preference"
     """
-    # Travel style descriptors
-    style_map = {
-        "cultural": "cultural",
-        "relax": "relaxing",
-        "active": "adventurous",
-        "balanced": "well-rounded"
-    }
-    
-    # POI type descriptors
-    type_descriptors = {
-        "museum": "museum experience",
-        "termy": "spa and wellness",
-        "spa": "spa experience",
-        "trail": "hiking adventure",
-        "restaurant": "dining experience",
-        "viewpoint": "scenic experience",
-        "winter_experience": "winter activity"
-    }
-    
-    # Target group suffixes
-    group_suffix = {
-        "couples": "for couples",
-        "family_kids": "for families",
-        "friends": "for your group",
-        "seniors": "at comfortable pace",
-        "solo": "for solo exploration"
-    }
-    
-    style_desc = style_map.get(travel_style, "")
-    type_desc = None
-    
-    # Find matching POI type
-    for poi_key, desc in type_descriptors.items():
-        if poi_key in poi_type:
-            type_desc = desc
-            break
-    
-    if not type_desc:
+    preferences = user.get("preferences", [])
+    if not preferences:
         return None
     
-    group_text = group_suffix.get(target_group, "")
+    # Get POI tags
+    poi_tags_list = poi.get("tags", [])
     
-    # Combine style + type + group
-    if style_desc and group_text:
-        return f"{style_desc.capitalize()} {type_desc} {group_text}"
-    elif style_desc:
-        return f"{style_desc.capitalize()} {type_desc}"
-    elif group_text:
-        return f"{type_desc.capitalize()} {group_text}"
+    # Convert tags to list if string
+    if isinstance(poi_tags_list, str):
+        if poi_tags_list:
+            poi_tags_list = [
+                t.strip().lower()
+                for t in poi_tags_list.split(",")
+                if t.strip()
+            ]
+        else:
+            poi_tags_list = []
+    
+    # Normalize POI tags to lowercase
+    poi_tags_normalized = [str(tag).lower() for tag in poi_tags_list]
+    
+    # Find matched preferences
+    matched_prefs = []
+    for pref in preferences:
+        pref_lower = pref.lower()
+        # Check if preference matches any POI tag (exact or substring)
+        if any(
+            pref_lower in tag or tag in pref_lower
+            for tag in poi_tags_normalized
+        ):
+            matched_prefs.append(pref)
+    
+    if matched_prefs:
+        # Return first matched preference (most relevant)
+        pref_text = matched_prefs[0].replace("_", " ")
+        return f"Matches your {pref_text} preference"
+    
+    return None
+
+
+def _explain_crowd_fit(
+    poi: Dict[str, Any], user: Dict[str, Any]
+) -> Optional[str]:
+    """
+    Generate reason from crowd tolerance fit (scoring signal).
+    
+    Args:
+        poi: POI data dict with popularity_score
+        user: User dict with crowd_tolerance
+        
+    Returns:
+        Reason string if crowd fit is notable, else None
+        
+    Example:
+        "Low-crowd option (fits your crowd_tolerance: 1)"
+    """
+    crowd_tolerance = user.get("crowd_tolerance", 2)
+    popularity = float(poi.get("popularity_score", 0) or 0)
+    
+    # Only explain when it's a GOOD fit (low tolerance + low popularity)
+    # Low tolerance (0-1) + low popularity (< 5.0) = good match!
+    if crowd_tolerance <= 1 and popularity < 5.0:
+        return (
+            f"Low-crowd option "
+            f"(fits your crowd_tolerance: {crowd_tolerance})"
+        )
+    
+    # Medium tolerance (2) + low popularity = also good
+    if crowd_tolerance == 2 and popularity < 3.0:
+        return "Quiet, peaceful destination"
+    
+    return None
+
+
+def _explain_budget_fit(
+    poi: Dict[str, Any], user: Dict[str, Any]
+) -> Optional[str]:
+    """
+    Generate reason from budget fit (scoring signal).
+    
+    Args:
+        poi: POI data dict with cena_bilet_normalny
+        user: User dict with budget_level
+        
+    Returns:
+        Reason string if budget fit is notable, else None
+        
+    Example:
+        "Budget-friendly (ticket: 15 PLN)"
+        "Good value for your budget"
+    """
+    budget_level = user.get("budget_level", 2)
+    ticket_normal = float(poi.get("cena_bilet_normalny", 0) or 0)
+    
+    # Budget level 1 (tight) + cheap ticket (< 15 PLN)
+    if budget_level == 1 and ticket_normal <= 15:
+        if ticket_normal == 0:
+            return "Free entry (perfect for your budget)"
+        return f"Budget-friendly (ticket: {int(ticket_normal)} PLN)"
+    
+    # Budget level 3 (premium) + premium experience (50+ PLN)
+    if budget_level == 3 and ticket_normal >= 50:
+        return f"Premium experience (ticket: {int(ticket_normal)} PLN)"
+    
+    # Medium budget (level 2) + reasonable price (10-30 PLN)
+    if budget_level == 2 and 10 <= ticket_normal <= 30:
+        return "Good value for your budget"
+    
+    return None
+
+
+def _explain_travel_style_match(
+    poi: Dict[str, Any], user: Dict[str, Any]
+) -> Optional[str]:
+    """
+    Generate reason from travel style match (scoring signal).
+    
+    Args:
+        poi: POI data dict with type, tags
+        user: User dict with travel_style
+        
+    Returns:
+        Reason string if style matches, else None
+        
+    Example:
+        "Cultural experience (matches your style)"
+        "Relaxing activity (matches your style)"
+    """
+    travel_style = user.get("travel_style", "").lower()
+    if not travel_style:
+        return None
+    
+    poi_type = poi.get("type", "").lower()
+    poi_tags = poi.get("tags", [])
+    
+    # Convert tags to string for matching
+    if isinstance(poi_tags, list):
+        tags_str = ",".join([str(t).lower() for t in poi_tags])
+    else:
+        tags_str = str(poi_tags).lower()
+    
+    # Cultural style matching
+    if travel_style == "cultural":
+        cultural_indicators = [
+            "museum", "heritage", "history",
+            "gallery", "art", "cultural"
+        ]
+        if any(
+            indicator in poi_type or indicator in tags_str
+            for indicator in cultural_indicators
+        ):
+            return "Cultural experience (matches your style)"
+    
+    # Relax style matching
+    if travel_style == "relax":
+        relax_indicators = [
+            "spa", "termy", "wellness",
+            "relax", "peaceful", "scenic_view"
+        ]
+        if any(
+            indicator in poi_type or indicator in tags_str
+            for indicator in relax_indicators
+        ):
+            return "Relaxing activity (matches your style)"
+    
+    # Active style matching
+    if travel_style == "active":
+        active_indicators = [
+            "trail", "hiking", "adventure",
+            "sport", "active", "outdoor"
+        ]
+        if any(
+            indicator in poi_type or indicator in tags_str
+            for indicator in active_indicators
+        ):
+            return "Active adventure (matches your style)"
     
     return None
 
@@ -89,6 +220,16 @@ def explain_poi_selection(
     """
     Explains why a POI was selected using natural language.
     
+    UAT Problem #7 REFINEMENT (18.02.2026):
+    Generate reasons from SCORING SIGNALS, not templates.
+    
+    Scoring signals (from engine.py):
+    1. Priority/Must-see (priority_level)
+    2. Preference match (tag overlap)
+    3. Crowd tolerance fit (popularity vs tolerance)
+    4. Budget fit (price vs budget_level)
+    5. Travel style match (POI type vs style)
+    
     Args:
         poi: POI data dict
         context: Context dict (time_of_day, weather, current_time, etc.)
@@ -98,157 +239,50 @@ def explain_poi_selection(
     Returns:
         Top 3 reasons (max) why this POI was selected
         
-    Examples:
+    Examples (NEW - scoring signal based):
     - "Must-see attraction in Zakopane"
-    - "Perfect for couples seeking romantic experiences"
-    - "Great for hiking and nature lovers"
-    - "Family-friendly with activities for kids"
-    - "Budget-friendly option for your trip"
-    - "Premium experience worth the splurge"
-    - "Works well rain or shine"
-    - "Most scenic at this time of day"
+    - "Matches your museum_heritage preference"
+    - "Low-crowd option (fits your crowd_tolerance: 1)"
+    - "Budget-friendly (ticket: 15 PLN)"
+    - "Cultural experience (matches your style)"
     """
     reasons = []
     
-    # Priority: priority_level (must-see, core)
-    priority = int(poi.get("priority_level", 0)) if poi.get("priority_level") else 0
+    # Priority 1: Must-see / Highly recommended (priority_level)
+    priority_val = poi.get("priority_level", 0)
+    priority = int(priority_val) if priority_val else 0
     if priority == 12:
         reasons.append("Must-see attraction in Zakopane")
     elif priority >= 11:
         reasons.append("Highly recommended by locals")
     
-    # BUGFIX (18.02.2026 - UAT Problem #7):
-    # Dynamic why_selected based on preferences + travel_style + POI characteristics
-    # BEFORE: Static "Perfect for couples seeking romantic experiences" for all POI
-    # AFTER: "Cultural experience matching your museum interests" (dynamic based on actual match)
+    # Priority 2: Preference match (scoring signal: tag overlap)
+    pref_reason = _explain_preference_match(poi, user)
+    if pref_reason:
+        reasons.append(pref_reason)
     
-    # Preferences match - validate against actual POI tags
-    preferences = user.get("preferences", [])
-    poi_tags_list = poi.get("tags", [])
+    # Priority 3: Crowd tolerance fit (scoring signal: popularity vs tolerance)
+    crowd_reason = _explain_crowd_fit(poi, user)
+    if crowd_reason:
+        reasons.append(crowd_reason)
     
-    # Convert tags to list if string
-    if isinstance(poi_tags_list, str):
-        if poi_tags_list:
-            poi_tags_list = [t.strip().lower() for t in poi_tags_list.split(",") if t.strip()]
-        else:
-            poi_tags_list = []
+    # Priority 4: Budget fit (scoring signal: price vs budget_level)
+    budget_reason = _explain_budget_fit(poi, user)
+    if budget_reason:
+        reasons.append(budget_reason)
     
-    # Normalize POI tags to lowercase
-    poi_tags_normalized = [str(tag).lower() for tag in poi_tags_list]
+    # Priority 5: Travel style match (scoring signal: type/tags vs style)
+    style_reason = _explain_travel_style_match(poi, user)
+    if style_reason:
+        reasons.append(style_reason)
     
-    matched_prefs = []
-    for pref in preferences:
-        pref_lower = pref.lower()
-        # Check if preference matches any POI tag (exact or substring)
-        if any(pref_lower in tag or tag in pref_lower for tag in poi_tags_normalized):
-            matched_prefs.append(pref)
-    
-    # Get target group and travel style for dynamic messaging
-    target_group = user.get("target_group", "").lower()
-    travel_style = user.get("travel_style", "").lower()
-    poi_type = poi.get("type", "").lower()
-    
-    # Dynamic target group + preference matching (UAT Problem #7 fix)
-    if matched_prefs:
-        # Generate dynamic reason based on preference match + target group
-        pref_text = matched_prefs[0].replace("_", " ")
-        
-        # Map preferences to natural language
-        pref_mapping = {
-            "museum heritage": "museum and heritage",
-            "local food experience": "local food",
-            "kids attractions": "family activities",
-            "nature landscape": "nature and scenery",
-            "mountain trails": "mountain hiking"
-        }
-        pref_text = pref_mapping.get(pref_text, pref_text)
-        
-        # Add target group context if relevant
-        if target_group == "couples":
-            reasons.append(f"Matches your {pref_text} interests - perfect for couples")
-        elif target_group == "family_kids":
-            reasons.append(f"Great {pref_text} experience for families with kids")
-        elif target_group == "friends":
-            reasons.append(f"Fun {pref_text} activity for your group")
-        elif target_group == "seniors":
-            reasons.append(f"Comfortable {pref_text} experience at relaxed pace")
-        else:
-            reasons.append(f"Matches your {pref_text} interests")
-    
-    # If no preference match, use travel style + POI type
-    elif travel_style and target_group:
-        style_poi_combo = _generate_style_based_reason(travel_style, poi_type, target_group)
-        if style_poi_combo:
-            reasons.append(style_poi_combo)
-    
-    # Fallback to target group match only if no better reason found
-    else:
-        poi_groups = str(poi.get("target_groups", "")).lower()
-        if target_group == "couples" and "couples" in poi_groups:
-            reasons.append("Well-suited for couples")
-        elif target_group == "family_kids" and "family" in poi_groups:
-            reasons.append("Family-friendly experience")
-        elif target_group == "friends" and "friends" in poi_groups:
-            reasons.append("Great for groups of friends")
-        elif target_group == "seniors" and "seniors" in poi_groups:
-            reasons.append("Senior-friendly destination")
-        elif target_group == "solo" and "solo" in poi_groups:
-            reasons.append("Perfect for solo travelers")
-    
-    # Budget considerations
-    budget_level = user.get("budget_level", 2)
-    ticket_normal = float(poi.get("cena_bilet_normalny", 0) or 0)
-    
-    if budget_level == 1 and ticket_normal <= 10:
-        reasons.append("Budget-friendly option for your trip")
-    elif budget_level == 3 and ticket_normal >= 50:
-        reasons.append("Premium experience worth the splurge")
-    
-    # Weather resistance
-    weather_dep = poi.get("zależność_od_pogody", "").lower()
-    if weather_dep in ["indoor", "flexible", "wewnatrz", "elastyczna"]:
-        reasons.append("Works well rain or shine")
-    
-    # Time of day match
-    time_of_day = context.get("time_of_day", "").lower()
-    poi_timing = poi.get("najlepszy_czas_dnia", "").lower()
-    if poi_timing and time_of_day in poi_timing:
-        if time_of_day == "morning":
-            reasons.append("Best visited in the morning")
-        elif time_of_day == "afternoon":
-            reasons.append("Perfect afternoon activity")
-        elif time_of_day == "evening":
-            reasons.append("Most scenic at this time of day")
-    
-    # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #5):
-    # Generate special experience reasons ONLY from POI tags, not name substring matching
-    # Example: "Dom do góry nogami" has "góry" in name but is NOT a viewpoint
-    
-    # Special experiences - validate against POI tags
-    poi_tags_str = ",".join(poi_tags_normalized) if poi_tags_normalized else ""
-    poi_type = poi.get("type", "").lower()
-    
-    # Winter experiences (kuligi)
-    if "winter_experience" in poi_tags_str or "kulig" in poi_type:
-        reasons.append("Unique winter experience you can't miss")
-    
-    # Relaxation (termy/spa)
-    elif any(tag in poi_type for tag in ["termy", "spa", "wellness", "thermal"]):
-        reasons.append("Perfect for relaxation after a day of exploring")
-    
-    # Museum/cultural (validate with tags, not just name)
-    elif any(tag in poi_tags_str for tag in ["museum", "heritage", "cultural", "historical", "ethnographic"]):
-        reasons.append("Cultural enrichment and local history")
-    
-    # Mountain views (validate with tags: viewpoint/scenic/panorama)
-    elif any(tag in poi_tags_str for tag in ["viewpoint", "scenic", "panorama", "mountain_view", "nature_landscape"]):
-        reasons.append("Breathtaking mountain views")
-    
-    # Return top 3 reasons (prioritize by order added)
+    # Return top 3 reasons (most important)
     return reasons[:3]
 
 
-def generate_quality_summary(day_badges: List[str], attraction_count: int) -> str:
+def generate_quality_summary(
+    day_badges: List[str], attraction_count: int
+) -> str:
     """
     Generates human-readable summary of day quality.
     
