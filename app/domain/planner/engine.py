@@ -745,8 +745,34 @@ def score_poi(
 ):
     score = 0.0
 
-    # bazowe
-    score += safe_float(p.get("must_see")) * 2.0
+    # UAT FIX (18.02.2026 - Problem #10): Must_see conditional scoring
+    # Tests 03, 06, 07, 08, 09: Wielka Krokiew appears in every plan
+    # Problem: must_see * 2.0 bonus (20 points for Krokiew) dominates all other scoring
+    # Solution: Full bonus only when POI matches user preferences
+    # This keeps must_see important but not overwhelming when user wants different experiences
+    
+    # First calculate if POI matches user preferences (check tag bonus)
+    user_preferences = user.get("preferences", [])
+    poi_matches_preferences = False
+    tag_bonus = 0
+    
+    if user_preferences:
+        # Calculate tag-based preference bonus
+        tag_bonus = calculate_tag_preference_score(p, user_preferences)
+        poi_matches_preferences = (tag_bonus > 0)
+    
+    # Apply conditional must_see bonus
+    must_see_value = safe_float(p.get("must_see"))
+    if poi_matches_preferences or not user_preferences:
+        # Full bonus when: preferences match OR user has no preferences
+        score += must_see_value * 2.0
+    else:
+        # Reduced bonus when: user has preferences but POI doesn't match
+        score += must_see_value * 1.0  # 50% reduction
+        if must_see_value > 5:  # Log for high must_see POI
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [MUST_SEE REDUCED] {poi_name_safe}: {must_see_value * 1.0:.1f} (no preference match, user wants: {user_preferences})")
+    
     score += safe_float(p.get("priority"))
 
     # dopasowanie - existing modules
@@ -779,14 +805,13 @@ def score_poi(
     score += calculate_intensity_score(p, user)
     
     # CLIENT DATA UPDATE (05.02.2026): Tag-based preference scoring
-    user_preferences = user.get("preferences", [])
-    if user_preferences:
-        tag_bonus = calculate_tag_preference_score(p, user_preferences)
+    # NOTE: tag_bonus already calculated above in must_see conditional logic
+    # Add the bonus to score here with logging
+    if tag_bonus > 0:
         score += tag_bonus
-        if tag_bonus > 0:
-            # ASCII-safe print for Windows terminal (polish characters)
-            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-            print(f"    [TAG BONUS] {poi_name_safe}: +{tag_bonus} from preferences {user_preferences}")
+        # ASCII-safe print for Windows terminal (polish characters)
+        poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+        print(f"    [TAG BONUS] {poi_name_safe}: +{tag_bonus} from preferences {user_preferences}")
     
     # ETAP 1 ENHANCEMENT (29.01.2026) - New scoring modules
     score += calculate_space_score(p, user, context)  # indoor/outdoor vs weather
