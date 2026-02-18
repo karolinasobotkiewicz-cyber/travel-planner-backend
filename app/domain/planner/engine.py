@@ -369,24 +369,59 @@ def safe_float(x, default=0.0):
 
 def is_kids_focused_poi(poi):
     """
-    Check if POI is kids-focused (only family_kids in target_groups).
+    Check if POI is kids-focused (target_groups + tags analysis).
     
     CLIENT REQUIREMENT (04.02.2026): Kids-focused POI should have daily limit
     for non-family groups (max 1 per day).
+    
+    UAT FIX (18.02.2026 - Problem #2): Enhanced detection via tags
+    - Original logic: ONLY family_kids in target_groups
+    - New logic: Also check for kids-related tags
     
     Args:
         poi: POI dict
         
     Returns:
-        bool: True if POI is kids-focused (only family_kids)
+        bool: True if POI is kids-focused
     """
+    # Method 1: ONLY family_kids in target_groups (strictest)
     target_groups = poi.get("target_groups") or []
-    if not target_groups:
-        return False
+    if target_groups:
+        tg = set([str(x).strip().lower() for x in target_groups])
+        if len(tg) == 1 and "family_kids" in tg:
+            return True
     
-    # Kids-focused = POI with ONLY family_kids (not multi-group)
-    tg = set([str(x).strip().lower() for x in target_groups])
-    return len(tg) == 1 and "family_kids" in tg
+    # Method 2: UAT FIX - Check for kids-specific tags
+    # If POI has multiple kids-related tags → likely kids-focused
+    poi_tags = poi.get("tags") or []
+    tags_str = ",".join([str(t).lower() for t in poi_tags])
+    
+    kids_indicators = [
+        "kids", "children", "playground", "interactive_exhibition_kids",
+        "petting_zoo", "farm_animals", "feeding_experience",
+        "miniature_world", "fairytale_world", "illusion_kids",
+        "aquatic_playground", "adventure_playground", "trampoline_park",
+        "family_entertainment_kids", "zoo", "aquarium_kids"
+    ]
+    
+    kids_tag_count = sum(1 for indicator in kids_indicators if indicator in tags_str)
+    
+    # If POI has 2+ kids indicators → treat as kids-focused
+    if kids_tag_count >= 2:
+        return True
+    
+    # Method 3: UAT FIX - Check POI name for obvious kids attractions
+    poi_name = str(poi.get("name", "")).lower()
+    name_indicators = [
+        "mini zoo", "podwodny świat", "dom do góry nogami",
+        "myszogród", "playground", "kids park", "children"
+    ]
+    
+    for indicator in name_indicators:
+        if indicator in poi_name:
+            return True
+    
+    return False
 
 
 def is_termy_spa(poi):
@@ -719,6 +754,19 @@ def score_poi(
     score += calculate_budget_score(p, user)
     score += calculate_premium_penalty(p, user)  # CLIENT REQUIREMENT (08.02.2026): Premium experience penalty at budget/standard levels
     score += calculate_crowd_score(p, user, current_time_minutes=now)  # Added current_time for peak_hours
+    
+    # UAT FIX (18.02.2026 - Problem #3): Popularity penalty for low crowd_tolerance
+    # Tests 02, 04, 05, 06: crowd_tolerance=1 users get top magnets (Morskie Oko, Krupówki, Krokiew)
+    # Solution: Additional penalty for popular POI (popularity_score >= 7) + low tolerance (0-1)
+    popularity = safe_float(p.get("popularity_score", 0), 0)
+    crowd_tolerance = safe_int(user.get("crowd_tolerance", 1), 1)
+    
+    if popularity >= 7 and crowd_tolerance <= 1:
+        # Strong penalty for popular attractions when user has low crowd tolerance
+        penalty = -15.0
+        score += penalty
+        poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+        print(f"    [POPULARITY PENALTY] {poi_name_safe}: {penalty} (popularity={popularity:.1f}, tolerance={crowd_tolerance})")
 
     # ETAP 1 ROZSZERZONY - preferences + travel_style
     score += calculate_preference_score(p, user)
@@ -832,6 +880,14 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
     # Global tracking across ALL days
     global_used_pois = set()
     
+    # UAT FIX (18.02.2026 - Problem #6): Track termy/spa count across all days
+    # Test 08: 5 termy in 7 days is too much
+    # Limit: max 2-3 termy in 7+ day plans (1 termy per 2-3 days)
+    max_termy_total = max(2, num_days // 3)  # 2-day: 2 termy, 3-day: 2, 5-day: 2, 7-day: 3
+    global_termy_tracking = {"count": 0, "max": max_termy_total}
+    
+    print(f"[MULTI-DAY] Termy limit for {num_days} days: max {max_termy_total} total")
+    
     # Core POI distribution strategy
     # Get all core POIs (priority_level == 12)
     core_pois = [p for p in pois if is_core_poi(p)]
@@ -871,13 +927,15 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
         
         # Build day with global tracking
         # The global_used set will be updated inside build_day()
+        # UAT FIX (18.02.2026 - Problem #6): Pass termy tracking dict
         day_plan = build_day(
             pois=pois,
             user=user,
             context=context,
             day_start=day_start,
             day_end=day_end,
-            global_used=global_used_pois  # Pass reference to global set
+            global_used=global_used_pois,  # Pass reference to global set
+            global_termy_tracking=global_termy_tracking  # Pass termy limit tracker
         )
         
         # Count POIs used in this day
@@ -891,6 +949,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
         
         print(f"[MULTI-DAY] Day {day_num + 1} complete: {day_poi_count} POIs ({day_core_count} core)")
         print(f"[MULTI-DAY] Global used POIs after Day {day_num + 1}: {len(global_used_pois)}")
+        print(f"[MULTI-DAY] Global termy count after Day {day_num + 1}: {global_termy_tracking['count']}/{global_termy_tracking['max']}")
         
         all_day_plans.append(day_plan)
     
@@ -902,7 +961,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
 # =========================
 
 
-def build_day(pois, user, context, day_start=None, day_end=None, global_used=None):
+def build_day(pois, user, context, day_start=None, day_end=None, global_used=None, global_termy_tracking=None):
     """
     Build daily plan from POIs.
     
@@ -913,6 +972,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         day_start: Start time string "HH:MM" (default: DAY_START global)
         day_end: End time string "HH:MM" (default: DAY_END global)
         global_used: Optional set of POI IDs already used in previous days (for multi-day planning)
+        global_termy_tracking: Optional dict {"count": int, "max": int} for tracking termy/spa across all days
     """
     ctx = _get_context(context)
     
@@ -975,7 +1035,33 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     # BUDGET TRACKING (FIX 07.02.2026)
     # Track daily cost to enforce daily_limit hard constraint
     daily_cost = 0  # Sum of ticket_price for all POI added today
-    daily_limit = user.get("daily_limit")  # None or int (PLN)
+    
+    # UAT FIX (18.02.2026 - Problem #5): Enhanced daily_limit detection
+    # Check multiple possible locations for daily_limit in user dict
+    daily_limit = user.get("daily_limit")  # Direct: user.daily_limit
+    
+    if daily_limit is None:
+        # Try user.budget.daily_limit
+        budget_dict = user.get("budget", {})
+        if isinstance(budget_dict, dict):
+            daily_limit = budget_dict.get("daily_limit")
+    
+    if daily_limit is None:
+        # Try user.group.daily_limit
+        group_dict = user.get("group", {})
+        if isinstance(group_dict, dict):
+            daily_limit = group_dict.get("daily_limit")
+    
+    # Convert to int if string
+    if daily_limit is not None:
+        try:
+            daily_limit = int(daily_limit)
+            print(f"[BUDGET] Daily limit detected: {daily_limit} PLN")
+        except (ValueError, TypeError):
+            daily_limit = None
+            print(f"[BUDGET] WARNING: Invalid daily_limit value: {user.get('daily_limit')}")
+    else:
+        print(f"[BUDGET] No daily_limit set - budget tracking disabled")
 
     while now < end:
         # FEEDBACK KLIENTKI (03.02.2026): Enforce core_min POI
@@ -1082,6 +1168,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if is_termy_spa(p) and termy_count >= 1:
                     print(f"[LIMITS] Skip termy/spa POI ID: {poi_id(p)} (already have {termy_count}/1 for seniors)")
                     continue  # Skip - already have 1 termy/spa today
+            
+            # UAT FIX (18.02.2026 - Problem #6): Global termy limit across all days
+            # Test 08: 5 termy in 7 days is too much (max 2-3)
+            if global_termy_tracking is not None and is_termy_spa(p):
+                if global_termy_tracking["count"] >= global_termy_tracking["max"]:
+                    print(f"[LIMITS] Skip termy/spa POI ID: {poi_id(p)} (global limit {global_termy_tracking['count']}/{global_termy_tracking['max']})")
+                    continue  # Skip - global termy limit reached
             
             # STEP 3: Budget hard filter (FIX 07.02.2026)
             # If daily_limit is set, check if adding this POI would exceed budget
@@ -1387,6 +1480,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         if daily_cost + poi_cost_total > daily_limit:
                             continue  # EXCLUDE - would exceed daily budget limit
                     
+                    # UAT FIX (18.02.2026 - Problem #6): Check global termy limit (fallback soft POI)
+                    if global_termy_tracking is not None and is_termy_spa(p):
+                        if global_termy_tracking["count"] >= global_termy_tracking["max"]:
+                            continue  # Skip - global termy limit reached
+                    
                     # Soft POI criteria (client requirements)
                     # Since all Zakopane POI have intensity='medium', accept medium intensity
                     # Focus on: short duration (10-30 min) + low must_see_score (0-2)
@@ -1627,6 +1725,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             if is_termy_spa(best):
                 termy_count += 1
                 print(f"[LIMITS] Termy/spa POI added: {termy_count}/1 for seniors today")
+        
+        # UAT FIX (18.02.2026 - Problem #6): Increment global termy counter
+        if global_termy_tracking is not None and is_termy_spa(best):
+            global_termy_tracking["count"] += 1
+            print(f"[LIMITS] Global termy count: {global_termy_tracking['count']}/{global_termy_tracking['max']}")
 
         # update kultur
         if is_culture(best):
@@ -1690,6 +1793,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if user_group == 'seniors':
                         if is_termy_spa(p) and termy_count >= 1:
                             continue  # Skip - already have 1 termy/spa today
+                    
+                    # UAT FIX (18.02.2026 - Problem #6): Check global termy limit
+                    if global_termy_tracking is not None and is_termy_spa(p):
+                        if global_termy_tracking["count"] >= global_termy_tracking["max"]:
+                            continue  # Skip - global termy limit reached
                     
                     # FIX #7 (02.02.2026): Check hard limit before adding soft POI
                     if attraction_count >= limits["hard"]:
@@ -1773,6 +1881,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             termy_count += 1
                             print(f"[LIMITS] Termy/spa POI added (soft): {termy_count}/1 for seniors today")
                     
+                    # UAT FIX (18.02.2026 - Problem #6): Increment global termy counter (gap filler)
+                    if global_termy_tracking is not None and is_termy_spa(p):
+                        global_termy_tracking["count"] += 1
+                        print(f"[LIMITS] Global termy count (gap filler): {global_termy_tracking['count']}/{global_termy_tracking['max']}")
+                    
                     soft_filled = True
                     break  # Fill one soft POI per gap
                 
@@ -1804,6 +1917,155 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         # finale lock
         if is_finale(best):
             finale_done = True
+
+    # UAT FIX (18.02.2026 - Problem #4): Fill massive time gaps before day_end
+    # Tests 03, 06, 07, 08, 09: Days end at 14:30, day_end at 19:00 (4.5h gap)
+    # Solution: If (day_end - current_time) > 180min, add light activities
+    remaining_to_end = end - now
+    
+    if remaining_to_end > 180:  # 3+ hours remaining
+        print(f"[GAP FILL END] Large gap remaining: {remaining_to_end}min ({minutes_to_time(now)} → {minutes_to_time(end)})")
+        
+        # Try to add 1-2 light activities to fill the gap
+        gap_fill_attempts = 0
+        max_gap_fill = 2  # Max 2 additional light activities
+        
+        while remaining_to_end > 90 and gap_fill_attempts < max_gap_fill:
+            # Find soft POI (light activity: 30-60 min, low must_see)
+            soft_best = None
+            soft_score = -9999
+            soft_duration = 0
+            soft_travel = 0
+            
+            for p in pois:
+                if poi_id(p) in used:
+                    continue
+                
+                # Apply hard filters
+                if should_exclude_by_target_group(p, user):
+                    continue
+                if should_exclude_by_intensity(p, user):
+                    continue
+                
+                # Limits
+                user_group = user.get("target_group", "")
+                if user_group in ['solo', 'couples', 'friends', 'seniors']:
+                    if is_kids_focused_poi(p) and kids_focused_count >= 1:
+                        continue
+                if user_group == 'seniors':
+                    if is_termy_spa(p) and termy_count >= 1:
+                        continue
+                if attraction_count >= limits["hard"]:
+                    break
+                
+                # Budget filter
+                if daily_limit is not None:
+                    group_size = user.get("group_size", 1)
+                    poi_cost_total = float(p.get("ticket_price", 0)) * group_size
+                    if daily_cost + poi_cost_total > daily_limit:
+                        continue
+                
+                # Soft POI criteria: 10-60 min, must_see <= 7
+                time_min = p.get("time_min", 60)
+                if time_min < 10 or time_min > 60:
+                    continue
+                must_see_score = p.get("must_see", p.get("must_see_score", 10))
+                if must_see_score > 7:
+                    continue
+                
+                # Calculate travel + duration
+                travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
+                start_time = now + travel
+                if start_time >= end:
+                    continue
+                
+                duration = min(time_min, remaining_to_end - travel)
+                if duration < 10:
+                    continue
+                
+                if not is_open(p, start_time, duration, ctx["season"], ctx):
+                    continue
+                
+                # Simple scoring: prefer nearby, quick visits
+                score = 10 - travel * 0.5
+                
+                if score > soft_score:
+                    soft_best = p
+                    soft_score = score
+                    soft_duration = duration
+                    soft_travel = travel
+            
+            if soft_best:
+                # Add soft POI to fill gap
+                if soft_travel > 0:
+                    plan.append({
+                        "type": "transfer",
+                        "from": poi_name(last_poi) if last_poi else "start",
+                        "to": poi_name(soft_best),
+                        "duration_min": soft_travel,
+                    })
+                    now += soft_travel
+                
+                plan.append({
+                    "type": "attraction",
+                    "poi": soft_best,
+                    "name": poi_name(soft_best),
+                    "start_time": minutes_to_time(now),
+                    "end_time": minutes_to_time(now + soft_duration),
+                    "meta": {
+                        "experience_role": "gap_filler",
+                        "is_culture": bool(is_culture(soft_best)),
+                        "body_state_after": get_next_body_state(soft_best, body_state),
+                    },
+                })
+                
+                now += soft_duration
+                used.add(poi_id(soft_best))
+                if global_used is not None:
+                    global_used.add(poi_id(soft_best))
+                
+                # Update counters
+                attraction_count += 1
+                if is_core_poi(soft_best):
+                    core_attraction_count += 1
+                if user_group in ['solo', 'couples', 'friends', 'seniors']:
+                    if is_kids_focused_poi(soft_best):
+                        kids_focused_count += 1
+                if user_group == 'seniors':
+                    if is_termy_spa(soft_best):
+                        termy_count += 1
+                
+                # Update budget
+                if daily_limit is not None:
+                    group_size = user.get("group_size", 1)
+                    poi_cost_total = float(soft_best.get("ticket_price", 0)) * group_size
+                    daily_cost += poi_cost_total
+                
+                last_poi = soft_best
+                remaining_to_end = end - now
+                gap_fill_attempts += 1
+                
+                print(f"[GAP FILL END] Added light activity: {poi_name(soft_best)} ({soft_duration}min), remaining={remaining_to_end}min")
+            else:
+                # No soft POI available, add free_time (max 90min)
+                free_duration = min(90, remaining_to_end)
+                free_start_time = minutes_to_time(now)
+                free_end_time = minutes_to_time(now + free_duration)
+                
+                overlaps, conflict = _check_time_overlap(plan, free_start_time, free_end_time)
+                if not overlaps:
+                    plan.append({
+                        "type": "free_time",
+                        "start_time": free_start_time,
+                        "end_time": free_end_time,
+                        "duration_min": free_duration,
+                        "description": "Czas wolny na relaks: spacer, kawa, zakupy, odpoczynek"
+                    })
+                    now += free_duration
+                    remaining_to_end = end - now
+                    print(f"[GAP FILL END] Added free_time ({free_duration}min), remaining={remaining_to_end}min")
+                
+                break  # Exit after adding free_time (stop gap filling)
 
     # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #10):
     # Standardize all items to use start_time/end_time (not "time")

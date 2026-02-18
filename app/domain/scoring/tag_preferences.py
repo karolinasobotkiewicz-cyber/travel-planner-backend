@@ -16,7 +16,7 @@ from typing import List, Dict, Any
 USER_PREFERENCES_TO_TAGS = {
     "attractions_for_kids": {
         "type_match": ["kids_attractions", "theme_park", "zoo_other"],
-        "type_bonus": 20,
+        "type_bonus": 30,
         "tags": [
             "playground",
             "interactive_exhibition_kids",
@@ -31,11 +31,11 @@ USER_PREFERENCES_TO_TAGS = {
             "trampoline_park",
             "family_entertainment",
         ],
-        "tag_bonus": 15,
+        "tag_bonus": 25,
     },
     "theme_parks": {
         "type_match": ["theme_park", "amusement_park"],
-        "type_bonus": 25,
+        "type_bonus": 35,
         "tags": [
             "dinosaur_park",
             "adventure_park",
@@ -46,11 +46,11 @@ USER_PREFERENCES_TO_TAGS = {
             "interactive_exhibits",
             "amusement_rides",
         ],
-        "tag_bonus": 15,
+        "tag_bonus": 25,
     },
     "active_sport": {
         "type_match": ["active_sport", "adventure_sport"],
-        "type_bonus": 20,
+        "type_bonus": 30,
         "tags": [
             "skiing",
             "snowboarding",
@@ -67,11 +67,11 @@ USER_PREFERENCES_TO_TAGS = {
             "zipline",
             "off_road",
         ],
-        "tag_bonus": 15,
+        "tag_bonus": 25,
     },
     "museums_heritage": {
         "type_match": ["museum", "heritage_site", "cultural_attraction"],
-        "type_bonus": 20,
+        "type_bonus": 30,
         "tags": [
             "local_history",
             "mountain_culture",
@@ -84,11 +84,29 @@ USER_PREFERENCES_TO_TAGS = {
             "interactive_museum",
             "educational_exhibition",
         ],
-        "tag_bonus": 15,
+        "tag_bonus": 25,
+    },
+    # ALIAS for frontend compatibility (18.02.2026 UAT fix)
+    "museum_heritage": {
+        "type_match": ["museum", "heritage_site", "cultural_attraction"],
+        "type_bonus": 30,
+        "tags": [
+            "local_history",
+            "mountain_culture",
+            "regional_heritage",
+            "traditional_architecture",
+            "ethnographic_museum",
+            "themed_museum",
+            "historical_mansion",
+            "art_gallery",
+            "interactive_museum",
+            "educational_exhibition",
+        ],
+        "tag_bonus": 25,
     },
     "nature_landscapes": {
         "type_match": ["nature_outdoor", "scenic_viewpoint"],
-        "type_bonus": 20,
+        "type_bonus": 30,
         "tags": [
             "mountain_viewpoint",
             "scenic_panorama",
@@ -103,11 +121,11 @@ USER_PREFERENCES_TO_TAGS = {
             "gorge",
             "forest_trail",
         ],
-        "tag_bonus": 15,
+        "tag_bonus": 25,
     },
     "water_attractions": {
         "type_match": ["water_wellness", "aquapark"],
-        "type_bonus": 20,
+        "type_bonus": 30,
         "tags": [
             "thermal_baths",
             "hot_springs",
@@ -119,11 +137,11 @@ USER_PREFERENCES_TO_TAGS = {
             "aquatic_playground",
             "year_round",
         ],
-        "tag_bonus": 15,
+        "tag_bonus": 25,
     },
     "castles_palaces": {
         "type_match": ["castle", "palace", "heritage_site"],
-        "type_bonus": 25,
+        "type_bonus": 35,
         "tags": [
             "medieval_castle",
             "castle_ruins",
@@ -133,11 +151,11 @@ USER_PREFERENCES_TO_TAGS = {
             "gothic_architecture",
             "royal_residence",
         ],
-        "tag_bonus": 15,
+        "tag_bonus": 25,
     },
     "caves_mines": {
         "type_match": ["cave", "mine", "underground_attraction"],
-        "type_bonus": 25,
+        "type_bonus": 35,
         "tags": [
             "limestone_cave",
             "underground_tour",
@@ -148,11 +166,11 @@ USER_PREFERENCES_TO_TAGS = {
             "underground_chapel",
             "crystal_formations",
         ],
-        "tag_bonus": 15,
+        "tag_bonus": 25,
     },
     "relax_wellness": {
         "type_match": ["water_wellness", "spa"],
-        "type_bonus": 20,
+        "type_bonus": 30,
         "tags": [
             "thermal_baths",
             "hot_springs",
@@ -164,7 +182,7 @@ USER_PREFERENCES_TO_TAGS = {
             "sauna",
             "jacuzzi",
         ],
-        "tag_bonus": 15,
+        "tag_bonus": 25,
     },
     "must_see_only": {
         "type_match": [],  # No specific type - applies to all POI
@@ -172,18 +190,62 @@ USER_PREFERENCES_TO_TAGS = {
         "tags": [
             "must_see",  # Must-see attractions marked in POI data
         ],
-        "tag_bonus": 20,  # Higher bonus (20 vs 15) for must-see filtering
+        "tag_bonus": 25,  # Higher bonus for must-see filtering
+    },
+    # UAT FIX (18.02.2026): Missing preferences from Test 02, 04
+    "local_food_experience": {
+        "type_match": ["restaurant", "food_experience", "cultural_attraction"],
+        "type_bonus": 30,
+        "tags": [
+            "local_cuisine",
+            "regional_food",
+            "traditional_restaurant",
+            "bacówka",
+            "highlander_cuisine",
+            "food_tasting",
+            "local_specialties",
+            "mountain_food",
+            "oscypek",
+            "regional_dishes",
+        ],
+        "tag_bonus": 25,
+    },
+    "history_mystery": {
+        "type_match": [
+            "museum",
+            "heritage_site",
+            "cultural_attraction",
+            "underground_attraction",
+        ],
+        "type_bonus": 35,  # Higher bonus for niche preference
+        "tags": [
+            "local_history",
+            "regional_heritage",
+            "historical_mansion",
+            "legends",
+            "folklore",
+            "mystery",
+            "underground_tour",
+            "hidden_gem",
+            "secret_history",
+            "unexplored",
+            "discovery",
+        ],
+        "tag_bonus": 25,
     },
 }
 
 
-def calculate_tag_preference_score(poi: Dict[str, Any], user_preferences: List[str]) -> int:
+def calculate_tag_preference_score(
+    poi: Dict[str, Any], user_preferences: List[str]
+) -> int:
     """
     Calculate bonus score based on matching user preferences to POI tags.
     
     Args:
         poi: Normalized POI dict with 'tags' and 'type' fields
-        user_preferences: List of preference strings (e.g., ["attractions_for_kids", "water_attractions"])
+        user_preferences: List of preference strings
+            (e.g., ["attractions_for_kids", "water_attractions"])
     
     Returns:
         Total bonus score (0 if no preferences or no matches)
