@@ -275,6 +275,8 @@ class PlanService:
         # 3. KONWERTUJ ITEMS Z ENGINE
         lunch_added = False  # Track czy engine dodał lunch
         first_attraction_index = 0  # Track first attraction for timing correction
+        last_transit_was_car = False  # Track if previous transit was by car (UAT Problem #9)
+        last_parking_name = None  # Track last parking to avoid duplicates
         
         for item in engine_result:
             item_type = item.get("type")
@@ -304,6 +306,44 @@ class PlanService:
                 lunch_added = True
             
             elif item_type == "attraction":
+                # BUGFIX (18.02.2026 - UAT Problem #9): Add parking before attraction if needed
+                # Generate parking item BEFORE attraction if:
+                # 1. User has car
+                # 2. Previous transit was by CAR (duration >= 10 min)
+                # 3. This is NOT the first attraction (already has parking at day start)
+                # 4. POI has different parking name than previous (avoid duplicates)
+                
+                poi = item.get("poi", {})
+                current_parking_name = poi.get("parking_name", "")
+                
+                if (has_car and last_transit_was_car and 
+                    first_attraction_index > 0 and 
+                    current_parking_name and 
+                    current_parking_name != last_parking_name):
+                    
+                    # Generate parking item before this attraction
+                    attr_start_time = item.get("start_time")
+                    
+                    # Calculate parking start: attraction_start - parking_duration - walk_time
+                    from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+                    
+                    parking_duration = 15
+                    walk_time_raw = poi.get("parking_walk_time_min")
+                    walk_time = int(walk_time_raw) if walk_time_raw and walk_time_raw > 0 else 5
+                    
+                    attr_start_min = time_to_minutes(attr_start_time)
+                    parking_start_min = attr_start_min - parking_duration - walk_time
+                    parking_start = minutes_to_time(parking_start_min)
+                    
+                    # Generate parking item
+                    parking_item = self._generate_parking_item(
+                        poi,
+                        parking_start,
+                        attr_start_time
+                    )
+                    items.append(parking_item)
+                    last_parking_name = current_parking_name
+                
                 # 5. ATTRACTION (4.11 - z cost estimation)
                 
                 # BUGFIX: Correct first attraction timing if parking exists
@@ -321,7 +361,11 @@ class PlanService:
                     # Calculate corrected start time: day_start + parking + walk
                     corrected_start_min = time_to_minutes(day_start) + parking_duration + walk_time
                     attr_start_time = minutes_to_time(corrected_start_min)
-                    first_attraction_index += 1
+                    
+                    # Track first parking name
+                    last_parking_name = first_attraction.get("poi", {}).get("parking_name", "")
+                
+                first_attraction_index += 1
                 
                 attraction_item = self._generate_attraction_item(
                     item.get("poi"),
@@ -331,6 +375,9 @@ class PlanService:
                     context  # ETAP 2 Day 5: Pass context for explainability
                 )
                 items.append(attraction_item)
+                
+                # Reset transit flag after attraction
+                last_transit_was_car = False
             
             elif item_type == "transfer":
                 # 6. TRANSIT
@@ -358,8 +405,10 @@ class PlanService:
                 
                 if has_car and duration >= 10:
                     mode = TransitMode.CAR
+                    last_transit_was_car = True  # UAT Problem #9: Track car transit
                 elif has_car and duration < 10:
                     mode = TransitMode.WALK
+                    last_transit_was_car = False
                 else:
                     # No car - use context transport or walk
                     transport = context.get('transport', 'walk')
@@ -370,6 +419,7 @@ class PlanService:
                         'public_transport': TransitMode.PUBLIC_TRANSPORT,
                     }
                     mode = mode_map.get(transport, TransitMode.WALK)
+                    last_transit_was_car = (mode == TransitMode.CAR)
                 
                 transit_item = TransitItem(
                     type=ItemType.TRANSIT,
