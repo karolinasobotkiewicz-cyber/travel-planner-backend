@@ -20,6 +20,7 @@ class ItemType(str, Enum):
     TRANSIT = "transit"
     ATTRACTION = "attraction"
     LUNCH_BREAK = "lunch_break"
+    DINNER_BREAK = "dinner_break"
     FREE_TIME = "free_time"
     DAY_END = "day_end"
 
@@ -187,6 +188,25 @@ class LunchBreakItem(BaseModel):
     )
 
 
+class DinnerBreakItem(BaseModel):
+    """
+    Przerwa na kolację - 18:00-19:30 (jeśli jest czas w dniu).
+    Backend generuje suggestions z naciskiem na regionalne jedzenie.
+    """
+
+    type: Literal[ItemType.DINNER_BREAK] = ItemType.DINNER_BREAK
+    start_time: str = Field(..., pattern=r"^([01]\d|2[0-3]):([0-5]\d)$")
+    end_time: str = Field(..., pattern=r"^([01]\d|2[0-3]):([0-5]\d)$")
+    duration_min: int = Field(..., ge=0, description="Czas przerwy")
+    label: str = Field(
+        default="Kolacja / regionalne smaki", description="Etykieta"
+    )
+    suggestions: List[str] = Field(
+        default_factory=list,
+        description="Backend generuje (ETAP 1: statyczne teksty)",
+    )
+
+
 class FreeTimeItem(BaseModel):
     """
     Wolny czas między atrakcjami.
@@ -214,6 +234,7 @@ PlanItem = Union[
     TransitItem,
     AttractionItem,
     LunchBreakItem,
+    DinnerBreakItem,
     FreeTimeItem,
 ]
 

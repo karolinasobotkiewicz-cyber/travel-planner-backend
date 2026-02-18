@@ -282,6 +282,11 @@ LUNCH_EARLIEST = "12:00"
 LUNCH_LATEST = "14:30"
 LUNCH_DURATION_MIN = 40
 
+DINNER_TARGET = "19:00"
+DINNER_EARLIEST = "18:00"
+DINNER_LATEST = "20:00"
+DINNER_DURATION_MIN = 90
+
 MIN_TRANSFER_MIN = 5
 
 GROUP_LIMITS = {
@@ -1056,6 +1061,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     body_state = "neutral"
     finale_done = False
     lunch_done = False
+    dinner_done = False  # UAT Problem #11: Track dinner_break
     
     # BUDGET TRACKING (FIX 07.02.2026)
     # Track daily cost to enforce daily_limit hard constraint
@@ -1145,6 +1151,65 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 lunch_done = True
                 fatigue = max(0, fatigue - 2)
                 print(f"[LUNCH] Inserted lunch at {lunch_start_time}-{lunch_end_time}")
+                continue
+
+        # UAT Problem #11: DINNER_BREAK
+        # Add dinner break if:
+        # - NOT done yet
+        # - Current time >= DINNER_EARLIEST (18:00)
+        # - Enough time left in day (at least 90 min before day_end)
+        if not dinner_done:
+            dinner_earliest = time_to_minutes(DINNER_EARLIEST)  # 18:00
+            dinner_target = time_to_minutes(DINNER_TARGET)      # 19:00
+            dinner_latest = time_to_minutes(DINNER_LATEST)      # 20:00
+            should_insert_dinner = False
+            is_late_dinner = False
+            
+            # Case 1: We've reached earliest dinner time (18:00)
+            if now >= dinner_earliest:
+                should_insert_dinner = True
+                
+                # Case 1a: Already past latest dinner time (20:00) - late dinner!
+                if now > dinner_latest:
+                    is_late_dinner = True
+                    print(f"[DINNER] WARNING: Late dinner scheduled at {minutes_to_time(now)} (should be by {DINNER_LATEST})")
+            
+            if should_insert_dinner:
+                dinner_start_time = minutes_to_time(now)
+                dinner_end_time = minutes_to_time(min(end, now + DINNER_DURATION_MIN))
+                
+                # Check overlap before adding dinner
+                overlaps, conflict = _check_time_overlap(plan, dinner_start_time, dinner_end_time)
+                if overlaps:
+                    print(f"[OVERLAP DETECTED] dinner_break {dinner_start_time}-{dinner_end_time} conflicts with {conflict.get('type')} {conflict.get('start_time')}-{conflict.get('end_time')}")
+                    # Adjust dinner time - move to after conflicting item
+                    conflict_end_min = time_to_minutes(conflict.get('end_time', dinner_start_time))
+                    now = conflict_end_min
+                    dinner_start_time = minutes_to_time(now)
+                    dinner_end_time = minutes_to_time(min(end, now + DINNER_DURATION_MIN))
+                
+                # Generate suggestions based on preferences
+                dinner_suggestions = ["Regionalna restauracja", "Bacówka", "Karcma góralska"]
+                if "local_food_experience" in user.get("preferences", []):
+                    dinner_suggestions = [
+                        "Regionalna restauracja z kuchnią góralską",
+                        "Bacówka z degustacją oscypka",
+                        "Karcma z tradycyjnymi potrawami"
+                    ]
+                
+                plan.append(
+                    {
+                        "type": "dinner_break",
+                        "start_time": dinner_start_time,
+                        "end_time": dinner_end_time,
+                        "duration_min": DINNER_DURATION_MIN,
+                        "suggestions": dinner_suggestions,
+                    }
+                )
+                now += DINNER_DURATION_MIN
+                dinner_done = True
+                fatigue = max(0, fatigue - 2)
+                print(f"[DINNER] Inserted dinner at {dinner_start_time}-{dinner_end_time}")
                 continue
 
         # swiety final

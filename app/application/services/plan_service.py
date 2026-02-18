@@ -15,6 +15,7 @@ from app.domain.models.plan import (
     TransitItem,
     AttractionItem,
     LunchBreakItem,
+    DinnerBreakItem,
     FreeTimeItem,
     TicketInfo,
     ParkingInfo,
@@ -304,6 +305,21 @@ class PlanService:
                 )
                 items.append(lunch_item)
                 lunch_added = True
+            
+            elif item_type == "dinner_break":
+                # UAT Problem #11: DINNER_BREAK - z engine
+                dinner_item = DinnerBreakItem(
+                    type=ItemType.DINNER_BREAK,
+                    start_time=item.get("start_time", "18:00"),
+                    end_time=item.get("end_time", "19:30"),
+                    duration_min=item.get("duration_min", 90),
+                    suggestions=item.get("suggestions", [
+                        "Regionalna restauracja",
+                        "Bacówka",
+                        "Karcma góralska"
+                    ])
+                )
+                items.append(dinner_item)
             
             elif item_type == "attraction":
                 # BUGFIX (18.02.2026 - UAT Problem #9): Add parking before attraction if needed
