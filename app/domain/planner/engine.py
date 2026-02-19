@@ -160,6 +160,142 @@ def _add_buffer_item(plan, now, buffer_type, duration_min, reason_context=None, 
     return now + duration_min
 
 
+def _get_free_time_label(plan, now_min, duration_min, day_end_min):
+    """
+    Generate smart, context-aware label for free_time items.
+    
+    BUGFIX (19.02.2026 - UAT Round 2, Bug #3):
+    Client requirement: Free time should have meaningful, context-aware descriptions.
+    Tests show 2-3h gaps with generic "Czas wolny" - need smart labels!
+    
+    Args:
+        plan: List of plan items (to check previous item)
+        now_min: Current time in minutes from midnight
+        duration_min: Duration of free_time in minutes
+        day_end_min: Day end time in minutes
+    
+    Returns:
+        str: Smart description for free_time
+    
+    Context Detection:
+    - After lunch_break → "Czas wolny po lunchu: kawa, lekki spacer, zakupy"
+    - After dinner_break → "Wieczór: spacer, zakupy, relaks w hotelu"
+    - End of day (>60 min to day_end) → "Kolacja i wieczorny wypoczynek: restauracja, spacer, zakupy"
+    - Long gap (>90 min) → "Czas wolny: spacer po okolicy, kawa, zakupy, zwiedzanie na własną rękę"
+    - Short gap (60-90 min) → "Przerwa kawowa: kawa, przekąska, odpoczynek"
+    """
+    # Check previous item in plan
+    last_item = None
+    if plan:
+        # Find last item with type (skip empty items)
+        for item in reversed(plan):
+            if "type" in item:
+                last_item = item
+                break
+    
+    # Context 1: After lunch_break
+    if last_item and last_item.get("type") == "lunch_break":
+        return "Czas wolny po lunchu: kawa, lekki spacer, zakupy, relaks"
+    
+    # Context 2: After dinner_break
+    if last_item and last_item.get("type") == "dinner_break":
+        return "Wieczór: spacer, zakupy, relaks w hotelu"
+    
+    # Context 3: End of day (check if free_time brings us close to day_end)
+    # Check 1: Does this free_time END within 60 min of day_end?
+    # Check 2: OR is the gap to day_end large (>90 min) suggesting end-of-day period?
+    end_of_free_time = now_min + duration_min
+    remaining_to_day_end = day_end_min - now_min
+    
+    # If free_time ends near day_end (within 60 min) OR fills large end-of-day gap
+    if end_of_free_time >= day_end_min - 60 or (remaining_to_day_end > 90 and now_min >= 840):  # After 14:00
+        # Check time of day (evening hours: 18:00-21:00 = 1080-1260 min)
+        if now_min >= 1080:  # After 18:00
+            return "Kolacja i wieczorny wypoczynek: restauracja, spacer, zakupy"
+        else:
+            return "Czas wolny do końca dnia: kolacja, spacer, zakupy, relaks"
+    
+    # Context 4: Long gap (>90 min)
+    if duration_min > 90:
+        return "Czas wolny: spacer po okolicy, kawa, zakupy, zwiedzanie na własną rękę"
+    
+    # Context 5: Medium gap (60-90 min)
+    if duration_min >= 60:
+        return "Przerwa: kawa, przekąska, odpoczynek, krótki spacer"
+    
+    # Default: Short gap (<60 min, but shouldn't happen since threshold is 60)
+    return "Przerwa kawowa: kawa, odpoczynek"
+
+
+def _log_preference_coverage(plan, user):
+    """
+    Validate and log preference coverage for the day.
+    
+    BUGFIX (19.02.2026 - UAT Round 2, Issue #5):
+    Client requirement: "preferences są ignorowane przez engine"
+    Problem: Tests 03-06, 09-10 show user preferences (kids_attractions, relaxation,
+             active_sport, history_mystery) not realized in plan.
+    
+    Solution: Log warning if day is missing attractions matching top 3 preferences.
+    This doesn't enforce coverage (scoring already boosted), but alerts developers.
+    
+    Args:
+        plan: List of plan items (dicts with type, poi, etc.)
+        user: User dict with "preferences" list
+    
+    Returns:
+        None (logs only)
+    
+    Logic:
+        - Get top 3 user preferences
+        - For each preference, check if ANY attraction in plan matches it
+        - Log warning if missing coverage
+        - Examples:
+          * User prefers ["relaxation", "kids_attractions", "nature"]
+          * Day has: Krokiew (sports), Muzeum (culture), Termy (relaxation)
+          * Missing: kids_attractions (OK if not family), nature (should warn)
+    """
+    user_prefs = user.get("preferences", [])
+    if not user_prefs:
+        return  # No preferences to check
+    
+    top_3_prefs = user_prefs[:3]
+    
+    # Get all attractions from plan with their POI tags
+    attractions = [
+        item for item in plan 
+        if item.get("type") == "attraction" and item.get("poi")
+    ]
+    
+    if not attractions:
+        print(f"[PREFERENCE COVERAGE] WARNING: No attractions in plan, cannot validate preferences")
+        return
+    
+    # Check coverage for each top 3 preference
+    missing_prefs = []
+    for pref in top_3_prefs:
+        # Check if ANY attraction has this preference in tags
+        has_match = False
+        for item in attractions:
+            poi = item.get("poi", {})
+            poi_tags = set(poi.get("tags", []))
+            if pref in poi_tags:
+                has_match = True
+                break
+        
+        if not has_match:
+            missing_prefs.append(pref)
+    
+    # Log results
+    if missing_prefs:
+        print(f"[PREFERENCE COVERAGE] WARNING: Day missing top preferences: {missing_prefs}")
+        print(f"  - User top 3 preferences: {top_3_prefs}")
+        print(f"  - Attractions in plan: {len(attractions)}")
+        print(f"  - Suggestion: Check if POI tags cover these preferences or if scoring weights are too low")
+    else:
+        print(f"[PREFERENCE COVERAGE] ✓ Day covers all top 3 preferences: {top_3_prefs}")
+
+
 def _validate_and_fix_time_continuity(plan, day_end_str):
     """
     Validate time continuity in plan and fix issues.
@@ -230,8 +366,9 @@ def _validate_and_fix_time_continuity(plan, day_end_str):
     last_item = timed_items[-1]
     gap_to_day_end = day_end_min - last_item["end_min"]
     
-    if gap_to_day_end > 30:
-        # Significant time left until day_end - add free_time
+    # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Change threshold 30→60 min
+    if gap_to_day_end > 60:
+        # Significant time left until day_end - add free_time with smart label
         free_start = last_item["end_time"]
         free_end = day_end_str
         free_duration = gap_to_day_end
@@ -240,19 +377,23 @@ def _validate_and_fix_time_continuity(plan, day_end_str):
         overlaps, _ = _check_time_overlap(fixed_plan, free_start, free_end)
         
         if not overlaps:
+            # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Smart label for validation-added free_time
+            free_start_min = time_to_minutes(free_start)
+            smart_label = _get_free_time_label(fixed_plan, free_start_min, free_duration, day_end_min)
+            
             free_time_item = {
                 "type": "free_time",
                 "start_time": free_start,
                 "end_time": free_end,
                 "duration_min": free_duration,
-                "description": f"Czas wolny do konca dnia: kolacja, spacer, zakupy ({free_duration} min)"
+                "description": smart_label
             }
             
             # Insert before accommodation_end (last item in plan)
             insert_index = len(fixed_plan) - 1
             fixed_plan.insert(insert_index, free_time_item)
             
-            print(f"[TIME CONTINUITY] Auto-added free_time {free_start}-{free_end} ({free_duration} min) to fill gap to day_end")
+            print(f"[TIME CONTINUITY] Auto-added free_time {free_start}-{free_end} ({free_duration} min): {smart_label.encode('ascii', errors='ignore').decode('ascii')}")
         else:
             issues.append(f"GAP TO DAY_END: {gap_to_day_end} min after last activity (cannot add free_time - overlap)")
     
@@ -786,22 +927,80 @@ def score_poi(
     score += calculate_premium_penalty(p, user)  # CLIENT REQUIREMENT (08.02.2026): Premium experience penalty at budget/standard levels
     score += calculate_crowd_score(p, user, current_time_minutes=now)  # Added current_time for peak_hours
     
-    # UAT FIX (18.02.2026 - Problem #3): Popularity penalty for low crowd_tolerance
-    # Tests 02, 04, 05, 06: crowd_tolerance=1 users get top magnets (Morskie Oko, Krupówki, Krokiew)
-    # Solution: Additional penalty for popular POI (popularity_score >= 7) + low tolerance (0-1)
-    popularity = safe_float(p.get("popularity_score", 0), 0)
+    # BUGFIX (19.02.2026 - UAT Round 2, Issue #6): Crowd_tolerance penalty using crowd_level
+    # Tests 04, 05, 06, 08: crowd_tolerance=1 users get popular POI with "Low-crowd" label
+    # Problem: Used popularity_score (must-see value), not crowd_level (actual crowding)
+    # Examples: Morskie Oko, Krokiew, Krupówki marked as "Low-crowd" despite high crowds
+    # Solution: Use crowd_level (1=low, 2=medium, 3=high) for penalty, stronger weights
+    crowd_level_str = str(p.get("crowd_level", "")).strip()
     crowd_tolerance = safe_int(user.get("crowd_tolerance", 1), 1)
     
-    if popularity >= 7 and crowd_tolerance <= 1:
-        # Strong penalty for popular attractions when user has low crowd tolerance
-        penalty = -15.0
-        score += penalty
-        poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-        print(f"    [POPULARITY PENALTY] {poi_name_safe}: {penalty} (popularity={popularity:.1f}, tolerance={crowd_tolerance})")
+    # Parse crowd_level to int (may be "1", "2", "3" or empty)
+    try:
+        crowd_level = int(crowd_level_str) if crowd_level_str else 0
+    except (ValueError, TypeError):
+        crowd_level = 0
+    
+    if crowd_tolerance <= 1:  # Low tolerance users
+        if crowd_level >= 3:  # High crowd POI
+            # Strong penalty (70% reduction) - client suggested *= 0.3
+            # Using additive: -40 points (more than priority_bonus)
+            penalty = -40.0
+            score += penalty
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [CROWD PENALTY] {poi_name_safe}: {penalty} (crowd_level={crowd_level}, tolerance={crowd_tolerance})")
+        elif crowd_level == 2:  # Medium crowd POI
+            # Moderate penalty (30% reduction)
+            penalty = -20.0
+            score += penalty
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [CROWD PENALTY] {poi_name_safe}: {penalty} (crowd_level={crowd_level}, tolerance={crowd_tolerance})")
 
     # ETAP 1 ROZSZERZONY - preferences + travel_style
     score += calculate_preference_score(p, user)
     score += calculate_travel_style_score(p, user)
+    
+    # BUGFIX (19.02.2026 - UAT Round 2, Issue #5): Travel style preference boost
+    # Problem: Tests 03, 05, 06, 09 show travel_style not properly boosting matching preferences
+    # Test 03: friends+adventure gets museums instead of trails (active_sport ignored)
+    # Test 05, 06, 09: relax style gets museums instead of spa/termy (relaxation ignored)
+    # Solution: Boost score when travel_style aligns with POI tags + user preferences
+    travel_style = user.get("travel_style", "")
+    poi_tags = set(p.get("tags", []))
+    
+    if travel_style == "relax":
+        # Boost relaxation POI for relax travelers
+        relax_tags = {"relaxation", "spa", "termy", "wellness", "hot_springs", "water_attractions"}
+        if relax_tags & poi_tags:
+            boost = score * 0.5  # 50% boost
+            score += boost
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [RELAX BOOST] {poi_name_safe}: +{boost:.1f} (relax style + relaxation tags)")
+        
+        # Penalty for active POI for relax travelers
+        active_tags = {"active_sport", "hiking", "climbing", "mountain_trails"}
+        if active_tags & poi_tags:
+            penalty = score * 0.3  # 30% penalty
+            score -= penalty
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [RELAX PENALTY] {poi_name_safe}: -{penalty:.1f} (relax style conflicts with active)")
+
+    elif travel_style == "adventure":
+        # Boost active POI for adventure travelers
+        active_tags = {"active_sport", "hiking", "climbing", "mountain_trails", "outdoor", "sports"}
+        if active_tags & poi_tags:
+            boost = score * 0.5  # 50% boost
+            score += boost
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [ADVENTURE BOOST] {poi_name_safe}: +{boost:.1f} (adventure style + active tags)")
+        
+        # Mild penalty for museums for adventure travelers (not forbidden, just lower priority)
+        museum_tags = {"museums", "museum_heritage", "culture"}
+        if museum_tags & poi_tags:
+            penalty = score * 0.2  # 20% penalty
+            score -= penalty
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [ADVENTURE PENALTY] {poi_name_safe}: -{penalty:.1f} (adventure style prefers active over culture)")
     
     # FIX #6 (02.02.2026): Priority_level bonus (core: +25, secondary: +10, optional: 0)
     score += calculate_priority_bonus(p, user)
@@ -1138,12 +1337,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     lunch_start_time = minutes_to_time(now)
                     lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
                 
+                # BUGFIX (19.02.2026 - UAT Round 2, Bug #2): Calculate actual duration
+                # If lunch is shortened by day_end, duration_min should reflect actual time
+                lunch_start_min = time_to_minutes(lunch_start_time)
+                lunch_end_min = time_to_minutes(lunch_end_time)
+                actual_lunch_duration = lunch_end_min - lunch_start_min
+                
                 plan.append(
                     {
                         "type": "lunch_break",
                         "start_time": lunch_start_time,
                         "end_time": lunch_end_time,
-                        "duration_min": LUNCH_DURATION_MIN,
+                        "duration_min": actual_lunch_duration,  # Use actual duration, not constant
                         "suggestions": ["Lunch", "Restauracja", "Odpoczynek"],
                     }
                 )
@@ -1188,6 +1393,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     dinner_start_time = minutes_to_time(now)
                     dinner_end_time = minutes_to_time(min(end, now + DINNER_DURATION_MIN))
                 
+                # BUGFIX (19.02.2026 - UAT Round 2, Bug #2): Calculate actual duration
+                # If dinner is shortened by day_end, duration_min should reflect actual time
+                dinner_start_min = time_to_minutes(dinner_start_time)
+                dinner_end_min = time_to_minutes(dinner_end_time)
+                actual_dinner_duration = dinner_end_min - dinner_start_min
+                
                 # Generate suggestions based on preferences
                 dinner_suggestions = ["Regionalna restauracja", "Bacówka", "Karcma góralska"]
                 if "local_food_experience" in user.get("preferences", []):
@@ -1202,7 +1413,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         "type": "dinner_break",
                         "start_time": dinner_start_time,
                         "end_time": dinner_end_time,
-                        "duration_min": DINNER_DURATION_MIN,
+                        "duration_min": actual_dinner_duration,  # Use actual duration, not constant
                         "suggestions": dinner_suggestions,
                     }
                 )
@@ -1534,12 +1745,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         # Check if POI was selected
 
         if not best:
-            # FALLBACK for gaps >20 min: Try soft POI or add free_time
-            # Client requirement: gaps >20 min should have soft POI or free_time
+            # FALLBACK for gaps >60 min: Try soft POI or add free_time
+            # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Change threshold 20→60 min
+            # Client feedback: 8/10 tests have 1-3h gaps unexplained
+            # Client requirement: gaps >60 min should have soft POI or free_time
             
             remaining_time = end - now
             
-            if remaining_time >= 20:  # Only handle gaps >20 min
+            if remaining_time >= 60:  # Only handle gaps >60 min (UAT Round 2 fix)
                 # Try to find soft POI: low intensity, short duration, low must_see
                 soft_best = None
                 soft_score = -9999
@@ -1624,8 +1837,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     best_travel = soft_travel_time  # Use stored travel time
                     best_duration = soft_duration
                 else:
-                    # No soft POI - add free_time (max 40 min)
-                    free_duration = min(40, remaining_time)
+                    # No soft POI - add free_time with smart label
+                    # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Remove 40 min limit, use smart labels
+                    # Client feedback: 2-3h gaps need longer free_time, context-aware descriptions
+                    free_duration = min(120, remaining_time)  # Max 2h per free_time block
                     free_start_time = minutes_to_time(now)
                     free_end_time = minutes_to_time(now + free_duration)
                     
@@ -1637,18 +1852,23 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         now += 15
                         continue
                     
+                    # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Smart label based on context
+                    smart_label = _get_free_time_label(plan, now, free_duration, end)
+                    
                     plan.append({
                         "type": "free_time",
                         "start_time": free_start_time,
                         "end_time": free_end_time,
                         "duration_min": free_duration,
-                        "description": "Czas wolny: spacer, kawa, odpoczynek"
+                        "description": smart_label
                     })
                     
+                    print(f"[GAP FILL] Added free_time ({free_duration}min) with label: {smart_label.encode('ascii', errors='ignore').decode('ascii')}")
                     now += free_duration
                     continue
             else:
-                # Gap <20 min or not enough time - just advance time
+                # Gap <60 min or not enough time - just advance time
+                # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Updated comment to reflect 60 min threshold
                 now += 15
                 if now + 30 >= end:
                     break
@@ -1979,22 +2199,27 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     soft_filled = True
                     break  # Fill one soft POI per gap
                 
-                # If no soft POI fits, add free_time (max 40 min)
-                if not soft_filled and gap_duration > 20:
-                    free_duration = min(40, gap_duration)
+                # If no soft POI fits, add free_time with smart label
+                # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Change threshold 20→60, remove limit, smart labels
+                if not soft_filled and gap_duration > 60:
+                    free_duration = min(120, gap_duration)  # Max 2h per free_time block
                     free_start_time = minutes_to_time(now)
                     free_end_time = minutes_to_time(now + free_duration)
                     
                     # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #2): Check overlap before adding
                     overlaps, conflict = _check_time_overlap(plan, free_start_time, free_end_time)
                     if not overlaps:
+                        # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Smart label based on context
+                        smart_label = _get_free_time_label(plan, now, free_duration, end)
+                        
                         plan.append({
                             "type": "free_time",
                             "start_time": free_start_time,
                             "end_time": free_end_time,
                             "duration_min": free_duration,
-                            "description": "Czas wolny: spacer, kawa, odpoczynek"
+                            "description": smart_label
                         })
+                        print(f"[GAP FILL] Added free_time after culture ({free_duration}min): {smart_label.encode('ascii', errors='ignore').decode('ascii')}")
                         now += free_duration
                     else:
                         print(f"[OVERLAP DETECTED] gap-fill free_time {free_start_time}-{free_end_time} conflicts with {conflict.get('type')} {conflict.get('start_time')}-{conflict.get('end_time')}")
@@ -2009,12 +2234,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             finale_done = True
 
     # UAT FIX (18.02.2026 - Problem #4): Fill massive time gaps before day_end
-    # Tests 03, 06, 07, 08, 09: Days end at 14:30, day_end at 19:00 (4.5h gap)
-    # Solution: If (day_end - current_time) > 180min, add light activities
+    # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Change threshold 180→60 min
+    # Client feedback: 8/10 tests have 1-3h end-of-day gaps
+    # Tests 03, 06, 07, 08, 09: Days end early, leaving 1.5-4.5h gaps
+    # Solution: If (day_end - current_time) > 60min, add light activities or free_time
     remaining_to_end = end - now
     
-    if remaining_to_end > 180:  # 3+ hours remaining
-        print(f"[GAP FILL END] Large gap remaining: {remaining_to_end}min ({minutes_to_time(now)} → {minutes_to_time(end)})")
+    if remaining_to_end > 60:  # 1+ hour remaining (UAT Round 2 fix)
+        print(f"[GAP FILL END] Gap remaining: {remaining_to_end}min ({minutes_to_time(now)} → {minutes_to_time(end)})")
         
         # Try to add 1-2 light activities to fill the gap
         gap_fill_attempts = 0
@@ -2137,23 +2364,27 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 
                 print(f"[GAP FILL END] Added light activity: {poi_name(soft_best)} ({soft_duration}min), remaining={remaining_to_end}min")
             else:
-                # No soft POI available, add free_time (max 90min)
-                free_duration = min(90, remaining_to_end)
+                # No soft POI available, add free_time with smart label
+                # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Remove 90 min limit, use smart labels
+                free_duration = min(180, remaining_to_end)  # Max 3h per free_time block
                 free_start_time = minutes_to_time(now)
                 free_end_time = minutes_to_time(now + free_duration)
                 
                 overlaps, conflict = _check_time_overlap(plan, free_start_time, free_end_time)
                 if not overlaps:
+                    # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Smart label for end-of-day gaps
+                    smart_label = _get_free_time_label(plan, now, free_duration, end)
+                    
                     plan.append({
                         "type": "free_time",
                         "start_time": free_start_time,
                         "end_time": free_end_time,
                         "duration_min": free_duration,
-                        "description": "Czas wolny na relaks: spacer, kawa, zakupy, odpoczynek"
+                        "description": smart_label
                     })
                     now += free_duration
                     remaining_to_end = end - now
-                    print(f"[GAP FILL END] Added free_time ({free_duration}min), remaining={remaining_to_end}min")
+                    print(f"[GAP FILL END] Added free_time ({free_duration}min), remaining={remaining_to_end}min, label: {smart_label.encode('ascii', errors='ignore').decode('ascii')}")
                 
                 break  # Exit after adding free_time (stop gap filling)
 
@@ -2205,6 +2436,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             print(f"  - Free time: {free_time_minutes}/{total_minutes} min ({free_time_pct:.1f}%)")
             print(f"  - Attractions: {attraction_count_final}")
             print(f"  - Suggestion: Relax filters (target_group, intensity, budget, distance)")
+    
+    # BUGFIX (19.02.2026 - UAT Round 2, Issue #5): Validate preference coverage
+    # Check if day includes attractions matching top 3 user preferences
+    _log_preference_coverage(plan, user)
     
     # NOTE: Gap filling moved to PlanService (after parking/transit timing adjustments)
     # This ensures gaps are detected AFTER all time shifts from parking

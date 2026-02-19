@@ -15,36 +15,47 @@ def calculate_preference_score(poi: dict, user: dict) -> float:
     Returns:
         Score bonus za matching tags
 
-    Logic:
-        - Za każdy matching tag: +5 punktów
+    Logic (BUGFIX 19.02.2026 - UAT Round 2, Issue #5):
+        - Top 3 preferences: +15 punktów each (3x boost)
+        - Pozostałe preferences: +8 punktów each (1.6x boost)
+        - Zwiększone z +5 → pozwala preferencjom konkurować z must-see POI (+25)
         - Jeśli brak preferences: 0 (neutralne)
 
     Examples:
-        >>> user = {"preferences": ["outdoor", "family"]}
+        >>> user = {"preferences": ["outdoor", "family", "adventure"]}
         >>> poi = {"tags": ["outdoor", "mountain", "hiking"]}
         >>> calculate_preference_score(poi, user)
-        5.0
+        15.0  # "outdoor" is in top 3
 
-        >>> user = {"preferences": ["outdoor", "family"]}
+        >>> user = {"preferences": ["museums", "culture"]}
         >>> poi = {"tags": ["museums", "culture"]}
         >>> calculate_preference_score(poi, user)
-        0.0
+        30.0  # Both in top 3: 15 + 15
     """
     score = 0.0
 
-    # Get preferences from user
-    user_prefs = set(user.get("preferences", []))
-    if not user_prefs:
+    # Get preferences from user (ordered list)
+    user_prefs_list = user.get("preferences", [])
+    if not user_prefs_list:
         return 0.0  # Brak preferencji = neutralne
+
+    # Get top 3 preferences
+    top_3_prefs = set(user_prefs_list[:3])
+    other_prefs = set(user_prefs_list[3:])
 
     # Get tags from POI
     poi_tags = set(poi.get("tags", []))
     if not poi_tags:
         return 0.0  # POI bez tagów = neutralne
 
-    # Count matching tags
-    matches = user_prefs & poi_tags
-    score += len(matches) * 5.0
+    # BUGFIX (19.02.2026 - UAT Round 2, Issue #5): Weighted preference scoring
+    # Top 3 preferences get 3x boost to compete with must-see POI (priority_level=core: +25)
+    top_matches = top_3_prefs & poi_tags
+    score += len(top_matches) * 15.0  # Was 5.0, now 15.0
+
+    # Other preferences get moderate boost
+    other_matches = other_prefs & poi_tags
+    score += len(other_matches) * 8.0  # Was 5.0, now 8.0
 
     return score
 

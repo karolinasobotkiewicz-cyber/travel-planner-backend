@@ -349,6 +349,17 @@ class PlanService:
                     
                     attr_start_min = time_to_minutes(attr_start_time)
                     parking_start_min = attr_start_min - parking_duration - walk_time
+                    
+                    # BUGFIX (19.02.2026 - UAT Round 2, Bug #1): Parking overlap with transit
+                    # Ensure parking starts AFTER transit ends (never before/during transit!)
+                    if items:
+                        last_item = items[-1]
+                        if last_item.type == ItemType.TRANSIT:
+                            transit_end_min = time_to_minutes(last_item.end_time)
+                            if parking_start_min < transit_end_min:
+                                # Overlap detected! Move parking to start right after transit
+                                parking_start_min = transit_end_min
+                    
                     parking_start = minutes_to_time(parking_start_min)
                     
                     # Generate parking item
@@ -619,6 +630,17 @@ class PlanService:
             user=user
         )
         
+        # BUGFIX (19.02.2026 - UAT Round 2, Issue #7): Cost note for clarity
+        # Client requirement: Make it explicit that cost_estimate is for entire group
+        # Generate cost_note: "Total for your group of X people"
+        group_size = user.get("group_size", 1)
+        if group_size > 1:
+            cost_note = f"Total for your group of {group_size} people"
+        elif group_size == 1:
+            cost_note = "For 1 person"
+        else:
+            cost_note = None  # Shouldn't happen, but handle gracefully
+        
         return AttractionItem(
             type=ItemType.ATTRACTION,
             start_time=start_time,
@@ -631,6 +653,7 @@ class PlanService:
             lng=poi_dict.get("lng", 0.0),
             address=poi_dict.get("address", ""),
             cost_estimate=estimated_cost,  # Poprawiono z estimated_cost
+            cost_note=cost_note,  # BUGFIX (19.02.2026 - Issue #7)
             ticket_info=TicketInfo(
                 ticket_normal=poi_dict.get("ticket_normal", 0) or 0,
                 ticket_reduced=poi_dict.get("ticket_reduced", 0) or 0,

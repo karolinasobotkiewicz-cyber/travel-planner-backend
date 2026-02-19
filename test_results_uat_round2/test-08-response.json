@@ -1,0 +1,1404 @@
+{
+  "plan_id": "55b9c91e-f7fc-460e-bd1e-492ed9446a5b",
+  "version": 1,
+  "days": [
+    {
+      "day": 1,
+      "items": [
+        {
+          "type": "day_start",
+          "time": "09:00"
+        },
+        {
+          "type": "parking",
+          "start_time": "09:00",
+          "end_time": "09:15",
+          "name": "Parking płatny",
+          "address": "Strzelców Podhalańskich 58, 43-229 Kościelisko",
+          "lat": 49.27567766423668,
+          "lng": 19.86923843610088,
+          "parking_type": "paid",
+          "walk_time_min": 5
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_33",
+          "name": "Dolina Kościeliska",
+          "start_time": "09:20",
+          "end_time": "12:20",
+          "duration_min": 180,
+          "description_short": "Jedna z najpiękniejszych tatrzańskich dolin, słynąca z malowniczych krajobrazów, jaskiń i górskich szlaków.",
+          "lat": 49.25,
+          "lng": 19.8666667,
+          "address": "Dolina Kościeliska 3, 34-511 Kościelisko",
+          "cost_estimate": 22,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 11,
+            "ticket_reduced": 5
+          },
+          "parking": {
+            "name": "Parking płatny",
+            "walk_time_min": 5
+          },
+          "pro_tip": "Polecam wybrać się rano, by uniknąć tłumów i cieszyć się ciszą oraz spokojem natury. Koniecznie zabierz latarkę na zwiedzanie jaskiń!",
+          "why_selected": [
+            "Must-see attraction in Zakopane",
+            "Matches your nature landscape preference",
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": [
+            "must_see",
+            "core_attraction"
+          ]
+        },
+        {
+          "type": "lunch_break",
+          "start_time": "13:12",
+          "end_time": "13:52",
+          "duration_min": 40,
+          "label": "Lunch / przerwa regeneracyjna",
+          "suggestions": [
+            "Lunch",
+            "Restauracja",
+            "Odpoczynek"
+          ]
+        },
+        {
+          "type": "transit",
+          "start_time": "13:52",
+          "end_time": "14:07",
+          "duration_min": 15,
+          "mode": "car",
+          "from": "Dolina Kościeliska",
+          "to": "Muzeum Tatrzańskie"
+        },
+        {
+          "type": "parking",
+          "start_time": "14:07",
+          "end_time": "14:22",
+          "name": "Parking Krupówki 20",
+          "address": "Mariusza Zaruskiego 1, 34-500 Zakopane",
+          "lat": 49.29429371765401,
+          "lng": 19.95164171402313,
+          "parking_type": "paid",
+          "walk_time_min": 3
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_24",
+          "name": "Muzeum Tatrzańskie",
+          "start_time": "14:12",
+          "end_time": "15:12",
+          "duration_min": 60,
+          "description_short": "Muzeum prezentujące historię, kulturę i przyrodę Tatr oraz Podhala.",
+          "lat": 49.2949668,
+          "lng": 19.9499116,
+          "address": "Krupówki 10, 34-500 Zakopane, Poland",
+          "cost_estimate": 48,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 24,
+            "ticket_reduced": 12
+          },
+          "parking": {
+            "name": "Parking Krupówki 20",
+            "walk_time_min": 3
+          },
+          "pro_tip": "Warto zwiedzić także filie muzeum, rozproszone w różnych częściach Zakopanego i okolicy, gdzie prezentowane są m.in. sztuka współczesna i ekspozycje związane ze słynnymi mieszkańcami regionu.",
+          "why_selected": [
+            "Must-see attraction in Zakopane",
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": [
+            "must_see",
+            "core_attraction"
+          ]
+        },
+        {
+          "type": "transit",
+          "start_time": "15:12",
+          "end_time": "15:22",
+          "duration_min": 10,
+          "mode": "car",
+          "from": "Muzeum Tatrzańskie",
+          "to": "Muzeum Stylu Zakopiańskiego im. S. Witkiewicza"
+        },
+        {
+          "type": "parking",
+          "start_time": "15:58",
+          "end_time": "16:13",
+          "name": "Parking na miejscu na cztery samochody",
+          "address": "Kościeliska 18, 34-500 Zakopane, Poland",
+          "lat": 49.29423307964222,
+          "lng": 19.94307549195877,
+          "parking_type": "paid",
+          "walk_time_min": 1
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_26",
+          "name": "Muzeum Stylu Zakopiańskiego im. S. Witkiewicza",
+          "start_time": "16:14",
+          "end_time": "16:59",
+          "duration_min": 45,
+          "description_short": "Muzeum prezentujące historię i charakterystyczny styl zakopiański w architekturze i sztuce.",
+          "lat": 49.2943331,
+          "lng": 19.9429691,
+          "address": "Kościeliska 18, 34-500 Zakopane, Poland",
+          "cost_estimate": 44,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 22,
+            "ticket_reduced": 11
+          },
+          "parking": {
+            "name": "Parking na miejscu na cztery samochody",
+            "walk_time_min": 1
+          },
+          "pro_tip": "Odwiedź muzeum poza sezonem turystycznym, by zwiedzać w spokojniejszej atmosferze i dokładniej obejrzeć detale architektoniczne Willi Koliba.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "transit",
+          "start_time": "16:59",
+          "end_time": "17:09",
+          "duration_min": 10,
+          "mode": "car",
+          "from": "Muzeum Stylu Zakopiańskiego im. S. Witkiewicza",
+          "to": "Kaplica Najświętszego Serca Pana Jezusa w Jaszczurówce"
+        },
+        {
+          "type": "parking",
+          "start_time": "17:34",
+          "end_time": "17:49",
+          "name": "Parking przy ulicy",
+          "address": "Droga Oswalda Balzera, 34-500 Zakopane",
+          "lat": 49.28425502719659,
+          "lng": 20.000749330936,
+          "parking_type": "paid",
+          "walk_time_min": 1
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_30",
+          "name": "Kaplica Najświętszego Serca Pana Jezusa w Jaszczurówce",
+          "start_time": "17:50",
+          "end_time": "18:05",
+          "duration_min": 15,
+          "description_short": "Drewniana kaplica w stylu zakopiańskim, będąca jednym z najpiękniejszych przykładów architektury sakralnej regionu.",
+          "lat": 49.2842616,
+          "lng": 20.0013828,
+          "address": "Jaszczurówka 38, 34-500 Zakopane, Poland",
+          "cost_estimate": 0,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 0,
+            "ticket_reduced": 0
+          },
+          "parking": {
+            "name": "Parking przy ulicy",
+            "walk_time_min": 1
+          },
+          "pro_tip": "Warto odwiedzić kaplicę w trakcie mszy lub koncertów, by poczuć wyjątkową atmosferę tego miejsca.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "dinner_break",
+          "start_time": "18:22",
+          "end_time": "19:52",
+          "duration_min": 90,
+          "label": "Kolacja / regionalne smaki",
+          "suggestions": [
+            "Regionalna restauracja z kuchnią góralską",
+            "Bacówka z degustacją oscypka",
+            "Karcma z tradycyjnymi potrawami"
+          ]
+        },
+        {
+          "type": "day_end",
+          "time": "20:00"
+        }
+      ],
+      "quality_badges": [
+        "has_must_see",
+        "good_variety",
+        "realistic_timing"
+      ]
+    },
+    {
+      "day": 2,
+      "items": [
+        {
+          "type": "day_start",
+          "time": "09:00"
+        },
+        {
+          "type": "parking",
+          "start_time": "09:00",
+          "end_time": "09:15",
+          "name": "Parking Wierch Poroniec",
+          "address": "DW960, 34-532 Brzegi",
+          "lat": 49.28495541022139,
+          "lng": 20.11278591938301,
+          "parking_type": "paid",
+          "walk_time_min": 3
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_34",
+          "name": "Rusinowa Polana",
+          "start_time": "09:18",
+          "end_time": "11:48",
+          "duration_min": 150,
+          "description_short": "Malownicza polana w Tatrach, oferująca piękne widoki na okoliczne szczyty.",
+          "lat": 49.2607771,
+          "lng": 20.0895038,
+          "address": "34-532 Brzegi",
+          "cost_estimate": 22,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 11,
+            "ticket_reduced": 5
+          },
+          "parking": {
+            "name": "Parking Wierch Poroniec",
+            "walk_time_min": 3
+          },
+          "pro_tip": "Najpiękniejsze widoki zobaczysz podczas wschodu słońca – wtedy polana jest mniej zatłoczona.",
+          "why_selected": [
+            "Must-see attraction in Zakopane",
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": [
+            "must_see",
+            "core_attraction"
+          ]
+        },
+        {
+          "type": "lunch_break",
+          "start_time": "12:42",
+          "end_time": "13:22",
+          "duration_min": 40,
+          "label": "Lunch / przerwa regeneracyjna",
+          "suggestions": [
+            "Lunch",
+            "Restauracja",
+            "Odpoczynek"
+          ]
+        },
+        {
+          "type": "transit",
+          "start_time": "13:22",
+          "end_time": "13:39",
+          "duration_min": 17,
+          "mode": "car",
+          "from": "Rusinowa Polana",
+          "to": "Galeria sztuki w willi Oksza"
+        },
+        {
+          "type": "parking",
+          "start_time": "13:39",
+          "end_time": "13:54",
+          "name": "Parking na miejscu",
+          "address": "Hr. Władysława Zamoyskiego 25, 34-500 Zakopane, Poland",
+          "lat": 49.28876287435649,
+          "lng": 19.9666987218065,
+          "parking_type": "paid",
+          "walk_time_min": 1
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_27",
+          "name": "Galeria sztuki w willi Oksza",
+          "start_time": "13:44",
+          "end_time": "14:29",
+          "duration_min": 45,
+          "description_short": "Galeria prezentująca zbiory sztuki w zabytkowej willi Oksza, będąca filią Muzeum Tatrzańskiego.",
+          "lat": 49.2886803,
+          "lng": 19.9663291,
+          "address": "Hr. Władysława Zamoyskiego 25, 34-500 Zakopane, Poland",
+          "cost_estimate": 48,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 24,
+            "ticket_reduced": 12
+          },
+          "parking": {
+            "name": "Parking na miejscu",
+            "walk_time_min": 1
+          },
+          "pro_tip": "Warto zwrócić uwagę na elementy architektoniczne wnętrza willi, które są przykładem stylu zakopiańskiego.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "transit",
+          "start_time": "14:29",
+          "end_time": "14:39",
+          "duration_min": 10,
+          "mode": "car",
+          "from": "Galeria sztuki w willi Oksza",
+          "to": "Dom do góry nogami"
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_13",
+          "name": "Dom do góry nogami",
+          "start_time": "14:39",
+          "end_time": "14:59",
+          "duration_min": 20,
+          "description_short": "Nietypowy budynek, w którym wszystko stoi na głowie – atrakcja dla całej rodziny.",
+          "lat": 49.2939691,
+          "lng": 19.957179,
+          "address": "Aleje 3-go Maja, 34-500 Zakopane, Poland",
+          "cost_estimate": 42,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 21,
+            "ticket_reduced": 17
+          },
+          "parking": {
+            "name": "Parking przy domu do góry nogami",
+            "walk_time_min": 1
+          },
+          "pro_tip": "Zabierz ze sobą aparat lub telefon z pełną baterią – zdjęcia z tej atrakcji są wyjątkowe i na długo pozostaną w pamięci.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_5",
+          "name": "Papugarnia Egzotyczne Zakopane",
+          "start_time": "15:20",
+          "end_time": "16:05",
+          "duration_min": 45,
+          "description_short": "Papugarnia z egzotycznymi ptakami w Zakopanem, idealna atrakcja dla rodzin i miłośników zwierząt.",
+          "lat": 49.2876722,
+          "lng": 19.9799362,
+          "address": "Droga do Olczy 11, 34-500 Zakopane, Poland",
+          "cost_estimate": 64,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 32,
+            "ticket_reduced": 25
+          },
+          "parking": {
+            "name": "Parking na miejscu",
+            "walk_time_min": 1
+          },
+          "pro_tip": "Warto zabrać aparat fotograficzny – papugi często chętnie siadają na rękach i ramionach gości, co zapewnia ciekawe zdjęcia.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "transit",
+          "start_time": "16:05",
+          "end_time": "16:15",
+          "duration_min": 10,
+          "mode": "car",
+          "from": "Papugarnia Egzotyczne Zakopane",
+          "to": "Wystawa Figur Woskowych EXPO Krupówki"
+        },
+        {
+          "type": "parking",
+          "start_time": "16:38",
+          "end_time": "16:53",
+          "name": "Parking miejski przy ulicy",
+          "address": "Aleje 3-go maja, 34-500 Zakopane",
+          "lat": 49.29251552805412,
+          "lng": 19.95908605418339,
+          "parking_type": "paid",
+          "walk_time_min": 3
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_22",
+          "name": "Wystawa Figur Woskowych EXPO Krupówki",
+          "start_time": "16:56",
+          "end_time": "17:26",
+          "duration_min": 30,
+          "description_short": "Wystawa prezentująca realistyczne figury woskowe znanych postaci.",
+          "lat": 49.2912955,
+          "lng": 19.9604778,
+          "address": "Krupówki 60, 34-500 Zakopane, Poland",
+          "cost_estimate": 90,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 45,
+            "ticket_reduced": 35
+          },
+          "parking": {
+            "name": "Parking miejski przy ulicy",
+            "walk_time_min": 3
+          },
+          "pro_tip": "Zabierz aparat lub telefon, bo figury można fotografować bez ograniczeń.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "transit",
+          "start_time": "17:26",
+          "end_time": "17:36",
+          "duration_min": 10,
+          "mode": "car",
+          "from": "Wystawa Figur Woskowych EXPO Krupówki",
+          "to": "Tatrzańskie Mini Zoo"
+        },
+        {
+          "type": "parking",
+          "start_time": "17:46",
+          "end_time": "18:01",
+          "name": "Parking na miejscu",
+          "address": "Józefa Piłsudskiego 51, 34-500 Zakopane",
+          "lat": 49.28637200796405,
+          "lng": 19.96220234068982,
+          "parking_type": "paid",
+          "walk_time_min": 1
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_2",
+          "name": "Tatrzańskie Mini Zoo",
+          "start_time": "18:02",
+          "end_time": "18:32",
+          "duration_min": 30,
+          "description_short": "Niewielkie zoo zlokalizowane na Podhalu, prezentujące zwierzęta typowe dla regionu Tatr.",
+          "lat": 49.2864315,
+          "lng": 19.9621711,
+          "address": "Józefa Piłsudskiego k/26, 34-500 Zakopane, Poland",
+          "cost_estimate": 80,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 40,
+            "ticket_reduced": 40
+          },
+          "parking": {
+            "name": "Parking na miejscu",
+            "walk_time_min": 1
+          },
+          "pro_tip": "Warto zabrać ze sobą drobne pieniądze na zakup specjalnej karmy, którą można dać zwierzętom podczas wizyty.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "dinner_break",
+          "start_time": "19:19",
+          "end_time": "20:00",
+          "duration_min": 41,
+          "label": "Kolacja / regionalne smaki",
+          "suggestions": [
+            "Regionalna restauracja z kuchnią góralską",
+            "Bacówka z degustacją oscypka",
+            "Karcma z tradycyjnymi potrawami"
+          ]
+        },
+        {
+          "type": "day_end",
+          "time": "20:00"
+        }
+      ],
+      "quality_badges": [
+        "has_must_see",
+        "good_variety",
+        "realistic_timing"
+      ]
+    },
+    {
+      "day": 3,
+      "items": [
+        {
+          "type": "day_start",
+          "time": "09:00"
+        },
+        {
+          "type": "parking",
+          "start_time": "09:00",
+          "end_time": "09:15",
+          "name": "Parking Palenica Białczańska",
+          "address": "Droga Oswalda Balzera, 34-532 Brzegi",
+          "lat": 49.25627181318524,
+          "lng": 20.10349998425671,
+          "parking_type": "paid",
+          "walk_time_min": 7
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_35",
+          "name": "Morskie Oko",
+          "start_time": "09:22",
+          "end_time": "12:22",
+          "duration_min": 180,
+          "description_short": "Największe i jedno z najpiękniejszych jezior w Tatrach, otoczone spektakularnymi szczytami górskimi.",
+          "lat": 49.1971411,
+          "lng": 20.070087,
+          "address": "Droga Oswalda Balzera, 34-532 Brzegi",
+          "cost_estimate": 22,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 11,
+            "ticket_reduced": 5
+          },
+          "parking": {
+            "name": "Parking Palenica Białczańska",
+            "walk_time_min": 7
+          },
+          "pro_tip": "Aby uniknąć tłumów, najlepiej zaplanować wycieczkę wcześnie rano lub poza weekendem. Warto zabrać ze sobą prowiant i odpowiednie obuwie.",
+          "why_selected": [
+            "Must-see attraction in Zakopane",
+            "Matches your nature landscape preference",
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": [
+            "must_see",
+            "core_attraction"
+          ]
+        },
+        {
+          "type": "lunch_break",
+          "start_time": "13:12",
+          "end_time": "13:52",
+          "duration_min": 40,
+          "label": "Lunch / przerwa regeneracyjna",
+          "suggestions": [
+            "Lunch",
+            "Restauracja",
+            "Odpoczynek"
+          ]
+        },
+        {
+          "type": "transit",
+          "start_time": "13:52",
+          "end_time": "14:16",
+          "duration_min": 24,
+          "mode": "car",
+          "from": "Morskie Oko",
+          "to": "Podwodny Świat"
+        },
+        {
+          "type": "parking",
+          "start_time": "14:16",
+          "end_time": "14:31",
+          "name": "Parking po przeciwnej stronie ulicy",
+          "address": "Powstańców Śląskich 11, 34-500 Zakopane",
+          "lat": 49.29417049287513,
+          "lng": 19.93704701555601,
+          "parking_type": "paid",
+          "walk_time_min": 2
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_6",
+          "name": "Podwodny Świat",
+          "start_time": "14:21",
+          "end_time": "14:51",
+          "duration_min": 30,
+          "description_short": "Akwarium prezentujące faunę i florę podwodną.",
+          "lat": 49.2943257,
+          "lng": 19.9368506,
+          "address": "Ubocz 3b, 34-500 Zakopane, Poland",
+          "cost_estimate": 56,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 28,
+            "ticket_reduced": 24
+          },
+          "parking": {
+            "name": "Parking po przeciwnej stronie ulicy",
+            "walk_time_min": 2
+          },
+          "pro_tip": "Warto zaplanować wizytę rano, kiedy jest mniej odwiedzających i można w spokoju przyglądać się ekspozycjom.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "transit",
+          "start_time": "14:51",
+          "end_time": "15:01",
+          "duration_min": 10,
+          "mode": "car",
+          "from": "Podwodny Świat",
+          "to": "Wielka Krokiew"
+        },
+        {
+          "type": "parking",
+          "start_time": "15:11",
+          "end_time": "15:26",
+          "name": "Parking miejski",
+          "address": "Józefa Piłsudskiego 28-32, 34-500 Zakopane",
+          "lat": 49.28220695693889,
+          "lng": 19.96447342331977,
+          "parking_type": "paid",
+          "walk_time_min": 1
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_20",
+          "name": "Wielka Krokiew",
+          "start_time": "15:27",
+          "end_time": "16:12",
+          "duration_min": 45,
+          "description_short": "Największa skocznia narciarska w Polsce i ikona sportowa Zakopanego.",
+          "lat": 49.2794102,
+          "lng": 19.9639442,
+          "address": "ul. Bronisława Czecha 1, 34-500 Zakopane, Poland",
+          "cost_estimate": 50,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 25,
+            "ticket_reduced": 20
+          },
+          "parking": {
+            "name": "Parking miejski",
+            "walk_time_min": 1
+          },
+          "pro_tip": "Najlepsze widoki rozciągają się ze szczytu skoczni – wjedź kolejką, by zrobić efektowne zdjęcia. Zwiedzanie poza zawodami jest spokojniejsze i pozwala lepiej docenić miejsce.",
+          "why_selected": [
+            "Must-see attraction in Zakopane",
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": [
+            "must_see",
+            "core_attraction"
+          ]
+        },
+        {
+          "type": "free_time",
+          "start_time": "16:58",
+          "end_time": "19:58",
+          "duration_min": 180,
+          "label": "Czas wolny do końca dnia: kolacja, spacer, zakupy, relaks"
+        },
+        {
+          "type": "day_end",
+          "time": "20:00"
+        }
+      ],
+      "quality_badges": [
+        "has_must_see",
+        "good_variety",
+        "realistic_timing"
+      ]
+    },
+    {
+      "day": 4,
+      "items": [
+        {
+          "type": "day_start",
+          "time": "09:00"
+        },
+        {
+          "type": "parking",
+          "start_time": "09:00",
+          "end_time": "09:15",
+          "name": "Parking Termy Chochołów",
+          "address": "315, 34-513 Chochołów",
+          "lat": 49.3520575535073,
+          "lng": 19.82175897064164,
+          "parking_type": "paid",
+          "walk_time_min": 2
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_17",
+          "name": "Chochołowskie Termy",
+          "start_time": "09:17",
+          "end_time": "11:17",
+          "duration_min": 120,
+          "description_short": "Duży kompleks basenów termalnych i spa oferujący relaks i rozrywkę w Chochołowie.",
+          "lat": 49.3518255,
+          "lng": 19.8231199,
+          "address": "Chochołów 400, 34-513 Witów, Poland",
+          "cost_estimate": 178,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 89,
+            "ticket_reduced": 59
+          },
+          "parking": {
+            "name": "Parking Termy Chochołów",
+            "walk_time_min": 2
+          },
+          "pro_tip": "Warto wybrać się w godzinach porannych lub wieczornych, by uniknąć największego tłoku i móc w pełni korzystać z atrakcji term oraz podziwiać widok na Tatry.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": [
+            "premium_experience"
+          ]
+        },
+        {
+          "type": "transit",
+          "start_time": "11:17",
+          "end_time": "11:37",
+          "duration_min": 20,
+          "mode": "car",
+          "from": "Chochołowskie Termy",
+          "to": "Myszogród"
+        },
+        {
+          "type": "parking",
+          "start_time": "14:00",
+          "end_time": "14:15",
+          "name": "Auto Parking obok Biedronki",
+          "address": "34-500 Zakopane",
+          "lat": 49.29327022308206,
+          "lng": 19.95807655548775,
+          "parking_type": "paid",
+          "walk_time_min": 3
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_3",
+          "name": "Myszogród",
+          "start_time": "14:18",
+          "end_time": "14:48",
+          "duration_min": 30,
+          "description_short": "Nietypowa wystawa ze światem stworzonym dla setek żywych myszek.",
+          "lat": 49.2916215,
+          "lng": 19.9604081,
+          "address": "Krupówki 81/B, 34-500 Zakopane, Poland",
+          "cost_estimate": 56,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 28,
+            "ticket_reduced": 24
+          },
+          "parking": {
+            "name": "Auto Parking obok Biedronki",
+            "walk_time_min": 3
+          },
+          "pro_tip": "Dla pełnego komfortu warto zarezerwować bilet online, szczególnie w sezonie turystycznym lub w weekendy.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "lunch_break",
+          "start_time": "14:30",
+          "end_time": "15:10",
+          "duration_min": 40,
+          "label": "Lunch / przerwa regeneracyjna",
+          "suggestions": [
+            "Lunch",
+            "Restauracja",
+            "Odpoczynek"
+          ]
+        },
+        {
+          "type": "transit",
+          "start_time": "15:10",
+          "end_time": "15:32",
+          "duration_min": 22,
+          "mode": "car",
+          "from": "Myszogród",
+          "to": "Termy Gorący Potok"
+        },
+        {
+          "type": "parking",
+          "start_time": "15:32",
+          "end_time": "15:47",
+          "name": "Parking na miejscu",
+          "address": "os. Nowe 45, 34-424 Szaflary",
+          "lat": 49.39962067618252,
+          "lng": 20.02184613839256,
+          "parking_type": "paid",
+          "walk_time_min": 1
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_16",
+          "name": "Termy Gorący Potok",
+          "start_time": "15:37",
+          "end_time": "17:07",
+          "duration_min": 90,
+          "description_short": "Kompleks basenów termalnych z wodami geotermalnymi i strefą relaksu.",
+          "lat": 49.3999583,
+          "lng": 20.0225918,
+          "address": "os. Nowe 45, 34-424 Szaflary, Poland",
+          "cost_estimate": 118,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 59,
+            "ticket_reduced": 45
+          },
+          "parking": {
+            "name": "Parking na miejscu",
+            "walk_time_min": 1
+          },
+          "pro_tip": "Warto przyjechać w tygodniu, by uniknąć większych tłumów i w pełni korzystać ze wszystkich atrakcji.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": [
+            "premium_experience"
+          ]
+        },
+        {
+          "type": "dinner_break",
+          "start_time": "19:44",
+          "end_time": "20:00",
+          "duration_min": 16,
+          "label": "Kolacja / regionalne smaki",
+          "suggestions": [
+            "Regionalna restauracja z kuchnią góralską",
+            "Bacówka z degustacją oscypka",
+            "Karcma z tradycyjnymi potrawami"
+          ]
+        },
+        {
+          "type": "day_end",
+          "time": "20:00"
+        }
+      ],
+      "quality_badges": [
+        "good_variety",
+        "realistic_timing"
+      ]
+    },
+    {
+      "day": 5,
+      "items": [
+        {
+          "type": "day_start",
+          "time": "09:00"
+        },
+        {
+          "type": "parking",
+          "start_time": "09:00",
+          "end_time": "09:15",
+          "name": "Parking Tetmajera 17",
+          "address": "Kazimierza Przerwy-Tetmajera 17, 34-500 Zakopane",
+          "lat": 49.28920668357339,
+          "lng": 19.9578271971264,
+          "parking_type": "paid",
+          "walk_time_min": 1
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_25",
+          "name": "Muzeum Kornela Makuszyńskiego",
+          "start_time": "09:16",
+          "end_time": "09:46",
+          "duration_min": 30,
+          "description_short": "Oddział Muzeum Tatrzańskiego poświęcony życiu i twórczości Kornela Makuszyńskiego.",
+          "lat": 49.2894914,
+          "lng": 19.9581178,
+          "address": "Kazimierza Przerwy-Tetmajera 15, 34-500 Zakopane, Poland",
+          "cost_estimate": 28,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 14,
+            "ticket_reduced": 7
+          },
+          "parking": {
+            "name": "Parking Tetmajera 17",
+            "walk_time_min": 1
+          },
+          "pro_tip": "Warto połączyć wizytę z odwiedzeniem innych oddziałów Muzeum Tatrzańskiego – często dostępny jest bilet łączony.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "transit",
+          "start_time": "09:46",
+          "end_time": "09:56",
+          "duration_min": 10,
+          "mode": "car",
+          "from": "Muzeum Kornela Makuszyńskiego",
+          "to": "Tatrzański Park Edukacyjny"
+        },
+        {
+          "type": "parking",
+          "start_time": "10:13",
+          "end_time": "10:28",
+          "name": "Parking miejski",
+          "address": "Józefa Piłsudskiego 28-32, 34-500 Zakopane",
+          "lat": 49.28216607253456,
+          "lng": 19.96449449239132,
+          "parking_type": "paid",
+          "walk_time_min": 4
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_29",
+          "name": "Tatrzański Park Edukacyjny",
+          "start_time": "10:32",
+          "end_time": "11:32",
+          "duration_min": 60,
+          "description_short": "Edukacyjny park zoologiczny, który przybliża przyrodę Tatr i kulturę góralską.",
+          "lat": 49.2816859,
+          "lng": 19.9623758,
+          "address": "Józefa Piłsudskiego 38, 34-500 Zakopane, Poland",
+          "cost_estimate": 60,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 30,
+            "ticket_reduced": 25
+          },
+          "parking": {
+            "name": "Parking miejski",
+            "walk_time_min": 4
+          },
+          "pro_tip": "Najlepiej odwiedzić park w tygodniu, aby uniknąć tłumów i mieć więcej czasu na uczestnictwo w warsztatach edukacyjnych.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "transit",
+          "start_time": "11:32",
+          "end_time": "11:42",
+          "duration_min": 10,
+          "mode": "car",
+          "from": "Tatrzański Park Edukacyjny",
+          "to": "Illusion House"
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_12",
+          "name": "Illusion House",
+          "start_time": "11:42",
+          "end_time": "12:27",
+          "duration_min": 45,
+          "description_short": "Interaktywna wystawa poświęcona iluzjom optycznym, zjawiskom fizycznym i zagadkom percepcji.",
+          "lat": 49.2957417,
+          "lng": 19.9528545,
+          "address": "DH GRANIT, Tadeusza Kościuszki 3, 34-500 Zakopane, Poland",
+          "cost_estimate": 90,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 45,
+            "ticket_reduced": 40
+          },
+          "parking": {
+            "name": "Parknig Krupówki Zakopane",
+            "walk_time_min": 2
+          },
+          "pro_tip": "Warto zabrać aparat fotograficzny – wiele iluzji robi świetne wrażenie na zdjęciach!",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "lunch_break",
+          "start_time": "13:06",
+          "end_time": "13:46",
+          "duration_min": 40,
+          "label": "Lunch / przerwa regeneracyjna",
+          "suggestions": [
+            "Lunch",
+            "Restauracja",
+            "Odpoczynek"
+          ]
+        },
+        {
+          "type": "transit",
+          "start_time": "13:46",
+          "end_time": "13:56",
+          "duration_min": 10,
+          "mode": "car",
+          "from": "Illusion House",
+          "to": "Muzeum Karola Szymanowskiego w willi \"Atma\""
+        },
+        {
+          "type": "parking",
+          "start_time": "13:56",
+          "end_time": "14:11",
+          "name": "PARKING KRUPÓWKI \"AK\"",
+          "address": "Ogrodowa 2, 34-500 Zakopane",
+          "lat": 49.29374981765316,
+          "lng": 19.95176421343834,
+          "parking_type": "paid",
+          "walk_time_min": 6
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_28",
+          "name": "Muzeum Karola Szymanowskiego w willi \"Atma\"",
+          "start_time": "14:02",
+          "end_time": "14:32",
+          "duration_min": 30,
+          "description_short": "Historyczna willa w stylu zakopiańskim, w której znajduje się muzeum poświęcone Karolowi Szymanowskiemu.",
+          "lat": 49.2924196,
+          "lng": 19.9484817,
+          "address": "Kasprusie 19, 34-500 Zakopane, Poland",
+          "cost_estimate": 30,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 15,
+            "ticket_reduced": 10
+          },
+          "parking": {
+            "name": "PARKING KRUPÓWKI \"AK\"",
+            "walk_time_min": 6
+          },
+          "pro_tip": "Warto sprawdzić aktualny program wydarzeń – w Willi Atma regularnie odbywają się kameralne koncerty i spotkania kulturalne.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "transit",
+          "start_time": "14:32",
+          "end_time": "14:42",
+          "duration_min": 10,
+          "mode": "car",
+          "from": "Muzeum Karola Szymanowskiego w willi \"Atma\"",
+          "to": "Myszogród"
+        },
+        {
+          "type": "parking",
+          "start_time": "14:50",
+          "end_time": "15:05",
+          "name": "Auto Parking obok Biedronki",
+          "address": "34-500 Zakopane",
+          "lat": 49.29327022308206,
+          "lng": 19.95807655548775,
+          "parking_type": "paid",
+          "walk_time_min": 3
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_3",
+          "name": "Myszogród",
+          "start_time": "15:08",
+          "end_time": "15:38",
+          "duration_min": 30,
+          "description_short": "Nietypowa wystawa ze światem stworzonym dla setek żywych myszek.",
+          "lat": 49.2916215,
+          "lng": 19.9604081,
+          "address": "Krupówki 81/B, 34-500 Zakopane, Poland",
+          "cost_estimate": 56,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 28,
+            "ticket_reduced": 24
+          },
+          "parking": {
+            "name": "Auto Parking obok Biedronki",
+            "walk_time_min": 3
+          },
+          "pro_tip": "Dla pełnego komfortu warto zarezerwować bilet online, szczególnie w sezonie turystycznym lub w weekendy.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "free_time",
+          "start_time": "15:59",
+          "end_time": "17:59",
+          "duration_min": 120,
+          "label": "Czas wolny do końca dnia: kolacja, spacer, zakupy, relaks"
+        },
+        {
+          "type": "free_time",
+          "start_time": "17:59",
+          "end_time": "19:59",
+          "duration_min": 120,
+          "label": "Czas wolny do końca dnia: kolacja, spacer, zakupy, relaks"
+        },
+        {
+          "type": "dinner_break",
+          "start_time": "19:59",
+          "end_time": "20:00",
+          "duration_min": 1,
+          "label": "Kolacja / regionalne smaki",
+          "suggestions": [
+            "Regionalna restauracja z kuchnią góralską",
+            "Bacówka z degustacją oscypka",
+            "Karcma z tradycyjnymi potrawami"
+          ]
+        },
+        {
+          "type": "day_end",
+          "time": "20:00"
+        }
+      ],
+      "quality_badges": [
+        "good_variety",
+        "realistic_timing"
+      ]
+    },
+    {
+      "day": 6,
+      "items": [
+        {
+          "type": "day_start",
+          "time": "09:00"
+        },
+        {
+          "type": "parking",
+          "start_time": "09:00",
+          "end_time": "09:15",
+          "name": "Parknig Krupówki Zakopane",
+          "address": "Tadeusza Kościuszki 3, 34-500 Zakopane",
+          "lat": 49.29563664460791,
+          "lng": 19.95302614085424,
+          "parking_type": "paid",
+          "walk_time_min": 2
+        },
+        {
+          "type": "free_time",
+          "start_time": "09:00",
+          "end_time": "11:00",
+          "duration_min": 120,
+          "label": "Czas wolny: spacer po okolicy, kawa, zakupy, zwiedzanie na własną rękę"
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_12",
+          "name": "Illusion House",
+          "start_time": "09:17",
+          "end_time": "10:02",
+          "duration_min": 45,
+          "description_short": "Interaktywna wystawa poświęcona iluzjom optycznym, zjawiskom fizycznym i zagadkom percepcji.",
+          "lat": 49.2957417,
+          "lng": 19.9528545,
+          "address": "DH GRANIT, Tadeusza Kościuszki 3, 34-500 Zakopane, Poland",
+          "cost_estimate": 90,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 45,
+            "ticket_reduced": 40
+          },
+          "parking": {
+            "name": "Parknig Krupówki Zakopane",
+            "walk_time_min": 2
+          },
+          "pro_tip": "Warto zabrać aparat fotograficzny – wiele iluzji robi świetne wrażenie na zdjęciach!",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "free_time",
+          "start_time": "11:55",
+          "end_time": "13:55",
+          "duration_min": 120,
+          "label": "Czas wolny: spacer po okolicy, kawa, zakupy, zwiedzanie na własną rękę"
+        },
+        {
+          "type": "lunch_break",
+          "start_time": "13:55",
+          "end_time": "14:35",
+          "duration_min": 40,
+          "label": "Lunch / przerwa regeneracyjna",
+          "suggestions": [
+            "Lunch",
+            "Restauracja",
+            "Odpoczynek"
+          ]
+        },
+        {
+          "type": "free_time",
+          "start_time": "14:35",
+          "end_time": "16:35",
+          "duration_min": 120,
+          "label": "Czas wolny po lunchu: kawa, lekki spacer, zakupy, relaks"
+        },
+        {
+          "type": "free_time",
+          "start_time": "16:35",
+          "end_time": "18:35",
+          "duration_min": 120,
+          "label": "Czas wolny do końca dnia: kolacja, spacer, zakupy, relaks"
+        },
+        {
+          "type": "dinner_break",
+          "start_time": "18:35",
+          "end_time": "20:00",
+          "duration_min": 85,
+          "label": "Kolacja / regionalne smaki",
+          "suggestions": [
+            "Regionalna restauracja z kuchnią góralską",
+            "Bacówka z degustacją oscypka",
+            "Karcma z tradycyjnymi potrawami"
+          ]
+        },
+        {
+          "type": "day_end",
+          "time": "20:00"
+        }
+      ],
+      "quality_badges": [
+        "realistic_timing"
+      ]
+    },
+    {
+      "day": 7,
+      "items": [
+        {
+          "type": "day_start",
+          "time": "09:00"
+        },
+        {
+          "type": "parking",
+          "start_time": "09:00",
+          "end_time": "09:15",
+          "name": "Parking przy domu do góry nogami",
+          "address": "Aleje 3-go Maja, 34-500 Zakopane",
+          "lat": 49.29421509759925,
+          "lng": 19.95656167049711,
+          "parking_type": "paid",
+          "walk_time_min": 1
+        },
+        {
+          "type": "free_time",
+          "start_time": "09:00",
+          "end_time": "11:00",
+          "duration_min": 120,
+          "label": "Czas wolny: spacer po okolicy, kawa, zakupy, zwiedzanie na własną rękę"
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_13",
+          "name": "Dom do góry nogami",
+          "start_time": "09:16",
+          "end_time": "09:36",
+          "duration_min": 20,
+          "description_short": "Nietypowy budynek, w którym wszystko stoi na głowie – atrakcja dla całej rodziny.",
+          "lat": 49.2939691,
+          "lng": 19.957179,
+          "address": "Aleje 3-go Maja, 34-500 Zakopane, Poland",
+          "cost_estimate": 42,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 21,
+            "ticket_reduced": 17
+          },
+          "parking": {
+            "name": "Parking przy domu do góry nogami",
+            "walk_time_min": 1
+          },
+          "pro_tip": "Zabierz ze sobą aparat lub telefon z pełną baterią – zdjęcia z tej atrakcji są wyjątkowe i na długo pozostaną w pamięci.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": []
+        },
+        {
+          "type": "free_time",
+          "start_time": "11:37",
+          "end_time": "13:37",
+          "duration_min": 120,
+          "label": "Czas wolny: spacer po okolicy, kawa, zakupy, zwiedzanie na własną rękę"
+        },
+        {
+          "type": "lunch_break",
+          "start_time": "13:37",
+          "end_time": "14:17",
+          "duration_min": 40,
+          "label": "Lunch / przerwa regeneracyjna",
+          "suggestions": [
+            "Lunch",
+            "Restauracja",
+            "Odpoczynek"
+          ]
+        },
+        {
+          "type": "free_time",
+          "start_time": "14:17",
+          "end_time": "16:17",
+          "duration_min": 120,
+          "label": "Czas wolny po lunchu: kawa, lekki spacer, zakupy, relaks"
+        },
+        {
+          "type": "transit",
+          "start_time": "16:17",
+          "end_time": "16:27",
+          "duration_min": 10,
+          "mode": "car",
+          "from": "Dom do góry nogami",
+          "to": "KULIGI w Zakopanem"
+        },
+        {
+          "type": "parking",
+          "start_time": "16:27",
+          "end_time": "16:42",
+          "name": "Parking przy Siwej Polanie",
+          "address": "34-512 Witów",
+          "lat": 49.28807813151476,
+          "lng": 19.84804736703877,
+          "parking_type": "paid",
+          "walk_time_min": 1
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_31",
+          "name": "KULIGI w Zakopanem",
+          "start_time": "16:32",
+          "end_time": "17:32",
+          "duration_min": 60,
+          "description_short": "Organizator tradycyjnych kuligów z saniami i pochodniami po zakopiańskich okolicach.",
+          "lat": 49.294211,
+          "lng": 19.9517825,
+          "address": "Mariusza Zaruskiego 1, 34-500 Zakopane, Poland",
+          "cost_estimate": 494,
+          "cost_note": "Total for your group of 2 people",
+          "ticket_info": {
+            "ticket_normal": 247,
+            "ticket_reduced": 247
+          },
+          "parking": {
+            "name": "Parking przy Siwej Polanie",
+            "walk_time_min": 1
+          },
+          "pro_tip": "Najlepszy klimat kuligu jest po zmroku – pochodnie i śnieg tworzą wtedy niepowtarzalny nastrój.",
+          "why_selected": [
+            "Peaceful atmosphere"
+          ],
+          "quality_badges": [
+            "premium_experience"
+          ]
+        },
+        {
+          "type": "dinner_break",
+          "start_time": "19:06",
+          "end_time": "20:00",
+          "duration_min": 54,
+          "label": "Kolacja / regionalne smaki",
+          "suggestions": [
+            "Regionalna restauracja z kuchnią góralską",
+            "Bacówka z degustacją oscypka",
+            "Karcma z tradycyjnymi potrawami"
+          ]
+        },
+        {
+          "type": "day_end",
+          "time": "20:00"
+        }
+      ],
+      "quality_badges": [
+        "good_variety",
+        "realistic_timing"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,299 @@
+{
+  "plan_id": "bb4fbcc6-4a9c-457a-b17e-b695093d9b1b",
+  "version": 1,
+  "days": [
+    {
+      "day": 1,
+      "items": [
+        {
+          "type": "day_start",
+          "time": "10:00"
+        },
+        {
+          "type": "parking",
+          "start_time": "10:00",
+          "end_time": "10:15",
+          "name": "Parking Wierch Poroniec",
+          "address": "DW960, 34-532 Brzegi",
+          "lat": 49.28495541022139,
+          "lng": 20.11278591938301,
+          "parking_type": "paid",
+          "walk_time_min": 3
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_34",
+          "name": "Rusinowa Polana",
+          "start_time": "10:18",
+          "end_time": "12:48",
+          "duration_min": 150,
+          "description_short": "Malownicza polana w Tatrach, oferująca piękne widoki na okoliczne szczyty.",
+          "lat": 49.2607771,
+          "lng": 20.0895038,
+          "address": "34-532 Brzegi",
+          "cost_estimate": 32,
+          "cost_note": "Total for your group of 4 people",
+          "ticket_info": {
+            "ticket_normal": 11,
+            "ticket_reduced": 5
+          },
+          "parking": {
+            "name": "Parking Wierch Poroniec",
+            "walk_time_min": 3
+          },
+          "pro_tip": "Najpiękniejsze widoki zobaczysz podczas wschodu słońca – wtedy polana jest mniej zatłoczona.",
+          "why_selected": [
+            "Must-see attraction in Zakopane",
+            "Low-crowd option (fits your comfort level)"
+          ],
+          "quality_badges": [
+            "must_see",
+            "core_attraction",
+            "family_favorite"
+          ]
+        },
+        {
+          "type": "lunch_break",
+          "start_time": "13:42",
+          "end_time": "14:22",
+          "duration_min": 40,
+          "label": "Lunch / przerwa regeneracyjna",
+          "suggestions": [
+            "Lunch",
+            "Restauracja",
+            "Odpoczynek"
+          ]
+        },
+        {
+          "type": "transit",
+          "start_time": "14:22",
+          "end_time": "14:38",
+          "duration_min": 16,
+          "mode": "car",
+          "from": "Rusinowa Polana",
+          "to": "Papugarnia Egzotyczne Zakopane"
+        },
+        {
+          "type": "parking",
+          "start_time": "14:38",
+          "end_time": "14:53",
+          "name": "Parking na miejscu",
+          "address": "Droga do Olczy 11, 34-500 Zakopane",
+          "lat": 49.28768470927717,
+          "lng": 19.97993464078015,
+          "parking_type": "paid",
+          "walk_time_min": 1
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_5",
+          "name": "Papugarnia Egzotyczne Zakopane",
+          "start_time": "14:38",
+          "end_time": "15:23",
+          "duration_min": 45,
+          "description_short": "Papugarnia z egzotycznymi ptakami w Zakopanem, idealna atrakcja dla rodzin i miłośników zwierząt.",
+          "lat": 49.2876722,
+          "lng": 19.9799362,
+          "address": "Droga do Olczy 11, 34-500 Zakopane, Poland",
+          "cost_estimate": 114,
+          "cost_note": "Total for your group of 4 people",
+          "ticket_info": {
+            "ticket_normal": 32,
+            "ticket_reduced": 25
+          },
+          "parking": {
+            "name": "Parking na miejscu",
+            "walk_time_min": 1
+          },
+          "pro_tip": "Warto zabrać aparat fotograficzny – papugi często chętnie siadają na rękach i ramionach gości, co zapewnia ciekawe zdjęcia.",
+          "why_selected": [
+            "Low-crowd option (fits your comfort level)"
+          ],
+          "quality_badges": [
+            "family_favorite"
+          ]
+        },
+        {
+          "type": "day_end",
+          "time": "16:00"
+        }
+      ],
+      "quality_badges": [
+        "has_must_see",
+        "good_variety",
+        "realistic_timing"
+      ]
+    },
+    {
+      "day": 2,
+      "items": [
+        {
+          "type": "day_start",
+          "time": "10:00"
+        },
+        {
+          "type": "parking",
+          "start_time": "10:00",
+          "end_time": "10:15",
+          "name": "Parking miejski",
+          "address": "Józefa Piłsudskiego 28-32, 34-500 Zakopane",
+          "lat": 49.28220695693889,
+          "lng": 19.96447342331977,
+          "parking_type": "paid",
+          "walk_time_min": 1
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_20",
+          "name": "Wielka Krokiew",
+          "start_time": "10:16",
+          "end_time": "11:01",
+          "duration_min": 45,
+          "description_short": "Największa skocznia narciarska w Polsce i ikona sportowa Zakopanego.",
+          "lat": 49.2794102,
+          "lng": 19.9639442,
+          "address": "ul. Bronisława Czecha 1, 34-500 Zakopane, Poland",
+          "cost_estimate": 90,
+          "cost_note": "Total for your group of 4 people",
+          "ticket_info": {
+            "ticket_normal": 25,
+            "ticket_reduced": 20
+          },
+          "parking": {
+            "name": "Parking miejski",
+            "walk_time_min": 1
+          },
+          "pro_tip": "Najlepsze widoki rozciągają się ze szczytu skoczni – wjedź kolejką, by zrobić efektowne zdjęcia. Zwiedzanie poza zawodami jest spokojniejsze i pozwala lepiej docenić miejsce.",
+          "why_selected": [
+            "Must-see attraction in Zakopane",
+            "Low-crowd option (fits your comfort level)"
+          ],
+          "quality_badges": [
+            "must_see",
+            "core_attraction",
+            "family_favorite"
+          ]
+        },
+        {
+          "type": "transit",
+          "start_time": "11:01",
+          "end_time": "11:11",
+          "duration_min": 10,
+          "mode": "car",
+          "from": "Wielka Krokiew",
+          "to": "Podwodny Świat"
+        },
+        {
+          "type": "parking",
+          "start_time": "11:29",
+          "end_time": "11:44",
+          "name": "Parking po przeciwnej stronie ulicy",
+          "address": "Powstańców Śląskich 11, 34-500 Zakopane",
+          "lat": 49.29417049287513,
+          "lng": 19.93704701555601,
+          "parking_type": "paid",
+          "walk_time_min": 2
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_6",
+          "name": "Podwodny Świat",
+          "start_time": "11:46",
+          "end_time": "12:16",
+          "duration_min": 30,
+          "description_short": "Akwarium prezentujące faunę i florę podwodną.",
+          "lat": 49.2943257,
+          "lng": 19.9368506,
+          "address": "Ubocz 3b, 34-500 Zakopane, Poland",
+          "cost_estimate": 104,
+          "cost_note": "Total for your group of 4 people",
+          "ticket_info": {
+            "ticket_normal": 28,
+            "ticket_reduced": 24
+          },
+          "parking": {
+            "name": "Parking po przeciwnej stronie ulicy",
+            "walk_time_min": 2
+          },
+          "pro_tip": "Warto zaplanować wizytę rano, kiedy jest mniej odwiedzających i można w spokoju przyglądać się ekspozycjom.",
+          "why_selected": [
+            "Low-crowd option (fits your comfort level)"
+          ],
+          "quality_badges": [
+            "family_favorite"
+          ]
+        },
+        {
+          "type": "lunch_break",
+          "start_time": "12:37",
+          "end_time": "13:17",
+          "duration_min": 40,
+          "label": "Lunch / przerwa regeneracyjna",
+          "suggestions": [
+            "Lunch",
+            "Restauracja",
+            "Odpoczynek"
+          ]
+        },
+        {
+          "type": "transit",
+          "start_time": "13:17",
+          "end_time": "13:27",
+          "duration_min": 10,
+          "mode": "car",
+          "from": "Podwodny Świat",
+          "to": "Muzeum Stylu Zakopiańskiego im. S. Witkiewicza"
+        },
+        {
+          "type": "parking",
+          "start_time": "13:27",
+          "end_time": "13:42",
+          "name": "Parking na miejscu na cztery samochody",
+          "address": "Kościeliska 18, 34-500 Zakopane, Poland",
+          "lat": 49.29423307964222,
+          "lng": 19.94307549195877,
+          "parking_type": "paid",
+          "walk_time_min": 1
+        },
+        {
+          "type": "attraction",
+          "poi_id": "poi_26",
+          "name": "Muzeum Stylu Zakopiańskiego im. S. Witkiewicza",
+          "start_time": "13:32",
+          "end_time": "14:17",
+          "duration_min": 45,
+          "description_short": "Muzeum prezentujące historię i charakterystyczny styl zakopiański w architekturze i sztuce.",
+          "lat": 49.2943331,
+          "lng": 19.9429691,
+          "address": "Kościeliska 18, 34-500 Zakopane, Poland",
+          "cost_estimate": 66,
+          "cost_note": "Total for your group of 4 people",
+          "ticket_info": {
+            "ticket_normal": 22,
+            "ticket_reduced": 11
+          },
+          "parking": {
+            "name": "Parking na miejscu na cztery samochody",
+            "walk_time_min": 1
+          },
+          "pro_tip": "Odwiedź muzeum poza sezonem turystycznym, by zwiedzać w spokojniejszej atmosferze i dokładniej obejrzeć detale architektoniczne Willi Koliba.",
+          "why_selected": [
+            "Low-crowd option (fits your comfort level)"
+          ],
+          "quality_badges": [
+            "family_favorite"
+          ]
+        },
+        {
+          "type": "day_end",
+          "time": "16:00"
+        }
+      ],
+      "quality_badges": [
+        "has_must_see",
+        "good_variety",
+        "realistic_timing"
+      ]
+    }
+  ]
+}

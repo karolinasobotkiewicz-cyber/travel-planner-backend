@@ -148,7 +148,11 @@ class AttractionItem(BaseModel):
     address: str = Field(..., description="Adres atrakcji")
 
     cost_estimate: int = Field(
-        ..., ge=0, description="Oszacowany koszt dla grupy"
+        ..., ge=0, description="Total cost for the entire group (not per person)"
+    )
+    cost_note: str | None = Field(
+        default=None,
+        description="Explanation of cost (e.g., 'Total for your group of 4 people')",
     )
     ticket_info: TicketInfo = Field(..., description="Info o cenach")
     parking: ParkingInfo = Field(

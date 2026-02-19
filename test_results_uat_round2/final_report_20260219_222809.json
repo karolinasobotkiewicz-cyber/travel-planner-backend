@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-02-19T22:28:09.552999",
+  "summary": {
+    "total": 10,
+    "passed": 0,
+    "failed": 0,
+    "errors": 10
+  },
+  "results": [
+    {
+      "test_number": 1,
+      "status": "API_ERROR",
+      "error": "HTTP 404: {\"detail\":\"Not Found\"}"
+    },
+    {
+      "test_number": 2,
+      "status": "API_ERROR",
+      "error": "HTTP 404: {\"detail\":\"Not Found\"}"
+    },
+    {
+      "test_number": 3,
+      "status": "API_ERROR",
+      "error": "HTTP 404: {\"detail\":\"Not Found\"}"
+    },
+    {
+      "test_number": 4,
+      "status": "API_ERROR",
+      "error": "HTTP 404: {\"detail\":\"Not Found\"}"
+    },
+    {
+      "test_number": 5,
+      "status": "API_ERROR",
+      "error": "HTTP 404: {\"detail\":\"Not Found\"}"
+    },
+    {
+      "test_number": 6,
+      "status": "API_ERROR",
+      "error": "HTTP 404: {\"detail\":\"Not Found\"}"
+    },
+    {
+      "test_number": 7,
+      "status": "API_ERROR",
+      "error": "HTTP 404: {\"detail\":\"Not Found\"}"
+    },
+    {
+      "test_number": 8,
+      "status": "API_ERROR",
+      "error": "HTTP 404: {\"detail\":\"Not Found\"}"
+    },
+    {
+      "test_number": 9,
+      "status": "API_ERROR",
+      "error": "HTTP 404: {\"detail\":\"Not Found\"}"
+    },
+    {
+      "test_number": 10,
+      "status": "API_ERROR",
+      "error": "HTTP 404: {\"detail\":\"Not Found\"}"
+    }
+  ]
+}
