@@ -356,16 +356,18 @@ class PlanService:
             elif item_type == "attraction":
                 # BUGFIX (18.02.2026 - UAT Problem #9): Add parking before attraction if needed
                 # FIX #3 (20.02.2026 - UAT Round 3): Use location change detection
+                # FIX #3.1 (20.02.2026 - UAT Round 3 Test-01): Remove parking_name requirement
                 # Generate parking item BEFORE attraction if:
                 # 1. User has car
                 # 2. This is NOT the first attraction (already has parking at day start)
-                # 3. POI has parking data (parking_name, lat, lng)
-                # 4. Location changed from previous attraction (distance > 50m)
+                # 3. Location changed from previous attraction (distance > 50m)
+                # Note: Even if POI lacks parking_name, we create parking with fallback name
                 
                 poi = item.get("poi", {})
                 current_parking_name = poi.get("parking_name", "")
-                current_lat = poi.get("lat")
-                current_lng = poi.get("lng")
+                # FIX #3.2: POI dict has capitalized keys from Excel ("Lat", "Lng")
+                current_lat = poi.get("Lat")
+                current_lng = poi.get("Lng")
                 
                 # Check if location changed from previous attraction
                 location_changed = False
@@ -375,14 +377,17 @@ class PlanService:
                     distance_km = haversine_distance(prev_lat, prev_lng, current_lat, current_lng)
                     # Location changed if distance > 0.05 km (50 meters)
                     location_changed = distance_km > 0.05
+                    # DEBUG: print(f"[PARKING DEBUG] {poi.get('Name')}: distance={distance_km:.3f}km, location_changed={location_changed}")
                 elif first_attraction_index > 0:
                     # No previous location to compare, but not first attraction
                     # Assume location changed (safe default - create parking)
                     location_changed = True
+                    # DEBUG: print(f"[PARKING DEBUG] {poi.get('Name')}: no prev location, assuming changed=True")
                 
+                # FIX #3.1: Removed current_parking_name requirement
+                # Create parking for ANY location change with car, even without parking_name in POI
                 if (has_car and 
                     first_attraction_index > 0 and 
-                    current_parking_name and 
                     location_changed):
                     
                     # Generate parking item before this attraction
@@ -611,13 +616,14 @@ class PlanService:
         
         # Use parking_lat/lng or fallback to POI lat/lng
         # NOTE: parking_lat can be 0.0 (valid), use None check
+        # FIX #3.2: POI dict has capitalized keys from Excel ("Lat", "Lng")
         parking_lat = poi_dict.get("parking_lat")
         if parking_lat is None or parking_lat == 0.0:
-            parking_lat = poi_dict.get("lat", 0.0)
+            parking_lat = poi_dict.get("Lat", 0.0)
         
         parking_lng = poi_dict.get("parking_lng")
         if parking_lng is None or parking_lng == 0.0:
-            parking_lng = poi_dict.get("lng", 0.0)
+            parking_lng = poi_dict.get("Lng", 0.0)
         
         return ParkingItem(
             type=ItemType.PARKING,
@@ -660,6 +666,15 @@ class PlanService:
         # HOTFIX #10.5: Debug logging - track POI ID in attraction item creation
         poi_id_from_dict = poi_dict.get("id", "")
         print(f"[ATTRACTION ITEM] Creating item: poi_id={poi_id_from_dict}")
+        
+        # FIX #3.2: Extract lat/lng with fallback (same pattern as parking)
+        lat_value = poi_dict.get("Lat")
+        if lat_value is None or lat_value == 0.0:
+            lat_value = poi_dict.get("lat", 0.0)
+        
+        lng_value = poi_dict.get("Lng")
+        if lng_value is None or lng_value == 0.0:
+            lng_value = poi_dict.get("lng", 0.0)
         
         # ETAP 2 Day 5: Generate explainability and quality badges
         if context is None:
@@ -713,8 +728,9 @@ class PlanService:
             poi_id=poi_dict.get("id", ""),
             name=poi_dict.get("name", ""),
             description_short=poi_dict.get("description_short", ""),
-            lat=poi_dict.get("lat", 0.0),
-            lng=poi_dict.get("lng", 0.0),
+            # FIX #3.2: Use extracted lat/lng values
+            lat=lat_value,
+            lng=lng_value,
             address=poi_dict.get("address", ""),
             cost_estimate=estimated_cost,  # Poprawiono z estimated_cost
             cost_note=cost_note,  # BUGFIX (19.02.2026 - Issue #7)
@@ -929,8 +945,10 @@ class PlanService:
                 next_type = next_item['type']
                 
                 # Get next start time
+                # FIX #4.1 (20.02.2026): Include parking in gap detection
+                # Client issue: Gaps before parking items were not filled
                 next_start = None
-                if next_type in ['attraction', 'lunch_break']:
+                if next_type in ['attraction', 'lunch_break', 'parking', 'dinner_break', 'free_time']:
                     if 'start_time' in next_item:
                         next_start = time_to_minutes(next_item['start_time'])
                 
@@ -1021,8 +1039,9 @@ class PlanService:
                             if not poi_name or str(poi_name).lower() == 'nan':
                                 continue  # Invalid POI data
                             
-                            poi_lat = poi.get('lat', 0)
-                            poi_lng = poi.get('lng', 0)
+                            # FIX #3.2: POI dict has capitalized keys from Excel ("Lat", "Lng")
+                            poi_lat = poi.get('Lat', 0)
+                            poi_lng = poi.get('Lng', 0)
                             if poi_lat == 0 or poi_lng == 0:
                                 continue  # Missing location data
                             
