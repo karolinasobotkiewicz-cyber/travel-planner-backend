@@ -917,8 +917,10 @@ class PlanService:
             item_type = item_dict['type']
             
             # Get end time of current item
+            # FIX #4.2 (20.02.2026): Include free_time and dinner_break for gap detection
+            # Client issue (test-02): Gaps after free_time or dinner_break were not detected
             current_end = None
-            if item_type in ['attraction', 'transit', 'lunch_break', 'parking']:
+            if item_type in ['attraction', 'transit', 'lunch_break', 'parking', 'free_time', 'dinner_break']:
                 if 'end_time' in item_dict:
                     current_end = time_to_minutes(item_dict['end_time'])
                     # Add walk_time for parking
@@ -946,23 +948,23 @@ class PlanService:
                 
                 # Get next start time
                 # FIX #4.1 (20.02.2026): Include parking in gap detection
-                # Client issue: Gaps before parking items were not filled
+                # FIX #4.4 (20.02.2026): Include day_end in gap detection
+                # Client issue (test-02): Gaps before day_end were not detected
                 next_start = None
                 if next_type in ['attraction', 'lunch_break', 'parking', 'dinner_break', 'free_time']:
                     if 'start_time' in next_item:
                         next_start = time_to_minutes(next_item['start_time'])
+                elif next_type == 'day_end':
+                    if 'time' in next_item:
+                        next_start = time_to_minutes(next_item['time'])
                 
                 if next_start is not None:
                     gap = next_start - current_end
                     
                     print(f"[GAP FILLING] {item_type} ends {current_end} -> {next_type} starts {next_start} = GAP {gap} min")
                     
-                    # BUGFIX (31.01.2026 - Problem #3): Skip gap filling before lunch if gap <50 min
-                    # FIX #4 (15.02.2026): Reduced from 60 to 50 min to be less aggressive
-                    # Lunch can start earlier instead of adding unnecessary free_time
-                    if next_type == 'lunch_break' and gap < 50:
-                        print(f"[GAP FILLING] ✗ SKIP filling {gap} min gap before lunch (lunch can start earlier)")
-                        continue
+                    # FIX #4.3 (20.02.2026): Removed skip condition for lunch_break
+                    # Client requirement (test-02): ALL gaps >15 min must be filled, including before meal breaks
                     
                     # BUGFIX (02.02.2026 - FIX #2): Skip free_time if next attraction opens soon
                     # Check if gap is caused by waiting for opening hours
@@ -984,9 +986,10 @@ class PlanService:
                         if attraction_count >= hard_limit:
                             print(f"[GAP FILLING] ✗ SKIP - attraction limit reached ({attraction_count}/{hard_limit})")
                             # Add free_time instead of POI
+                            # FIX #4.3 (20.02.2026): Removed 40 min limit - fill entire gap
+                            # Client requirement (test-02): Gaps of 54 min were only partially filled (40 min), leaving 14 min unfilled
                             free_time_start = minutes_to_time(current_end)
-                            free_time_end = minutes_to_time(min(current_end + gap, next_start))
-                            free_duration = min(gap, 40)  # Max 40 min free time
+                            free_duration = gap  # Fill entire gap (was: min(gap, 40))
                             
                             result.append(FreeTimeItem(
                                 type=ItemType.FREE_TIME,
@@ -1137,7 +1140,9 @@ class PlanService:
                             continue  # Skip free_time - POI added instead
                         
                         # NO POI FOUND - add free_time as LAST RESORT
-                        gap_duration = min(gap, 40)  # Max 40 min free time
+                        # FIX #4.4 (20.02.2026): Removed 40 min limit (second occurrence)
+                        # Client requirement (test-02): Fill entire gaps, not just partial
+                        gap_duration = gap  # Fill entire gap (was: min(gap, 40))
                         free_time_start = minutes_to_time(current_end)
                         free_time_end = minutes_to_time(current_end + gap_duration)
                         
@@ -1154,7 +1159,8 @@ class PlanService:
                         result.append(free_time_item)
         
         # FIX #4 (15.02.2026): Add end-of-day free_time if gap >30 min before day_end
-        # Client feedback: "Brakuje free_time na końcówkach dni"
+        # FIX #4.5 (20.02.2026): Changed threshold from 30 to 15 min to be consistent with main gap filling
+        # Client issue (test-02 Day 1): Gap 21 min before day_end was not filled (21 < 30)
         if result and len(result) >= 2:
             # Check second-to-last item (last is usually DAY_END)
             last_item = result[-2] if result[-1].dict()['type'] == 'day_end' else result[-1]
@@ -1172,7 +1178,7 @@ class PlanService:
                 day_end_min = time_to_minutes(day_end_str)
                 gap_to_end = day_end_min - last_end_min
                 
-                if gap_to_end > 30:
+                if gap_to_end > 15:  # Changed from 30 to 15
                     print(f"[GAP FILLING] Adding end-of-day free_time: {gap_to_end} min gap before day_end ({last_end_str} → {day_end_str})")
                     
                     # Cap at 90 min to avoid excessively long free time
