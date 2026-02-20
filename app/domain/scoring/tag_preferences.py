@@ -233,6 +233,65 @@ USER_PREFERENCES_TO_TAGS = {
         ],
         "tag_bonus": 25,
     },
+    # ALIAS FIX (UAT Round 3 - FIX #5): Frontend preference aliases
+    # Client test files use different preference names than backend mapping
+    "kids_attractions": {
+        # Alias for "attractions_for_kids"
+        "type_match": ["kids_attractions", "theme_park", "zoo_other"],
+        "type_bonus": 30,
+        "tags": [
+            "playground",
+            "interactive_exhibition_kids",
+            "petting_zoo",
+            "farm_animals",
+            "feeding_experience",
+            "miniature_world",
+            "fairytale_world",
+            "illusion_kids",
+            "aquatic_playground",
+            "adventure_playground",
+            "trampoline_park",
+            "family_entertainment",
+        ],
+        "tag_bonus": 25,
+    },
+    "nature_landscape": {
+        # Alias for "nature_landscapes" (singular vs plural)
+        "type_match": ["nature_outdoor", "scenic_viewpoint"],
+        "type_bonus": 30,
+        "tags": [
+            "mountain_viewpoint",
+            "scenic_panorama",
+            "hiking",
+            "mountain_trails",
+            "natural_landscape",
+            "waterfall",
+            "alpine_valley",
+            "mountain_lake",
+            "botanical_garden",
+            "nature_reserve",
+            "gorge",
+            "forest_trail",
+        ],
+        "tag_bonus": 25,
+    },
+    "mountain_trails": {
+        # Alias for mountain/hiking focused preference
+        "type_match": ["nature_outdoor", "scenic_viewpoint", "hiking_trail"],
+        "type_bonus": 30,
+        "tags": [
+            "mountain_trails",
+            "hiking",
+            "alpine_valley",
+            "mountain_viewpoint",
+            "scenic_panorama",
+            "mountain_lake",
+            "summit",
+            "ridge_trail",
+            "forest_trail",
+        ],
+        "tag_bonus": 25,
+    },
 }
 
 

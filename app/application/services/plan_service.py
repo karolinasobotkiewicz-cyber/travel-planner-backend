@@ -24,13 +24,19 @@ from app.domain.models.plan import (
     ParkingType,  # Dodano dla parking_type
 )
 from app.application.services.trip_mapper import trip_input_to_engine_params
-from app.domain.planner.engine import build_day, plan_multiple_days, travel_time_minutes, is_open
+from app.domain.planner.engine import build_day, plan_multiple_days, travel_time_minutes, is_open, haversine_distance
 from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
 from app.infrastructure.repositories import POIRepository
 
 # ETAP 2 Day 5: Quality + Explainability
 from app.domain.planner.quality_checker import validate_day_quality, check_poi_quality
 from app.domain.planner.explainability import explain_poi_selection
+
+# UAT Round 3 - FIX #1 (20.02.2026): Timeline Integrity Validator
+# Validates all items form non-overlapping sequential timeline
+# Detects overlaps: parking↔attraction, lunch↔attraction, free_time↔attraction
+# Client feedback: ALL 10 tests had parking overlaps, walk_time ignored
+from app.domain.validators import validate_and_heal_timeline
 
 
 class PlanService:
@@ -143,6 +149,9 @@ class PlanService:
             # Update context for this day (for conversion step)
             day_context = context.copy()
             day_context["date"] = dates[day_num]
+            # FIX #4 (15.02.2026): Add day_start and day_end to context for end-of-day logic
+            day_context["day_start"] = day_start
+            day_context["day_end"] = day_end
             
             # Konwersja engine result → PlanResponse items
             day_items = self._convert_engine_result_to_items(
@@ -197,9 +206,30 @@ class PlanService:
             day_plan_for_validation = {"items": day_items_dict}
             day_quality_badges = validate_day_quality(day_plan_for_validation, all_pois_dict)
             
+            # FIX #1 (20.02.2026 - UAT Round 3): Timeline Integrity Validation
+            # PROBLEM: All 10 client tests had overlaps (parking↔attraction, lunch↔attraction)
+            # SOLUTION: Validate + heal timeline before creating DayPlan
+            # - Detects ALL overlap types (parking, transit, attraction, meals, free_time)
+            # - Enforces walk_time gap: attraction.start >= parking.end + walk_time
+            # - Auto-heals overlaps by cascading items forward
+            healed_items, validation_warnings = validate_and_heal_timeline(
+                day_items,
+                day_number=day_num + 1,
+                raise_on_failure=False  # Log warnings but don't block plan generation
+            )
+            
+            # Use healed timeline (overlaps fixed)
+            day_items = healed_items
+            
+            # Log validation warnings if any
+            if validation_warnings:
+                print(f"[TIMELINE VALIDATOR] Day {day_num + 1}:")
+                for warning in validation_warnings:
+                    print(f"  {warning}")
+            
             day_plan = DayPlan(
                 day=day_num + 1,
-                items=day_items,
+                items=day_items,  # Use healed items with no overlaps
                 quality_badges=day_quality_badges  # ETAP 2 Day 5
             )
             
@@ -278,6 +308,8 @@ class PlanService:
         first_attraction_index = 0  # Track first attraction for timing correction
         last_transit_was_car = False  # Track if previous transit was by car (UAT Problem #9)
         last_parking_name = None  # Track last parking to avoid duplicates
+        # FIX #3 (20.02.2026 - UAT Round 3): Track location changes instead of transit mode
+        last_attraction_location = None  # (lat, lng) of previous attraction
         
         for item in engine_result:
             item_type = item.get("type")
@@ -323,22 +355,38 @@ class PlanService:
             
             elif item_type == "attraction":
                 # BUGFIX (18.02.2026 - UAT Problem #9): Add parking before attraction if needed
+                # FIX #3 (20.02.2026 - UAT Round 3): Use location change detection
                 # Generate parking item BEFORE attraction if:
                 # 1. User has car
-                # 2. Previous transit was by CAR (duration >= 10 min)
-                # 3. This is NOT the first attraction (already has parking at day start)
-                # 4. POI has different parking name than previous (avoid duplicates)
+                # 2. This is NOT the first attraction (already has parking at day start)
+                # 3. POI has parking data (parking_name, lat, lng)
+                # 4. Location changed from previous attraction (distance > 50m)
                 
                 poi = item.get("poi", {})
                 current_parking_name = poi.get("parking_name", "")
+                current_lat = poi.get("lat")
+                current_lng = poi.get("lng")
                 
-                if (has_car and last_transit_was_car and 
+                # Check if location changed from previous attraction
+                location_changed = False
+                if last_attraction_location and current_lat and current_lng:
+                    prev_lat, prev_lng = last_attraction_location
+                    # Calculate distance in km
+                    distance_km = haversine_distance(prev_lat, prev_lng, current_lat, current_lng)
+                    # Location changed if distance > 0.05 km (50 meters)
+                    location_changed = distance_km > 0.05
+                elif first_attraction_index > 0:
+                    # No previous location to compare, but not first attraction
+                    # Assume location changed (safe default - create parking)
+                    location_changed = True
+                
+                if (has_car and 
                     first_attraction_index > 0 and 
                     current_parking_name and 
-                    current_parking_name != last_parking_name):
+                    location_changed):
                     
                     # Generate parking item before this attraction
-                    attr_start_time = item.get("start_time")
+                    attr_start_time_orig = item.get("start_time")
                     
                     # Calculate parking start: attraction_start - parking_duration - walk_time
                     from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
@@ -347,7 +395,7 @@ class PlanService:
                     walk_time_raw = poi.get("parking_walk_time_min")
                     walk_time = int(walk_time_raw) if walk_time_raw and walk_time_raw > 0 else 5
                     
-                    attr_start_min = time_to_minutes(attr_start_time)
+                    attr_start_min = time_to_minutes(attr_start_time_orig)
                     parking_start_min = attr_start_min - parking_duration - walk_time
                     
                     # BUGFIX (19.02.2026 - UAT Round 2, Bug #1): Parking overlap with transit
@@ -360,21 +408,33 @@ class PlanService:
                                 # Overlap detected! Move parking to start right after transit
                                 parking_start_min = transit_end_min
                     
+                    # FIX #2 (20.02.2026 - UAT Round 3): CASCADE UPDATE
+                    # Problem: Round 2 fix adjusted parking_start but NOT attraction_start
+                    # Result: parking moved forward but attraction stayed → OVERLAP!
+                    # Solution: ALWAYS recalculate attraction start from actual parking times
+                    # Formula: attraction.start = parking.end + walk_time
+                    parking_end_min = parking_start_min + parking_duration
+                    attr_start_min = parking_end_min + walk_time
+                    attr_start_time = minutes_to_time(attr_start_min)  # Corrected start time
+                    
                     parking_start = minutes_to_time(parking_start_min)
                     
                     # Generate parking item
                     parking_item = self._generate_parking_item(
                         poi,
                         parking_start,
-                        attr_start_time
+                        attr_start_time  # Use corrected time (includes walk_time!)
                     )
                     items.append(parking_item)
                     last_parking_name = current_parking_name
+                else:
+                    # No parking created for this attraction - use original engine time
+                    attr_start_time = item.get("start_time")
                 
                 # 5. ATTRACTION (4.11 - z cost estimation)
                 
                 # BUGFIX: Correct first attraction timing if parking exists
-                attr_start_time = item.get("start_time")
+                # FIX #2: Only adjust if this is first attraction (attr_start_time may already be set above)
                 if first_attraction_index == 0 and has_car and first_attraction:
                     # First attraction with parking - adjust start time
                     # parking duration: 15 min, walk time: from POI
@@ -402,6 +462,10 @@ class PlanService:
                     context  # ETAP 2 Day 5: Pass context for explainability
                 )
                 items.append(attraction_item)
+                
+                # FIX #3 (20.02.2026): Track attraction location for next iteration
+                if current_lat and current_lng:
+                    last_attraction_location = (current_lat, current_lng)
                 
                 # Reset transit flag after attraction
                 last_transit_was_car = False
@@ -784,13 +848,14 @@ class PlanService:
         global_used: set = None
     ) -> List[Any]:
         """
-        Fill gaps >20 min between items with POI or free_time.
+        Fill gaps >15 min between items with POI or free_time.
         
         BUGFIX (31.01.2026 - Problem #4): ACTIVE gap filling
+        FIX #4 (15.02.2026): Lower threshold 20→15 min, add end-of-day free_time
         Philosophy: "Najlepiej jakby w ogóle nie było luk czasowych, szczególnie jak atrakcje są otwarte"
         
         NEW LOGIC:
-        1. Detect gap >20 min
+        1. Detect gap >15 min
         2. TRY: Find available POI that fits in gap (is_open, duration fits)
         3. TRY: Prefer shorter, nearby POI
         4. LAST RESORT: Add free_time only if NO POI available
@@ -874,9 +939,10 @@ class PlanService:
                     
                     print(f"[GAP FILLING] {item_type} ends {current_end} -> {next_type} starts {next_start} = GAP {gap} min")
                     
-                    # BUGFIX (31.01.2026 - Problem #3): Skip gap filling before lunch if gap <60 min
+                    # BUGFIX (31.01.2026 - Problem #3): Skip gap filling before lunch if gap <50 min
+                    # FIX #4 (15.02.2026): Reduced from 60 to 50 min to be less aggressive
                     # Lunch can start earlier instead of adding unnecessary free_time
-                    if next_type == 'lunch_break' and gap < 60:
+                    if next_type == 'lunch_break' and gap < 50:
                         print(f"[GAP FILLING] ✗ SKIP filling {gap} min gap before lunch (lunch can start earlier)")
                         continue
                     
@@ -894,7 +960,8 @@ class PlanService:
                                 print(f"[GAP FILLING] ✗ SKIP filling {gap} min gap - next attraction is already open, can start earlier")
                                 continue
                     
-                    if gap > 20:
+                    # FIX #4 (15.02.2026): Lower threshold from 20 to 15 min
+                    if gap > 15:
                         # HOTFIX (02.02.2026): Check if attraction limit reached
                         if attraction_count >= hard_limit:
                             print(f"[GAP FILLING] ✗ SKIP - attraction limit reached ({attraction_count}/{hard_limit})")
@@ -1066,6 +1133,50 @@ class PlanService:
                         )
                         
                         result.append(free_time_item)
+        
+        # FIX #4 (15.02.2026): Add end-of-day free_time if gap >30 min before day_end
+        # Client feedback: "Brakuje free_time na końcówkach dni"
+        if result and len(result) >= 2:
+            # Check second-to-last item (last is usually DAY_END)
+            last_item = result[-2] if result[-1].dict()['type'] == 'day_end' else result[-1]
+            last_end_str = None
+            
+            # Get last item's end_time
+            if hasattr(last_item, 'end_time') and last_item.end_time:
+                last_end_str = last_item.end_time
+            
+            # Get day_end from context
+            day_end_str = context.get("day_end")
+            
+            if last_end_str and day_end_str:
+                last_end_min = time_to_minutes(last_end_str)
+                day_end_min = time_to_minutes(day_end_str)
+                gap_to_end = day_end_min - last_end_min
+                
+                if gap_to_end > 30:
+                    print(f"[GAP FILLING] Adding end-of-day free_time: {gap_to_end} min gap before day_end ({last_end_str} → {day_end_str})")
+                    
+                    # Cap at 90 min to avoid excessively long free time
+                    free_time_duration = min(gap_to_end, 90)
+                    free_time_start = last_end_str
+                    free_time_end = minutes_to_time(last_end_min + free_time_duration)
+                    
+                    end_of_day_item = FreeTimeItem(
+                        type=ItemType.FREE_TIME,
+                        start_time=free_time_start,
+                        end_time=free_time_end,
+                        duration_min=free_time_duration,
+                        label="Czas wolny na koniec dnia"
+                    )
+                    
+                    # Insert before DAY_END
+                    if result[-1].dict()['type'] == 'day_end':
+                        result.insert(-1, end_of_day_item)
+                    else:
+                        result.append(end_of_day_item)
+                    
+                    print(f"[GAP FILLING] ✓ Added end-of-day free_time: {free_time_start}-{free_time_end} ({free_time_duration} min)")
+                    print(f"[GAP FILLING] ✓ Added end-of-day free_time: {free_time_start}-{free_time_end} ({free_time_duration} min)")
         
         print(f"[GAP FILLING] Final: {len(items)} -> {len(result)} items")
         return result

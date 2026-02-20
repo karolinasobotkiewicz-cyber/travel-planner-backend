@@ -1248,6 +1248,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #9): Track termy/spa for daily limit
     termy_count = 0  # Max 1/day for seniors
     
+    # FIX #5 (UAT Round 3 - 19.02.2026): Track preference coverage for top 3 preferences
+    # Client feedback: "Część atrakcji jest zoo/rozrywka mimo prefs museum_heritage + cultural"
+    # Goal: Enforce at least 1 attraction per top 3 user preference per day
+    covered_preferences = set()  # Track which of top 3 preferences have been covered
+    
     limits = GROUP_ATTRACTION_LIMITS.get(user["target_group"], {
         "soft": 7,
         "hard": 8,
@@ -1540,6 +1545,37 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             if attraction_count >= limits["soft"]:
                 score -= 50  # Strong penalty to discourage exceeding soft limit
                 print(f"[LIMITS] Soft limit penalty: {attraction_count}/{limits['soft']} attractions, -50 score")
+            
+            # FIX #5 (UAT Round 3 - 19.02.2026): PREFERENCE COVERAGE BOOST
+            # Client feedback: "Część atrakcji jest zoo/rozrywka mimo prefs museum_heritage + cultural"
+            # After 2 attractions added, massively boost POI matching uncovered top 3 preferences
+            if attraction_count >= 2:
+                user_prefs = user.get("preferences", [])
+                top_3_prefs = user_prefs[:3]  # Top 3 preferences only
+                uncovered = set(top_3_prefs) - covered_preferences
+                
+                if uncovered:
+                    # Check if this POI matches any uncovered preference
+                    from app.domain.scoring.tag_preferences import USER_PREFERENCES_TO_TAGS
+                    
+                    poi_type = p.get("type", "")
+                    poi_tags = set(p.get("tags", []))
+                    
+                    matched_uncovered_prefs = set()
+                    for pref in uncovered:
+                        pref_config = USER_PREFERENCES_TO_TAGS.get(pref, {})
+                        type_matches = pref_config.get("type_match", [])
+                        tag_matches = set(pref_config.get("tags", []))
+                        
+                        # Check if POI matches this preference
+                        if poi_type in type_matches or poi_tags & tag_matches:
+                            matched_uncovered_prefs.add(pref)
+                    
+                    # Apply massive boost for uncovered preferences
+                    if matched_uncovered_prefs:
+                        boost = len(matched_uncovered_prefs) * 75  # +75 per uncovered preference
+                        score += boost
+                        print(f"[PREFERENCE COVERAGE] +{boost} boost for uncovered prefs: {matched_uncovered_prefs} (POI: {poi_name(p)})")
 
             # CLIENT REQUIREMENT (04.02.2026): Collect candidates within 1% of best score for variety
             # This prevents always selecting same POI, adds diversity to plans
@@ -2040,6 +2076,35 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         if global_termy_tracking is not None and is_termy_spa(best):
             global_termy_tracking["count"] += 1
             print(f"[LIMITS] Global termy count: {global_termy_tracking['count']}/{global_termy_tracking['max']}")
+        
+        # FIX #5 (UAT Round 3 - 19.02.2026): Update preference coverage tracking
+        # Track which of top 3 preferences have been covered by this POI
+        user_prefs = user.get("preferences", [])
+        top_3_prefs = user_prefs[:3]
+        
+        if top_3_prefs:
+            from app.domain.scoring.tag_preferences import USER_PREFERENCES_TO_TAGS
+            
+            poi_type = best.get("type", "")
+            poi_tags = set(best.get("tags", []))
+            
+            for pref in top_3_prefs:
+                if pref not in covered_preferences:
+                    pref_config = USER_PREFERENCES_TO_TAGS.get(pref, {})
+                    type_matches = pref_config.get("type_match", [])
+                    tag_matches = set(pref_config.get("tags", []))
+                    
+                    # Check if POI matches this preference
+                    if poi_type in type_matches or poi_tags & tag_matches:
+                        covered_preferences.add(pref)
+                        print(f"[PREFERENCE COVERAGE] ✓ Covered preference '{pref}' with {poi_name(best)}")
+            
+            # Log coverage status
+            uncovered = set(top_3_prefs) - covered_preferences
+            if uncovered:
+                print(f"[PREFERENCE COVERAGE] Still uncovered: {uncovered}")
+            else:
+                print(f"[PREFERENCE COVERAGE] ✓ All top 3 preferences covered!")
 
         # update kultur
         if is_culture(best):
@@ -2195,6 +2260,27 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if global_termy_tracking is not None and is_termy_spa(p):
                         global_termy_tracking["count"] += 1
                         print(f"[LIMITS] Global termy count (gap filler): {global_termy_tracking['count']}/{global_termy_tracking['max']}")
+                    
+                    # FIX #5 (UAT Round 3 - 19.02.2026): Update preference coverage for soft POI too
+                    user_prefs = user.get("preferences", [])
+                    top_3_prefs = user_prefs[:3]
+                    
+                    if top_3_prefs:
+                        from app.domain.scoring.tag_preferences import USER_PREFERENCES_TO_TAGS
+                        
+                        poi_type = p.get("type", "")
+                        poi_tags = set(p.get("tags", []))
+                        
+                        for pref in top_3_prefs:
+                            if pref not in covered_preferences:
+                                pref_config = USER_PREFERENCES_TO_TAGS.get(pref, {})
+                                type_matches = pref_config.get("type_match", [])
+                                tag_matches = set(pref_config.get("tags", []))
+                                
+                                # Check if POI matches this preference
+                                if poi_type in type_matches or poi_tags & tag_matches:
+                                    covered_preferences.add(pref)
+                                    print(f"[PREFERENCE COVERAGE] ✓ Covered preference '{pref}' with soft POI {poi_name(p)}")
                     
                     soft_filled = True
                     break  # Fill one soft POI per gap
@@ -2357,6 +2443,26 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     group_size = user.get("group_size", 1)
                     poi_cost_total = float(soft_best.get("ticket_price", 0)) * group_size
                     daily_cost += poi_cost_total
+                
+                # FIX #5 (UAT Round 3 - 19.02.2026): Track preference coverage for gap filler
+                user_prefs = user.get("preferences", [])
+                top_3_prefs = user_prefs[:3]
+                
+                if top_3_prefs:
+                    from app.domain.scoring.tag_preferences import USER_PREFERENCES_TO_TAGS
+                    
+                    poi_type = soft_best.get("type", "")
+                    poi_tags = set(soft_best.get("tags", []))
+                    
+                    for pref in top_3_prefs:
+                        if pref not in covered_preferences:
+                            pref_config = USER_PREFERENCES_TO_TAGS.get(pref, {})
+                            type_matches = pref_config.get("type_match", [])
+                            tag_matches = set(pref_config.get("tags", []))
+                            
+                            if poi_type in type_matches or poi_tags & tag_matches:
+                                covered_preferences.add(pref)
+                                print(f"[PREFERENCE COVERAGE] ✓ Covered preference '{pref}' with gap filler {poi_name(soft_best)}")
                 
                 last_poi = soft_best
                 remaining_to_end = end - now
