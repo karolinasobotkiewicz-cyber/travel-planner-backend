@@ -2621,6 +2621,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if should_exclude_by_intensity(p, user):
                     continue
                 
+                # FIX #15.2 (23.02.2026 - TEST-06): Add kids filter to gap filling
+                # CRITICAL BUG: Gap filling was adding Zoo for seniors because kids filter was missing
+                # This is why poi_2 appeared despite FIX #15 blocking it in main engine
+                if should_exclude_kids_poi_for_adults(p, user):
+                    print(f"   [GAP FILL] Excluded kids POI: {poi_name(p)}")
+                    continue
+                
                 # Limits
                 user_group = user.get("target_group", "")
                 if user_group in ['solo', 'couples', 'friends', 'seniors']:
