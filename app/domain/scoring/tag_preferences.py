@@ -124,7 +124,7 @@ USER_PREFERENCES_TO_TAGS = {
         "tag_bonus": 25,
     },
     "water_attractions": {
-        "type_match": ["water_wellness", "aquapark"],
+        "type_match": ["water_wellness", "aquapark", "water_attractions"],
         "type_bonus": 30,
         "tags": [
             "thermal_baths",
@@ -169,7 +169,7 @@ USER_PREFERENCES_TO_TAGS = {
         "tag_bonus": 25,
     },
     "relax_wellness": {
-        "type_match": ["water_wellness", "spa"],
+        "type_match": ["water_wellness", "spa", "water_attractions"],
         "type_bonus": 30,
         "tags": [
             "thermal_baths",
@@ -212,9 +212,12 @@ USER_PREFERENCES_TO_TAGS = {
     },
     # FIX #6 (22.02.2026 - TEST-02): Missing "relaxation" preference alias
     # Test-02 uses "relaxation" but system only has "relax_wellness"
+    # FIX #18 (24.02.2026 - TEST-06): Add "water_attractions" to type_match
+    # Problem: Termy have type="water_attractions" in Excel but not in type_match list
+    # Result: Termy lose -30 pts type_bonus, museums win despite FIX #16+17
     "relaxation": {
         # Alias for "relax_wellness" - termy, spa, thermal baths
-        "type_match": ["water_wellness", "spa", "thermal_baths"],
+        "type_match": ["water_wellness", "spa", "thermal_baths", "water_attractions"],
         "type_bonus": 30,
         "tags": [
             "thermal_baths",
@@ -332,13 +335,21 @@ def calculate_tag_preference_score(
     
     CLIENT DATA UPDATE (05.02.2026): No penalty for missing preferences.
     Backward compatible - returns 0 if user has no preferences.
+    
+    FIX #18 (24.02.2026): Handle multiple types in POI
+    Excel POI can have comma-separated types: "water_attractions, kids_attractions, relaxation"
+    Split and check each type individually.
     """
     if not user_preferences:
         return 0
     
     total_bonus = 0
     poi_tags = poi.get("tags", [])
-    poi_type = poi.get("type", "").lower()
+    poi_type_raw = poi.get("type", "")
+    
+    # FIX #18: Split comma-separated types and clean them
+    # "water_attractions, kids_attractions" -> ["water_attractions", "kids_attractions"]
+    poi_types = [t.strip().lower() for t in str(poi_type_raw).split(",") if t.strip()]
     
     for pref in user_preferences:
         if pref not in USER_PREFERENCES_TO_TAGS:
@@ -346,9 +357,11 @@ def calculate_tag_preference_score(
         
         pref_config = USER_PREFERENCES_TO_TAGS[pref]
         
-        # Type match bonus
-        if poi_type in pref_config["type_match"]:
-            total_bonus += pref_config["type_bonus"]
+        # Type match bonus - check if ANY POI type matches
+        for poi_type in poi_types:
+            if poi_type in pref_config["type_match"]:
+                total_bonus += pref_config["type_bonus"]
+                break  # Only add bonus once per preference
         
         # Tag match bonus (can stack multiple tags)
         matching_tags = set(poi_tags) & set(pref_config["tags"])
