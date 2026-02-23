@@ -1143,19 +1143,28 @@ def score_poi(
     score += calculate_preference_score(p, user)
     score += calculate_travel_style_score(p, user)
     
-    # FIX #14 (23.02.2026 - TEST-06 CRITICAL FIX): Budget utilization boost
-    # Problem: TEST-06 (seniors, 500 zł/day) used only 10% budget (154/1500 zł total).
-    # Root cause: High daily_limit doesn't incentivize engine to select premium/expensive POIs.
-    # Solution: Boost score when daily budget is severely underutilized (<30%) to encourage spending.
-    if daily_limit is not None and daily_cost < daily_limit * 0.3:
-        # Severely underutilizing budget - boost premium/expensive POIs
+    # FIX #17 (24.02.2026 - TEST-06 COMPREHENSIVE FIX): Enhanced budget utilization boost
+    # Problem: FIX #14 (+30 pts at <30%) insufficient for high daily_limit (500 zł/day).
+    # TEST-06 results: Budget utilization 10.3% (154/1500 zł), engine selecting cheap museums over premium POI.
+    # Root cause: +30 pts boost cannot overcome ~45pt gap between museums (~73 pts) and Termy (~25 pts).
+    # Solution: Stronger progressive boost (60-80 pts), higher threshold (50%), severity-based scaling.
+    if daily_limit is not None:
+        utilization = daily_cost / daily_limit if daily_limit > 0 else 0
         poi_cost = calculate_poi_cost_for_group(p, user)
-        if poi_cost > 0:
-            # Boost proportional to POI cost (expensive POIs get bigger boost)
-            budget_boost = (poi_cost / daily_limit) * 30.0  # Max +30 pts for 100% daily_limit POI
+        
+        if utilization < 0.5 and poi_cost > 0:  # Under 50% utilized (was 30%)
+            # Progressive boost based on underutilization severity
+            if utilization < 0.2:  # Severe underutilization (<20%)
+                boost_multiplier = 80.0  # Was 30.0 - strong incentive for premium POI
+            elif utilization < 0.35:  # Moderate underutilization (<35%)
+                boost_multiplier = 60.0
+            else:  # Mild underutilization (<50%)
+                boost_multiplier = 40.0
+            
+            budget_boost = (poi_cost / daily_limit) * boost_multiplier
             score += budget_boost
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-            print(f"    [BUDGET BOOST] {poi_name_safe}: +{budget_boost:.1f} (under 30% budget, POI cost={poi_cost:.0f} PLN)")
+            print(f"    [BUDGET BOOST] {poi_name_safe}: +{budget_boost:.1f} (utilization={utilization*100:.0f}%, POI cost={poi_cost:.0f} PLN)")
     
     # BUGFIX (19.02.2026 - UAT Round 2, Issue #5): Travel style preference boost
     # Problem: Tests 03, 05, 06, 09 show travel_style not properly boosting matching preferences
@@ -1234,6 +1243,39 @@ def score_poi(
             score -= penalty
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [ADVENTURE PENALTY] {poi_name_safe}: -{penalty:.1f} (adventure style prefers active over culture)")
+    
+    # FIX #16 (24.02.2026 - TEST-06 COMPREHENSIVE FIX): Explicit Termy boost for relaxation preference
+    # CRITICAL: Termy are premium relaxation experiences that should DOMINATE when user wants relaxation.
+    # Problem: TEST-06 (relaxation preference + relax style) got 0% Termy, 75% museums (6/8 POI museums, 0 Termy).
+    # Root cause: 
+    #   - Relaxation is 3rd preference (weaker than museum_heritage 1st)
+    #   - Termy expensive (~150 zł) → premium penalty (-20 pts)
+    #   - Existing relax boost (+50% multiplicative) insufficient for low base scores
+    #   - Museums score ~73 pts (must_see + preference), Termy score ~25 pts → 48pt gap
+    # Solution: 
+    #   - Strong additive +60 pts boost when Termy + relaxation preference (overcome museum dominance)
+    #   - Additional +30 pts if relax travel_style matches (total +90 pts)
+    #   - Negate premium penalty for Termy (justified expense for relaxation goal)
+    # Expected impact: Termy 25 + 60 + 30 + 20 = 135 pts > Museums 73 pts ✅
+    user_preferences = user.get("preferences", [])
+    if "relaxation" in user_preferences and is_termy_spa(p):
+        # Base Termy boost for having relaxation preference
+        termy_boost = 60.0  # Strong boost to compete with museums (~70 pts baseline)
+        score += termy_boost
+        poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+        print(f"    [TERMY BOOST] {poi_name_safe}: +{termy_boost:.1f} (relaxation preference, combat museum dominance)")
+        
+        # Additional boost if relax travel_style matches (reinforces intent)
+        if user.get("travel_style") == "relax":
+            style_boost = 30.0
+            score += style_boost
+            print(f"    [TERMY BOOST] {poi_name_safe}: +{style_boost:.1f} (relax style match)")
+        
+        # Negate premium penalty for Termy (justified expense for relaxation goal)
+        # Premium penalty already applied earlier (~-20 pts), add it back
+        penalty_negation = 20.0
+        score += penalty_negation
+        print(f"    [TERMY BOOST] {poi_name_safe}: +{penalty_negation:.1f} (premium penalty negated - justified expense)")
     
     # FIX #6 (02.02.2026): Priority_level bonus (core: +25, secondary: +10, optional: 0)
     score += calculate_priority_bonus(p, user)
