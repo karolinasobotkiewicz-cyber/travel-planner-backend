@@ -713,13 +713,19 @@ def should_exclude_kids_poi_for_adults(poi, user):
         return False  # Not adult group - no exclusion
     
     # Kids-only POI identifiers
+    # FIX #15 (23.02.2026): Added zoo_other to block Zoo for adults
     kids_only_tags = {"kids_attractions", "petting_zoo", "fairytale_world", 
                      "miniature_world", "children_playground", "playground"}
     kids_only_types = {"kids_attractions", "zoo_other", "petting_zoo", "playground", "zoo"}
     
+    print(f"   kids_only_types: {kids_only_types}")
+    
     # Check BOTH tags AND type fields (FIX #10.2/10.3)
     has_kids_tag = bool(kids_only_tags & poi_tags)
     has_kids_type = any(t in kids_only_types for t in poi_type_list)
+    
+    print(f"   has_kids_tag: {has_kids_tag} (matched: {kids_only_tags & poi_tags})")
+    print(f"   has_kids_type: {has_kids_type} (matched types: {[t for t in poi_type_list if t in kids_only_types]})")
     
     # FIX #12: Multi-purpose POI exception - Check if POI serves adults too
     # Adult-appropriate types that override kids_attractions filtering
@@ -730,10 +736,14 @@ def should_exclude_kids_poi_for_adults(poi, user):
     
     has_adult_type = any(t in adult_appropriate_types for t in poi_type_list)
     has_adult_tag = bool(adult_appropriate_tags & poi_tags)
+    print(f"   has_adult_type: {has_adult_type} (matched: {[t for t in poi_type_list if t in adult_appropriate_types]})")
+    print(f"   has_adult_tag: {has_adult_tag} (matched: {adult_appropriate_tags & poi_tags})")
     
     # Check if POI explicitly includes current group in target_groups
     # FIX #15 (23.02.2026 - TEST-06): Handle both string and list formats
     poi_target_groups = poi.get("target_groups", [])
+    print(f"   poi_target_groups RAW: {poi_target_groups} (type: {type(poi_target_groups)})")
+    
     if poi_target_groups:
         # Handle both "solo, couples, seniors" (string) and ["solo", "couples", "seniors"] (list)
         if isinstance(poi_target_groups, str):
@@ -741,37 +751,28 @@ def should_exclude_kids_poi_for_adults(poi, user):
         else:
             target_groups_list = [str(tg).strip().lower() for tg in poi_target_groups]
         explicitly_targets_group = group_type.lower() in target_groups_list
+        print(f"   target_groups_list: {target_groups_list}")
+        print(f"   group_type: '{group_type}' -> explicitly_targets: {explicitly_targets_group}")
     else:
         explicitly_targets_group = False
+        print(f"   target_groups EMPTY -> explicitly_targets: False")
     
     # EXCEPTION: Don't exclude if POI serves BOTH kids AND adults
     # Conditions: (has_kids_type OR has_kids_tag) AND (has_adult_type OR has_adult_tag) AND explicitly_targets_group
     is_multi_purpose = (has_kids_type or has_kids_tag) and (has_adult_type or has_adult_tag) and explicitly_targets_group
+    print(f"   is_multi_purpose: {is_multi_purpose} = ({has_kids_type or has_kids_tag}) AND ({has_adult_type or has_adult_tag}) AND ({explicitly_targets_group})")
     
     if is_multi_purpose:
         # Multi-purpose POI (e.g., Termy with both kids and adult facilities) - ALLOW
         should_exclude = False
-        print(f"[FIX #12] Multi-purpose POI {poi_id} ALLOWED for {group_type}: has kids_type={has_kids_type}, has_adult_type={has_adult_type}, targets_group={explicitly_targets_group}")
+        print(f"   ✅ [FIX #12] DECISION: ALLOW - Multi-purpose POI for {group_type}")
     else:
         # Pure kids POI - EXCLUDE for adults
         should_exclude = has_kids_tag or has_kids_type
-    
-    # FIX #10.5: DEBUG LOGGING for poi_2 (Zoo) issue
-    if poi_id == "poi_2" or "zoo" in poi_name.lower() or poi_id == "poi_15" or "termy" in poi_name.lower():
-        print(f"\n🔍 [FIX #10.5 + #12 DEBUG] Kids POI Filter Check:")
-        print(f"   POI: {poi_id} - {poi_name}")
-        print(f"   Group type: {group_type}")
-        print(f"   Is adult group: {group_type in adult_groups}")
-        print(f"   POI tags: {poi_tags}")
-        print(f"   POI type string: '{poi_type_str}'")
-        print(f"   POI type list: {poi_type_list}")
-        print(f"   Has kids tag: {has_kids_tag} (matched: {poi_tags & kids_only_tags})")
-        print(f"   Has kids type: {has_kids_type}")
-        print(f"   Has adult type: {has_adult_type} (matched: {set(poi_type_list) & adult_appropriate_types})")
-        print(f"   Has adult tag: {has_adult_tag} (matched: {poi_tags & adult_appropriate_tags})")
-        print(f"   Explicitly targets {group_type}: {explicitly_targets_group}")
-        print(f"   Is multi-purpose: {is_multi_purpose}")
-        print(f"   DECISION: {'EXCLUDE ❌' if should_exclude else 'ALLOW ✅'}")
+        if should_exclude:
+            print(f"   ❌ [KIDS FILTER] DECISION: EXCLUDE - Kids-only POI for adult group")
+        else:
+            print(f"   ✅ DECISION: ALLOW - Not a kids POI")
     
     return should_exclude
 
