@@ -695,12 +695,16 @@ def should_exclude_kids_poi_for_adults(poi, user):
     poi_id = poi.get("id", "unknown")
     poi_name = poi.get("name", "unknown")
     
-    # FIX #10.6: ALWAYS print when filter is called
-    print(f"[FIX #10.6 TRACE] Filter called for: {poi_id} - {poi_name}")
+    # FIX #10.6 + FIX #15: ALWAYS print when filter is called
+    print(f"\n🔍 [FIX #15 FILTER CALLED] {poi_id} - {poi_name}")
     
     poi_tags = set(poi.get("tags", []))
     poi_type_str = str(poi.get("type", "")).lower()
     poi_type_list = [t.strip() for t in poi_type_str.split(",") if t.strip()]
+    
+    print(f"   Type string: '{poi_type_str}'")
+    print(f"   Type list: {poi_type_list}")
+    print(f"   Tags: {poi_tags}")
     
     group_type = user.get("group", {}).get("type", "") if isinstance(user.get("group"), dict) else user.get("target_group", "")
     adult_groups = ["friends", "couples", "couple", "seniors", "solo", "adults"]
@@ -728,10 +732,15 @@ def should_exclude_kids_poi_for_adults(poi, user):
     has_adult_tag = bool(adult_appropriate_tags & poi_tags)
     
     # Check if POI explicitly includes current group in target_groups
+    # FIX #15 (23.02.2026 - TEST-06): Handle both string and list formats
     poi_target_groups = poi.get("target_groups", [])
     if poi_target_groups:
-        target_groups_str = [str(tg).strip().lower() for tg in poi_target_groups]
-        explicitly_targets_group = group_type.lower() in target_groups_str
+        # Handle both "solo, couples, seniors" (string) and ["solo", "couples", "seniors"] (list)
+        if isinstance(poi_target_groups, str):
+            target_groups_list = [tg.strip().lower() for tg in poi_target_groups.split(',')]
+        else:
+            target_groups_list = [str(tg).strip().lower() for tg in poi_target_groups]
+        explicitly_targets_group = group_type.lower() in target_groups_list
     else:
         explicitly_targets_group = False
     
