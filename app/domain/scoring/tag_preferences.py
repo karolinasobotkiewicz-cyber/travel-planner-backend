@@ -210,6 +210,27 @@ USER_PREFERENCES_TO_TAGS = {
         ],
         "tag_bonus": 25,
     },
+    # FIX #6 (22.02.2026 - TEST-02): Missing "relaxation" preference alias
+    # Test-02 uses "relaxation" but system only has "relax_wellness"
+    "relaxation": {
+        # Alias for "relax_wellness" - termy, spa, thermal baths
+        "type_match": ["water_wellness", "spa", "thermal_baths"],
+        "type_bonus": 30,
+        "tags": [
+            "thermal_baths",
+            "hot_springs",
+            "spa_wellness",
+            "relaxation_pools",
+            "geothermal_pools",
+            "year_round",
+            "massage",
+            "sauna",
+            "jacuzzi",
+            "wellness_center",
+            "relax",
+        ],
+        "tag_bonus": 25,
+    },
     "history_mystery": {
         "type_match": [
             "museum",

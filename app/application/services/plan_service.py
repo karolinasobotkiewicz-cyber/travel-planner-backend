@@ -227,9 +227,82 @@ class PlanService:
                 for warning in validation_warnings:
                     print(f"  {warning}")
             
+            # FIX #3 FAIL-SAFE (22.02.2026): Remove/truncate items that exceed day_end
+            # Even if engine or gap filling creates items past day_end, this ensures compliance
+            from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+            day_end_min = time_to_minutes(day_end)
+            cleaned_items = []
+            
+            for item in day_items:
+                # Get dict using model_dump() or dict()
+                if hasattr(item, 'model_dump'):
+                    item_dict = item.model_dump()
+                elif hasattr(item, 'dict'):
+                    item_dict = item.dict()
+                else:
+                    cleaned_items.append(item)
+                    continue
+                
+                item_type = item_dict.get('type')
+                
+                # Skip day_start (no end_time)
+                if item_type == 'day_start':
+                    cleaned_items.append(item)
+                    continue
+                
+                # Check if item has end_time
+                end_time_str = item_dict.get('end_time')
+                if not end_time_str:
+                    cleaned_items.append(item)
+                    continue
+                
+                item_end_min = time_to_minutes(end_time_str)
+                
+                # If item ends before or at day_end, keep it
+                if item_end_min <= day_end_min:
+                    cleaned_items.append(item)
+                else:
+                    # Item exceeds day_end - truncate or skip
+                    start_time_str = item_dict.get('start_time')
+                    if start_time_str:
+                        item_start_min = time_to_minutes(start_time_str)
+                        
+                        # If item starts before day_end, truncate it
+                        if item_start_min < day_end_min:
+                            new_duration = day_end_min - item_start_min
+                            if new_duration >= 5:  # Keep only if >= 5 min remaining
+                                # Clone item with truncated end_time
+                                truncated_dict = item_dict.copy()
+                                truncated_dict['end_time'] = day_end
+                                truncated_dict['duration_min'] = new_duration
+                                
+                                # Recreate item with same type
+                                ItemClass = type(item)
+                                try:
+                                    truncated_item = ItemClass(**truncated_dict)
+                                    cleaned_items.append(truncated_item)
+                                    print(f"[DAY_END ENFORCER] Day {day_num + 1}: Truncated {item_type} from {end_time_str} to {day_end} (was {item_end_min - day_end_min} min over)")
+                                except Exception as e:
+                                    print(f"[DAY_END ENFORCER] Day {day_num + 1}: Failed to truncate {item_type}: {e}")
+                                    # Keep original if truncation fails
+                                    cleaned_items.append(item)
+                            else:
+                                print(f"[DAY_END ENFORCER] Day {day_num + 1}: Removed {item_type} {start_time_str}-{end_time_str} (starts too close to day_end)")
+                        else:
+                            # Item starts after day_end - remove completely
+                            print(f"[DAY_END ENFORCER] Day {day_num + 1}: Removed {item_type} {start_time_str}-{end_time_str} (starts after day_end {day_end})")
+            
+            day_items = cleaned_items
+            
+            # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
+            # This ensures day_end is always the last item in timeline
+            # Previous bug: day_end was added in _convert_engine_result_to_items,
+            # but gap filling could insert items after it
+            day_items.append(DayEndItem(time=day_end))
+            
             day_plan = DayPlan(
                 day=day_num + 1,
-                items=day_items,  # Use healed items with no overlaps
+                items=day_items,  # Use healed items with no overlaps + day_end at end
                 quality_badges=day_quality_badges  # ETAP 2 Day 5
             )
             
@@ -560,8 +633,9 @@ class PlanService:
         # 7. FREE_TIME - gaps detection
         # TODO: Implementuj free_time gdy są luki w schedulu (ETAP 2)
         
-        # 8. DAY_END
-        items.append(DayEndItem(time=day_end))
+        # 8. DAY_END - MOVED TO generate_plan() to ensure it's always last
+        # FIX #4 (22.02.2026): day_end must be added AFTER gap filling and validation
+        # items.append(DayEndItem(time=day_end))
         
         return items
 
@@ -963,6 +1037,15 @@ class PlanService:
                     
                     print(f"[GAP FILLING] {item_type} ends {current_end} -> {next_type} starts {next_start} = GAP {gap} min")
                     
+                    # FIX #7 (22.02.2026 - UAT Round 3, TEST-03 Issue):
+                    # CRITICAL: Skip gap filling between transit and parking
+                    # Problem: Engine adds transit, then plan_service adds parking, gap_filling detects gap
+                    # Solution: Transit→Parking is a natural sequence (travel + parking arrival), NO free_time needed
+                    # Client feedback (TEST-03): 3 occurrences of "transit → free_time → parking" pattern
+                    if item_type == 'transit' and next_type == 'parking':
+                        print(f"[GAP FILLING] ✗ SKIP transit→parking gap ({gap} min) - natural travel sequence")
+                        continue
+                    
                     # FIX #4.3 (20.02.2026): Removed skip condition for lunch_break
                     # Client requirement (test-02): ALL gaps >15 min must be filled, including before meal breaks
                     
@@ -988,8 +1071,23 @@ class PlanService:
                             # Add free_time instead of POI
                             # FIX #4.3 (20.02.2026): Removed 40 min limit - fill entire gap
                             # Client requirement (test-02): Gaps of 54 min were only partially filled (40 min), leaving 14 min unfilled
-                            free_time_start = minutes_to_time(current_end)
+                            # FIX #3 (22.02.2026): Respect day_end - don't exceed it with free_time
+                            day_end_str = context.get("day_end")
                             free_duration = gap  # Fill entire gap (was: min(gap, 40))
+                            
+                            if day_end_str:
+                                day_end_min = time_to_minutes(day_end_str)
+                                free_time_end_proposed = current_end + free_duration
+                                
+                                # If proposed end exceeds day_end, cap it
+                                if free_time_end_proposed > day_end_min:
+                                    free_duration = day_end_min - current_end
+                                    if free_duration < 5:  # Skip if too short
+                                        print(f"[GAP FILLING] SKIP free_time - would exceed day_end")
+                                        continue
+                                    print(f"[GAP FILLING] CAPPED free_time to day_end: {gap} min → {free_duration} min")
+                            
+                            free_time_start = minutes_to_time(current_end)
                             
                             result.append(FreeTimeItem(
                                 type=ItemType.FREE_TIME,
@@ -1142,7 +1240,34 @@ class PlanService:
                         # NO POI FOUND - add free_time as LAST RESORT
                         # FIX #4.4 (20.02.2026): Removed 40 min limit (second occurrence)
                         # Client requirement (test-02): Fill entire gaps, not just partial
-                        gap_duration = gap  # Fill entire gap (was: min(gap, 40))
+                        # FIX #3 (22.02.2026): Respect day_end - don't exceed it with free_time
+                        # FIX #9 (22.02.2026 - UAT Round 3, TEST-03 Issue): Cap free_time at 60 min
+                        # Problem (TEST-03): 157-minute gap creates single massive "Czas wolny" block
+                        # Solution: Cap at 60 min - large gaps will become multiple smaller free_time blocks
+                        # Client feedback: 2.6-hour single gap looks like poor planning
+                        day_end_str = context.get("day_end")
+                        if day_end_str:
+                            day_end_min = time_to_minutes(day_end_str)
+                            free_time_end_proposed = current_end + gap
+                            
+                            # If proposed end exceeds day_end, cap it
+                            if free_time_end_proposed > day_end_min:
+                                gap_duration = day_end_min - current_end
+                                if gap_duration < 5:  # Skip if too short
+                                    print(f"[GAP FILLING] SKIP free_time - would exceed day_end ({current_end + gap} > {day_end_min})")
+                                    continue
+                                print(f"[GAP FILLING] CAPPED free_time to day_end: {gap} min → {gap_duration} min")
+                            else:
+                                # FIX #9: Cap at 60 min to avoid excessively long single free_time blocks
+                                gap_duration = min(gap, 60)
+                                if gap_duration < gap:
+                                    print(f"[GAP FILLING] CAPPED free_time: {gap} min → {gap_duration} min (max 60)")
+                        else:
+                            # FIX #9: Cap at 60 min even without day_end
+                            gap_duration = min(gap, 60)
+                            if gap_duration < gap:
+                                print(f"[GAP FILLING] CAPPED free_time: {gap} min → {gap_duration} min (max 60)")
+                        
                         free_time_start = minutes_to_time(current_end)
                         free_time_end = minutes_to_time(current_end + gap_duration)
                         
@@ -1161,6 +1286,7 @@ class PlanService:
         # FIX #4 (15.02.2026): Add end-of-day free_time if gap >30 min before day_end
         # FIX #4.5 (20.02.2026): Changed threshold from 30 to 15 min to be consistent with main gap filling
         # Client issue (test-02 Day 1): Gap 21 min before day_end was not filled (21 < 30)
+        # FIX #6.2 (22.02.2026): Add dinner_break instead of free_time if appropriate
         if result and len(result) >= 2:
             # Check second-to-last item (last is usually DAY_END)
             last_item = result[-2] if result[-1].dict()['type'] == 'day_end' else result[-1]
@@ -1179,29 +1305,93 @@ class PlanService:
                 gap_to_end = day_end_min - last_end_min
                 
                 if gap_to_end > 15:  # Changed from 30 to 15
-                    print(f"[GAP FILLING] Adding end-of-day free_time: {gap_to_end} min gap before day_end ({last_end_str} → {day_end_str})")
-                    
-                    # Cap at 90 min to avoid excessively long free time
-                    free_time_duration = min(gap_to_end, 90)
-                    free_time_start = last_end_str
-                    free_time_end = minutes_to_time(last_end_min + free_time_duration)
-                    
-                    end_of_day_item = FreeTimeItem(
-                        type=ItemType.FREE_TIME,
-                        start_time=free_time_start,
-                        end_time=free_time_end,
-                        duration_min=free_time_duration,
-                        label="Czas wolny na koniec dnia"
+                    # FIX #6.2 (22.02.2026): Check if dinner_break should be added instead of free_time
+                    # Conditions for dinner:
+                    # 1. Gap >= 60 min (enough time for dinner)
+                    # 2. Last item ends >= 17:30 (reasonable dinner time)
+                    # 3. No dinner_break exists yet in this day
+                    has_dinner = any(item.dict().get('type') == 'dinner_break' for item in result)
+                    should_add_dinner = (
+                        gap_to_end >= 60 and 
+                        last_end_min >= time_to_minutes("17:30") and 
+                        not has_dinner
                     )
                     
-                    # Insert before DAY_END
-                    if result[-1].dict()['type'] == 'day_end':
-                        result.insert(-1, end_of_day_item)
+                    if should_add_dinner:
+                        # Add dinner_break instead of free_time
+                        dinner_duration = min(60, gap_to_end)  # Max 60 min for dinner
+                        dinner_start = last_end_str
+                        dinner_end = minutes_to_time(last_end_min + dinner_duration)
+                        
+                        # Generate suggestions (simple default - user preferences not available here)
+                        suggestions = [
+                            "Regionalna restauracja z kuchnią góralską",
+                            "Bacówka z degustacją oscypka",
+                            "Karcma z tradycyjnymi potrawami"
+                        ]
+                        
+                        dinner_item = DinnerBreakItem(
+                            type=ItemType.DINNER_BREAK,
+                            start_time=dinner_start,
+                            end_time=dinner_end,
+                            duration_min=dinner_duration,
+                            suggestions=suggestions
+                        )
+                        
+                        # Insert before DAY_END
+                        if result[-1].dict()['type'] == 'day_end':
+                            result.insert(-1, dinner_item)
+                        else:
+                            result.append(dinner_item)
+                        
+                        print(f"[GAP FILLING] ✓ Added end-of-day dinner_break: {dinner_start}-{dinner_end} ({dinner_duration} min)")
+                        
+                        # Add remaining time as free_time if gap is still large
+                        remaining_gap = gap_to_end - dinner_duration
+                        if remaining_gap > 15:
+                            free_time_start = dinner_end
+                            free_time_end = minutes_to_time(last_end_min + dinner_duration + min(remaining_gap, 90))
+                            free_time_duration = time_to_minutes(free_time_end) - time_to_minutes(free_time_start)
+                            
+                            free_time_item = FreeTimeItem(
+                                type=ItemType.FREE_TIME,
+                                start_time=free_time_start,
+                                end_time=free_time_end,
+                                duration_min=free_time_duration,
+                                label="Wieczór: spacer, zakupy, relaks w hotelu"
+                            )
+                            
+                            if result[-1].dict()['type'] == 'day_end':
+                                result.insert(-1, free_time_item)
+                            else:
+                                result.append(free_time_item)
+                            
+                            print(f"[GAP FILLING] ✓ Added post-dinner free_time: {free_time_start}-{free_time_end} ({free_time_duration} min)")
                     else:
-                        result.append(end_of_day_item)
-                    
-                    print(f"[GAP FILLING] ✓ Added end-of-day free_time: {free_time_start}-{free_time_end} ({free_time_duration} min)")
-                    print(f"[GAP FILLING] ✓ Added end-of-day free_time: {free_time_start}-{free_time_end} ({free_time_duration} min)")
+                        # Add free_time as usual
+                        print(f"[GAP FILLING] Adding end-of-day free_time: {gap_to_end} min gap before day_end ({last_end_str} → {day_end_str})")
+                        
+                        # FIX #9 (22.02.2026): Reduced cap from 90 to 60 min for consistency
+                        # Avoid excessively long free time blocks
+                        free_time_duration = min(gap_to_end, 60)
+                        free_time_start = last_end_str
+                        free_time_end = minutes_to_time(last_end_min + free_time_duration)
+                        
+                        end_of_day_item = FreeTimeItem(
+                            type=ItemType.FREE_TIME,
+                            start_time=free_time_start,
+                            end_time=free_time_end,
+                            duration_min=free_time_duration,
+                            label="Czas wolny na koniec dnia"
+                        )
+                        
+                        # Insert before DAY_END
+                        if result[-1].dict()['type'] == 'day_end':
+                            result.insert(-1, end_of_day_item)
+                        else:
+                            result.append(end_of_day_item)
+                        
+                        print(f"[GAP FILLING] ✓ Added end-of-day free_time: {free_time_start}-{free_time_end} ({free_time_duration} min)")
         
         print(f"[GAP FILLING] Final: {len(items)} -> {len(result)} items")
         return result

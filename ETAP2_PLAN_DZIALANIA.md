@@ -1,10 +1,10 @@
 # 🎯 ETAP 2 - PLAN DZIAŁANIA (3 TYGODNIE)
 
 **Start:** 12.02.2026 (środa)  
-**Koniec:** 19.02.2026 (UAT Round 2 Complete)  
-**Status:** 🎉 UAT ROUND 2 COMPLETE - ALL 7 BUGFIXES VALIDATED (Days 15-16 ✅)  
+**Current:** Day 17 (20.02.2026) - UAT Round 3 Analysis  
+**Status:** 🚨 **CRITICAL ISSUES FOUND** - Round 2 fixes failed in production  
 **Deadline:** 12.03.2026  
-**Last Updated:** 19.02.2026 23:30 PM
+**Last Updated:** 20.02.2026 12:00 PM
 
 ## 📊 PROGRESS TRACKER
 
@@ -21,13 +21,25 @@
 - ✅ **Day 11-12 (22-23.02):** Documentation - COMPLETED
 - ✅ **Day 13-14 (16-17.02):** CLIENT FEEDBACK BUGFIXES (All 12 Problems + Critical Overlap Bug) - COMPLETED
 - ✅ **Day 15-16 (19.02):** UAT ROUND 2 - ALL 7 BUGFIXES + TEST AUTOMATION - COMPLETED
+- 🚨 **Day 17 (20.02):** UAT ROUND 3 - PRODUCTION TESTING REVEALED CRITICAL FAILURES
 
 **🎉 WEEK 1 EXTENDED:** 7 days completed on 15.02.2026 (accelerated progress) ✅
 **🚀 WEEK 2 COMPLETE:** Days 8-12 completed on 19-23.02.2026 ✅
 **🔥 CLIENT FEEDBACK:** Days 13-14 completed on 16-17.02.2026 (12 problems fixed + critical bug) ✅
 **🎊 UAT ROUND 2:** Days 15-16 completed on 19.02.2026 (7 bugfixes + 10/10 tests passed) ✅
+**🚨 UAT ROUND 3:** Day 17 (20.02.2026) - ALL FIXES FAILED IN PRODUCTION ❌
 
-**📝 Next Steps:** Production Deployment + Phase 3 Planning
+**⚠️ CRITICAL STATUS:** Round 2 bugfixes did NOT work in production environment
+- Parking overlaps: 10/10 tests still failing
+- Timeline integrity: Multiple overlap types (parking, lunch, free_time)
+- Missing items: Transit/parking creation broken
+- Root cause: No timeline validator, timing logic split across layers
+
+**📝 Next Steps:** 
+1. IMMEDIATE: Timeline Integrity Validator implementation (Priority 1)
+2. CRITICAL: Fix parking overlap with cascade updates (Priority 1)
+3. HIGH: Fix missing transit/parking, gap filling, preference coverage
+4. Estimated: 2-3 days to resolve all critical + high priority issues
 
 ---
 
@@ -2152,7 +2164,238 @@ Klientka będzie zadowolona! 🎉
 
 ✅ **Client satisfaction:**
 > "Klientka ma być zadowolona i nie ma być już żadnych błędów"  
-**✅ ACHIEVED!** All UAT Round 2 issues resolved and validated.
+**⚠️ PARTIALLY ACHIEVED** - Issues persist in production testing (see Day 17 below)
+
+---
+
+## 🚨 DAY 17 (20.02.2026): UAT ROUND 3 - CLIENT PRODUCTION TESTING
+
+### **STATUS: ⚠️ CRITICAL ISSUES FOUND - ALL ROUND 2 FIXES FAILED IN PRODUCTION**
+
+**Context:** Klientka przetestowała commit `7eb9b9f` (UAT Round 2 bugfixes) na Render.com i wszystkie 10 testów mają nadal problemy.
+
+### **🔴 CRITICAL FINDING:**
+
+**ALL 7 BUGFIXES FROM ROUND 2 FAILED IN PRODUCTION ENVIRONMENT!**
+
+- ❌ Bug #1 (Parking overlap): **STILL OCCURS** in 10/10 tests
+- ❌ Bug #3 (Gap filling): **STILL OCCURS** in 8/10 tests
+- ❌ Issue #5 (Preferences): **STILL FAILS** in 8/10 tests
+- ❌ Issue #6 (Crowd tolerance): **STILL INACCURATE** in 1/10 tests
+- ✅ Bug #2 (duration_min): Not mentioned (possibly working)
+- ✅ Issue #4 (why_selected): Not mentioned (possibly working)
+- ✅ Issue #7 (cost_note): Not mentioned (possibly working)
+
+### **🆕 NEW CRITICAL BUGS DISCOVERED:**
+
+1. **Missing walk_time enforcement** (10/10 tests) 🔴
+   - `attraction.start_time` ignores `parking.walk_time_min`
+   - Example: parking ends 14:56, walk=3 min, attraction starts 14:46 (10 min BEFORE!)
+
+2. **Overlapping events** (5/10 tests) 🔴
+   - lunch ↔ attraction overlaps
+   - free_time ↔ attraction overlaps
+   - Timeline integrity completely broken
+
+3. **Missing transit/parking items** (4/10 tests) 🔴
+   - Attractions without transit when location changes
+   - First attraction sometimes missing parking
+   - "Teleportation" between POIs
+
+4. **Free_time duplicates** (3/10 tests) 🟠
+   - Same gap gets multiple free_time items
+   - Free_time overlaps with itself
+
+### **📊 PROBLEM FREQUENCY:**
+
+| Problem | Tests Affected | Severity | Root Cause |
+|---------|---------------|----------|------------|
+| Parking overlaps | 10/10 (100%) | 🔴 CRITICAL | Timing logic split between engine/service |
+| walk_time ignored | 10/10 (100%) | 🔴 CRITICAL | No validation: attraction >= parking.end + walk |
+| Large time gaps | 8/10 (80%) | 🔴 HIGH | Threshold 60min too high, no end-of-day logic |
+| Preference coverage | 8/10 (80%) | 🟡 HIGH | Scoring insufficient, no hard constraints |
+| Overlapping events | 5/10 (50%) | 🔴 CRITICAL | No timeline validator, items created independently |
+| Missing transit/parking | 4/10 (40%) | 🔴 HIGH | Creation conditions too restrictive |
+| Free_time duplicates | 3/10 (30%) | 🟠 MEDIUM | Gap filling runs multiple times |
+| Crowd tolerance | 1/10 (10%) | 🟠 MEDIUM | Static crowd_level, no time-of-day adjustment |
+
+### **🔍 ROOT CAUSE ANALYSIS:**
+
+**Why Round 2 Fixes Failed:**
+
+1. **Parking Overlap Fix (Bug #1):**
+   - Our fix adjusted `parking_start` to avoid transit
+   - BUT `attraction_start` was NEVER updated
+   - Result: parking moves forward, attraction stays same → OVERLAP!
+   - **Real fix needed:** Move timing logic to engine OR cascade updates in service
+
+2. **Gap Filling Fix (Bug #3):**
+   - Threshold 60min is TOO HIGH (client sees gaps 25-36 min)
+   - No end-of-day free_time logic
+   - Gap 121 min not filled → logic not executing at all
+   - **Real fix needed:** Lower threshold to 20-30min, add end-of-day handler
+
+3. **Preference Coverage Fix (Issue #5):**
+   - +15 bonus insufficient against +25 must-see
+   - No daily minimum enforcement
+   - Preference-to-tag mapping incomplete (history_mystery fails)
+   - **Real fix needed:** Hard constraints for top 3 prefs, enforce daily mins
+
+4. **Systemic Issue:**
+   - **NO TIMELINE INTEGRITY VALIDATOR**
+   - Items created independently (engine, service, meal, gap filler)
+   - No final check for overlaps
+   - **Critical missing piece:** Timeline validator that runs LAST
+
+### **📋 DETAILED CLIENT FEEDBACK:**
+
+**See full analysis:** `CLIENT_FEEDBACK_20_02_2026_UAT_ROUND3_ANALYSIS.md`
+
+**Sample Issues:**
+
+<details>
+<summary><b>Test 01 Examples (click to expand)</b></summary>
+
+```
+Day1: parking 14:07-14:22 vs Krokiew 14:12-14:57 ❌
+      Attraction starts 10 min BEFORE parking ends!
+
+Day2: parking 13:39-13:54 vs Oksza 13:44-14:29 ❌
+      5 min overlap
+
+Day3: parking 15:53-16:08 vs Podwodny Świat 15:53-16:23 ❌
+      Attraction starts SAME TIME as parking!
+
+"Brakuje free_time na końcówkach dni (plany kończą się realnie wcześniej niż day_end)"
+```
+</details>
+
+<details>
+<summary><b>Test 02 Examples (click to expand)</b></summary>
+
+```
+Day1: parking 14:41-14:56 (walk 3) vs Muzeum Tatrzańskie 14:46-15:46 ❌
+      Expected: ≥14:59 (parking end + walk)
+      Actual: 14:46 (13 min TOO EARLY!)
+
+Day3: "Dom do góry nogami" has parking in field, but NO parking item ❌
+      Missing parking duration in timeline!
+
+"Część atrakcji jest zoo/rozrywka mimo prefs museum_heritage + travel_style cultural"
+```
+</details>
+
+<details>
+<summary><b>Test 04 Examples (click to expand)</b></summary>
+
+```
+5 parking overlaps across D1-D5:
+- D1 Krokiew: parking 14:37-14:52 vs start 14:42
+- D2 Muzeum: parking 14:45-15:00 vs start 14:50
+- D3 Oksza: parking 14:09-14:24 vs start 14:14
+- D4 Figury: parking 14:23-14:38 vs start 14:28
+- D5 Atma: parking 15:27-15:42 (walk 6) vs start 15:33
+
+D5 luka 121 min (12:27→14:28) ❌ EXTREME GAP not filled!
+
+"Plan wrzuca family fun (mini zoo/iluzje) zamiast POI historycznych" (history_mystery preference ignored)
+```
+</details>
+
+<details>
+<summary><b>Test 08 Examples (click to expand)</b></summary>
+
+```
+"Overlapy czasowe (parking/attraction, lunch/attraction, free_time/attraction) 
+występują w Day 1,2,3,4,5,6,7"
+
+"Free_time jako zapychacz: dubluje się i nachodzi na atrakcje"
+
+"Braki w łańcuchu logistycznym: atrakcje bez transit/parking"
+```
+</details>
+
+### **🎯 ACTION PLAN:**
+
+**Phase 1: CRITICAL FIXES (2-3 days)**
+
+1. **Timeline Integrity Validator** (Priority 1 - CRITICAL)
+   - [ ] Create `validate_timeline_integrity()` function
+   - [ ] Detect ALL overlaps (parking, lunch, free_time, attraction)
+   - [ ] Create `heal_timeline_overlaps()` auto-fix function
+   - [ ] Run validator AFTER all items created, BEFORE returning plan
+   - [ ] Log errors if healing impossible
+
+2. **Fix Parking Overlap + walk_time** (Priority 1 - CRITICAL)
+   - [ ] Option A: Move timing logic to engine (proper solution)
+   - [ ] Option B: Fix in plan_service with cascade updates (quick fix)
+   - [ ] Enforce: `attraction.start >= parking.end + walk_time_min`
+   - [ ] Add healing: if overlap, cascade all subsequent items forward
+
+3. **Fix Missing Transit/Parking** (Priority 1 - CRITICAL)
+   - [ ] Review parking creation conditions (remove restrictive checks)
+   - [ ] Ensure first attraction gets parking if user has car
+   - [ ] Ensure location changes always generate transit
+   - [ ] Validate: every attraction has path (daystart → transit → parking → walk)
+
+**Phase 2: HIGH PRIORITY (1-2 days)**
+
+4. **Fix Gap Filling**
+   - [ ] Lower threshold: 60min → 30min (or 20min)
+   - [ ] Add end-of-day free_time logic
+   - [ ] Make hidden buffers explicit (search_parking, traffic_margin)
+   - [ ] Single-pass gap filling to prevent duplicates
+
+5. **Fix Preference Coverage**
+   - [ ] Add hard constraints: top 3 prefs → at least 1 matching POI per day
+   - [ ] Enforce daily minimums (relax style → 1 relax POI/day)
+   - [ ] Expand preference-to-tag mapping (especially history_mystery)
+   - [ ] Add fallback communication when preference unavailable
+
+**Phase 3: Testing**
+
+6. **Real Timeline Integrity Tests**
+   - [ ] Create test: Load JSON → API → validate NO overlaps
+   - [ ] Test MUST FAIL if any overlap detected
+   - [ ] Run on all 10 client test JSONs
+   - [ ] Add to CI/CD pipeline
+
+7. **Re-run All 10 UAT Scenarios**
+   - [ ] Fix all critical issues
+   - [ ] Deploy to test environment
+   - [ ] Run automated test suite
+   - [ ] Manually verify 2-3 timelines
+   - [ ] If pass → production | If fail → debug and repeat
+
+### **⏱️ ESTIMATED TIME:**
+
+- Critical fixes (1-3): **8-12 hours**
+- High priority (4-5): **6-8 hours**
+- Testing (6-7): **3-4 hours**
+- **TOTAL: 2-3 days** (17-24 hours work)
+
+### **💬 CLIENT COMMUNICATION:**
+
+**Status:** Analysis complete, awaiting approval to proceed with fixes
+
+**Key Message:**
+- Round 2 fixes didn't work as expected (root causes identified)
+- Main issue: No timeline integrity validator (items overlap)
+- Solution: Timeline validator + proper timing cascade
+- Estimate: 2-3 days for critical + high priority fixes
+- Will send sample fixed timeline before full deployment
+
+### **📁 FILES CREATED:**
+
+1. ✅ `CLIENT_FEEDBACK_20_02_2026_UAT_ROUND3_ANALYSIS.md` (complete breakdown)
+2. ⏳ `ETAP2_PLAN_DZIALANIA.md` (this update - Day 17 section)
+
+### **📁 FILES TO UPDATE (After Approval):**
+
+1. `app/application/services/plan_service.py` - Timeline validator + healer
+2. `app/domain/planner/engine.py` - Timing logic improvements
+3. `test_timeline_integrity.py` - New real timeline tests
+4. Unit tests for all new fixes
 
 ---
 
@@ -2184,8 +2427,12 @@ Klientka będzie zadowolona! 🎉
 
 ---
 
-**Status:** 🎊 **UAT ROUND 2 COMPLETE** (19.02.2026 23:30 PM)  
-**Achievement:** All 7 bugfixes validated | 10/10 UAT tests PASSED | 31/31 unit tests PASSED  
-**Next Phase:** Production Deployment + Phase 3 Planning  
+**Status:** 🚨 **UAT ROUND 3 - CRITICAL ISSUES FOUND** (20.02.2026 12:00 PM)  
+**Current Situation:** All Round 2 fixes failed in production testing  
+**Issues:** Parking overlaps (10/10), timeline integrity broken, missing transit/parking  
+**Root Cause:** No timeline validator, timing logic split between layers  
+**Action Required:** Timeline validator + cascade updates + comprehensive fixes  
+**Estimate:** 2-3 days for critical + high priority fixes  
+**Next Phase:** Emergency bugfix sprint (Days 17-19) → Re-testing → Production  
 **Developer:** Mateusz Zurowski (ngencode.dev@gmail.com)  
 **Client:** Karolina Sobotkiewicz

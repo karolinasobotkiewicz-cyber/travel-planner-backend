@@ -28,6 +28,62 @@ from app.domain.filters.seasonality import filter_by_season
 # Helper Functions
 # =========================
 
+def calculate_poi_cost_for_group(poi: dict, user: dict) -> float:
+    """
+    Calculate total POI cost for entire group using consistent logic.
+    
+    FIX #2 (22.02.2026 - Budget Tracking): Unified cost calculation.
+    Used by both engine.py (budget tracking) and plan_service.py (cost_estimate).
+    
+    Logic (matches plan_service._estimate_cost):
+    - free_entry POI: 0 PLN
+    - family_kids: (2 adults × ticket_normal) + (children × ticket_reduced)
+    - couples: group_size × ticket_normal
+    - friends: group_size × ticket_normal
+    - seniors: group_size × ticket_reduced (senior discount)
+    - solo: ticket_normal (1 person)
+    - fallback (no price data): 50 PLN × group_size
+    
+    Args:
+        poi: POI dict with ticket_normal, ticket_reduced, free_entry
+        user: User dict with target_group, group_size, children_age
+    
+    Returns:
+        Total cost in PLN for entire group
+    """
+    free_entry = poi.get("free_entry", False)
+    if free_entry:
+        return 0.0
+    
+    ticket_normal = float(poi.get("ticket_normal", 0) or 0)
+    ticket_reduced = float(poi.get("ticket_reduced", 0) or 0)
+    
+    group_type = user.get("target_group", "solo")
+    group_size = user.get("group_size", 1)
+    
+    # Fallback for POI without price data
+    if ticket_normal == 0 and ticket_reduced == 0 and not free_entry:
+        return group_size * 50.0  # 50 PLN per person default
+    
+    # Group-specific calculation
+    if group_type == "family_kids":
+        # Assume: 2 adults + (group_size - 2) children
+        adults = 2
+        children = max(0, group_size - 2)
+        return (adults * ticket_normal) + (children * ticket_reduced)
+    
+    elif group_type == "seniors":
+        # All members use reduced ticket
+        return group_size * ticket_reduced
+    
+    elif group_type == "solo":
+        return ticket_normal
+    
+    else:
+        # couples, friends: all use normal ticket
+        return group_size * ticket_normal
+
+
 def is_core_poi(poi):
     """
     Check if POI is a core attraction.
@@ -453,6 +509,12 @@ GROUP_DAILY_ENERGY = {
 # - solo: 5-7 attractions (max 8), 2 core, 3-4 secondary
 # - couples: 5-6 attractions (max 6), 1-2 must-see, 2-3 scenic
 # - friends: 6-8 attractions (max 8), 2 core, 3-4 active, 1-2 evening
+#
+# FIX #13 (23.02.2026 - TEST-06 CRITICAL FIX):
+# SENIORS LIMIT TOO LOW: hard=5 caused Day 1 to fill 5 POIs and stop, leaving Days 2-3 empty.
+# Problem: TEST-06 has 8-hour days (10:00-18:00) but seniors hit hard limit after ~3 hours.
+# Result: 10% budget usage, Day 3 practically empty (1 POI + 6h free time).
+# Solution: Increase seniors to soft=5, hard=7 (matching couples) to allow proper day filling.
 GROUP_ATTRACTION_LIMITS = {
     "family_kids": {
         "soft": 6,  # Start penalty after 6
@@ -462,9 +524,9 @@ GROUP_ATTRACTION_LIMITS = {
     },
     "seniors": {
         "soft": 5,
-        "hard": 5,  # Hard stop at 5
+        "hard": 7,  # FIX #13: Increased from 5 to 7 (was causing early stop, empty Day 3)
         "core_min": 1,
-        "core_max": 1,
+        "core_max": 2,  # FIX #13: Increased from 1 to 2 (allow more must-see coverage)
     },
     "solo": {
         "soft": 7,
@@ -594,6 +656,115 @@ def is_termy_spa(poi):
         any(keyword in poi_type for keyword in ["termy", "spa", "thermal", "wellness"]) or
         any(keyword in tags_str for keyword in ["relax", "spa", "thermal", "wellness"])
     )
+
+
+def should_exclude_kids_poi_for_adults(poi, user):
+    """
+    Check if POI should be excluded for adult groups (friends/couples/seniors/solo).
+    
+    FIX #10.4 (22.02.2026 - UAT Round 3, TEST-03 FINAL FIX):
+    CRITICAL BUGFIX: FIX #10 was only applied in main POI selection loop (line 1546),
+    but variety logic (line 1823), core rotation (line 1730), and soft fallback (line 1927)
+    bypass this filter, allowing kids POIs to appear in adult plans.
+    
+    Root cause: poi_15 (Termy Zakopańskie) has type='kids_attractions' but appeared in 
+    TEST-03 (friends, adventure) plan because variety logic re-scanned without FIX #10.
+    
+    Solution: Extract FIX #10 logic to reusable function, apply to ALL POI selection paths.
+    
+    FIX #10.5 (22.02.2026 - UAT Round 3, TEST-04 DEBUG):
+    Added comprehensive logging to diagnose poi_2 (Zoo) appearing for solo travelers.
+    
+    FIX #10.6 (22.02.2026 - TEST-04 DEBUG v2):
+    Added ALWAYS-ON logging to verify filter is being called at all.
+    
+    FIX #12 (23.02.2026 - TEST-06 CRITICAL FIX):
+    MULTI-PURPOSE POI EXCEPTION: Don't exclude POIs that serve both kids AND adults.
+    Problem: poi_15 (Termy Zakopańskie) has type='kids_attractions, relaxation' and
+    includes 'seniors' in target_groups, pero was blocked for seniors with relaxation preference.
+    Solution: Allow POI if it has BOTH kids type AND adult-appropriate types (relaxation, water_attractions, spa)
+    AND explicitly includes requesting group in target_groups.
+    
+    Args:
+        poi: POI dict with tags and type
+        user: User dict with group type
+        
+    Returns:
+        bool: True if POI should be EXCLUDED (hard block for kids POI in adult plans)
+    """
+    poi_id = poi.get("id", "unknown")
+    poi_name = poi.get("name", "unknown")
+    
+    # FIX #10.6: ALWAYS print when filter is called
+    print(f"[FIX #10.6 TRACE] Filter called for: {poi_id} - {poi_name}")
+    
+    poi_tags = set(poi.get("tags", []))
+    poi_type_str = str(poi.get("type", "")).lower()
+    poi_type_list = [t.strip() for t in poi_type_str.split(",") if t.strip()]
+    
+    group_type = user.get("group", {}).get("type", "") if isinstance(user.get("group"), dict) else user.get("target_group", "")
+    adult_groups = ["friends", "couples", "couple", "seniors", "solo", "adults"]
+    
+    if group_type not in adult_groups:
+        return False  # Not adult group - no exclusion
+    
+    # Kids-only POI identifiers
+    kids_only_tags = {"kids_attractions", "petting_zoo", "fairytale_world", 
+                     "miniature_world", "children_playground", "playground"}
+    kids_only_types = {"kids_attractions", "zoo_other", "petting_zoo", "playground", "zoo"}
+    
+    # Check BOTH tags AND type fields (FIX #10.2/10.3)
+    has_kids_tag = bool(kids_only_tags & poi_tags)
+    has_kids_type = any(t in kids_only_types for t in poi_type_list)
+    
+    # FIX #12: Multi-purpose POI exception - Check if POI serves adults too
+    # Adult-appropriate types that override kids_attractions filtering
+    adult_appropriate_types = {"relaxation", "spa", "wellness", "water_attractions", 
+                              "thermal_baths", "hot_springs", "casino", "nightlife"}
+    adult_appropriate_tags = {"thermal_baths", "spa_pools", "sauna_zone", "wellness_center",
+                             "hot_springs", "relaxation_zone"}
+    
+    has_adult_type = any(t in adult_appropriate_types for t in poi_type_list)
+    has_adult_tag = bool(adult_appropriate_tags & poi_tags)
+    
+    # Check if POI explicitly includes current group in target_groups
+    poi_target_groups = poi.get("target_groups", [])
+    if poi_target_groups:
+        target_groups_str = [str(tg).strip().lower() for tg in poi_target_groups]
+        explicitly_targets_group = group_type.lower() in target_groups_str
+    else:
+        explicitly_targets_group = False
+    
+    # EXCEPTION: Don't exclude if POI serves BOTH kids AND adults
+    # Conditions: (has_kids_type OR has_kids_tag) AND (has_adult_type OR has_adult_tag) AND explicitly_targets_group
+    is_multi_purpose = (has_kids_type or has_kids_tag) and (has_adult_type or has_adult_tag) and explicitly_targets_group
+    
+    if is_multi_purpose:
+        # Multi-purpose POI (e.g., Termy with both kids and adult facilities) - ALLOW
+        should_exclude = False
+        print(f"[FIX #12] Multi-purpose POI {poi_id} ALLOWED for {group_type}: has kids_type={has_kids_type}, has_adult_type={has_adult_type}, targets_group={explicitly_targets_group}")
+    else:
+        # Pure kids POI - EXCLUDE for adults
+        should_exclude = has_kids_tag or has_kids_type
+    
+    # FIX #10.5: DEBUG LOGGING for poi_2 (Zoo) issue
+    if poi_id == "poi_2" or "zoo" in poi_name.lower() or poi_id == "poi_15" or "termy" in poi_name.lower():
+        print(f"\n🔍 [FIX #10.5 + #12 DEBUG] Kids POI Filter Check:")
+        print(f"   POI: {poi_id} - {poi_name}")
+        print(f"   Group type: {group_type}")
+        print(f"   Is adult group: {group_type in adult_groups}")
+        print(f"   POI tags: {poi_tags}")
+        print(f"   POI type string: '{poi_type_str}'")
+        print(f"   POI type list: {poi_type_list}")
+        print(f"   Has kids tag: {has_kids_tag} (matched: {poi_tags & kids_only_tags})")
+        print(f"   Has kids type: {has_kids_type}")
+        print(f"   Has adult type: {has_adult_type} (matched: {set(poi_type_list) & adult_appropriate_types})")
+        print(f"   Has adult tag: {has_adult_tag} (matched: {poi_tags & adult_appropriate_tags})")
+        print(f"   Explicitly targets {group_type}: {explicitly_targets_group}")
+        print(f"   Is multi-purpose: {is_multi_purpose}")
+        print(f"   DECISION: {'EXCLUDE ❌' if should_exclude else 'ALLOW ✅'}")
+    
+    return should_exclude
 
 
 def safe_int(x, default=0):
@@ -888,6 +1059,8 @@ def score_poi(
     culture_streak,
     body_state,
     finale_done,
+    daily_cost=0,  # FIX #14: Added for budget utilization boost
+    daily_limit=None,  # FIX #14: Added for budget utilization boost
 ):
     score = 0.0
 
@@ -960,6 +1133,20 @@ def score_poi(
     score += calculate_preference_score(p, user)
     score += calculate_travel_style_score(p, user)
     
+    # FIX #14 (23.02.2026 - TEST-06 CRITICAL FIX): Budget utilization boost
+    # Problem: TEST-06 (seniors, 500 zł/day) used only 10% budget (154/1500 zł total).
+    # Root cause: High daily_limit doesn't incentivize engine to select premium/expensive POIs.
+    # Solution: Boost score when daily budget is severely underutilized (<30%) to encourage spending.
+    if daily_limit is not None and daily_cost < daily_limit * 0.3:
+        # Severely underutilizing budget - boost premium/expensive POIs
+        poi_cost = calculate_poi_cost_for_group(p, user)
+        if poi_cost > 0:
+            # Boost proportional to POI cost (expensive POIs get bigger boost)
+            budget_boost = (poi_cost / daily_limit) * 30.0  # Max +30 pts for 100% daily_limit POI
+            score += budget_boost
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [BUDGET BOOST] {poi_name_safe}: +{budget_boost:.1f} (under 30% budget, POI cost={poi_cost:.0f} PLN)")
+    
     # BUGFIX (19.02.2026 - UAT Round 2, Issue #5): Travel style preference boost
     # Problem: Tests 03, 05, 06, 09 show travel_style not properly boosting matching preferences
     # Test 03: friends+adventure gets museums instead of trails (active_sport ignored)
@@ -993,6 +1180,42 @@ def score_poi(
             score += boost
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [ADVENTURE BOOST] {poi_name_safe}: +{boost:.1f} (adventure style + active tags)")
+        
+        # FIX #11 (22.02.2026 - UAT Round 3, TEST-03 HYBRID Solution):
+        # CRITICAL: Mountain POI boost for adventure + mountain_trails preference
+        # Problem: TEST-03 (adventure + mountain_trails) gets museums > hiking trails
+        # Only 1/11 POIs was hiking (9%), 6/11 were museums (54%)
+        # Solution: Strong boost (100%) for mountain/hiking POIs to prioritize over indoor attractions
+        mountain_tags = {"hiking", "mountain_trail", "scenic_viewpoint", "cable_car", 
+                        "funicular", "mountain_lake", "alpine", "trekking", "peak"}
+        if mountain_tags & poi_tags:
+            boost = score * 1.0  # 100% boost (DOUBLE score for mountain POIs)
+            score += boost
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [MOUNTAIN BOOST] {poi_name_safe}: +{boost:.1f} (adventure + mountain tags)")
+        
+        # FIX #8 (22.02.2026 - UAT Round 3, TEST-03 Issue):
+        # CRITICAL: Hard penalty for relaxation/wellness/spa POI for adventure travelers
+        # Problem (TEST-03): Termy Gorący Potok (236 zł, 62% of budget) selected for adventure group
+        # Solution: Strong penalty for relaxing/wellness POI (like relax→active penalty)
+        # Client feedback: "active_sport" preference completely unmet, got thermal pools instead
+        relax_tags = {"relaxation", "spa", "termy", "wellness", "hot_springs", "thermal_baths", "water_wellness"}
+        if relax_tags & poi_tags:
+            penalty = score * 0.5  # 50% penalty (strong, matching relax→active penalty)
+            score -= penalty
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [ADVENTURE PENALTY] {poi_name_safe}: -{penalty:.1f} (adventure style conflicts with spa/wellness)")
+        
+        # FIX #8.2 (22.02.2026): Penalty for family attractions for adventure travelers
+        # Problem (TEST-03): Tatrzańskie Mini Zoo (160 zł, 41% of budget) selected for adventure group
+        # Family attractions don't match adventure/active_sport preferences
+        # Note: 40% penalty is OPTIMAL - increasing to 50% caused catastrophic regression (90→55 score)
+        family_tags = {"kids_attractions", "family_friendly", "zoo", "aquarium", "children"}
+        if family_tags & poi_tags:
+            penalty = score * 0.4  # 40% penalty (KEEP THIS VALUE - validated working)
+            score -= penalty
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [ADVENTURE PENALTY] {poi_name_safe}: -{penalty:.1f} (adventure style conflicts with family attractions)")
         
         # Mild penalty for museums for adventure travelers (not forbidden, just lower priority)
         museum_tags = {"museums", "museum_heritage", "culture"}
@@ -1357,10 +1580,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         "suggestions": ["Lunch", "Restauracja", "Odpoczynek"],
                     }
                 )
-                now += LUNCH_DURATION_MIN
+                # FIX #3: Update 'now' with actual lunch duration (not constant)
+                # Ensures 'now' respects day_end if lunch was truncated
+                now = lunch_end_min  # Use actual end time, not now + LUNCH_DURATION_MIN
                 lunch_done = True
                 fatigue = max(0, fatigue - 2)
-                print(f"[LUNCH] Inserted lunch at {lunch_start_time}-{lunch_end_time}")
+                print(f"[LUNCH] Inserted lunch at {lunch_start_time}-{lunch_end_time} (duration: {actual_lunch_duration} min)")
                 continue
 
         # UAT Problem #11: DINNER_BREAK
@@ -1368,25 +1593,30 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         # - NOT done yet
         # - Current time >= DINNER_EARLIEST (18:00)
         # - Enough time left in day (at least 90 min before day_end)
+        # FIX #3 (22.02.2026): Respect user day_end - don't schedule dinner beyond it
         if not dinner_done:
             dinner_earliest = time_to_minutes(DINNER_EARLIEST)  # 18:00
             dinner_target = time_to_minutes(DINNER_TARGET)      # 19:00
-            dinner_latest = time_to_minutes(DINNER_LATEST)      # 20:00
+            # FIX #3: Use min of hardcoded DINNER_LATEST and actual day_end
+            dinner_latest = min(time_to_minutes(DINNER_LATEST), end)  # Respect user day_end
             should_insert_dinner = False
             is_late_dinner = False
             
-            # Case 1: We've reached earliest dinner time (18:00)
-            if now >= dinner_earliest:
+           # Case 1: We've reached earliest dinner time (18:00)
+            # FIX #3: Also check if there's enough time left for dinner (min 40 min)
+            if now >= dinner_earliest and now + 40 <= end:
                 should_insert_dinner = True
                 
-                # Case 1a: Already past latest dinner time (20:00) - late dinner!
+                # Case 1a: Already past latest dinner time - late dinner!
                 if now > dinner_latest:
                     is_late_dinner = True
-                    print(f"[DINNER] WARNING: Late dinner scheduled at {minutes_to_time(now)} (should be by {DINNER_LATEST})")
+                    print(f"[DINNER] WARNING: Late dinner scheduled at {minutes_to_time(now)} (should be by {minutes_to_time(dinner_latest)})")
             
             if should_insert_dinner:
                 dinner_start_time = minutes_to_time(now)
-                dinner_end_time = minutes_to_time(min(end, now + DINNER_DURATION_MIN))
+                # FIX #3: Calculate dinner_end_time respecting day_end
+                dinner_end_min = min(end, now + DINNER_DURATION_MIN)
+                dinner_end_time = minutes_to_time(dinner_end_min)
                 
                 # Check overlap before adding dinner
                 overlaps, conflict = _check_time_overlap(plan, dinner_start_time, dinner_end_time)
@@ -1422,10 +1652,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         "suggestions": dinner_suggestions,
                     }
                 )
-                now += DINNER_DURATION_MIN
+                # FIX #3: Update 'now' with actual dinner duration (not constant)
+                # Ensures 'now' respects day_end if dinner was truncated
+                now = dinner_end_min  # Use actual end time, not now + DINNER_DURATION_MIN
                 dinner_done = True
                 fatigue = max(0, fatigue - 2)
-                print(f"[DINNER] Inserted dinner at {dinner_start_time}-{dinner_end_time}")
+                print(f"[DINNER] Inserted dinner at {dinner_start_time}-{dinner_end_time} (duration: {actual_dinner_duration} min)")
                 continue
 
         # swiety final
@@ -1445,6 +1677,17 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         for p in pois:
             if poi_id(p) in used:
                 continue
+            
+            # FIX #10/10.2/10.3/10.4 (22.02.2026 - UAT Round 3, TEST-03 FINAL FIX):
+            # CRITICAL: Hard block kids-only POIs for adult groups (friends/couples/seniors/solo)
+            # Problem: TEST-03 (friends, adventure) gets kids POIs (zoo, termy with kids_attractions type)
+            # Root cause: 40% family_tags penalty insufficient - kids POIs still competitive
+            # Solution: HARD BLOCK (not penalty) - kids POIs should NEVER appear in adult plans
+            # FIX #10.4: Extracted to reusable function to prevent bypass via variety/core/soft paths
+            if should_exclude_kids_poi_for_adults(p, user):
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[FILTER] HARD BLOCK kids POI for adult group: {poi_name_safe}")
+                continue  # SKIP entirely - not applicable for adult groups
             
             # FEEDBACK KLIENTKI (03.02.2026) - HARD FILTERS
             # STEP 1: Target group hard filter
@@ -1483,15 +1726,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     continue  # Skip - global termy limit reached
             
             # STEP 3: Budget hard filter (FIX 07.02.2026)
-            # If daily_limit is set, check if adding this POI would exceed budget
-            # FIX (07.02.2026 v2): daily_limit is per GROUP, so multiply ticket_price by group_size
+            # FIX #2 (22.02.2026): Use unified cost calculation (matches plan_service)
             if daily_limit is not None:
-                group_size = user.get("group_size", 1)
-                poi_cost_per_person = float(p.get("ticket_price", 0))
-                poi_cost_total = poi_cost_per_person * group_size
+                poi_cost_total = calculate_poi_cost_for_group(p, user)
                 potential_cost = daily_cost + poi_cost_total
                 if potential_cost > daily_limit:
-                    print(f"[FILTER] EXCLUDED by budget: POI_ID={poi_id(p)} (cost={poi_cost_per_person}x{group_size}={poi_cost_total} PLN, current={daily_cost}/{daily_limit} PLN)")
+                    print(f"[FILTER] EXCLUDED by budget: POI_ID={poi_id(p)} (cost={poi_cost_total:.0f} PLN, current={daily_cost:.0f}/{daily_limit} PLN)")
                     continue  # EXCLUDE - would exceed daily budget limit
 
             travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
@@ -1526,6 +1766,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 culture_streak=culture_streak,
                 body_state=body_state,
                 finale_done=finale_done,
+                daily_cost=daily_cost,  # FIX #14
+                daily_limit=daily_limit,  # FIX #14
             )
             
             # FEEDBACK KLIENTKI (03.02.2026): Boost core POI if core_min not met
@@ -1606,6 +1848,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         continue
                     
                     # Apply same filters as main loop
+                    # FIX #10.4: Apply kids POI filter to core rotation path
+                    if should_exclude_kids_poi_for_adults(p, user):
+                        continue
+                    
                     if should_exclude_by_target_group(p, user):
                         continue
                     if should_exclude_by_intensity(p, user):
@@ -1626,9 +1872,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             continue
                     
                     # BUDGET HARD FILTER
+                    # FIX #2 (22.02.2026): Use unified cost calculation
                     if daily_limit is not None:
-                        group_size = user.get("group_size", 1)
-                        poi_cost_total = float(p.get("ticket_price", 0)) * group_size
+                        poi_cost_total = calculate_poi_cost_for_group(p, user)
                         if daily_cost + poi_cost_total > daily_limit:
                             continue
                     
@@ -1654,6 +1900,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         p=p, user=user, fatigue=fatigue, used=used, now=start_time,
                         energy_left=energy, context=ctx, culture_streak=culture_streak,
                         body_state=body_state, finale_done=finale_done,
+                        daily_cost=daily_cost, daily_limit=daily_limit,  # FIX #14
                     )
                     
                     score += 50  # Core boost (same as main loop)
@@ -1694,6 +1941,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         continue
                     
                     # Apply same filters as before
+                    # FIX #10.4: Apply kids POI filter to variety logic path (CRITICAL!)
+                    # This was the root cause of poi_15 (termy with kids_attractions) appearing
+                    if should_exclude_kids_poi_for_adults(p, user):
+                        continue
+                    
                     if should_exclude_by_target_group(p, user):
                         continue
                     if should_exclude_by_intensity(p, user):
@@ -1715,10 +1967,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             continue
                     
                     # BUDGET HARD FILTER (FIX 07.02.2026): Apply to candidate collection
-                    # FIX (07.02.2026 v2): Multiply by group_size for per-group budget
+                    # FIX #2 (22.02.2026): Use unified cost calculation
                     if daily_limit is not None:
-                        group_size = user.get("group_size", 1)
-                        poi_cost_total = float(p.get("ticket_price", 0)) * group_size
+                        poi_cost_total = calculate_poi_cost_for_group(p, user)
                         if daily_cost + poi_cost_total > daily_limit:
                             continue  # EXCLUDE - would exceed daily budget limit
                     
@@ -1744,6 +1995,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         p=p, user=user, fatigue=fatigue, used=used, now=start_time,
                         energy_left=energy, context=ctx, culture_streak=culture_streak,
                         body_state=body_state, finale_done=finale_done,
+                        daily_cost=daily_cost, daily_limit=daily_limit,  # FIX #14
                     )
                     
                     if core_attraction_count < limits.get("core_min", 1) and is_core:
@@ -1799,6 +2051,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         continue
                     
                     # HOTFIX #10.8: Apply hard filters (target_group + intensity) to soft POI selection
+                    # FIX #10.4: Apply kids POI filter to soft POI fallback path
+                    if should_exclude_kids_poi_for_adults(p, user):
+                        continue  # EXCLUDE - kids POI for adult groups
+                    
                     if should_exclude_by_target_group(p, user):
                         continue  # EXCLUDE - target group mismatch
                     
@@ -1812,10 +2068,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             continue  # Skip - already have 1 kids-focused POI today
                     
                     # BUDGET HARD FILTER (FIX 07.02.2026): Apply to soft POI too
-                    # FIX (07.02.2026 v2): Multiply by group_size for per-group budget
+                    # FIX #2 (22.02.2026): Use unified cost calculation
                     if daily_limit is not None:
-                        group_size = user.get("group_size", 1)
-                        poi_cost_total = float(p.get("ticket_price", 0)) * group_size
+                        poi_cost_total = calculate_poi_cost_for_group(p, user)
                         if daily_cost + poi_cost_total > daily_limit:
                             continue  # EXCLUDE - would exceed daily budget limit
                     
@@ -1876,7 +2131,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     # No soft POI - add free_time with smart label
                     # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Remove 40 min limit, use smart labels
                     # Client feedback: 2-3h gaps need longer free_time, context-aware descriptions
-                    free_duration = min(120, remaining_time)  # Max 2h per free_time block
+                    # FIX #3 (22.02.2026): Also cap at day_end to prevent violations
+                    free_duration = min(120, remaining_time, end - now)  # Max 2h, AND respect day_end
                     free_start_time = minutes_to_time(now)
                     free_end_time = minutes_to_time(now + free_duration)
                     
@@ -2003,13 +2259,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         print(f"[ENGINE SELECTION] ADDED POI: id={poi_id(best)}, time={minutes_to_time(now)}")
         
         # BUDGET TRACKING (FIX 07.02.2026): Update daily cost
-        # FIX (07.02.2026 v2): Multiply by group_size for per-group budget
-        group_size = user.get("group_size", 1)
-        poi_cost_per_person = float(best.get("ticket_price", 0))
-        poi_cost_total = poi_cost_per_person * group_size
+        # FIX #2 (22.02.2026): Use unified cost calculation (matches plan_service)
+        poi_cost_total = calculate_poi_cost_for_group(best, user)
         daily_cost += poi_cost_total
         if daily_limit is not None:
-            print(f"[BUDGET] POI cost: {poi_cost_per_person}×{group_size}={poi_cost_total} PLN, daily total: {daily_cost}/{daily_limit} PLN")
+            print(f"[BUDGET] POI cost: {poi_cost_total:.0f} PLN, daily total: {daily_cost:.0f}/{daily_limit} PLN")
 
         now += best_duration
         energy -= energy_cost(best, best_duration, ctx)
@@ -2151,6 +2405,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if poi_id(p) in used:
                         continue
                     
+                    # FIX #10.7 (22.02.2026 - TEST-04 CRITICAL FIX): Add kids POI filter to gap filling
+                    # ROOT CAUSE: poi_2 (Zoo) appeared for solo traveler because gap filling logic
+                    # was missing should_exclude_kids_poi_for_adults check (only had target_group + intensity)
+                    if should_exclude_kids_poi_for_adults(p, user):
+                        continue  # EXCLUDE - kids POI for adult groups
+                    
                     # HOTFIX #10.8: Apply hard filters (target_group + intensity) to soft POI selection
                     if should_exclude_by_target_group(p, user):
                         continue  # EXCLUDE - target group mismatch
@@ -2288,7 +2548,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # If no soft POI fits, add free_time with smart label
                 # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Change threshold 20→60, remove limit, smart labels
                 if not soft_filled and gap_duration > 60:
-                    free_duration = min(120, gap_duration)  # Max 2h per free_time block
+                    # FIX #3 (22.02.2026): Also cap at day_end to prevent violations
+                    free_duration = min(120, gap_duration, end - now)  # Max 2h, AND respect day_end
                     free_start_time = minutes_to_time(now)
                     free_end_time = minutes_to_time(now + free_duration)
                     
@@ -2362,9 +2623,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     break
                 
                 # Budget filter
+                # FIX #2 (22.02.2026): Use unified cost calculation
                 if daily_limit is not None:
-                    group_size = user.get("group_size", 1)
-                    poi_cost_total = float(p.get("ticket_price", 0)) * group_size
+                    poi_cost_total = calculate_poi_cost_for_group(p, user)
                     if daily_cost + poi_cost_total > daily_limit:
                         continue
                 
@@ -2439,9 +2700,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         termy_count += 1
                 
                 # Update budget
+                # FIX #2 (22.02.2026): Use unified cost calculation
                 if daily_limit is not None:
-                    group_size = user.get("group_size", 1)
-                    poi_cost_total = float(soft_best.get("ticket_price", 0)) * group_size
+                    poi_cost_total = calculate_poi_cost_for_group(soft_best, user)
                     daily_cost += poi_cost_total
                 
                 # FIX #5 (UAT Round 3 - 19.02.2026): Track preference coverage for gap filler
@@ -2472,7 +2733,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             else:
                 # No soft POI available, add free_time with smart label
                 # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Remove 90 min limit, use smart labels
-                free_duration = min(180, remaining_to_end)  # Max 3h per free_time block
+                # FIX #3 (22.02.2026): Also cap at day_end to prevent violations
+                free_duration = min(180, remaining_to_end, end - now)  # Max 3h, AND respect day_end
                 free_start_time = minutes_to_time(now)
                 free_end_time = minutes_to_time(now + free_duration)
                 
