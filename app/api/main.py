@@ -5,19 +5,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import plan, payment, content, poi
+from app.infrastructure.config.settings import settings
 
 
 app = FastAPI(
     title="Travel Planner API",
-    description="Backend API for travel planning engine - ETAP 1",
-    version="1.0.0",
+    description="Backend API for travel planning engine - ETAP 2 (Auth + Payment)",
+    version="2.0.0",
 )
 
-# CORS - TODO: doprecyzowac origins w ETAP 2
+# CORS - ETAP 2: Restricted to frontend URLs (localhost:3000, lets-travel.pl)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # FIXME: production security
-    allow_credentials=True,
+    allow_origins=settings.cors_origins,  # From .env: http://localhost:3000,https://lets-travel.pl
+    allow_credentials=True,  # Required for JWT auth
     allow_methods=["*"],
     allow_headers=["*"],
 )

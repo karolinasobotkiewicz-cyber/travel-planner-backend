@@ -34,7 +34,7 @@ class PlanPostgreSQLRepository(IPlanRepository):
         """
         self.db = db
 
-    def save(self, plan: PlanResponse) -> str:
+    def save(self, plan: PlanResponse, user_id: Optional[uuid.UUID] = None) -> str:
         """
         Saves plan to database and creates version snapshot.
         
@@ -45,6 +45,7 @@ class PlanPostgreSQLRepository(IPlanRepository):
         
         Args:
             plan: PlanResponse domain model
+            user_id: Optional UUID of authenticated user (ETAP 2)
             
         Returns:
             plan_id (str)
@@ -62,6 +63,9 @@ class PlanPostgreSQLRepository(IPlanRepository):
                 # UPDATE existing plan
                 existing_plan.updated_at = datetime.utcnow()
                 existing_plan.trip_metadata = self._extract_metadata(plan)
+                # Link to user if provided and not already linked
+                if user_id and not existing_plan.user_id:
+                    existing_plan.user_id = user_id
                 
                 # Get next version number
                 max_version = self.db.query(PlanVersion).filter(
@@ -91,6 +95,7 @@ class PlanPostgreSQLRepository(IPlanRepository):
                     group_type="unknown",  # TODO: pass from TripInput
                     days_count=len(plan.days),
                     budget_level=2,  # TODO: pass from TripInput
+                    user_id=user_id,  # ETAP 2: Link plan to authenticated user
                     trip_metadata=self._extract_metadata(plan)
                 )
                 self.db.add(new_plan)

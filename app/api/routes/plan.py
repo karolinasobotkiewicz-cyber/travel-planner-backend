@@ -16,8 +16,10 @@ from app.api.dependencies import (
     get_plan_repository,
     get_poi_repository,
     get_version_repository,
-    get_plan_editor
+    get_plan_editor,
+    get_optional_user  # ETAP 2: Optional auth for backward compatibility
 )
+from app.infrastructure.database.models import User
 from app.application.services.plan_service import PlanService
 from app.application.services.plan_editor import PlanEditor
 
@@ -31,9 +33,14 @@ router = APIRouter()
     status_code=status.HTTP_200_OK,
     summary="Generate multi-day travel plan",
     description="""
-    **ETAP 2 - Multi-Day Planning**
+    **ETAP 2 - Multi-Day Planning + Auth**
     
     Generates 1-5 day travel plan with POI uniqueness >70% across days.
+    
+    **Authentication:**
+    - Optional for backward compatibility (ETAP 1 tests)
+    - Recommended: Include Bearer token in Authorization header
+    - If authenticated: Plan is linked to user account
     
     **Features:**
     - Multi-day planning (1-5 days supported)
@@ -60,6 +67,7 @@ router = APIRouter()
     
     **Error Codes:**
     - 400: Invalid trip_input (validation failed)
+    - 401: Invalid/expired authentication token (if provided)
     - 500: Plan generation failed
     """
 )
@@ -67,16 +75,28 @@ def preview_plan(
     trip_input: TripInput,
     plan_repo: PlanRepository = Depends(get_plan_repository),
     poi_repo: POIRepository = Depends(get_poi_repository),
-    version_repo: PlanVersionRepository = Depends(get_version_repository)
+    version_repo: PlanVersionRepository = Depends(get_version_repository),
+    current_user: User = Depends(get_optional_user)  # ETAP 2: Optional auth
 ):
+    """
+    Generate travel plan with optional authentication.
+    
+    If user is authenticated:
+    - Plan is linked to user.id in database
+    - User can later access their plans
+    
+    If anonymous:
+    - Plan is created without user_id (backward compatibility)
+    """
     # Utworz service z POI repository
     plan_service = PlanService(poi_repo)
     
     # Generuj plan z prawdziwego silnika (4.10, 4.11, 4.12)
     plan = plan_service.generate_plan(trip_input)
     
-    # Zapisz w repository
-    plan_repo.save(plan)
+    # Zapisz w repository z user_id (if authenticated)
+    user_id = current_user.id if current_user else None
+    plan_repo.save(plan, user_id=user_id)
     
     # ETAP 2: Auto-save version #1
     try:
