@@ -2,8 +2,9 @@
 Plan endpoints - preview, status, get plan.
 """
 from fastapi import APIRouter, HTTPException, status, Depends
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
+import uuid
 
 from app.domain.models.trip_input import TripInput
 from app.domain.models.plan import PlanResponse
@@ -17,7 +18,8 @@ from app.api.dependencies import (
     get_poi_repository,
     get_version_repository,
     get_plan_editor,
-    get_optional_user  # ETAP 2: Optional auth for backward compatibility
+    get_optional_user,  # ETAP 2: Optional auth for backward compatibility
+    get_current_user  # ETAP 2: Required auth for protected endpoints
 )
 from app.infrastructure.database.models import User
 from app.application.services.plan_service import PlanService
@@ -752,4 +754,129 @@ def regenerate_time_range_in_day(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to regenerate range: {str(e)}"
+        )
+
+
+# ====================================
+# ETAP 2: User-Specific Endpoints
+# ====================================
+
+class ClaimGuestPlansRequest(BaseModel):
+    """Request body for /claim-guest-plans endpoint."""
+    guest_id: str = Field(..., description="Guest UUID from frontend localStorage")
+
+
+@router.post("/claim-guest-plans")
+async def claim_guest_plans(
+    request: ClaimGuestPlansRequest,
+    current_user: User = Depends(get_current_user),
+    plan_repo: PlanRepository = Depends(get_plan_repository)
+):
+    """
+    Transfer guest plans to authenticated user (ETAP 2).
+    
+    Flow:
+    1. User creates plans as guest (no auth) → stored with user_id=NULL
+    2. User signs up / logs in
+    3. Frontend calls this endpoint with guest_id from localStorage
+    4. Backend transfers all guest plans to authenticated user_id
+    
+    Args:
+        request: Contains guest_id (UUID string)
+        current_user: Authenticated user from JWT (get_current_user dependency)
+        plan_repo: Plan repository
+        
+    Returns:
+        {
+            "success": true,
+            "transferred_plans": 3,
+            "user_id": "uuid"
+        }
+        
+    Raises:
+        401: If not authenticated (get_current_user raises HTTPException)
+        500: Database error
+    """
+    try:
+        # Transfer ownership from guest to authenticated user
+        transferred_count = plan_repo.transfer_ownership(
+            guest_id=request.guest_id,
+            user_id=current_user.id
+        )
+        
+        return {
+            "success": True,
+            "transferred_plans": transferred_count,
+            "user_id": str(current_user.id)
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to transfer guest plans: {str(e)}"
+        )
+
+
+@router.get("/my-plans")
+async def get_my_plans(
+    current_user: User = Depends(get_current_user),
+    plan_repo: PlanRepository = Depends(get_plan_repository)
+):
+    """
+    Get all plans for authenticated user (ETAP 2).
+    
+    Returns list of user's plans with metadata.
+    Frontend can use this for user dashboard / "My Plans" page.
+    
+    Args:
+        current_user: Authenticated user from JWT
+        plan_repo: Plan repository
+        
+    Returns:
+        {
+            "plans": [
+                {
+                    "plan_id": "uuid",
+                    "location": "Kraków",
+                    "days_count": 3,
+                    "created_at": "2025-01-30T12:00:00",
+                    "updated_at": "2025-01-30T14:30:00"
+                },
+                ...
+            ],
+            "total_count": 5
+        }
+        
+    Raises:
+        401: If not authenticated
+        500: Database error
+    """
+    try:
+        # Fetch all plans for this user
+        plans = plan_repo.get_by_user(current_user.id)
+        
+        # Convert to response format
+        plans_response = []
+        for plan in plans:
+            # Get metadata for each plan
+            metadata = plan_repo.get_metadata(plan.plan_id)
+            if metadata:
+                plans_response.append({
+                    "plan_id": plan.plan_id,
+                    "location": metadata.get("location", "Unknown"),
+                    "days_count": metadata.get("days_count", len(plan.days)),
+                    "created_at": metadata.get("created_at"),
+                    "updated_at": metadata.get("updated_at"),
+                    "version": plan.version
+                })
+        
+        return {
+            "plans": plans_response,
+            "total_count": len(plans_response)
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch user plans: {str(e)}"
         )

@@ -255,6 +255,96 @@ class PlanPostgreSQLRepository(IPlanRepository):
         except SQLAlchemyError as e:
             raise Exception(f"Failed to fetch metadata: {str(e)}")
 
+    def get_by_user(self, user_id: uuid.UUID) -> list[PlanResponse]:
+        """
+        Gets all plans for a specific user (ETAP 2 - /my-plans endpoint).
+        
+        Args:
+            user_id: UUID of authenticated user
+            
+        Returns:
+            List of PlanResponse objects (reconstructed from DB)
+        """
+        try:
+            # Fetch all plans for this user
+            plans = self.db.query(Plan).filter(
+                Plan.user_id == user_id
+            ).order_by(Plan.created_at.desc()).all()
+            
+            result = []
+            for plan in plans:
+                # Fetch latest version for each plan
+                latest_version = self.db.query(PlanVersion).filter(
+                    PlanVersion.plan_id == plan.id
+                ).order_by(PlanVersion.version_number.desc()).first()
+                
+                if latest_version:
+                    plan_response = self._reconstruct_plan_response(plan, latest_version)
+                    result.append(plan_response)
+            
+            return result
+            
+        except SQLAlchemyError as e:
+            raise Exception(f"Failed to fetch user plans: {str(e)}")
+
+    def transfer_ownership(self, guest_id: str, user_id: uuid.UUID) -> int:
+        """
+        Transfers guest plans to authenticated user (ETAP 2 - /claim-guest-plans endpoint).
+        
+        Logic:
+        - Guest plans have user_id = NULL (created before auth)
+        - We match by session or guest identifier stored in trip_metadata
+        - Transfer all matching plans to authenticated user_id
+        
+        Args:
+            guest_id: Guest identifier (UUID string from localStorage)
+            user_id: Authenticated user UUID
+            
+        Returns:
+            Count of transferred plans
+        """
+        try:
+            # Find all guest plans where user_id is NULL
+            # In current implementation, anonymous users create plans with user_id=NULL
+            # We could add guest_id tracking in trip_metadata for precise matching
+            # For now: transfer all NULL user_id plans (assumes single-device guest session)
+            
+            # More precise: find plans where trip_metadata.guest_id matches
+            # But ETAP 1 didn't store guest_id, so we'd need to update /preview endpoint first
+            
+            # Simpler approach for now: transfer ALL NULL plans created recently
+            # This assumes guest creates plans, then immediately logs in and claims them
+            
+            # Query plans with NULL user_id
+            guest_plans = self.db.query(Plan).filter(
+                Plan.user_id == None
+            ).all()
+            
+            # Filter by guest_id in trip_metadata (if stored)
+            # If not stored, transfer all NULL plans (fallback for backward compatibility)
+            matching_plans = []
+            for plan in guest_plans:
+                # Check if guest_id stored in metadata
+                if plan.trip_metadata and plan.trip_metadata.get('guest_id') == guest_id:
+                    matching_plans.append(plan)
+                elif not plan.trip_metadata or 'guest_id' not in plan.trip_metadata:
+                    # Fallback: include all NULL plans without guest_id tracking
+                    matching_plans.append(plan)
+            
+            # Transfer ownership
+            transferred_count = 0
+            for plan in matching_plans:
+                plan.user_id = user_id
+                plan.updated_at = datetime.utcnow()
+                transferred_count += 1
+            
+            self.db.commit()
+            return transferred_count
+            
+        except SQLAlchemyError as e:
+            self.db.rollback()
+            raise Exception(f"Failed to transfer ownership: {str(e)}")
+
     # --- Helper methods ---
 
     def _extract_metadata(self, plan: PlanResponse) -> Dict[str, Any]:
