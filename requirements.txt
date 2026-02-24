@@ -29,3 +29,9 @@ python-dotenv==1.0.0
 sqlalchemy==2.0.25
 psycopg2-binary==2.9.9
 alembic==1.13.1
+
+# Auth & Payment (ETAP 2)
+supabase==2.3.4
+stripe==7.10.0
+pyjwt==2.8.0
+python-jose[cryptography]==3.3.0

@@ -3,7 +3,8 @@ Configuration management using Pydantic Settings.
 Zarządza env variables i konfiguracją aplikacji.
 """
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Optional
+from pydantic import field_validator
+from typing import Optional, Union
 
 
 class Settings(BaseSettings):
@@ -25,7 +26,24 @@ class Settings(BaseSettings):
     # =========================
 
     openweather_api_key: str = ""
-    # W przyszłości: stripe_secret_key, google_maps_api_key, etc.
+    # W przyszłości: google_maps_api_key, etc.
+
+    # =========================
+    # SUPABASE AUTH (ETAP 2)
+    # =========================
+
+    supabase_url: str = ""
+    supabase_anon_key: str = ""
+    supabase_jwt_secret: str = ""
+
+    # =========================
+    # STRIPE PAYMENT (ETAP 2)
+    # =========================
+
+    stripe_secret_key: str = ""
+    stripe_publishable_key: str = ""
+    stripe_price_id: str = ""
+    stripe_webhook_secret: str = ""  # Dodamy po deployment
 
     # =========================
     # DATABASE (ETAP 2)
@@ -38,8 +56,17 @@ class Settings(BaseSettings):
     # CORS
     # =========================
 
-    cors_origins: list[str] = ["*"]
+    cors_origins: Union[list[str], str] = ["*"]
     # Produkcja: konkretne domeny frontendu
+    
+    @field_validator('cors_origins', mode='before')
+    @classmethod
+    def parse_cors_origins(cls, v):
+        """Parse CORS_ORIGINS from string or keep as list."""
+        if isinstance(v, str):
+            # Split by comma and strip whitespace
+            return [origin.strip() for origin in v.split(',') if origin.strip()]
+        return v
 
     # =========================
     # PLANNER CONFIG
