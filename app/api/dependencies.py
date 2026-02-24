@@ -159,8 +159,20 @@ async def get_current_user(
             email=user_data["email"],
         )
         db.add(user)
-        db.commit()
-        db.refresh(user)
+        try:
+            db.commit()
+            db.refresh(user)
+        except Exception:
+            # Handle duplicate key error (race condition or test data)
+            db.rollback()
+            # Try to fetch again
+            user = db.query(User).filter(User.supabase_id == user_data["supabase_id"]).first()
+            if not user:
+                # Still doesn't exist - unexpected error
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to create user"
+                )
     
     return user
 
@@ -207,8 +219,6 @@ async def get_optional_user(
     if not credentials:
         return None
     
-    try:
-        return await get_current_user(credentials, db)
-    except HTTPException:
-        # Invalid token - return None instead of raising error
-        return None
+    # Token provided - MUST be valid or raise 401
+    # Don't catch exceptions - let them propagate as 401 errors
+    return await get_current_user(credentials, db)
