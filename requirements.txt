@@ -17,7 +17,7 @@ numpy==1.26.3
 
 # HTTP client
 requests==2.31.0
-httpx==0.26.0
+httpx==0.25.2  # Must be <0.26 for supabase compatibility
 
 # Date/time
 python-dateutil==2.8.2
