@@ -1,12 +1,13 @@
 """
 Content endpoints - destinations, home content.
 """
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import List
 
 from app.infrastructure.repositories import DestinationsRepository
 from app.api.dependencies import get_destinations_repository
+from app.infrastructure.storage import build_destination_image_url
 
 router = APIRouter()
 
@@ -28,7 +29,8 @@ class DestinationItem(BaseModel):
     name: str
     country: str
     region_type: str  # mountain, sea, city
-    image_key: str  # relatywna sciezka do obrazka
+    image_key: str  # relatywna sciezka do obrazka (np. "destination_zakopane")
+    image_url: str | None  # pelny URL do obrazka w Supabase Storage (11.03.2026)
     description_short: str
 
 
@@ -57,12 +59,14 @@ def get_home_content(
     # Map JSON structure to DestinationItem
     destinations = []
     for dest in destinations_raw:
+        image_key = dest.get("image_key", "")
         destinations.append({
             "destination_id": dest.get("id"),  # JSON ma "id", API zwraca "destination_id"
             "name": dest.get("name"),
             "country": "Poland",  # ETAP 1: hardcoded
             "region_type": _infer_region_type(dest.get("region", "")),
-            "image_key": dest.get("image_key"),
+            "image_key": image_key,
+            "image_url": build_destination_image_url(image_key),  # 11.03.2026: Supabase Storage
             "description_short": dest.get("description_short", "")
         })
     
@@ -70,72 +74,79 @@ def get_home_content(
     if not destinations:
         print("WARNING: destinations.json empty, using fallback")
         # FALLBACK: hardcoded destinations (do czasu utworzenia JSON)
-        destinations = [
-        {
-            "destination_id": "zakopane",
-            "name": "Zakopane",
-            "country": "Poland",
-            "region_type": "mountain",
-            "image_key": "destinations/zakopane_placeholder.jpg",
-            "description_short": "Stolica polskich Tatr - idealna na rodzinne wypady"
-        },
-        {
-            "destination_id": "krakow",
-            "name": "Kraków",
-            "country": "Poland",
-            "region_type": "city",
-            "image_key": "destinations/krakow_placeholder.jpg",
-            "description_short": "Historyczne miasto z bogata kultura"
-        },
-        {
-            "destination_id": "gdansk",
-            "name": "Gdańsk",
-            "country": "Poland",
-            "region_type": "sea",
-            "image_key": "destinations/gdansk_placeholder.jpg",
-            "description_short": "Morskie miasto z piekna starówka"
-        },
-        {
-            "destination_id": "wroclaw",
-            "name": "Wrocław",
-            "country": "Poland",
-            "region_type": "city",
-            "image_key": "destinations/wroclaw_placeholder.jpg",
-            "description_short": "Miasto 100 mostów i krasnali"
-        },
-        {
-            "destination_id": "kolobrzeg",
-            "name": "Kołobrzeg",
-            "country": "Poland",
-            "region_type": "sea",
-            "image_key": "destinations/kolobrzeg_placeholder.jpg",
-            "description_short": "Nadmorski kurort z plazami"
-        },
-        {
-            "destination_id": "poznan",
-            "name": "Poznań",
-            "country": "Poland",
-            "region_type": "city",
-            "image_key": "destinations/poznan_placeholder.jpg",
-            "description_short": "Miasto z kultowa Starym Rynkiem"
-        },
-        {
-            "destination_id": "bieszczady",
-            "name": "Bieszczady",
-            "country": "Poland",
-            "region_type": "mountain",
-            "image_key": "destinations/bieszczady_placeholder.jpg",
-            "description_short": "Dzika przyroda i polskie gory"
-        },
-        {
-            "destination_id": "torun",
-            "name": "Toruń",
-            "country": "Poland",
-            "region_type": "city",
-            "image_key": "destinations/torun_placeholder.jpg",
-            "description_short": "Miasto piernika i gotyckie zabytki"
-        },
+        fallback_destinations = [
+            {
+                "destination_id": "zakopane",
+                "name": "Zakopane",
+                "country": "Poland",
+                "region_type": "mountain",
+                "image_key": "destination_zakopane",
+                "description_short": "Stolica polskich Tatr - idealna na rodzinne wypady"
+            },
+            {
+                "destination_id": "krakow",
+                "name": "Kraków",
+                "country": "Poland",
+                "region_type": "city",
+                "image_key": "destination_krakow",
+                "description_short": "Historyczne miasto z bogata kultura"
+            },
+            {
+                "destination_id": "gdansk",
+                "name": "Gdańsk",
+                "country": "Poland",
+                "region_type": "sea",
+                "image_key": "destination_gdansk",
+                "description_short": "Morskie miasto z piekna starówka"
+            },
+            {
+                "destination_id": "wroclaw",
+                "name": "Wrocław",
+                "country": "Poland",
+                "region_type": "city",
+                "image_key": "destination_wroclaw",
+                "description_short": "Miasto 100 mostów i krasnali"
+            },
+            {
+                "destination_id": "kolobrzeg",
+                "name": "Kołobrzeg",
+                "country": "Poland",
+                "region_type": "sea",
+                "image_key": "destination_kolobrzeg",
+                "description_short": "Nadmorski kurort z plazami"
+            },
+            {
+                "destination_id": "poznan",
+                "name": "Poznań",
+                "country": "Poland",
+                "region_type": "city",
+                "image_key": "destination_poznan",
+                "description_short": "Miasto z kultowa Starym Rynkiem"
+            },
+            {
+                "destination_id": "bieszczady",
+                "name": "Bieszczady",
+                "country": "Poland",
+                "region_type": "mountain",
+                "image_key": "destination_bieszczady",
+                "description_short": "Dzika przyroda i polskie gory"
+            },
+            {
+                "destination_id": "torun",
+                "name": "Toruń",
+                "country": "Poland",
+                "region_type": "city",
+                "image_key": "destination_torun",
+                "description_short": "Miasto piernika i gotyckie zabytki"
+            },
         ]
+        
+        # Add image_url to fallback destinations
+        destinations = []
+        for dest in fallback_destinations:
+            dest_with_url = dest.copy()
+            dest_with_url["image_url"] = build_destination_image_url(dest["image_key"])
+            destinations.append(dest_with_url)
     
     return HomeContentResponse(
         destinations=[DestinationItem(**d) for d in destinations],

@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, status, Depends
 
 from app.infrastructure.repositories import POIRepository
 from app.api.dependencies import get_poi_repository
+from app.infrastructure.storage import build_poi_image_url
 
 router = APIRouter()
 
@@ -37,5 +38,12 @@ def get_poi_details(
         )
     
     # Convert POI model to dict response
-    # TODO: add image_key field in CZESC 4
-    return poi.model_dump(by_alias=True)
+    poi_dict = poi.model_dump(by_alias=True)
+    
+    # Add image_url (11.03.2026 - Supabase Storage integration)
+    if poi.image_key:
+        poi_dict["image_url"] = build_poi_image_url(poi.image_key)
+    else:
+        poi_dict["image_url"] = None
+    
+    return poi_dict

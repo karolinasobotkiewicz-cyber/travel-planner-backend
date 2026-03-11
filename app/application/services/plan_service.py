@@ -27,6 +27,7 @@ from app.application.services.trip_mapper import trip_input_to_engine_params
 from app.domain.planner.engine import build_day, plan_multiple_days, travel_time_minutes, is_open, haversine_distance
 from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
 from app.infrastructure.repositories import POIRepository
+from app.infrastructure.storage import build_poi_image_url  # 11.03.2026 - Supabase Storage
 
 # ETAP 2 Day 5: Quality + Explainability
 from app.domain.planner.quality_checker import validate_day_quality, check_poi_quality
@@ -806,6 +807,9 @@ class PlanService:
             lat=lat_value,
             lng=lng_value,
             address=poi_dict.get("address", ""),
+            # 11.03.2026 - Supabase Storage integration
+            image_key=poi_dict.get("image_key"),
+            image_url=build_poi_image_url(poi_dict.get("image_key", "")),
             cost_estimate=estimated_cost,  # Poprawiono z estimated_cost
             cost_note=cost_note,  # BUGFIX (19.02.2026 - Issue #7)
             ticket_info=TicketInfo(

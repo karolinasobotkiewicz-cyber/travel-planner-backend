@@ -147,6 +147,16 @@ class AttractionItem(BaseModel):
     lng: float = Field(..., description="Długość geograficzna")
     address: str = Field(..., description="Adres atrakcji")
 
+    # Media (11.03.2026 - Supabase Storage integration)
+    image_key: str | None = Field(
+        default=None,
+        description="Klucz do obrazka w Supabase Storage (np. 'poi_morskie_oko')"
+    )
+    image_url: str | None = Field(
+        default=None,
+        description="Pełny URL do obrazka w Supabase Storage"
+    )
+
     cost_estimate: int = Field(
         ..., ge=0, description="Total cost for the entire group (not per person)"
     )
