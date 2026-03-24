@@ -6,7 +6,8 @@ Defines database schema for plans and plan_versions tables.
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, Text, JSON, UniqueConstraint, Numeric, text
+import sqlalchemy as sa
+from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, Text, JSON, UniqueConstraint, Numeric, text, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -20,14 +21,20 @@ class Plan(Base):
     
     Each plan represents a user's trip (1-7 days).
     Actual day-by-day itineraries are stored in plan_versions table.
+    
+    Ownership:
+    - Authenticated users: user_id is set, guest_id is NULL
+    - Guest users: guest_id is set, user_id is NULL
+    - One of user_id OR guest_id must be present (check constraint)
     """
     __tablename__ = "plans"
 
     # Primary key
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     
-    # User reference (ETAP 2) - nullable for backward compatibility
+    # Owner reference (ETAP 2 - Guest Support)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    guest_id = Column(String(255), nullable=True, index=True)  # UUID from frontend localStorage
     
     # Trip metadata
     location = Column(String(255), nullable=False, index=True)
@@ -49,8 +56,15 @@ class Plan(Base):
     payment_sessions = relationship("PaymentSession", back_populates="plan")
     transactions = relationship("Transaction", back_populates="plan")
     
+    # Table constraints
+    __table_args__ = (
+        # Ensure either user_id OR guest_id is present
+        sa.CheckConstraint('user_id IS NOT NULL OR guest_id IS NOT NULL', name='ck_plans_owner_id'),
+    )
+    
     def __repr__(self):
-        return f"<Plan(id={self.id}, location={self.location}, days={self.days_count})>"
+        owner = f"user_id={self.user_id}" if self.user_id else f"guest_id={self.guest_id}"
+        return f"<Plan(id={self.id}, {owner}, location={self.location}, days={self.days_count})>"
 
 
 class PlanVersion(Base):
@@ -142,14 +156,20 @@ class PaymentSession(Base):
     
     Each session represents a payment attempt for a travel plan.
     Status transitions: pending → completed/expired/failed
+    
+    Ownership:
+    - Authenticated users: user_id is set, guest_id is NULL
+    - Guest users: guest_id is set, user_id is NULL
+    - One of user_id OR guest_id must be present (check constraint)
     """
     __tablename__ = "payment_sessions"
     
     # Primary key
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     
-    # Foreign keys
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Owner reference (ETAP 2 - Guest Support)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    guest_id = Column(String(255), nullable=True, index=True)  # UUID from frontend localStorage
     plan_id = Column(UUID(as_uuid=True), ForeignKey("plans.id", ondelete="CASCADE"), nullable=False, index=True)
     
     # Stripe reference
@@ -172,8 +192,15 @@ class PaymentSession(Base):
     plan = relationship("Plan", back_populates="payment_sessions")
     transactions = relationship("Transaction", back_populates="payment_session", cascade="all, delete-orphan")
     
+    # Table constraints
+    __table_args__ = (
+        # Ensure either user_id OR guest_id is present
+        sa.CheckConstraint('user_id IS NOT NULL OR guest_id IS NOT NULL', name='ck_payment_sessions_owner_id'),
+    )
+    
     def __repr__(self):
-        return f"<PaymentSession(id={self.id}, stripe_session_id={self.stripe_session_id}, status={self.status})>"
+        owner = f"user={self.user_id}" if self.user_id else f"guest={self.guest_id}"
+        return f"<PaymentSession(id={self.id}, {owner}, stripe={self.stripe_session_id}, status={self.status})>"
 
 
 class Transaction(Base):

@@ -18,8 +18,9 @@ from app.api.dependencies import (
     get_poi_repository,
     get_version_repository,
     get_plan_editor,
-    get_optional_user,  # ETAP 2: Optional auth for backward compatibility
-    get_current_user  # ETAP 2: Required auth for protected endpoints
+    get_current_user,  # ETAP 2: Required auth for protected endpoints
+    get_owner_id,  # ETAP 2: Guest support (auth OR guest)
+    OwnerIdentity  # ETAP 2: Owner identity wrapper
 )
 from app.infrastructure.database.models import User
 from app.application.services.plan_service import PlanService
@@ -35,14 +36,16 @@ router = APIRouter()
     status_code=status.HTTP_200_OK,
     summary="Generate multi-day travel plan",
     description="""
-    **ETAP 2 - Multi-Day Planning + Auth**
+    **ETAP 2 - Multi-Day Planning + Auth + Guest Support**
     
     Generates 1-5 day travel plan with POI uniqueness >70% across days.
     
     **Authentication:**
-    - Optional for backward compatibility (ETAP 1 tests)
-    - Recommended: Include Bearer token in Authorization header
+    - Works for BOTH authenticated users AND guests
+    - Authenticated: Include Bearer token in Authorization header
+    - Guest: Include X-Guest-ID header with UUID from localStorage
     - If authenticated: Plan is linked to user account
+    - If guest: Plan is linked to guest_id (can be claimed after signup)
     
     **Features:**
     - Multi-day planning (1-5 days supported)
@@ -52,8 +55,10 @@ router = APIRouter()
     - Budget penalties for premium POI (termy)
     - Version #1 auto-saved to database
     
-    **Example Request:**
+    **Example Request (Authenticated):**
     ```json
+    POST /plan/preview
+    Authorization: Bearer <jwt_token>
     {
         "location": {"city": "Zakopane", "country": "Poland", "region_type": "mountain"},
         "group": {"type": "couples", "size": 2, "crowd_tolerance": 1},
@@ -65,10 +70,19 @@ router = APIRouter()
     }
     ```
     
+    **Example Request (Guest):**
+    ```json
+    POST /plan/preview
+    X-Guest-ID: 123e4567-e89b-12d3-a456-426614174000
+    {
+        ... same body ...
+    }
+    ```
+    
     **Response:** PlanResponse with 5 days, ~28 POI, 71.4% uniqueness
     
     **Error Codes:**
-    - 400: Invalid trip_input (validation failed)
+    - 400: Invalid trip_input OR missing auth/guest-id
     - 401: Invalid/expired authentication token (if provided)
     - 500: Plan generation failed
     """
@@ -78,17 +92,18 @@ def preview_plan(
     plan_repo: PlanRepository = Depends(get_plan_repository),
     poi_repo: POIRepository = Depends(get_poi_repository),
     version_repo: PlanVersionRepository = Depends(get_version_repository),
-    current_user: User = Depends(get_optional_user)  # ETAP 2: Optional auth
+    owner: OwnerIdentity = Depends(get_owner_id)  # ETAP 2: Auth OR guest
 ):
     """
-    Generate travel plan with optional authentication.
+    Generate travel plan with authentication or guest support.
     
     If user is authenticated:
     - Plan is linked to user.id in database
     - User can later access their plans
     
-    If anonymous:
-    - Plan is created without user_id (backward compatibility)
+    If guest:
+    - Plan is linked to guest_id
+    - Guest can claim plans after signup via /claim-guest-plans
     """
     # Utworz service z POI repository
     plan_service = PlanService(poi_repo)
@@ -96,9 +111,8 @@ def preview_plan(
     # Generuj plan z prawdziwego silnika (4.10, 4.11, 4.12)
     plan = plan_service.generate_plan(trip_input)
     
-    # Zapisz w repository z user_id (if authenticated)
-    user_id = current_user.id if current_user else None
-    plan_repo.save(plan, user_id=user_id)
+    # Zapisz w repository z user_id OR guest_id
+    plan_repo.save(plan, user_id=owner.user_id, guest_id=owner.guest_id)
     
     # ETAP 2: Auto-save version #1
     try:

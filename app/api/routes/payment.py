@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 import stripe
 
-from app.api.dependencies import get_session, get_current_user
+from app.api.dependencies import get_session, get_current_user, get_owner_id, OwnerIdentity
 from app.infrastructure.database.models import User, PaymentSession, Plan
 from app.infrastructure.payment import (
     create_checkout_session as create_stripe_session,
@@ -51,25 +51,37 @@ class SessionStatusResponse(BaseModel):
 @router.post("/create-checkout-session", response_model=CheckoutSessionResponse)
 async def create_checkout_session(
     request: CreateCheckoutRequest,
-    current_user: User = Depends(get_current_user),
+    owner: OwnerIdentity = Depends(get_owner_id),
     db: Session = Depends(get_session)
 ):
     """
     Create Stripe Checkout Session for plan payment.
     
+    **ETAP 2 - Guest Support:**
+    Works for both authenticated users and guests.
+    
     Flow:
-    1. Verify plan exists and belongs to user
+    1. Verify plan exists and belongs to owner (user OR guest)
     2. Create Stripe Checkout Session (real API call)
     3. Save PaymentSession in database
     4. Return checkout URL for frontend redirect
     
     Security:
-    - Requires valid JWT token (get_current_user)
-    - User can only pay for their own plans
+    - Requires EITHER valid JWT token OR X-Guest-ID header
+    - Owner can only pay for their own plans
     
-    Example:
+    Example (Authenticated):
         POST /payment/create-checkout-session
         Authorization: Bearer <jwt_token>
+        {
+            "plan_id": "123e4567-e89b-12d3-a456-426614174000",
+            "success_url": "http://localhost:3000/payment/success",
+            "cancel_url": "http://localhost:3000/payment/cancel"
+        }
+    
+    Example (Guest):
+        POST /payment/create-checkout-session
+        X-Guest-ID: 123e4567-e89b-12d3-a456-426614174000
         {
             "plan_id": "123e4567-e89b-12d3-a456-426614174000",
             "success_url": "http://localhost:3000/payment/success",
@@ -93,11 +105,19 @@ async def create_checkout_session(
             detail=f"Plan not found: {request.plan_id}"
         )
     
-    # Verify plan belongs to current user (if user_id is set)
-    if plan.user_id and str(plan.user_id) != str(current_user.id):
+    # Verify plan belongs to current owner (user OR guest)
+    plan_owner_matches = False
+    if owner.user_id:
+        # Authenticated: check user_id
+        plan_owner_matches = plan.user_id and str(plan.user_id) == str(owner.user_id)
+    else:
+        # Guest: check guest_id
+        plan_owner_matches = plan.guest_id == owner.guest_id
+    
+    if not plan_owner_matches:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot create payment session for another user's plan"
+            detail="Cannot create payment session for another owner's plan"
         )
     
     # Check if plan already has completed payment
@@ -114,16 +134,20 @@ async def create_checkout_session(
     
     try:
         # Create Stripe Checkout Session (real API call)
+        # Use user_id if authenticated, guest_id if guest
+        customer_id = str(owner.user_id) if owner.user_id else owner.guest_id
+        
         stripe_session = create_stripe_session(
             plan_id=request.plan_id,
-            user_id=str(current_user.id),
+            user_id=customer_id,
             success_url=request.success_url,
             cancel_url=request.cancel_url
         )
         
         # Save PaymentSession in database
         payment_session = PaymentSession(
-            user_id=current_user.id,
+            user_id=owner.user_id,  # Can be None for guests
+            guest_id=owner.guest_id,  # Can be None for authenticated
             plan_id=request.plan_id,
             stripe_session_id=stripe_session.session_id,
             amount=stripe_session.amount / 100,  # Convert grosz to PLN
@@ -133,9 +157,10 @@ async def create_checkout_session(
         )
         db.add(payment_session)
         
-        # Link plan to user if not already
-        if not plan.user_id:
-            plan.user_id = current_user.id
+        # Link plan to user if authenticated (claim from guest)
+        if owner.user_id and not plan.user_id:
+            plan.user_id = owner.user_id
+            plan.guest_id = None  # Clear guest_id when claimed
         
         db.commit()
         db.refresh(payment_session)

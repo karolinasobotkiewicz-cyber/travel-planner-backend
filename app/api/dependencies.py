@@ -5,7 +5,7 @@ Provides repository instances with proper lifecycle management.
 import os
 from functools import lru_cache
 from typing import Optional
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
@@ -222,3 +222,114 @@ async def get_optional_user(
     # Token provided - MUST be valid or raise 401
     # Don't catch exceptions - let them propagate as 401 errors
     return await get_current_user(credentials, db)
+
+
+# ==========================================
+# ETAP 2: GUEST SUPPORT DEPENDENCIES
+# ==========================================
+
+
+class OwnerIdentity:
+    """
+    Represents owner of a plan or payment - either authenticated user or guest.
+    
+    Attributes:
+        user: User instance if authenticated, None if guest
+        user_id: UUID if authenticated, None if guest
+        guest_id: Guest UUID string if guest, None if authenticated
+        is_guest: True if guest, False if authenticated
+    """
+    def __init__(self, user: Optional[User] = None, guest_id: Optional[str] = None):
+        if not user and not guest_id:
+            raise ValueError("Either user or guest_id must be provided")
+        if user and guest_id:
+            raise ValueError("Cannot have both user and guest_id")
+        
+        self.user = user
+        self.user_id = user.id if user else None
+        self.guest_id = guest_id
+        self.is_guest = guest_id is not None
+    
+    def __repr__(self):
+        if self.user:
+            return f"<OwnerIdentity user={self.user.email}>"
+        return f"<OwnerIdentity guest={self.guest_id}>"
+
+
+async def get_owner_id(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    guest_id: Optional[str] = Header(None, alias="X-Guest-ID"),
+    db: Session = Depends(get_session)
+) -> OwnerIdentity:
+    """
+    Identify plan/payment owner - authenticated user OR guest.
+    
+    **Priority (first match wins):**
+    1. Valid JWT token → Authenticated user
+    2. X-Guest-ID header → Guest user
+    3. Neither → HTTP 400 error
+    
+    **Use cases:**
+    - Plan generation (auth or guest)
+    - Payment creation (auth or guest)
+    - Any endpoint that should work for both auth and guest
+    
+    **Usage:**
+        @app.post("/plan/preview")
+        async def create_plan(
+            owner: OwnerIdentity = Depends(get_owner_id),
+            db: Session = Depends(get_session)
+        ):
+            # Save plan with owner
+            plan.user_id = owner.user_id
+            plan.guest_id = owner.guest_id
+            db.add(plan)
+    
+    **Headers:**
+    - Authenticated: `Authorization: Bearer <jwt_token>`
+    - Guest: `X-Guest-ID: <uuid>` (frontend generates UUID, stores in localStorage)
+    
+    Args:
+        credentials: Optional JWT Bearer token
+        guest_id: Optional guest UUID from X-Guest-ID header
+        db: Database session
+    
+    Returns:
+        OwnerIdentity with either user or guest_id populated
+        
+    Raises:
+        HTTPException 400: If neither auth token nor guest_id provided
+        HTTPException 401: If auth token is invalid/expired
+        
+    Examples:
+        # Authenticated user
+        POST /plan/preview
+        Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
+        → OwnerIdentity(user=User(...), guest_id=None)
+        
+        # Guest user
+        POST /plan/preview
+        X-Guest-ID: 123e4567-e89b-12d3-a456-426614174000
+        → OwnerIdentity(user=None, guest_id="123e4567-e89b-12d3-a456-426614174000")
+    """
+    # Priority 1: Try authentication first
+    if credentials:
+        user = await get_current_user(credentials, db)
+        return OwnerIdentity(user=user)
+    
+    # Priority 2: Check for guest ID
+    if guest_id:
+        # Basic validation - must be non-empty string
+        guest_id = guest_id.strip()
+        if not guest_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="X-Guest-ID header cannot be empty"
+            )
+        return OwnerIdentity(guest_id=guest_id)
+    
+    # Neither provided
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Missing authentication. Provide either Authorization header or X-Guest-ID header."
+    )

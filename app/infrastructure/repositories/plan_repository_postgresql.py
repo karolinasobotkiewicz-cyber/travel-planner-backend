@@ -34,9 +34,13 @@ class PlanPostgreSQLRepository(IPlanRepository):
         """
         self.db = db
 
-    def save(self, plan: PlanResponse, user_id: Optional[uuid.UUID] = None) -> str:
+    def save(self, plan: PlanResponse, user_id: Optional[uuid.UUID] = None, guest_id: Optional[str] = None) -> str:
         """
         Saves plan to database and creates version snapshot.
+        
+        **ETAP 2 - Guest Support:**
+        Plans can be owned by authenticated users OR guests.
+        Either user_id OR guest_id should be provided (not both).
         
         Logic:
         1. Check if plan exists (by plan_id)
@@ -45,14 +49,20 @@ class PlanPostgreSQLRepository(IPlanRepository):
         
         Args:
             plan: PlanResponse domain model
-            user_id: Optional UUID of authenticated user (ETAP 2)
+            user_id: Optional UUID of authenticated user
+            guest_id: Optional guest ID string (UUID from frontend)
             
         Returns:
             plan_id (str)
             
         Raises:
             SQLAlchemyError: Database operation failed
+            ValueError: If both user_id and guest_id are provided
         """
+        # Validate: not both user_id and guest_id
+        if user_id and guest_id:
+            raise ValueError("Cannot provide both user_id and guest_id")
+        
         try:
             plan_id = plan.plan_id
             
@@ -63,9 +73,15 @@ class PlanPostgreSQLRepository(IPlanRepository):
                 # UPDATE existing plan
                 existing_plan.updated_at = datetime.utcnow()
                 existing_plan.trip_metadata = self._extract_metadata(plan)
+                
                 # Link to user if provided and not already linked
                 if user_id and not existing_plan.user_id:
                     existing_plan.user_id = user_id
+                    existing_plan.guest_id = None  # Clear guest_id when user claims
+                
+                # Link to guest if provided and not already linked
+                if guest_id and not existing_plan.guest_id and not existing_plan.user_id:
+                    existing_plan.guest_id = guest_id
                 
                 # Get next version number
                 max_version = self.db.query(PlanVersion).filter(
@@ -96,6 +112,7 @@ class PlanPostgreSQLRepository(IPlanRepository):
                     days_count=len(plan.days),
                     budget_level=2,  # TODO: pass from TripInput
                     user_id=user_id,  # ETAP 2: Link plan to authenticated user
+                    guest_id=guest_id,  # ETAP 2: Link plan to guest
                     trip_metadata=self._extract_metadata(plan)
                 )
                 self.db.add(new_plan)
@@ -289,12 +306,16 @@ class PlanPostgreSQLRepository(IPlanRepository):
 
     def transfer_ownership(self, guest_id: str, user_id: uuid.UUID) -> int:
         """
-        Transfers guest plans to authenticated user (ETAP 2 - /claim-guest-plans endpoint).
+        Transfers guest plans to authenticated user (ETAP 2 - /claim-guest-plans).
+        
+        After guest creates plans and then logs in/signs up, this method transfers
+        all plans owned by guest_id to the authenticated user_id.
         
         Logic:
-        - Guest plans have user_id = NULL (created before auth)
-        - We match by session or guest identifier stored in trip_metadata
-        - Transfer all matching plans to authenticated user_id
+        - Find all plans where guest_id = <guest_id>
+        - Update: user_id = <user_id>, guest_id = NULL
+        - Find all payment_sessions where guest_id = <guest_id>
+        - Update: user_id = <user_id>, guest_id = NULL
         
         Args:
             guest_id: Guest identifier (UUID string from localStorage)
@@ -302,41 +323,35 @@ class PlanPostgreSQLRepository(IPlanRepository):
             
         Returns:
             Count of transferred plans
+            
+        Raises:
+            Exception: Database error during transfer
         """
         try:
-            # Find all guest plans where user_id is NULL
-            # In current implementation, anonymous users create plans with user_id=NULL
-            # We could add guest_id tracking in trip_metadata for precise matching
-            # For now: transfer all NULL user_id plans (assumes single-device guest session)
-            
-            # More precise: find plans where trip_metadata.guest_id matches
-            # But ETAP 1 didn't store guest_id, so we'd need to update /preview endpoint first
-            
-            # Simpler approach for now: transfer ALL NULL plans created recently
-            # This assumes guest creates plans, then immediately logs in and claims them
-            
-            # Query plans with NULL user_id
+            # Find all plans owned by guest_id
             guest_plans = self.db.query(Plan).filter(
-                Plan.user_id == None
+                Plan.guest_id == guest_id
             ).all()
-            
-            # Filter by guest_id in trip_metadata (if stored)
-            # If not stored, transfer all NULL plans (fallback for backward compatibility)
-            matching_plans = []
-            for plan in guest_plans:
-                # Check if guest_id stored in metadata
-                if plan.trip_metadata and plan.trip_metadata.get('guest_id') == guest_id:
-                    matching_plans.append(plan)
-                elif not plan.trip_metadata or 'guest_id' not in plan.trip_metadata:
-                    # Fallback: include all NULL plans without guest_id tracking
-                    matching_plans.append(plan)
             
             # Transfer ownership
             transferred_count = 0
-            for plan in matching_plans:
+            for plan in guest_plans:
                 plan.user_id = user_id
+                plan.guest_id = None  # Clear guest_id after claim
                 plan.updated_at = datetime.utcnow()
                 transferred_count += 1
+            
+            # Also transfer payment sessions (if any exist)
+            # Import PaymentSession model inline to avoid circular dependency
+            from app.infrastructure.database.models import PaymentSession
+            
+            guest_payments = self.db.query(PaymentSession).filter(
+                PaymentSession.guest_id == guest_id
+            ).all()
+            
+            for payment in guest_payments:
+                payment.user_id = user_id
+                payment.guest_id = None  # Clear guest_id after claim
             
             self.db.commit()
             return transferred_count
