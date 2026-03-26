@@ -273,19 +273,28 @@ async def stripe_webhook(
 @router.get("/session/{session_id}/status", response_model=SessionStatusResponse)
 async def get_session_status(
     session_id: str,
-    current_user: User = Depends(get_current_user),
+    owner: OwnerIdentity = Depends(get_owner_id),
     db: Session = Depends(get_session)
 ):
     """
-    Get payment session status.
+    Get payment session status (ETAP 2 - Guest Support).
     
     Used by frontend to check if payment completed after redirect from Stripe.
+    Works for both authenticated users and guests.
     
-    Example:
+    **Authentication:**
+    - Authenticated: Include Bearer token in Authorization header
+    - Guest: Include X-Guest-ID header with UUID from localStorage
+    
+    Example (Authenticated):
         GET /payment/session/cs_test_abc123/status
         Authorization: Bearer <jwt_token>
         
-        Response:
+    Example (Guest):
+        GET /payment/session/cs_test_abc123/status
+        X-Guest-ID: 123e4567-e89b-12d3-a456-426614174000
+        
+    Response:
         {
             "session_id": "cs_test_abc123",
             "status": "completed",
@@ -307,8 +316,21 @@ async def get_session_status(
             detail=f"Payment session not found: {session_id}"
         )
     
-    # Verify session belongs to current user
-    if str(payment_session.user_id) != str(current_user.id):
+    # Verify session belongs to current owner (user OR guest)
+    session_owner_matches = False
+    if owner.user_id:
+        # Authenticated user - check user_id
+        session_owner_matches = (
+            payment_session.user_id and 
+            str(payment_session.user_id) == str(owner.user_id)
+        )
+    else:
+        # Guest - check guest_id
+        session_owner_matches = (
+            payment_session.guest_id == owner.guest_id
+        )
+    
+    if not session_owner_matches:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Cannot access another user's payment session"
