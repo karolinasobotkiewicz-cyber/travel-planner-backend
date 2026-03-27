@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Płatności - Travel Planner</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        
+        h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .step {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .step-number {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 30px;
+            margin-right: 10px;
+            font-weight: bold;
+        }
+        
+        .step h3 {
+            display: inline-block;
+            color: #333;
+            font-size: 18px;
+            margin-bottom: 15px;
+        }
+        
+        .step p {
+            color: #666;
+            line-height: 1.6;
+            margin-top: 10px;
+        }
+        
+        input[type="text"] {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: 'Courier New', monospace;
+            margin-top: 10px;
+            transition: border-color 0.3s;
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 20px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .result {
+            background: #e8f5e9;
+            border: 2px solid #4caf50;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 20px;
+            display: none;
+        }
+        
+        .result.success {
+            display: block;
+        }
+        
+        .result.error {
+            display: block;
+            background: #ffebee;
+            border-color: #f44336;
+        }
+        
+        .result h3 {
+            color: #4caf50;
+            margin-bottom: 10px;
+        }
+        
+        .result.error h3 {
+            color: #f44336;
+        }
+        
+        .result p {
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .info-box {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .info-box strong {
+            color: #856404;
+        }
+        
+        .test-cards {
+            background: #e3f2fd;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 10px;
+        }
+        
+        .test-cards h4 {
+            color: #1976d2;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+        
+        .test-cards p {
+            color: #555;
+            font-size: 13px;
+            margin: 5px 0;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .link {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: bold;
+        }
+        
+        .link:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧪 Test Płatności</h1>
+        <p class="subtitle">Travel Planner API - Tryb testowy</p>
+        
+        <div class="info-box">
+            <strong>ℹ️ Instrukcja:</strong><br>
+            1. Zaloguj się do <a href="https://supabase.com/dashboard/project/usztzcigcnsyyatguxay" target="_blank" class="link">Supabase</a><br>
+            2. Wklej swój JWT token poniżej<br>
+            3. Kliknij przycisk i zapłać testową kartą
+        </div>
+        
+        <div class="step">
+            <span class="step-number">1</span>
+            <h3>Twój JWT Token</h3>
+            <p>✅ Token testowy już wpisany poniżej - możesz od razu kliknąć przycisk!</p>
+            <input type="text" id="jwtToken" placeholder="Wklej tutaj token testowy z Supabase..." value="" />
+            <p style="margin-top: 10px; font-size: 12px; color: #999;">
+                💡 Jeśli token wygasł: Supabase → Authentication → Users → test@example.com → Copy Access Token
+            </p>
+        </div>
+        
+        <button id="startTest" onclick="startPaymentTest()">
+            🚀 Rozpocznij Test Płatności
+        </button>
+        
+        <div id="result" class="result">
+            <h3 id="resultTitle">✅ Sukces!</h3>
+            <p id="resultMessage"></p>
+        </div>
+        
+        <div class="test-cards">
+            <h4>💳 Testowe karty Stripe:</h4>
+            <p><strong>✅ Sukces:</strong> 4242 4242 4242 4242</p>
+            <p><strong>❌ Odrzucona:</strong> 4000 0000 0000 0002</p>
+            <p>Data: 12/34 | CVC: 123</p>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'https://travel-planner-backend-xbsp.onrender.com';
+        
+        async function startPaymentTest() {
+            const button = document.getElementById('startTest');
+            const result = document.getElementById('result');
+            const resultTitle = document.getElementById('resultTitle');
+            const resultMessage = document.getElementById('resultMessage');
+            const jwtToken = document.getElementById('jwtToken').value.trim();
+            
+            // Validate token
+            if (!jwtToken) {
+                showError('Proszę wklej JWT token z Supabase');
+                return;
+            }
+            
+            if (!jwtToken.startsWith('eyJ')) {
+                showError('Token wygląda nieprawidłowo. Powinien zaczynać się od "eyJ"');
+                return;
+            }
+            
+            // Update button state
+            button.disabled = true;
+            button.innerHTML = '<span class="loading"></span> Tworzę plan...';
+            result.style.display = 'none';
+            
+            try {
+                // Step 1: Create plan
+                console.log('Step 1: Creating plan...');
+                const planResponse = await fetch(`${API_BASE}/plan/preview`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${jwtToken}`
+                    },
+                    body: JSON.stringify({
+                        location: {
+                            city: 'Zakopane',
+                            country: 'Poland',
+                            region_type: 'mountain'
+                        },
+                        group: {
+                            type: 'couples',
+                            size: 2,
+                            crowd_tolerance: 1
+                        },
+                        trip_length: {
+                            days: 2,
+                            start_date: '2026-02-26'
+                        },
+                        daily_time_window: {
+                            start: '09:00',
+                            end: '19:00'
+                        },
+                        budget: {
+                            level: 2
+                        },
+                        preferences: ['culture', 'nature'],
+                        transport_modes: ['car']
+                    })
+                });
+                
+                if (!planResponse.ok) {
+                    const error = await planResponse.json();
+                    throw new Error(error.detail || 'Błąd tworzenia planu');
+                }
+                
+                const planData = await planResponse.json();
+                const planId = planData.plan_id;
+                console.log('Plan created:', planId);
+                
+                // Step 2: Create checkout session
+                button.innerHTML = '<span class="loading"></span> Tworzę sesję płatności...';
+                console.log('Step 2: Creating checkout session...');
+                
+                const checkoutResponse = await fetch(`${API_BASE}/payment/create-checkout-session`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${jwtToken}`
+                    },
+                    body: JSON.stringify({
+                        plan_id: planId,
+                        success_url: 'http://localhost:3000/test_platnosci.html?status=success',
+                        cancel_url: 'http://localhost:3000/test_platnosci.html?status=cancel'
+                    })
+                });
+                
+                if (!checkoutResponse.ok) {
+                    const error = await checkoutResponse.json();
+                    throw new Error(error.detail || 'Błąd tworzenia sesji płatności');
+                }
+                
+                const checkoutData = await checkoutResponse.json();
+                console.log('Checkout session created:', checkoutData.session_id);
+                
+                // Step 3: Save session_id and redirect to Stripe
+                localStorage.setItem('test_session_id', checkoutData.session_id);
+                localStorage.setItem('test_jwt_token', jwtToken);
+                
+                showSuccess(
+                    `Plan utworzony! (ID: ${planId.substring(0, 8)}...)<br>` +
+                    `Sesja płatności: ${checkoutData.session_id.substring(0, 20)}...<br><br>` +
+                    `<strong>Za 3 sekundy zostaniesz przekierowana do Stripe Checkout.</strong><br>` +
+                    `Użyj karty: <code>4242 4242 4242 4242</code>`
+                );
+                
+                // Redirect to Stripe after 3 seconds
+                setTimeout(() => {
+                    window.location.href = checkoutData.checkout_url;
+                }, 3000);
+                
+            } catch (error) {
+                console.error('Error:', error);
+                showError(`Błąd: ${error.message}`);
+                button.disabled = false;
+                button.innerHTML = '🚀 Rozpocznij Test Płatności';
+            }
+        }
+        
+        function showSuccess(message) {
+            const result = document.getElementById('result');
+            const resultTitle = document.getElementById('resultTitle');
+            const resultMessage = document.getElementById('resultMessage');
+            
+            result.className = 'result success';
+            resultTitle.textContent = '✅ Sukces!';
+            resultMessage.innerHTML = message;
+        }
+        
+        function showError(message) {
+            const result = document.getElementById('result');
+            const resultTitle = document.getElementById('resultTitle');
+            const resultMessage = document.getElementById('resultMessage');
+            
+            result.className = 'result error';
+            resultTitle.textContent = '❌ Błąd';
+            resultMessage.innerHTML = message;
+        }
+        
+        // Check if returning from Stripe
+        window.addEventListener('load', () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const sessionId = urlParams.get('session_id') || localStorage.getItem('test_session_id');
+            const jwtToken = localStorage.getItem('test_jwt_token');
+            
+            if (sessionId && jwtToken) {
+                // User returned from Stripe, check payment status
+                document.getElementById('jwtToken').value = jwtToken;
+                checkPaymentStatus(sessionId, jwtToken);
+            }
+        });
+        
+        async function checkPaymentStatus(sessionId, jwtToken) {
+            const button = document.getElementById('startTest');
+            const result = document.getElementById('result');
+            
+            button.disabled = true;
+            button.innerHTML = '<span class="loading"></span> Sprawdzam status płatności...';
+            
+            let attempts = 0;
+            const maxAttempts = 10;
+            
+            const checkStatus = async () => {
+                attempts++;
+                
+                try {
+                    const response = await fetch(`${API_BASE}/payment/session/${sessionId}/status`, {
+                        headers: {
+                            'Authorization': `Bearer ${jwtToken}`
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('Błąd sprawdzania statusu');
+                    }
+                    
+                    const data = await response.json();
+                    console.log(`Attempt ${attempts}: ${data.payment_status}`);
+                    
+                    if (data.payment_status === 'paid') {
+                        // SUCCESS!
+                        localStorage.removeItem('test_session_id');
+                        localStorage.removeItem('test_jwt_token');
+                        
+                        showSuccess(
+                            `<strong>🎉 PŁATNOŚĆ ZAKOŃCZONA SUKCESEM!</strong><br><br>` +
+                            `Status: <strong>${data.payment_status}</strong><br>` +
+                            `Kwota: ${(data.amount_total / 100).toFixed(2)} PLN<br>` +
+                            `Session ID: ${sessionId.substring(0, 30)}...<br><br>` +
+                            `Sprawdź:<br>` +
+                            `• <a href="https://dashboard.stripe.com/test/payments" target="_blank" class="link">Stripe Dashboard</a><br>` +
+                            `• <a href="https://supabase.com/dashboard/project/usztzcigcnsyyatguxay/editor" target="_blank" class="link">Supabase (tabela payment_sessions)</a>`
+                        );
+                        button.innerHTML = '✅ Test Zakończony';
+                        
+                    } else if (data.payment_status === 'unpaid' || data.payment_status === 'expired') {
+                        // FAILED
+                        localStorage.removeItem('test_session_id');
+                        localStorage.removeItem('test_jwt_token');
+                        
+                        showError(
+                            `Płatność nie powiodła się.<br>` +
+                            `Status: <strong>${data.payment_status}</strong><br><br>` +
+                            `Spróbuj ponownie z kartą: 4242 4242 4242 4242`
+                        );
+                        button.disabled = false;
+                        button.innerHTML = '🚀 Rozpocznij Test Płatności';
+                        
+                    } else if (attempts < maxAttempts) {
+                        // PENDING - try again
+                        button.innerHTML = `<span class="loading"></span> Sprawdzam (${attempts}/${maxAttempts})...`;
+                        setTimeout(checkStatus, 3000);
+                        
+                    } else {
+                        // TIMEOUT
+                        showError(
+                            `Timeout: Płatność wciąż w statusie "pending".<br>` +
+                            `To normalne - webhook może potrzebować więcej czasu.<br><br>` +
+                            `Sprawdź status ręcznie w:<br>` +
+                            `• <a href="https://dashboard.stripe.com/test/payments" target="_blank" class="link">Stripe Dashboard</a><br>` +
+                            `• <a href="https://supabase.com/dashboard/project/usztzcigcnsyyatguxay/editor" target="_blank" class="link">Supabase</a>`
+                        );
+                        button.disabled = false;
+                        button.innerHTML = '🚀 Rozpocznij Test Płatności';
+                    }
+                    
+                } catch (error) {
+                    console.error('Status check error:', error);
+                    showError(`Błąd sprawdzania statusu: ${error.message}`);
+                    button.disabled = false;
+                    button.innerHTML = '🚀 Rozpocznij Test Płatności';
+                }
+            };
+            
+            checkStatus();
+        }
+    </script>
+</body>
+</html>

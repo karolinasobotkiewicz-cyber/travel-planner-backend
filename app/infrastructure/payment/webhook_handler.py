@@ -76,11 +76,17 @@ def handle_checkout_completed(
     """
     Handle checkout.session.completed event.
     
+    **GUEST SUPPORT:**
+    Handles both authenticated users and guests.
+    metadata.user_id can be:
+    - UUID of user (authenticated)
+    - guest_id string (guest)
+    
     Flow:
-    1. Extract plan_id, user_id from session.metadata
+    1. Extract plan_id, owner_id from session.metadata
     2. Find PaymentSession in database
     3. Update PaymentSession status to "completed"
-    4. Create Transaction record (audit trail)
+    4. Create Transaction record (audit trail) with user_id OR guest_id
     5. Success!
     
     Args:
@@ -104,9 +110,9 @@ def handle_checkout_completed(
     # Extract metadata
     metadata = session.get("metadata", {})
     plan_id = metadata.get("plan_id")
-    user_id = metadata.get("user_id")
+    owner_id = metadata.get("user_id")  # Can be user_id OR guest_id
     
-    if not plan_id or not user_id:
+    if not plan_id or not owner_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Missing plan_id or user_id in session metadata"
@@ -127,9 +133,19 @@ def handle_checkout_completed(
     payment_session.status = "completed"
     payment_session.completed_at = datetime.now(timezone.utc)
     
+    # Determine if owner is user or guest
+    # Check if owner_id exists in users table (authenticated)
+    # If not, it's a guest_id
+    from app.infrastructure.database.models import User
+    
+    user = db.query(User).filter(User.id == owner_id).first()
+    is_authenticated_user = user is not None
+    
     # Create Transaction (audit trail)
+    # Set user_id OR guest_id based on owner type
     transaction = Transaction(
-        user_id=user_id,
+        user_id=owner_id if is_authenticated_user else None,
+        guest_id=owner_id if not is_authenticated_user else None,
         plan_id=plan_id,
         payment_session_id=payment_session.id,
         stripe_payment_intent=session.get("payment_intent"),  # pi_...
@@ -141,9 +157,10 @@ def handle_checkout_completed(
     
     db.commit()
     
+    owner_type = "user" if is_authenticated_user else "guest"
     return {
         "status": "success",
-        "message": f"Payment completed for plan {plan_id}",
+        "message": f"Payment completed for plan {plan_id} ({owner_type})",
         "transaction_id": str(transaction.id)
     }
 

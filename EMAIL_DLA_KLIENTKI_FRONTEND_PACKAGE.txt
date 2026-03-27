@@ -1,0 +1,210 @@
+Cześć Karolino!
+
+Wszystko gotowe dla frontendu 🚀
+
+---
+
+STAGING BACKEND:
+URL: https://travel-planner-backend-xbsp.onrender.com
+Swagger: https://travel-planner-backend-xbsp.onrender.com/docs
+Status: ✅ Live (19 endpointów)
+
+---
+
+PLIKI DO POBRANIA (7 dokumentów):
+
+1. Travel_Planner_ETAP2.postman_collection.json
+   ↳ Kolekcja Postman - 17 gotowych requestów
+   ↳ Import i testuj od razu
+   ↳ Automatyczne zapisywanie planId i sessionId
+
+2. ETAP2_SAMPLE_RESPONSES.md
+   ↳ Realne przykłady JSON dla wszystkich kluczowych endpointów
+   ↳ Pełny 3-dniowy plan Zakopanego (15 aktywności z detalami)
+   ↳ Wszystkie scenariusze payment (pending, paid, unpaid, expired)
+   ↳ Nowe endpointy: /claim-guest-plans, /my-plans
+   ↳ Gotowe do użycia jako mocki frontendowe
+
+3. ETAP2_API_SPECIFICATION.json
+   ↳ Kompletna specyfikacja OpenAPI 3.x
+   ↳ Wszystkie 19 endpointów
+   ↳ Możesz wygenerować TypeScript types: npx openapi-typescript ETAP2_API_SPECIFICATION.json -o types.ts
+
+4. ETAP2_FRONTEND_INTEGRATION_GUIDE.md
+   ↳ Kompletny przewodnik integracji z kodem JavaScript
+   ↳ 5 głównych flows (Guest, Auth, Migration, Payment, My Plans)
+   ↳ Strategia pollowania (gotowy kod)
+   ↳ Error handling + CORS config
+   ↳ Integration checklist (TODO list)
+
+5. test_platnosci.html
+   ↳ Narzędzie do testowania płatności (dla Ciebie!)
+   ↳ Otwórz w przeglądarce, kliknij przycisk, zapłać kartą testową
+   ↳ Bez instalacji, bez kodu, zero technicznej wiedzy
+
+6. JAK_TESTOWAC_PLATNOSCI.md
+   ↳ Instrukcje testowania płatności
+   ↳ Metoda HTML (najłatwiejsza) + API testing
+
+7. ETAP2_COMPLETION_REPORT.md
+   ↳ Raport implementacji (wszystkie 7 faz gotowe)
+   ↳ Dokumentacja co zostało zrobione
+
+BONUS: ETAP2_DELIVERABLES_README.md
+   ↳ Kompleksowy przewodnik po wszystkich plikach
+   ↳ Quick start guide
+   ↳ Credentials testowe (Supabase + Stripe)
+   ↳ CORS config, polling strategy, checklist
+
+---
+
+POSTMAN - JAK ZACZĄĆ:
+1. Otwórz Postman
+2. File → Import → Travel_Planner_ETAP2.postman_collection.json
+3. Ustaw zmienne w Collection:
+   - baseUrl: https://travel-planner-backend-xbsp.onrender.com
+   - authToken: (opcjonalnie - JWT z Supabase)
+4. Uruchom "Generate Plan" → automatycznie zapisze planId
+5. Uruchom "Create Checkout Session" → automatycznie zapisze sessionId
+6. Dalej możesz używać {{planId}} i {{sessionId}} w requestach
+
+17 requestów w 6 folderach:
+✅ Plan Management (tworzenie, pobieranie, wersje)
+✅ Plan Editing (usuwanie, zastępowanie, regeneracja)
+✅ Payment ETAP 2 (checkout, status)
+✅ User Management ETAP 2 (my-plans, claim-guest-plans)
+✅ Content & POI
+✅ System (health check)
+
+---
+
+SAMPLE RESPONSES - CO ZAWIERA:
+• Staging URL (na górze)
+• 10 szczegółowych endpointów ETAPU 2:
+  1. Generate Plan (multi-day) - 3 dni w Zakopanem
+     - Dzień 1: Gubałówka, Termy Zakoplanskie, Krupówki, góralskie restauracje
+     - Dzień 2: Morskie Oko, Dolina Kościeliska, highlander food
+     - Dzień 3: Muzeum Tatrzańskie, Rusinowa Polana, Wielka Krokiew
+     - Każda aktywność: czas, nazwa, typ, opis, lokalizacja (lat/lng), kategoria, poi_id, koszt, godziny otwarcia
+  2. Get Plan - aktualny plan
+  3. Get Plan Versions - historia wersji
+  4. Get Specific Version - konkretna wersja
+  5. Remove Activity - before/after (usunięcie aktywności)
+  6. Replace Activity - before/after (zamiana aktywności)
+  7. Create Checkout Session - inicjacja płatności (checkout_url + session_id)
+  8. Get Payment Status - 3 warianty (pending, paid, expired)
+  9. Claim Guest Plans - transfer guest → user (zwraca liczbę transferowanych planów)
+  10. My Plans - lista planów użytkownika
+
+• Authentication documentation (jak dodać Bearer token)
+• CORS configuration
+• Status & Entitlements Model z kodem JavaScript
+• Polling strategy - kompletny kod implementacji
+• Testing credentials (Supabase + Stripe)
+• Frontend notes (flows + error handling)
+
+---
+
+CREDENTIALS TESTOWE:
+
+Supabase:
+- Dashboard: https://supabase.com/dashboard
+- JWT Secret: pvaAG1JoRNPiJf7y2Y0XcCPscCnzKr6OFKfTSB+qlpJNFewjVrJWcPOpBTNJ28jF43xPjZj1dxscXoLtQqgm1A==
+- Jak dostać token: Authentication → Users → kliknij user → skopiuj "Access Token"
+
+Stripe:
+- Dashboard: https://dashboard.stripe.com/test (test mode)
+- Karta sukces: 4242 4242 4242 4242
+- Karta declined: 4000 0000 0000 0002
+- Expiry: dowolna przyszła (np. 12/34)
+- CVC: dowolne 3 cyfry (np. 123)
+- Cena: 19.99 PLN
+
+---
+
+CO FRONTEND MOŻE TERAZ ZROBIĆ:
+✅ Importować Postman i testować wszystkie endpointy
+✅ Użyć sample responses jako mocki (dokładne struktury JSON)
+✅ Wygenerować TypeScript types z OpenAPI spec
+✅ Zaimplementować 5 głównych flows z Integration Guide (gotowy kod JS)
+✅ Testować integrację na staging URL bez obaw o zmiany API
+✅ Parallel development - backend stabilny, wszystko udokumentowane
+
+---
+
+JAK TESTOWAĆ PŁATNOŚCI (dla Ciebie):
+1. Otwórz test_platnosci.html w przeglądarce (double-click)
+2. (Opcjonalnie) Wklej JWT token z Supabase
+3. Kliknij "Start Payment Test"
+4. Zapłać kartą: 4242 4242 4242 4242
+5. Po powrocie ze Stripe poczekaj na automatyczne sprawdzenie
+6. Zobaczysz sukces ✅ lub error ❌ z linkami do Stripe Dashboard
+
+Zero instalacji, zero kodu, zero technicznej wiedzy!
+
+---
+
+KLUCZOWE ENDPOINTY ETAPU 2:
+
+POST /payment/create-checkout-session (wymaga auth)
+↳ Tworzy sesję Stripe Checkout
+↳ Zwraca checkout_url (redirect) i session_id (do pollowania)
+
+GET /payment/session/{id}/status (wymaga auth)
+↳ Sprawdza status płatności
+↳ payment_status: pending, paid, unpaid, expired
+↳ Pollować co 3-5s max 60s po redirect ze Stripe
+
+POST /plan/claim-guest-plans (wymaga auth)
+↳ Transferuje plany guest → authenticated user
+↳ Request: { "guest_id": "uuid-from-localstorage" }
+↳ Response: { "success": true, "transferred_plans": 3 }
+
+GET /plan/my-plans (wymaga auth)
+↳ Lista wszystkich planów użytkownika
+↳ Dla "My Plans" dashboard page
+
+---
+
+POLLING STRATEGY (gotowy kod w sample responses):
+• Interwał: 3-5 sekund
+• Max czas: 60 sekund (12-20 prób)
+• Po timeout: Pokaż "Sprawdź później" + link do manualnej weryfikacji
+• Kiedy pollować: Po redirect ze Stripe Checkout
+
+Status transitions:
+pending → paid (sukces! pokaż pełny plan)
+pending → unpaid (płatność nieudana, pokaż error)
+pending → expired (sesja wygasła po 24h)
+
+---
+
+CORS:
+✅ Dozwolone: http://localhost:3000 (dev), https://lets-travel.pl (prod)
+✅ Metody: GET, POST, PUT, DELETE, OPTIONS
+✅ Headers: Content-Type, Authorization
+
+---
+
+STRUKTURA PLIKÓW:
+/
+├── Travel_Planner_ETAP2.postman_collection.json
+├── ETAP2_SAMPLE_RESPONSES.md
+├── ETAP2_API_SPECIFICATION.json
+├── ETAP2_FRONTEND_INTEGRATION_GUIDE.md
+├── ETAP2_COMPLETION_REPORT.md
+├── ETAP2_DELIVERABLES_README.md (← START HERE!)
+├── test_platnosci.html
+└── JAK_TESTOWAC_PLATNOSCI.md
+
+---
+
+Frontend może teraz sensownie zacząć implementację i mockowanie bez rozjazdów 🎉
+
+Wszystko przetestowane, udokumentowane i gotowe do użycia!
+
+Daj znać jak coś lub jeśli potrzebujecie więcej przykładów 😊
+
+---
+
+PS: Zacznijcie od ETAP2_DELIVERABLES_README.md - tam jest kompletny przewodnik po wszystkich plikach + quick start guide + credentials + checklist!

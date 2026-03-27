@@ -209,16 +209,30 @@ class Transaction(Base):
     
     Immutable record of successful payments.
     Created by Stripe webhook on checkout.session.completed event.
+    
+    **GUEST SUPPORT:**
+    - user_id: UUID FK for authenticated users (nullable)
+    - guest_id: VARCHAR UUID for guest users (nullable)
+    - CHECK: (user_id IS NOT NULL OR guest_id IS NOT NULL)
     """
     __tablename__ = "transactions"
     
     # Primary key
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     
-    # Foreign keys
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Foreign keys (BOTH nullable - one must be set)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    guest_id = Column(String(255), nullable=True, index=True)
     plan_id = Column(UUID(as_uuid=True), ForeignKey("plans.id", ondelete="CASCADE"), nullable=False, index=True)
     payment_session_id = Column(UUID(as_uuid=True), ForeignKey("payment_sessions.id", ondelete="CASCADE"), nullable=False)
+    
+    # Check constraint: user_id XOR guest_id
+    __table_args__ = (
+        CheckConstraint(
+            "(user_id IS NOT NULL AND guest_id IS NULL) OR (user_id IS NULL AND guest_id IS NOT NULL)",
+            name="transactions_owner_check"
+        ),
+    )
     
     # Stripe reference
     stripe_payment_intent = Column(String(255), nullable=False, unique=True, index=True)

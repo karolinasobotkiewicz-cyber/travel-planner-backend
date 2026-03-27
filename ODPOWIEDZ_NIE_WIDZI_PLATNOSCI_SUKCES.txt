@@ -1,0 +1,54 @@
+Temat: RE: Płatność przeszła ale nie widać
+
+Cześć! 🙂
+
+Jeśli flow przeszedł pomyślnie (widziałaś komunikat sukcesu), to płatność **na pewno jest** - tylko trzeba patrzeć we właściwym miejscu! 
+
+## ⚠️ Najczęstszy problem: TEST MODE
+
+Stripe ma dwa tryby:
+- **Live Mode** (prawdziwe płatności) 
+- **Test Mode** (testowe płatności) ← tu musi być!
+
+### ✅ Krok po kroku:
+
+**1. Otwórz Stripe Dashboard:**
+👉 https://dashboard.stripe.com/test/payments
+
+**2. Sprawdź przełącznik w PRAWYM GÓRNYM ROGU:**
+- ✅ Musi być: **"Viewing test data"**
+- ❌ Jeśli jest: **"Viewing live data"** → kliknij przełącznik i zmień na Test
+
+**3. Odśwież stronę (F5)**
+
+Teraz powinna zobaczyć swoją płatność! 💰
+
+---
+
+## 🔗 Dodatkowe miejsca gdzie sprawdzić:
+
+### Checkout Sessions (WSZYSTKIE sesje testowe):
+👉 https://dashboard.stripe.com/test/checkout/sessions
+
+Tutaj zobaczysz **WSZYSTKIE** próby płatności:
+- Twoja najnowsza sesja (dzisiaj 26-02)
+- Moja stara sesja (24-02)
+
+---
+
+## 📊 Supabase:
+
+Jeśli nadal nie ma w Stripe, sprawdź też Supabase:
+👉 https://supabase.com/dashboard/project/usztzcigcnsyyatguxay/editor/29565
+
+Kliknij tabelę "payment_sessions" → powinien być wpis z dzisiejszą datą.
+
+---
+
+**Jeśli NADAL nie widzisz płatności po przełączeniu na Test Mode:**
+- Zrób screenshot swojego dashboardu (prawego górnego rogu z przełącznikiem)
+- Wyślij mi - pomogę zdiagnozować co się dzieje
+
+Jestem pewien że to kwestia Test Mode! 🙂
+
+Pozdrawiam!

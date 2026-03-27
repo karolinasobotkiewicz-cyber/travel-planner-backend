@@ -1,0 +1,1984 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Travel Planner API",
+    "description": "Backend API for travel planning engine - ETAP 2 (Auth + Payment)",
+    "version": "2.0.0"
+  },
+  "paths": {
+    "/plan/preview": {
+      "post": {
+        "tags": [
+          "plan"
+        ],
+        "summary": "Generate multi-day travel plan",
+        "description": "**ETAP 2 - Multi-Day Planning + Auth**\n    \n    Generates 1-5 day travel plan with POI uniqueness >70% across days.\n    \n    **Authentication:**\n    - Optional for backward compatibility (ETAP 1 tests)\n    - Recommended: Include Bearer token in Authorization header\n    - If authenticated: Plan is linked to user account\n    \n    **Features:**\n    - Multi-day planning (1-5 days supported)\n    - Cross-day POI uniqueness (>70%)\n    - Core POI rotation (Morskie Oko not always day 1)\n    - Energy system (day 1 = heavy hiking OK, later days lighter)\n    - Budget penalties for premium POI (termy)\n    - Version #1 auto-saved to database\n    \n    **Example Request:**\n    ```json\n    {\n        \"location\": {\"city\": \"Zakopane\", \"country\": \"Poland\", \"region_type\": \"mountain\"},\n        \"group\": {\"type\": \"couples\", \"size\": 2, \"crowd_tolerance\": 1},\n        \"trip_length\": {\"days\": 5, \"start_date\": \"2026-03-15\"},\n        \"daily_time_window\": {\"start\": \"09:00\", \"end\": \"19:00\"},\n        \"budget\": {\"level\": 2},\n        \"transport_modes\": [\"car\"],\n        \"travel_style\": \"balanced\"\n    }\n    ```\n    \n    **Response:** PlanResponse with 5 days, ~28 POI, 71.4% uniqueness\n    \n    **Error Codes:**\n    - 400: Invalid trip_input (validation failed)\n    - 401: Invalid/expired authentication token (if provided)\n    - 500: Plan generation failed",
+        "operationId": "preview_plan_plan_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TripInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/plan/{plan_id}/status": {
+      "get": {
+        "tags": [
+          "plan"
+        ],
+        "summary": "Get Plan Status",
+        "description": "Sprawdza status planu (polling endpoint).\n\nStatusy:\n- pending: plan w trakcie generowania\n- ready: plan gotowy\n- failed: blad generowania\n- payment_required: wymaga platnosci (ETAP 2)",
+        "operationId": "get_plan_status_plan__plan_id__status_get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/plan/{plan_id}": {
+      "get": {
+        "tags": [
+          "plan"
+        ],
+        "summary": "Get Full Plan",
+        "description": "Zwraca pelny wygenerowany plan.\n\nETAP 1: Bez walidacji platnosci.\nETAP 2: Tylko po oplaceniu.",
+        "operationId": "get_full_plan_plan__plan_id__get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/plan/{plan_id}/versions": {
+      "get": {
+        "tags": [
+          "plan"
+        ],
+        "summary": "List Plan Versions",
+        "description": "Lists all versions of a plan (metadata only).\n\nReturns version history sorted by version_number DESC.\nEach version includes: version_number, created_at, change_type,\nchange_summary.\n\nETAP 2: Version tracking for edit history and rollback.",
+        "operationId": "list_plan_versions_plan__plan_id__versions_get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  },
+                  "title": "Response List Plan Versions Plan  Plan Id  Versions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/plan/{plan_id}/versions/{version_number}": {
+      "get": {
+        "tags": [
+          "plan"
+        ],
+        "summary": "Get Plan Version",
+        "description": "Gets full snapshot of a specific version (including days_json).\n\nUse this to preview what the plan looked like at a specific version.\nUseful before rollback to confirm target version.\n\nETAP 2: Version history with full snapshot.",
+        "operationId": "get_plan_version_plan__plan_id__versions__version_number__get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "version_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Version Number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Get Plan Version Plan  Plan Id  Versions  Version Number  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/plan/{plan_id}/rollback": {
+      "post": {
+        "tags": [
+          "plan"
+        ],
+        "summary": "Rollback Plan",
+        "description": "Rolls back plan to a previous version.\n\nLogic:\n1. Fetch target version snapshot\n2. Create new version with change_type='rollback'\n3. Copy days_json from target version to new version\n4. Update Plan.updated_at\n\nThis creates a NEW version (doesn't delete newer versions).\nExample: If plan has versions [1, 2, 3] and you rollback to 2,\nresult is [1, 2, 3, 4] where 4 is copy of 2.\n\nETAP 2: Rollback with version lineage tracking.",
+        "operationId": "rollback_plan_plan__plan_id__rollback_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Rollback Plan Plan  Plan Id  Rollback Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/plan/{plan_id}/days/{day_number}/remove": {
+      "post": {
+        "tags": [
+          "plan"
+        ],
+        "summary": "Remove POI from day plan",
+        "description": "**ETAP 2 - Remove POI with Gap Fill**\n    \n    Removes attraction from day plan, fills gap with new POI, recalculates times.\n    \n    **Logic:**\n    1. Find target attraction by poi_id\n    2. Remove item + adjacent transits\n    3. Calculate gap (start_time, duration)\n    4. Score available POI for gap fill (time fit, category, group match)\n    5. Insert best POI with transit\n    6. Reflow all times in day\n    7. Create new version (change_type='remove_item')\n    \n    **Example Request:**\n    ```json\n    {\n        \"item_id\": \"poi_30\",\n        \"avoid_cooldown_hours\": 24\n    }\n    ```\n    \n    **Result:** POI removed, gap filled (if possible), times recalculated, new version created\n    \n    **Error Codes:**\n    - 404: Plan not found\n    - 400: Invalid day_number or item_id not found\n    - 500: Remove operation failed",
+        "operationId": "remove_item_from_day_plan__plan_id__days__day_number__remove_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "day_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Day Number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoveItemRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/plan/{plan_id}/days/{day_number}/replace": {
+      "post": {
+        "tags": [
+          "plan"
+        ],
+        "summary": "Replace POI with similar attraction",
+        "description": "**ETAP 2 - SMART_REPLACE Strategy**\n    \n    Replaces attraction with best matching POI using similarity scoring.\n    \n    **Scoring algorithm:**\n    - Category match: +50 points (same category = wielka_krokiew → wielka_krokiew)\n    - Duration similarity: -(abs difference in minutes)\n    - Target group match: +30 points\n    - Same subcategory: +20 points\n    - Cost similarity: -(abs difference in PLN)\n    \n    **Logic:**\n    1. Find target POI to replace\n    2. Score all available POI (exclude already used)\n    3. Select top scoring candidate\n    4. Replace POI in place\n    5. Recalculate times (preserve structure)\n    6. Create new version (change_type='replace_item')\n    \n    **Example Request:**\n    ```json\n    {\n        \"item_id\": \"poi_20\",\n        \"strategy\": \"SMART_REPLACE\",\n        \"preferences\": {}\n    }\n    ```\n    \n    **Result:** POI replaced with similar attraction, times recalculated, new version created\n    \n    **Error Codes:**\n    - 404: Plan not found\n    - 400: Invalid day_number or item_id not found\n    - 500: Replace operation failed",
+        "operationId": "replace_item_in_day_plan__plan_id__days__day_number__replace_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "day_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Day Number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplaceItemRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/plan/{plan_id}/days/{day_number}/regenerate": {
+      "post": {
+        "tags": [
+          "plan"
+        ],
+        "summary": "Regenerate Time Range In Day",
+        "description": "Regenerate time range in day plan with pinned items.\n\nETAP 2 - DAY 8 (19.02.2026)\n\nRegenerates POIs in specified time range while keeping pinned items locked.\n\n**Flow:**\n1. Load current plan\n2. Extract items in time range (from_time to to_time)\n3. Keep pinned items locked\n4. Remove unpinned attractions\n5. Re-run mini planning for available slots\n6. Merge before + regenerated + after\n7. Recalculate all times (full reflow)\n8. Save as new version\n9. Return updated plan\n\n**Example:**\n```json\n{\n    \"from_time\": \"14:00\",\n    \"to_time\": \"17:00\",\n    \"pinned_items\": [\"poi_10\"]\n}\n```\n\n**Result:**\n- All attractions in 14:00-17:00 replaced\n- Except poi_10 (pinned, stays in place)\n- New POIs selected based on scoring\n- Times recalculated for entire day\n- New version created (change_type=\"regenerate_range\")",
+        "operationId": "regenerate_time_range_in_day_plan__plan_id__days__day_number__regenerate_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "day_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Day Number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegenerateRangeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/plan/claim-guest-plans": {
+      "post": {
+        "tags": [
+          "plan"
+        ],
+        "summary": "Claim Guest Plans",
+        "description": "Transfer guest plans to authenticated user (ETAP 2).\n\nFlow:\n1. User creates plans as guest (no auth) → stored with user_id=NULL\n2. User signs up / logs in\n3. Frontend calls this endpoint with guest_id from localStorage\n4. Backend transfers all guest plans to authenticated user_id\n\nArgs:\n    request: Contains guest_id (UUID string)\n    current_user: Authenticated user from JWT (get_current_user dependency)\n    plan_repo: Plan repository\n    \nReturns:\n    {\n        \"success\": true,\n        \"transferred_plans\": 3,\n        \"user_id\": \"uuid\"\n    }\n    \nRaises:\n    401: If not authenticated (get_current_user raises HTTPException)\n    500: Database error",
+        "operationId": "claim_guest_plans_plan_claim_guest_plans_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimGuestPlansRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/plan/my-plans": {
+      "get": {
+        "tags": [
+          "plan"
+        ],
+        "summary": "Get My Plans",
+        "description": "Get all plans for authenticated user (ETAP 2).\n\nReturns list of user's plans with metadata.\nFrontend can use this for user dashboard / \"My Plans\" page.\n\nArgs:\n    current_user: Authenticated user from JWT\n    plan_repo: Plan repository\n    \nReturns:\n    {\n        \"plans\": [\n            {\n                \"plan_id\": \"uuid\",\n                \"location\": \"Kraków\",\n                \"days_count\": 3,\n                \"created_at\": \"2025-01-30T12:00:00\",\n                \"updated_at\": \"2025-01-30T14:30:00\"\n            },\n            ...\n        ],\n        \"total_count\": 5\n    }\n    \nRaises:\n    401: If not authenticated\n    500: Database error",
+        "operationId": "get_my_plans_plan_my_plans_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/payment/create-checkout-session": {
+      "post": {
+        "tags": [
+          "payment"
+        ],
+        "summary": "Create Checkout Session",
+        "description": "Create Stripe Checkout Session for plan payment.\n\nFlow:\n1. Verify plan exists and belongs to user\n2. Create Stripe Checkout Session (real API call)\n3. Save PaymentSession in database\n4. Return checkout URL for frontend redirect\n\nSecurity:\n- Requires valid JWT token (get_current_user)\n- User can only pay for their own plans\n\nExample:\n    POST /payment/create-checkout-session\n    Authorization: Bearer <jwt_token>\n    {\n        \"plan_id\": \"123e4567-e89b-12d3-a456-426614174000\",\n        \"success_url\": \"http://localhost:3000/payment/success\",\n        \"cancel_url\": \"http://localhost:3000/payment/cancel\"\n    }\n    \n    Response:\n    {\n        \"session_id\": \"cs_test_...\",\n        \"checkout_url\": \"https://checkout.stripe.com/c/pay/cs_test_...\",\n        \"amount\": 3999,\n        \"currency\": \"pln\",\n        \"expires_at\": \"2026-02-25T12:00:00\"\n    }",
+        "operationId": "create_checkout_session_payment_create_checkout_session_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCheckoutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutSessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/payment/stripe/webhook": {
+      "post": {
+        "tags": [
+          "payment"
+        ],
+        "summary": "Stripe Webhook",
+        "description": "Stripe webhook endpoint - handles payment events.\n\nEvents handled:\n- checkout.session.completed: Payment succeeded → update PaymentSession, create Transaction\n- checkout.session.expired: Session expired → update PaymentSession status\n- payment_intent.succeeded: Confirm payment succeeded → update Transaction status\n\nSecurity:\n- Validates Stripe signature (HMAC)\n- Prevents replay attacks\n- Only processes events from Stripe\n\nConfiguration:\n1. In Stripe Dashboard → Developers → Webhooks\n2. Add endpoint: https://your-domain.com/payment/stripe/webhook\n3. Select events: checkout.session.completed, checkout.session.expired, payment_intent.succeeded\n4. Copy webhook secret to STRIPE_WEBHOOK_SECRET in .env\n\nTesting locally:\n```bash\nstripe listen --forward-to http://localhost:8000/payment/stripe/webhook\nstripe trigger checkout.session.completed\n```",
+        "operationId": "stripe_webhook_payment_stripe_webhook_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payment/session/{session_id}/status": {
+      "get": {
+        "tags": [
+          "payment"
+        ],
+        "summary": "Get Session Status",
+        "description": "Get payment session status.\n\nUsed by frontend to check if payment completed after redirect from Stripe.\n\nExample:\n    GET /payment/session/cs_test_abc123/status\n    Authorization: Bearer <jwt_token>\n    \n    Response:\n    {\n        \"session_id\": \"cs_test_abc123\",\n        \"status\": \"completed\",\n        \"amount\": 3999,\n        \"currency\": \"PLN\",\n        \"created_at\": \"2026-02-24T10:00:00\",\n        \"expires_at\": \"2026-02-25T10:00:00\",\n        \"completed_at\": \"2026-02-24T10:05:00\"\n    }",
+        "operationId": "get_session_status_payment_session__session_id__status_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/content/home": {
+      "get": {
+        "tags": [
+          "content"
+        ],
+        "summary": "Get Home Content",
+        "description": "Zwraca content dla home screen - 8 popularnych kierunkow.\n\nETAP 1: Data z destinations.json (4.13).\nETAP 2: Prawdziwe dane z bazy + realne zdjecia.\n\nNote: image_key to relatywna sciezka (np. \"destination_zakopane.jpg\"),\nnie pelny URL. Frontend sam sklada pelny URL.",
+        "operationId": "get_home_content_content_home_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HomeContentResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/poi/{poi_id}": {
+      "get": {
+        "tags": [
+          "poi"
+        ],
+        "summary": "Get Poi Details",
+        "description": "Zwraca pelne szczegoly POI z image_key.\n\nFrontend dostaje poi_id z AttractionItem w planie,\npotem fetchuje pelne dane z tego endpointu.\n\nETAP 1: Zwraca dane z Excel (przez POI repository).\nETAP 2: Zwraca z PostgreSQL + cache.\n\nResponse zawiera:\n- Wszystkie pola POI (nazwa, opis, ocena, ceny, etc)\n- image_key: relatywna sciezka do zdjecia (np. \"poi/poi_123.jpg\")\n- Placeholder images w ETAP 1, realne w ETAP 2",
+        "operationId": "get_poi_details_poi__poi_id__get",
+        "parameters": [
+          {
+            "name": "poi_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Poi Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health Check",
+        "description": "Health check endpoint for deployment monitoring.\n\nETAP 2: Includes database connectivity check.",
+        "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/reload-poi": {
+      "post": {
+        "summary": "Admin Reload Poi",
+        "description": "Admin endpoint to manually reload POI data from Excel.",
+        "operationId": "admin_reload_poi_admin_reload_poi_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/": {
+      "get": {
+        "summary": "Root",
+        "description": "Root endpoint with API info.",
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AttractionItem": {
+        "properties": {
+          "type": {
+            "const": "attraction",
+            "title": "Type",
+            "default": "attraction"
+          },
+          "poi_id": {
+            "type": "string",
+            "title": "Poi Id",
+            "description": "ID z bazy POI"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Nazwa atrakcji"
+          },
+          "start_time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "Start Time"
+          },
+          "end_time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "End Time"
+          },
+          "duration_min": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Duration Min",
+            "description": "Czas wizyty"
+          },
+          "description_short": {
+            "type": "string",
+            "title": "Description Short",
+            "description": "Krótki opis"
+          },
+          "lat": {
+            "type": "number",
+            "title": "Lat",
+            "description": "Szerokość geograficzna"
+          },
+          "lng": {
+            "type": "number",
+            "title": "Lng",
+            "description": "Długość geograficzna"
+          },
+          "address": {
+            "type": "string",
+            "title": "Address",
+            "description": "Adres atrakcji"
+          },
+          "cost_estimate": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Cost Estimate",
+            "description": "Total cost for the entire group (not per person)"
+          },
+          "cost_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Note",
+            "description": "Explanation of cost (e.g., 'Total for your group of 4 people')"
+          },
+          "ticket_info": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TicketInfo"
+              }
+            ],
+            "description": "Info o cenach"
+          },
+          "parking": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ParkingInfo"
+              }
+            ],
+            "description": "Parking (powtarza się dla każdej atrakcji)"
+          },
+          "pro_tip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pro Tip",
+            "description": "Pro tip z bazy POI (jeśli dostępne)"
+          },
+          "why_selected": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Why Selected",
+            "description": "Top 3 reasons why this POI was selected (natural language)"
+          },
+          "quality_badges": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Quality Badges",
+            "description": "Quality badges (must_see, perfect_timing, weather_resistant, etc.)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "poi_id",
+          "name",
+          "start_time",
+          "end_time",
+          "duration_min",
+          "description_short",
+          "lat",
+          "lng",
+          "address",
+          "cost_estimate",
+          "ticket_info",
+          "parking"
+        ],
+        "title": "AttractionItem",
+        "description": "Atrakcja z pełnymi danymi POI.\nFrontend NIE fetchuje danych po poi_id - plan to kompletny snapshot."
+      },
+      "BudgetInput": {
+        "properties": {
+          "level": {
+            "type": "integer",
+            "maximum": 3.0,
+            "minimum": 1.0,
+            "title": "Level",
+            "description": "Poziom budżetu: 1=cheap, 2=medium, 3=expensive",
+            "default": 2
+          },
+          "daily_limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Limit",
+            "description": "Opcjonalny dzienny limit w PLN"
+          }
+        },
+        "type": "object",
+        "title": "BudgetInput",
+        "description": "Budżet użytkownika."
+      },
+      "CheckoutSessionResponse": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "checkout_url": {
+            "type": "string",
+            "title": "Checkout Url"
+          },
+          "amount": {
+            "type": "integer",
+            "title": "Amount"
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency"
+          },
+          "expires_at": {
+            "type": "string",
+            "title": "Expires At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "checkout_url",
+          "amount",
+          "currency",
+          "expires_at"
+        ],
+        "title": "CheckoutSessionResponse",
+        "description": "Response with Stripe Checkout URL."
+      },
+      "ClaimGuestPlansRequest": {
+        "properties": {
+          "guest_id": {
+            "type": "string",
+            "title": "Guest Id",
+            "description": "Guest UUID from frontend localStorage"
+          }
+        },
+        "type": "object",
+        "required": [
+          "guest_id"
+        ],
+        "title": "ClaimGuestPlansRequest",
+        "description": "Request body for /claim-guest-plans endpoint."
+      },
+      "CreateCheckoutRequest": {
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "title": "Plan Id"
+          },
+          "success_url": {
+            "type": "string",
+            "title": "Success Url"
+          },
+          "cancel_url": {
+            "type": "string",
+            "title": "Cancel Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "plan_id",
+          "success_url",
+          "cancel_url"
+        ],
+        "title": "CreateCheckoutRequest",
+        "description": "Request to create Stripe checkout session."
+      },
+      "DailyTimeWindow": {
+        "properties": {
+          "start": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "Start",
+            "description": "Godzina startu dnia HH:MM",
+            "default": "09:00"
+          },
+          "end": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "End",
+            "description": "Godzina końca dnia HH:MM",
+            "default": "19:00"
+          }
+        },
+        "type": "object",
+        "title": "DailyTimeWindow",
+        "description": "Okno czasowe dla każdego dnia podróży."
+      },
+      "DayEndItem": {
+        "properties": {
+          "type": {
+            "const": "day_end",
+            "title": "Type",
+            "default": "day_end"
+          },
+          "time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "Time",
+            "description": "Godzina końca dnia HH:MM"
+          }
+        },
+        "type": "object",
+        "required": [
+          "time"
+        ],
+        "title": "DayEndItem",
+        "description": "Marker końca dnia (nie aktywność).\nMa tylko `time`, nie start_time/end_time."
+      },
+      "DayPlan": {
+        "properties": {
+          "day": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Day",
+            "description": "Numer dnia (1-indexed)"
+          },
+          "items": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DayStartItem"
+                },
+                {
+                  "$ref": "#/components/schemas/DayEndItem"
+                },
+                {
+                  "$ref": "#/components/schemas/ParkingItem"
+                },
+                {
+                  "$ref": "#/components/schemas/TransitItem"
+                },
+                {
+                  "$ref": "#/components/schemas/AttractionItem"
+                },
+                {
+                  "$ref": "#/components/schemas/LunchBreakItem"
+                },
+                {
+                  "$ref": "#/components/schemas/DinnerBreakItem"
+                },
+                {
+                  "$ref": "#/components/schemas/FreeTimeItem"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "Lista items (7 typów)"
+          },
+          "quality_badges": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Quality Badges",
+            "description": "Quality badges for the day (has_must_see, good_variety, realistic_timing, balanced_intensity)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "day"
+        ],
+        "title": "DayPlan",
+        "description": "Plan dla pojedynczego dnia.",
+        "example": {
+          "day": 1,
+          "items": [
+            {
+              "time": "09:00",
+              "type": "day_start"
+            },
+            {
+              "address": "Jagiellońska 1, Zakopane",
+              "end_time": "09:15",
+              "lat": 49.505,
+              "lng": 20.088,
+              "name": "Parking przy Termach",
+              "parking_type": "paid",
+              "start_time": "09:00",
+              "type": "parking",
+              "walk_time_min": 2
+            },
+            {
+              "duration_min": 5,
+              "end_time": "09:20",
+              "from": "Parking przy Termach",
+              "mode": "walk",
+              "start_time": "09:15",
+              "to": "Muzeum Oscypka",
+              "type": "transit"
+            },
+            {
+              "time": "19:00",
+              "type": "day_end"
+            }
+          ]
+        }
+      },
+      "DayStartItem": {
+        "properties": {
+          "type": {
+            "const": "day_start",
+            "title": "Type",
+            "default": "day_start"
+          },
+          "time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "Time",
+            "description": "Godzina startu dnia HH:MM"
+          }
+        },
+        "type": "object",
+        "required": [
+          "time"
+        ],
+        "title": "DayStartItem",
+        "description": "Marker początku dnia (nie aktywność).\nMa tylko `time`, nie start_time/end_time."
+      },
+      "DestinationItem": {
+        "properties": {
+          "destination_id": {
+            "type": "string",
+            "title": "Destination Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "country": {
+            "type": "string",
+            "title": "Country"
+          },
+          "region_type": {
+            "type": "string",
+            "title": "Region Type"
+          },
+          "image_key": {
+            "type": "string",
+            "title": "Image Key"
+          },
+          "description_short": {
+            "type": "string",
+            "title": "Description Short"
+          }
+        },
+        "type": "object",
+        "required": [
+          "destination_id",
+          "name",
+          "country",
+          "region_type",
+          "image_key",
+          "description_short"
+        ],
+        "title": "DestinationItem",
+        "description": "Pojedynczy kierunek podrozy z home screen."
+      },
+      "DinnerBreakItem": {
+        "properties": {
+          "type": {
+            "const": "dinner_break",
+            "title": "Type",
+            "default": "dinner_break"
+          },
+          "start_time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "Start Time"
+          },
+          "end_time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "End Time"
+          },
+          "duration_min": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Duration Min",
+            "description": "Czas przerwy"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "Etykieta",
+            "default": "Kolacja / regionalne smaki"
+          },
+          "suggestions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Suggestions",
+            "description": "Backend generuje (ETAP 1: statyczne teksty)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "start_time",
+          "end_time",
+          "duration_min"
+        ],
+        "title": "DinnerBreakItem",
+        "description": "Przerwa na kolację - 18:00-19:30 (jeśli jest czas w dniu).\nBackend generuje suggestions z naciskiem na regionalne jedzenie."
+      },
+      "FreeTimeItem": {
+        "properties": {
+          "type": {
+            "const": "free_time",
+            "title": "Type",
+            "default": "free_time"
+          },
+          "start_time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "Start Time"
+          },
+          "end_time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "End Time"
+          },
+          "duration_min": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Duration Min",
+            "description": "Czas wolny"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "Backend customizuje: 'Przerwa przed kolejną atrakcją'"
+          }
+        },
+        "type": "object",
+        "required": [
+          "start_time",
+          "end_time",
+          "duration_min",
+          "label"
+        ],
+        "title": "FreeTimeItem",
+        "description": "Wolny czas między atrakcjami.\nBackend customizuje label kontekstowo."
+      },
+      "GroupInput": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "description": "Typ grupy: solo, couples, friends, family_kids, seniors"
+          },
+          "size": {
+            "type": "integer",
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Size",
+            "description": "Liczba osób",
+            "default": 1
+          },
+          "children_age": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 18.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Children Age",
+            "description": "Wiek dziecka jeśli family_kids"
+          },
+          "crowd_tolerance": {
+            "type": "integer",
+            "maximum": 3.0,
+            "minimum": 0.0,
+            "title": "Crowd Tolerance",
+            "description": "Tolerancja na tłumy: 0=low, 3=high",
+            "default": 1
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "GroupInput",
+        "description": "Informacje o grupie podróżującej."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HomeContentResponse": {
+        "properties": {
+          "destinations": {
+            "items": {
+              "$ref": "#/components/schemas/DestinationItem"
+            },
+            "type": "array",
+            "title": "Destinations"
+          },
+          "featured_count": {
+            "type": "integer",
+            "title": "Featured Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "destinations",
+          "featured_count"
+        ],
+        "title": "HomeContentResponse",
+        "description": "Response dla home screen - 8 popularnych kierunkow."
+      },
+      "LocationInput": {
+        "properties": {
+          "city": {
+            "type": "string",
+            "minLength": 1,
+            "title": "City",
+            "description": "Miasto docelowe"
+          },
+          "country": {
+            "type": "string",
+            "title": "Country",
+            "description": "Kraj",
+            "default": "Poland"
+          },
+          "region_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region Type",
+            "description": "Typ regionu: mountain, sea, city"
+          }
+        },
+        "type": "object",
+        "required": [
+          "city"
+        ],
+        "title": "LocationInput",
+        "description": "Lokalizacja podróży."
+      },
+      "LunchBreakItem": {
+        "properties": {
+          "type": {
+            "const": "lunch_break",
+            "title": "Type",
+            "default": "lunch_break"
+          },
+          "start_time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "Start Time"
+          },
+          "end_time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "End Time"
+          },
+          "duration_min": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Duration Min",
+            "description": "Czas przerwy"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "Etykieta",
+            "default": "Lunch / przerwa regeneracyjna"
+          },
+          "suggestions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Suggestions",
+            "description": "Backend generuje (ETAP 1: statyczne teksty)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "start_time",
+          "end_time",
+          "duration_min"
+        ],
+        "title": "LunchBreakItem",
+        "description": "Przerwa na lunch - ZAWSZE 12:00-13:30.\nBackend generuje suggestions (ETAP 1: generyczne)."
+      },
+      "ParkingInfo": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Nazwa parkingu"
+          },
+          "walk_time_min": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Walk Time Min",
+            "description": "Czas spaceru do atrakcji w minutach"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "walk_time_min"
+        ],
+        "title": "ParkingInfo",
+        "description": "Parking info zagnieżdżony w attraction.\nKażda atrakcja ma własny parking object (powtarzający się celowo)."
+      },
+      "ParkingItem": {
+        "properties": {
+          "type": {
+            "const": "parking",
+            "title": "Type",
+            "default": "parking"
+          },
+          "start_time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "Start Time"
+          },
+          "end_time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "End Time"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Nazwa parkingu"
+          },
+          "address": {
+            "type": "string",
+            "title": "Address",
+            "description": "Adres parkingu"
+          },
+          "lat": {
+            "type": "number",
+            "title": "Lat",
+            "description": "Szerokość geograficzna"
+          },
+          "lng": {
+            "type": "number",
+            "title": "Lng",
+            "description": "Długość geograficzna"
+          },
+          "parking_type": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ParkingType"
+              }
+            ],
+            "description": "Typ: paid/free"
+          },
+          "walk_time_min": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Walk Time Min",
+            "description": "Czas spaceru DO pierwszej atrakcji"
+          }
+        },
+        "type": "object",
+        "required": [
+          "start_time",
+          "end_time",
+          "name",
+          "address",
+          "lat",
+          "lng",
+          "parking_type",
+          "walk_time_min"
+        ],
+        "title": "ParkingItem",
+        "description": "Parking na początku dnia (jeśli transport_modes=car)."
+      },
+      "ParkingType": {
+        "type": "string",
+        "enum": [
+          "paid",
+          "free"
+        ],
+        "title": "ParkingType",
+        "description": "Typy parkingu."
+      },
+      "PlanResponse": {
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "title": "Plan Id",
+            "description": "Unikalny ID planu"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version",
+            "description": "Wersja planu",
+            "default": 1
+          },
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/DayPlan"
+            },
+            "type": "array",
+            "title": "Days",
+            "description": "Lista dni z items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "plan_id"
+        ],
+        "title": "PlanResponse",
+        "description": "Główny response dla planu podróży.\nZgodny z plan_example_full_day_v1.json + wyjaśnienia klientki.",
+        "example": {
+          "days": [
+            {
+              "day": 1,
+              "items": [
+                {
+                  "time": "09:00",
+                  "type": "day_start"
+                },
+                {
+                  "time": "19:00",
+                  "type": "day_end"
+                }
+              ]
+            }
+          ],
+          "plan_id": "plan_20260125_abc123",
+          "version": 1
+        }
+      },
+      "RegenerateRangeRequest": {
+        "properties": {
+          "from_time": {
+            "type": "string",
+            "title": "From Time",
+            "description": "Start time HH:MM"
+          },
+          "to_time": {
+            "type": "string",
+            "title": "To Time",
+            "description": "End time HH:MM"
+          },
+          "pinned_items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Pinned Items",
+            "description": "POI IDs to keep (locked)",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "from_time",
+          "to_time"
+        ],
+        "title": "RegenerateRangeRequest",
+        "description": "Request to regenerate time range with pinned items."
+      },
+      "RemoveItemRequest": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "title": "Item Id"
+          },
+          "avoid_cooldown_hours": {
+            "type": "integer",
+            "title": "Avoid Cooldown Hours",
+            "default": 24
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id"
+        ],
+        "title": "RemoveItemRequest",
+        "description": "Request model for removing an item from a day plan."
+      },
+      "ReplaceItemRequest": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "title": "Item Id"
+          },
+          "strategy": {
+            "type": "string",
+            "title": "Strategy",
+            "default": "SMART_REPLACE"
+          },
+          "preferences": {
+            "type": "object",
+            "title": "Preferences",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id"
+        ],
+        "title": "ReplaceItemRequest",
+        "description": "Request model for replacing an item in a day plan."
+      },
+      "RollbackRequest": {
+        "properties": {
+          "target_version": {
+            "type": "integer",
+            "title": "Target Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "target_version"
+        ],
+        "title": "RollbackRequest",
+        "description": "Request model for rollback endpoint."
+      },
+      "SessionStatusResponse": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "amount": {
+            "type": "integer",
+            "title": "Amount"
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "expires_at": {
+            "type": "string",
+            "title": "Expires At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "status",
+          "amount",
+          "currency",
+          "created_at",
+          "expires_at",
+          "completed_at"
+        ],
+        "title": "SessionStatusResponse",
+        "description": "Payment session status."
+      },
+      "TicketInfo": {
+        "properties": {
+          "ticket_normal": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Ticket Normal",
+            "description": "Cena biletu normalnego"
+          },
+          "ticket_reduced": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Ticket Reduced",
+            "description": "Cena biletu ulgowego"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ticket_normal",
+          "ticket_reduced"
+        ],
+        "title": "TicketInfo",
+        "description": "Informacje o cenach biletów."
+      },
+      "TransitItem": {
+        "properties": {
+          "type": {
+            "const": "transit",
+            "title": "Type",
+            "default": "transit"
+          },
+          "start_time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "Start Time"
+          },
+          "end_time": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):([0-5]\\d)$",
+            "title": "End Time"
+          },
+          "duration_min": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Duration Min",
+            "description": "Czas przejazdu"
+          },
+          "mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TransitMode"
+              }
+            ],
+            "description": "walk/car/public_transport"
+          },
+          "from": {
+            "type": "string",
+            "title": "From",
+            "description": "Skąd"
+          },
+          "to": {
+            "type": "string",
+            "title": "To",
+            "description": "Dokąd"
+          }
+        },
+        "type": "object",
+        "required": [
+          "start_time",
+          "end_time",
+          "duration_min",
+          "mode",
+          "from",
+          "to"
+        ],
+        "title": "TransitItem",
+        "description": "Przejazd/spacer między lokalizacjami."
+      },
+      "TransitMode": {
+        "type": "string",
+        "enum": [
+          "walk",
+          "car",
+          "public_transport"
+        ],
+        "title": "TransitMode",
+        "description": "Tryby transportu."
+      },
+      "TripInput": {
+        "properties": {
+          "location": {
+            "$ref": "#/components/schemas/LocationInput"
+          },
+          "group": {
+            "$ref": "#/components/schemas/GroupInput"
+          },
+          "trip_length": {
+            "$ref": "#/components/schemas/TripLengthInput"
+          },
+          "daily_time_window": {
+            "$ref": "#/components/schemas/DailyTimeWindow"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/BudgetInput"
+          },
+          "transport_modes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Transport Modes",
+            "description": "Środki transportu: walk, car, public_transport",
+            "default": [
+              "car"
+            ]
+          },
+          "preferences": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Preferences",
+            "description": "Preferencje użytkownika (tags, typy atrakcji)"
+          },
+          "travel_style": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Travel Style",
+            "description": "Styl podróży: cultural, adventure, relax, balanced"
+          }
+        },
+        "type": "object",
+        "required": [
+          "location",
+          "group",
+          "trip_length",
+          "daily_time_window",
+          "budget"
+        ],
+        "title": "TripInput",
+        "description": "Główny model wejściowy dla generowania planu podróży.\nMapuje się na parametry engine.py poprzez adapter.",
+        "example": {
+          "budget": {
+            "daily_limit": 500,
+            "level": 2
+          },
+          "daily_time_window": {
+            "end": "19:00",
+            "start": "09:00"
+          },
+          "group": {
+            "children_age": 8,
+            "crowd_tolerance": 1,
+            "size": 4,
+            "type": "family_kids"
+          },
+          "location": {
+            "city": "Zakopane",
+            "country": "Poland",
+            "region_type": "mountain"
+          },
+          "preferences": [
+            "outdoor",
+            "family"
+          ],
+          "transport_modes": [
+            "car"
+          ],
+          "travel_style": "adventure",
+          "trip_length": {
+            "days": 3,
+            "start_date": "2026-02-15"
+          }
+        }
+      },
+      "TripLengthInput": {
+        "properties": {
+          "days": {
+            "type": "integer",
+            "maximum": 14.0,
+            "minimum": 1.0,
+            "title": "Days",
+            "description": "Liczba dni"
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Start Date",
+            "description": "Data rozpoczęcia YYYY-MM-DD"
+          }
+        },
+        "type": "object",
+        "required": [
+          "days",
+          "start_date"
+        ],
+        "title": "TripLengthInput",
+        "description": "Długość podróży."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

@@ -1,0 +1,74 @@
+Temat: RE: Płatność testowa - gdzie zobaczyć w Stripe
+
+Cześć! 🙂
+
+Rozumiem - jeśli "flow przeszedł" ale nie widzisz płatności, to najprawdopodobniej **checkout session został stworzony**, ale sama **płatność nie została dokończona** na stronie Stripe.
+
+## 🔍 Gdzie dokładnie sprawdzić:
+
+### 1️⃣ **Stripe Dashboard - PAYMENTS** (dokończone płatności)
+👉 **Link:** https://dashboard.stripe.com/test/payments
+
+**WAŻNE:** W prawym górnym rogu **MUSI być przełącznik "Viewing test data"** ✅
+- Jeśli jest "Viewing live data" → kliknij i zmień na "Test mode"
+- Inaczej nie zobaczysz testowych płatności!
+
+Tutaj zobaczysz płatności **TYLKO jeśli**:
+- ✅ Wpisałaś kartę `4242 4242 4242 4242` na stronie Stripe
+- ✅ Kliknęłaś "Pay" i płatność została potwierdzona
+
+### 2️⃣ **Stripe Dashboard - CHECKOUT SESSIONS** (wszystkie próby)
+👉 **Link:** https://dashboard.stripe.com/test/checkout/sessions
+
+Tutaj zobaczysz **WSZYSTKIE stworzone sesje**, nawet jeśli nie dokończyłaś płatności:
+- ✅ "complete" = płatność dokończona
+- ⚠️ "open" = sesja stworzona, ale nie dokończona (nie wpisałaś karty)
+- ⚠️ "expired" = sesja wygasła
+
+**To jest najlepsze miejsce żeby sprawdzić co się stało!**
+
+### 3️⃣ **Supabase - payment_sessions**
+👉 **Link:** https://supabase.com/dashboard/project/usztzcigcnsyyatguxay/editor/29565
+
+W Supabase pojawi się wpis **TYLKO jeśli**:
+- ✅ Dokończyłaś płatność na Stripe
+- ✅ Webhook został wywołany i zaktualizował status
+- ⚠️ Jeśli nie ma wpisu = płatność nie została dokończona
+
+---
+
+## 🎯 Co najprawdopodobniej się stało:
+
+Jeśli widzisz komunikat "płatność przeszła" w test_platnosci.html, to znaczy że:
+- ✅ Plan się stworzył
+- ✅ Checkout session się stworzył
+- ⚠️ **ALE** mogłaś nie dokończyć płatności na stronie Stripe (nie wpisać karty i kliknąć "Pay")
+
+**Sprawdź w:**
+1. https://dashboard.stripe.com/test/checkout/sessions ← tutaj zobaczysz wszystkie próby
+2. Znajdź najnowszą sesję i sprawdź status ("complete" czy "open")
+
+---
+
+## 💡 Jak przetestować znowu:
+
+1. Otwórz `test_platnosci.html`
+2. Wklej token JWT
+3. Kliknij "Rozpocznij Test Płatności"
+4. **WAŻNE:** Po przekierowaniu do Stripe:
+   - Wpisz kartę: `4242 4242 4242 4242`
+   - Data: dowolna przyszła (np. 12/30)
+   - CVC: dowolne 3 cyfry (np. 123)
+   - Kliknij **"Pay"** ← to jest kluczowy moment!
+5. Poczekaj aż wróci do aplikacji
+6. Sprawdź status
+
+Dopiero wtedy zobaczysz płatność w:
+- ✅ Stripe Dashboard → Payments
+- ✅ Supabase → payment_sessions
+
+---
+
+Daj znać co widzisz w Checkout Sessions! To pomoże zdiagnozować co się stało 🙂
+
+Pozdrawiam!

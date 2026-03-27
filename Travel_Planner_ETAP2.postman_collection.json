@@ -1,0 +1,470 @@
+{
+  "info": {
+    "name": "Travel Planner API - ETAP 2",
+    "_postman_id": "travel-planner-etap2-collection",
+    "description": "Complete API collection for Travel Planner ETAP 2 (Auth + Payment)\n\n**Staging URL:** https://travel-planner-backend-xbsp.onrender.com\n\n**Setup:**\n1. Set `{{baseUrl}}` variable to staging URL\n2. Get JWT token from Supabase and set `{{authToken}}` variable\n3. Run requests in order (Generate Plan → Create Payment → etc.)\n\n**Authentication:**\n- Most endpoints work without auth (backward compatible)\n- Payment endpoints require Bearer token\n- New endpoints (/claim-guest-plans, /my-plans) require auth",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://travel-planner-backend-xbsp.onrender.com",
+      "type": "string"
+    },
+    {
+      "key": "authToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "planId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "sessionId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Plan Management",
+      "item": [
+        {
+          "name": "Generate Plan (Multi-day)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const response = pm.response.json();",
+                  "    pm.collectionVariables.set('planId', response.plan_id);",
+                  "    console.log('Plan ID saved:', response.plan_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}",
+                "description": "Optional - include for user-linked plans",
+                "disabled": true
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"location\": \"Kraków\",\n  \"groupType\": \"couple\",\n  \"daysCount\": 3,\n  \"budget\": 2,\n  \"preferences\": {\n    \"pace\": \"relaxed\",\n    \"interests\": [\"culture\", \"food\"],\n    \"activityLevel\": \"moderate\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/plan/preview",
+              "host": ["{{baseUrl}}"],
+              "path": ["plan", "preview"]
+            },
+            "description": "Generate a new multi-day travel plan. Works with optional authentication.\n\nIf auth token provided:\n- Plan linked to user (user_id set)\n- Accessible via /my-plans\n\nWithout auth:\n- Guest plan (user_id = NULL)\n- Can be claimed later via /claim-guest-plans"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Plan",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/plan/{{planId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["plan", "{{planId}}"]
+            },
+            "description": "Retrieve full plan details including all days and activities."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Plan Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/plan/{{planId}}/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["plan", "{{planId}}", "status"]
+            },
+            "description": "Check plan generation status (ready, pending, failed)"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Plan Versions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/plan/{{planId}}/versions",
+              "host": ["{{baseUrl}}"],
+              "path": ["plan", "{{planId}}", "versions"]
+            },
+            "description": "Get version history for a plan (all edits/changes)"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Specific Version",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/plan/{{planId}}/versions/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["plan", "{{planId}}", "versions", "1"]
+            },
+            "description": "Retrieve a specific version of the plan"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Plan Editing",
+      "item": [
+        {
+          "name": "Remove Activity",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"activity_indices\": [2]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/plan/{{planId}}/days/1/remove",
+              "host": ["{{baseUrl}}"],
+              "path": ["plan", "{{planId}}", "days", "1", "remove"]
+            },
+            "description": "Remove one or more activities from a specific day.\n\nCreates new version automatically."
+          },
+          "response": []
+        },
+        {
+          "name": "Replace Activity",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"activity_index\": 1,\n  \"new_activity\": \"Sukiennice\",\n  \"replace_mode\": \"similar\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/plan/{{planId}}/days/1/replace",
+              "host": ["{{baseUrl}}"],
+              "path": ["plan", "{{planId}}", "days", "1", "replace"]
+            },
+            "description": "Replace an activity with a new one.\n\nreplace_mode:\n- 'similar' - find similar activity\n- 'exact' - use exact POI name"
+          },
+          "response": []
+        },
+        {
+          "name": "Regenerate Day Range",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"from_time\": \"14:00\",\n  \"to_time\": \"18:00\",\n  \"pinned_items\": [\"Wawel Castle\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/plan/{{planId}}/days/1/regenerate",
+              "host": ["{{baseUrl}}"],
+              "path": ["plan", "{{planId}}", "days", "1", "regenerate"]
+            },
+            "description": "Regenerate activities in a specific time range.\n\npinned_items: Activities to keep unchanged (optional)"
+          },
+          "response": []
+        },
+        {
+          "name": "Rollback to Version",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"target_version\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/plan/{{planId}}/rollback",
+              "host": ["{{baseUrl}}"],
+              "path": ["plan", "{{planId}}", "rollback"]
+            },
+            "description": "Rollback plan to a previous version"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Payment (ETAP 2)",
+      "item": [
+        {
+          "name": "Create Checkout Session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const response = pm.response.json();",
+                  "    pm.collectionVariables.set('sessionId', response.session_id);",
+                  "    console.log('Session ID saved:', response.session_id);",
+                  "    console.log('Checkout URL:', response.checkout_url);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{authToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"plan_id\": \"{{planId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/payment/create-checkout-session",
+              "host": ["{{baseUrl}}"],
+              "path": ["payment", "create-checkout-session"]
+            },
+            "description": "Create Stripe Checkout session for plan purchase.\n\n**Requires authentication!**\n\nReturns:\n- checkout_url: Stripe payment page URL\n- session_id: Use to check payment status\n\nTest card: 4242 4242 4242 4242"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Payment Status",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{authToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/payment/session/{{sessionId}}/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["payment", "session", "{{sessionId}}", "status"]
+            },
+            "description": "Check payment session status.\n\n**Requires authentication!**\n\npayment_status values:\n- 'pending': Awaiting payment\n- 'paid': Payment successful\n- 'unpaid': Payment failed\n- 'expired': Session expired (24h)\n\nPoll this endpoint every 3-5 seconds after Stripe redirect."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. User Management (ETAP 2)",
+      "item": [
+        {
+          "name": "Get My Plans",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{authToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/plan/my-plans",
+              "host": ["{{baseUrl}}"],
+              "path": ["plan", "my-plans"]
+            },
+            "description": "Get all plans for authenticated user.\n\n**Requires authentication!**\n\nReturns list of plans with metadata (no full day details).\n\nUse for \"My Plans\" dashboard page."
+          },
+          "response": []
+        },
+        {
+          "name": "Claim Guest Plans",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{authToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"guest_id\": \"b8e4d930-5e23-4f9b-8c4d-g2f3e9b6d8c8\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/plan/claim-guest-plans",
+              "host": ["{{baseUrl}}"],
+              "path": ["plan", "claim-guest-plans"]
+            },
+            "description": "Transfer guest plans to authenticated user.\n\n**Requires authentication!**\n\nFlow:\n1. Guest creates plans (no auth) → user_id = NULL\n2. Guest signs up/logs in\n3. Frontend calls this with guest_id from localStorage\n4. Backend transfers ownership\n\nReturns count of transferred plans."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "5. Content & POI",
+      "item": [
+        {
+          "name": "Get Home Content",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/content/home",
+              "host": ["{{baseUrl}}"],
+              "path": ["content", "home"]
+            },
+            "description": "Get homepage content (hero, features, testimonials)"
+          },
+          "response": []
+        },
+        {
+          "name": "Get POI Details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/poi/123",
+              "host": ["{{baseUrl}}"],
+              "path": ["poi", "123"]
+            },
+            "description": "Get detailed information about a Point of Interest"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "6. System",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Check API health and database connection"
+          },
+          "response": []
+        },
+        {
+          "name": "Root",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/",
+              "host": ["{{baseUrl}}"],
+              "path": [""]
+            },
+            "description": "Root endpoint - API info"
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{authToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          ""
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          ""
+        ]
+      }
+    }
+  ]
+}

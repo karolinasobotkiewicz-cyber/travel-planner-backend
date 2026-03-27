@@ -1,0 +1,73 @@
+Cześć Karolino!
+
+Rozumiem problem - w Supabase Dashboard nie ma bezpośredniego przycisku "Access Token" 😊
+
+---
+
+✅ ŁATWE ROZWIĄZANIE:
+
+Stworzyłem dla Ciebie prosty tool HTML:
+
+📄 **get_supabase_token.html**
+
+**Jak użyć (3 kroki):**
+
+1. **Stwórz testowego użytkownika w Supabase:**
+   - Wejdź: https://supabase.com/dashboard/project/usztzcigcnsyyatguxay/auth/users
+   - Kliknij "Add user" → "Create user"
+   - Email: test@travelplanner.pl (lub dowolny)
+   - Password: Test123456! (lub dowolne, ALE ZAPAMIĘTAJ!)
+   - Kliknij "Create user"
+
+2. **Otwórz get_supabase_token.html w przeglądarce**
+   - Double-click na plik
+   - Otworzy się ładna strona
+
+3. **Zaloguj się i pobierz token:**
+   - Wpisz email i hasło użytkownika
+   - Kliknij "Zaloguj i pobierz token"
+   - Token pojawi się w textbox
+   - Kliknij "Skopiuj token" 📋
+
+**Gotowe! 🎉**
+
+---
+
+🔹 **Jak użyć skopiowanego tokenu:**
+
+**Opcja A - test_platnosci.html:**
+1. Otwórz test_platnosci.html
+2. Wklej token w pole "JWT Token"
+3. Kliknij "Start Payment Test"
+
+**Opcja B - Postman:**
+1. W Postman → Authorization tab
+2. Type: Bearer Token
+3. Wklej token w pole "Token"
+
+---
+
+⚠️ **Ważne:**
+- Token ważny przez ~1 godzinę
+- Po wygaśnięciu po prostu wejdź znowu na get_supabase_token.html i pobierz nowy
+- Tylko 2 kliki: otwórz stronę → zaloguj się → skopiuj ✅
+
+---
+
+📂 **Zaktualizowana lista plików (8 dokumentów):**
+
+1. Travel_Planner_ETAP2.postman_collection.json
+2. ETAP2_SAMPLE_RESPONSES.md
+3. ETAP2_API_SPECIFICATION.json
+4. ETAP2_FRONTEND_INTEGRATION_GUIDE.md
+5. test_platnosci.html (do testowania płatności)
+6. **get_supabase_token.html** ⭐ (NOWY - do pobierania tokenu)
+7. JAK_TESTOWAC_PLATNOSCI.md
+8. ETAP2_COMPLETION_REPORT.md
+BONUS: ETAP2_DELIVERABLES_README.md
+
+---
+
+Teraz powinno być super łatwo! Daj znać jak działa 😊
+
+Pozdrawiam!

@@ -1,0 +1,26 @@
+Temat: RE: Błąd logowania - NAPRAWIONE ✅
+
+Cześć!
+
+Przepraszam za problem! 🙏 Teraz już działa.
+
+**Co było nie tak:**
+W pliku był **stary klucz do Supabase** który już wygasł. Zaktualizowałem do aktualnego klucza.
+
+**Co teraz zrobić:**
+1. **Odśwież stronę** (Ctrl + F5 lub F5)
+2. Wpisz email i hasło
+3. Kliknij "Zaloguj i pobierz token"
+
+Teraz powinno działać - po kliknięciu zobaczysz:
+- ⚙️ Wirujący spinner
+- ✅ Zielone pole z tokenem
+- 📋 Przycisk "Skopiuj token"
+
+**Jeśli dalej nie działa:**
+- Napisz mi - wygeneruję token ręcznie i wyślę Ci gotowy token do skopiowania.
+
+Przepraszam za kłopot! Powinna teraz być sprawa prosta 🙂
+
+Pozdrawiam,
+[Twoje imię]

@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pobierz Supabase Token</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .step {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .step-title {
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+        }
+        
+        input[type="email"],
+        input[type="password"] {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+            margin-bottom: 15px;
+        }
+        
+        input[type="email"]:focus,
+        input[type="password"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        button {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin-top: 10px;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .result {
+            display: none;
+            margin-top: 30px;
+            padding: 20px;
+            background: #e8f5e9;
+            border-radius: 10px;
+            border-left: 4px solid #4caf50;
+        }
+        
+        .result.show {
+            display: block;
+        }
+        
+        .result.error {
+            background: #ffebee;
+            border-left-color: #f44336;
+        }
+        
+        .result h3 {
+            color: #2e7d32;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .result.error h3 {
+            color: #c62828;
+        }
+        
+        textarea {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #4caf50;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            resize: vertical;
+            min-height: 150px;
+            margin-bottom: 10px;
+        }
+        
+        .copy-btn {
+            background: #4caf50;
+            padding: 10px 20px;
+            width: auto;
+            margin-top: 10px;
+        }
+        
+        .copy-btn:hover {
+            box-shadow: 0 5px 20px rgba(76, 175, 80, 0.4);
+        }
+        
+        .info {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border-left: 4px solid #2196f3;
+            font-size: 14px;
+            color: #1565c0;
+        }
+        
+        .info strong {
+            display: block;
+            margin-bottom: 5px;
+        }
+        
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            margin-left: 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .token-info {
+            margin-top: 15px;
+            padding: 10px;
+            background: white;
+            border-radius: 5px;
+            font-size: 13px;
+            color: #666;
+        }
+        
+        .token-info strong {
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔑 Pobierz Supabase Access Token</h1>
+        <p class="subtitle">Prosty sposób na uzyskanie JWT tokenu do testowania API</p>
+        
+        <div class="info">
+            <strong>ℹ️ Jak to działa:</strong>
+            Podaj email i hasło testowego użytkownika. Po zalogowaniu pokażę Ci Access Token (JWT), który możesz skopiować i użyć w Postman lub test_platnosci.html
+        </div>
+        
+        <div class="step">
+            <div class="step-title">Krok 1: Stwórz testowego użytkownika</div>
+            <div style="font-size: 14px; color: #666;">
+                1. Wejdź na: <a href="https://supabase.com/dashboard/project/usztzcigcnsyyatguxay/auth/users" target="_blank">Supabase Dashboard → Authentication → Users</a><br>
+                2. Kliknij "Add user" → "Create user"<br>
+                3. Email: test@travelplanner.pl (lub dowolny)<br>
+                4. Password: Test123456! (lub dowolne, ale zapamiętaj!)<br>
+                5. Kliknij "Create user"
+            </div>
+        </div>
+        
+        <div class="step">
+            <div class="step-title">Krok 2: Zaloguj się i pobierz token</div>
+            
+            <label for="email">Email:</label>
+            <input 
+                type="email" 
+                id="email" 
+                placeholder="test@travelplanner.pl"
+                value="test@travelplanner.pl"
+            >
+            
+            <label for="password">Password:</label>
+            <input 
+                type="password" 
+                id="password" 
+                placeholder="Hasło użytkownika"
+            >
+            
+            <button id="loginBtn" onclick="getToken()">
+                🔓 Zaloguj i pobierz token
+            </button>
+        </div>
+        
+        <div id="result" class="result">
+            <h3 id="resultTitle">
+                <span id="resultIcon">✅</span>
+                <span id="resultText">Sukces! Oto Twój Access Token:</span>
+            </h3>
+            <textarea id="tokenOutput" readonly></textarea>
+            <button class="copy-btn" onclick="copyToken()">📋 Skopiuj token</button>
+            
+            <div class="token-info">
+                <strong>💡 Jak użyć tego tokenu:</strong><br>
+                1. <strong>W Postman:</strong> Authorization → Type: Bearer Token → wklej token<br>
+                2. <strong>W test_platnosci.html:</strong> Wklej w pole "JWT Token"<br>
+                3. <strong>Token ważny przez:</strong> ~1 godzinę (potem pobierz nowy)
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+        // Supabase config
+        const SUPABASE_URL = 'https://usztzcigcnsyyatguxay.supabase.co';
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVzenR6Y2lnY25zeXlhdGd1eGF5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA4ODgyNjQsImV4cCI6MjA4NjQ2NDI2NH0.wvvsDDS6TW78y-earAmInS-NQKGdY1QY-2ho8QSGRnU';
+        
+        const { createClient } = window.supabase;
+        const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        
+        async function getToken() {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const button = document.getElementById('loginBtn');
+            const result = document.getElementById('result');
+            
+            if (!email || !password) {
+                showError('Proszę wypełnić email i hasło!');
+                return;
+            }
+            
+            // Loading state
+            button.disabled = true;
+            button.innerHTML = '⏳ Loguję...<span class="spinner"></span>';
+            result.classList.remove('show');
+            
+            try {
+                // Sign in
+                const { data, error } = await supabaseClient.auth.signInWithPassword({
+                    email: email,
+                    password: password
+                });
+                
+                if (error) throw error;
+                
+                if (!data.session || !data.session.access_token) {
+                    throw new Error('Nie udało się pobrać tokenu');
+                }
+                
+                // Success!
+                showSuccess(data.session.access_token, data.user);
+                
+            } catch (error) {
+                console.error('Login error:', error);
+                showError(error.message || 'Błąd logowania. Sprawdź email i hasło.');
+            } finally {
+                button.disabled = false;
+                button.innerHTML = '🔓 Zaloguj i pobierz token';
+            }
+        }
+        
+        function showSuccess(token, user) {
+            const result = document.getElementById('result');
+            const tokenOutput = document.getElementById('tokenOutput');
+            const resultTitle = document.getElementById('resultTitle');
+            const resultIcon = document.getElementById('resultIcon');
+            const resultText = document.getElementById('resultText');
+            
+            result.classList.remove('error');
+            result.classList.add('show');
+            resultIcon.textContent = '✅';
+            resultText.textContent = 'Sukces! Oto Twój Access Token:';
+            
+            tokenOutput.value = token;
+            
+            console.log('✅ Token obtained for user:', user.email);
+            console.log('Token preview:', token.substring(0, 50) + '...');
+        }
+        
+        function showError(message) {
+            const result = document.getElementById('result');
+            const tokenOutput = document.getElementById('tokenOutput');
+            const resultIcon = document.getElementById('resultIcon');
+            const resultText = document.getElementById('resultText');
+            
+            result.classList.add('error', 'show');
+            resultIcon.textContent = '❌';
+            resultText.textContent = 'Błąd logowania';
+            
+            tokenOutput.value = message;
+        }
+        
+        function copyToken() {
+            const tokenOutput = document.getElementById('tokenOutput');
+            tokenOutput.select();
+            document.execCommand('copy');
+            
+            const btn = event.target;
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '✅ Skopiowano!';
+            setTimeout(() => {
+                btn.innerHTML = originalText;
+            }, 2000);
+        }
+        
+        // Enter key support
+        document.getElementById('password').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                getToken();
+            }
+        });
+    </script>
+</body>
+</html>

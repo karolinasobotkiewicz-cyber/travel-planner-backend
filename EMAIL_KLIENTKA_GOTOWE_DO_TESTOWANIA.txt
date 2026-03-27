@@ -1,0 +1,167 @@
+Temat: ✅ ETAP 2 - Gotowe do testowania płatności!
+
+Cześć Karolino! 🎉
+
+**ETAP 2 jest w 100% gotowy!** 🚀
+
+Przygotowałem dla Ciebie kompletny pakiet testowy - możesz już przetestować płatności Stripe (test mode).
+
+---
+
+## 📦 CO MASZ W PAKIECIE?
+
+W folderze `travel-planner-backend` znajdziesz:
+
+### **1. START_SERWER_TEST.bat** 
+- Uruchamia lokalny serwer HTTP
+- Kliknij 2x i **nie zamykaj okna**
+
+### **2. WYGENERUJ_TOKEN_24H.py**
+- Generuje token JWT (ważny 24h)
+- Kliknij 2x, skopiuj token
+
+### **3. test_platnosci.html**
+- Narzędzie do testowania płatności
+- Otwórz przez: http://localhost:3000/test_platnosci.html
+
+### **4. INSTRUKCJA_KLIENTKA_TEST_PLATNOSCI.md**
+- Szczegółowa instrukcja krok po kroku
+- **Przeczytaj na początek!** 📖
+
+---
+
+## 🔐 TWÓJ TOKEN JWT (WAŻNY 24H)
+
+> **Skopiuj cały poniższy tekst:**
+
+```
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJhdXRoZW50aWNhdGVkIiwiZXhwIjoxNzcyMTkxMTUyLCJpYXQiOjE3NzIxMDQ3NTIsImlzcyI6Imh0dHBzOi8vdXN6dHpjaWdjbnN5eWF0Z3V4YXkuc3VwYWJhc2UuY28vYXV0aC92MSIsInN1YiI6IjVkMjYzM2RlLWE2OTctNDI4NS04NmMwLTFiNzMzNDkzZmQzOSIsImVtYWlsIjoia2xpZW50a2EudGVzdEB0cmF2ZWxwbGFubmVyLnBsIiwicGhvbmUiOiIiLCJhcHBfbWV0YWRhdGEiOnsicHJvdmlkZXIiOiJlbWFpbCIsInByb3ZpZGVycyI6WyJlbWFpbCJdfSwidXNlcl9tZXRhZGF0YSI6e30sInJvbGUiOiJhdXRoZW50aWNhdGVkIiwiYWFsIjoiYWFsMSIsImFtciI6W3sibWV0aG9kIjoicGFzc3dvcmQiLCJ0aW1lc3RhbXAiOjE3NzIxMDQ3NTJ9XSwic2Vzc2lvbl9pZCI6IjNhYjE0MjAxLTRjZmQtNDk5Mi04ZDM2LWMzZGFiOWJiNmY4OCJ9.Ia4AkcYbTrLsoU14KyXcflT8gcWp4sgq1lcMJLzrzio
+```
+
+**Ważny do:** 27.02.2026 11:19 UTC (jutro o tej samej porze)
+
+---
+
+## ⚡ QUICK START (3 MINUTY)
+
+### **KROK 1: Uruchom serwer**
+1. Kliknij 2x na `START_SERWER_TEST.bat`
+2. NIE zamykaj czarnego okna!
+
+### **KROK 2: Otwórz narzędzie**
+1. Otwórz przeglądarkę
+2. Wejdź na: http://localhost:3000/test_platnosci.html
+
+### **KROK 3: Wklej token**
+1. Skopiuj token z góry (cały tekst z `eyJh...`)
+2. Wklej w pole "JWT Token"
+3. Kliknij **"Rozpocznij Test Płatności"**
+
+### **KROK 4: Zapłać na Stripe**
+Po przekierowaniu na Stripe wpisz:
+- **Karta:** `4242 4242 4242 4242`
+- **Data:** `12/30`
+- **CVC:** `123`
+- Kliknij **"Pay"**
+
+### **KROK 5: Sprawdź wyniki**
+- **Stripe Dashboard:** https://dashboard.stripe.com/test/payments
+  - WAŻNE: Przełącz na **"Viewing test data"** (prawy górny róg)
+  - Zobaczysz płatność **19,99 PLN** ✅
+
+---
+
+## 📊 CO SPRAWDZASZ?
+
+Ten test weryfikuje:
+- ✅ Tworzenie planu (Zakopane, 2 dni, para)
+- ✅ Integrację z prawdziwym Stripe Checkout
+- ✅ Przekierowanie płatności
+- ✅ Zapisywanie w bazie danych (Supabase)
+- ✅ Webhook (automatyczna aktualizacja statusu)
+
+**To jest TEN SAM flow** który będzie w produkcji! 🎯
+
+---
+
+## 🆘 POMOC
+
+Jeśli coś nie działa:
+1. Przeczytaj: `INSTRUKCJA_KLIENTKA_TEST_PLATNOSCI.md`
+2. Sprawdź czy serwer działa (`START_SERWER_TEST.bat`)
+3. Jeśli błąd "Token expired" → uruchom `WYGENERUJ_TOKEN_24H.py`
+4. Wyślij mi screenshot błędu (F12 → Console)
+
+---
+
+## 💰 PŁATNOŚĆ ZA ETAP 2
+
+Wszystko działa! Możesz dokonać płatności:
+
+**Kwota:** 3800 PLN  
+**Numer konta:** 30 1050 1025 1000 0097 8344 2708  
+**Tytuł:** "Travel Planner ETAP 2"
+
+Po płatności wyślę:
+- ✅ Pełną dokumentację techniczną
+- ✅ Transfer projektu na Twoje konto
+- ✅ Instrukcję deploy na Render/Vercel
+
+---
+
+## 📦 DELIVERABLES (już gotowe)
+
+Wszystkie 19 endpointów wdrożone:
+
+### **Auth & Plans:**
+- POST /plan/preview (multi-day, 1-5 dni)
+- GET /plan/{id}
+- GET /plan/{id}/status
+- GET /plan/{id}/versions
+- GET /plan/{id}/versions/{num}
+
+### **Plan Editing:**
+- POST /plan/{id}/days/{day}/remove
+- POST /plan/{id}/days/{day}/replace (SMART_REPLACE)
+- POST /plan/{id}/days/{day}/regenerate
+- POST /plan/{id}/rollback
+
+### **Content & POI:**
+- GET /content/home (8 destynacji)
+- GET /poi/{id}
+
+### **Payment (STRIPE):**
+- POST /payment/create-checkout-session
+- POST /payment/stripe/webhook
+- GET /payment/session/{id}/status
+
+### **Monitoring:**
+- GET /health
+- GET /
+
+### **Extras:**
+- Export to PDF (PDF generator ready)
+- Share plan (shareable URLs)
+- OpenAPI spec exported
+- Postman collection delivered
+
+---
+
+## 🚀 NASTĘPNE KROKI (Po płatności)
+
+**ETAP 3 opcjonalny (2-3 tygodnie, 7000-9000 PLN):**
+- Rozszerzenie bazy POI (Kraków, Warszawa, Gdańsk, Wrocław)
+- Zaawansowana personalizacja (AI/ML recommendations)
+- Multi-language support (EN, DE)
+- Advanced analytics (Google Analytics, Mixpanel)
+
+Ale najpierw przetestuj ETAP 2! 🎉
+
+---
+
+**Pytania? Pisz śmiało!** 📧
+
+Pozdrawiam,
+Mateusz
+
+P.S. Jeśli wszystko zadziała → masz kompletny backend do produkcji! ✅ Frontend może zacząć integrację już teraz! 🚀

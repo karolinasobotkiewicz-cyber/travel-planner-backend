@@ -1,0 +1,36 @@
+Cześć Karolino!
+
+Przepraszam! Był błąd w kodzie JavaScript 😅
+
+✅ **NAPRAWIONE!**
+
+Był bug w inicjalizacji Supabase - teraz działa poprawnie.
+
+---
+
+🔄 **Co zrobić:**
+
+1. **Odśwież stronę** get_supabase_token.html w przeglądarce (Ctrl+F5)
+   - Lub zamknij i otwórz ponownie plik
+
+2. **Wpisz dane logowania:**
+   - Email: test@travelplanner.pl (lub jakiego stworzyłaś usera)
+   - Password: hasło tego użytkownika
+
+3. **Kliknij "Zaloguj i pobierz token"**
+   - Powinien pokazać się spinner "⏳ Loguję..."
+   - Po chwili pojawi się zielony box z tokenem
+   - Kliknij "Skopiuj token" 
+
+---
+
+⚠️ **Jeśli nadal nie działa:**
+
+Otwórz konsolę przeglądarki (F12) i zrób screenshot błędu, wyślę dokładniejszą diagnozę.
+
+**Lub alternatywnie:**
+Powiedz mi email użytkownika którego stworzyłaś, wygeneruję token inną metodą i po prostu Ci go podam 😊
+
+---
+
+Przepraszam za problemy techniczne!

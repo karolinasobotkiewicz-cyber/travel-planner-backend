@@ -1,0 +1,64 @@
+Temat: RE: Płatność nie widać - WEBHOOK PROBLEM
+
+Cześć! 🙂
+
+Wiem już co się stało! To nie jest problem z dashboardem - to problem z **webhookiem**.
+
+## ⚠️ Problem:
+
+W Stripe test mode czasami webhook nie odpala automatycznie. Płatność **przeszła w Stripe**, ale webhook nie zaktualizował bazy danych (Supabase).
+
+## ✅ Rozwiązanie - 3 kroki:
+
+### **Krok 1: Znajdź swoją płatność**
+👉 Otwórz: https://dashboard.stripe.com/test/payments
+
+Znajdź swoją płatność (z dzisiaj 26-02) i **kliknij na nią**.
+
+---
+
+### **Krok 2: Scroll w dół do sekcji "Events"**
+
+Na stronie szczegółów płatności, przewiń na dół - zobaczysz sekcję **"Events and logs"** lub **"Events"**.
+
+Znajdź event typu: `checkout.session.completed`
+
+---
+
+### **Krok 3: Retry webhook**
+
+Obok eventu `checkout.session.completed` będzie przycisk lub ikona **"···"** (trzy kropki).
+
+**Kliknij na nią** → zobaczysz opcję **"Resend event"** lub **"Send test webhook"**
+
+**Kliknij "Resend event"** → webhook zostanie ponownie wysłany do backendu.
+
+---
+
+## 🔗 Alternatywny sposób - przez Webhooks:
+
+1. Otwórz: https://dashboard.stripe.com/test/webhooks
+2. Kliknij na webhook (powinieneś zobaczyć endpoint: `https://travel-planner-backend-xbsp.onrender.com/payment/stripe/webhook`)
+3. Znajdź najnowszy failed/pending event
+4. Kliknij **"···"** → **"Resend"**
+
+---
+
+## 🎯 Co się stanie:
+
+Po retry webhook:
+- ✅ Backend dostanie notyfikację
+- ✅ Status w bazie (Supabase) zostanie zaktualizowany na "paid"
+- ✅ Zobaczysz wpis w tabeli `payment_sessions`
+
+---
+
+## 💡 Dlaczego tak się dzieje:
+
+Stripe w test mode czasami nie wysyła webhooków automatycznie (albo backend jest zbyt wolny i timeout). Dlatego trzeba ręcznie "retry". To normalne w testach! 🙂
+
+---
+
+Daj znać jak działało! Jeśli masz problem ze znalezieniem opcji "Resend", zrób screenshot - pomogę.
+
+Pozdrawiam!

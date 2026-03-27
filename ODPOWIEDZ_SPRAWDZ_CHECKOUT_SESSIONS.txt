@@ -1,0 +1,58 @@
+Temat: RE: Brak płatności z dzisiaj
+
+Cześć! 🙂
+
+Jeśli nie widzisz płatności z dzisiaj (26-02) w Payments, to najprawdopodobniej **płatność nie została dokończona** na stronie Stripe.
+
+## 🔍 SPRAWDŹ TUTAJ:
+
+👉 **Checkout Sessions:** https://dashboard.stripe.com/test/checkout/sessions
+
+**To jest najważniejszy link!** Tutaj zobaczysz co się stało z Twoją sesją.
+
+---
+
+## 🎯 Co powinna zobaczyć:
+
+W tabeli zobaczysz sesje płatności:
+- Moja stara (24-02) 
+- **Twoja dzisiejsza (26-02)** ← kliknij na nią!
+
+---
+
+## 📊 Sprawdź status Twojej sesji:
+
+### ✅ Status: **"complete"** 
+= Płatność przeszła pomyślnie
+- **Jeśli to widzisz** → płatność jest OK, tylko trzeba retry webhook (pisałem w poprzednim emailu)
+
+### ⚠️ Status: **"open"** 
+= Sesja stworzona, ale **NIE DOKOŃCZYŁAŚ płatności**
+- **Co się stało:** Otworzyła się strona Stripe, ale nie wpisałaś karty + nie kliknęłaś "Pay"
+- **Co zrobić:** Uruchom test od nowa (cała sesja od początku)
+
+### ⚠️ Status: **"expired"**
+= Sesja wygasła (za długo czekałaś)
+- **Co zrobić:** Uruchom test od nowa
+
+---
+
+## 💡 Najprawdopodobniej:
+
+Status będzie **"open"** - czyli sesja powstała, ale płatność nie została dokończona na stronie Stripe.
+
+**Aby test przeszedł pomyślnie, musisz:**
+1. Uruchomić `test_platnosci.html` od nowa
+2. Po przekierowaniu do Stripe **KONIECZNIE**:
+   - Wpisać kartę: `4242 4242 4242 4242`
+   - Data: np. `12/30`
+   - CVC: `123`
+   - Email: dowolny
+   - **KLIKNĄĆ "PAY"** ← to jest kluczowe!
+3. Poczekać aż wróci do aplikacji
+
+---
+
+Sprawdź w Checkout Sessions i daj znać jaki status ma Twoja sesja z dzisiaj - wtedy będę wiedział co się stało! 🙂
+
+Pozdrawiam!

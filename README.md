@@ -1,51 +1,75 @@
 # Travel Planner Backend
 
-Backend API do planowania jednodniowych wycieczek po Polsce. Projekt dla Karoliny Sobotkiewicz.
+Backend API do planowania wielodniowych wycieczek po Polsce. Projekt dla Karoliny Sobotkiewicz.
 
 ## Status
 
 **ETAP 1: COMPLETED** (29.01.2026)  
-**ETAP 2: COMPLETED** (15.02.2026)  
+**ETAP 2: COMPLETED & PAID** (26.02.2026) ✅  
+**Payment Received:** 02.03.2026 ✅  
+**Last Update:** 02.03.2026  
 **Live API:** https://travel-planner-backend-xbsp.onrender.com  
 **Docs:** https://travel-planner-backend-xbsp.onrender.com/docs
 
 ## Co działa
 
-### API Endpoints (14 total)
+### API Endpoints (19 total)
 
-**Plan Management:**
-- `POST /plan/preview` - Generowanie planu (1-5 dni)
-- `GET /plan/{id}` - Pobieranie planu
+**Plan Management (11):**
+- `POST /plan/preview` - Generowanie planu (1-5 dni, optional auth)
+- `GET /plan/{id}` - Pobieranie pełnego planu
 - `GET /plan/{id}/status` - Status generowania
 - `GET /plan/{id}/versions` - Historia wersji
-- `GET /plan/{id}/versions/{num}` - Konkretna wersja
-
-**Plan Editing (ETAP 2):**
+- `GET /plan/{id}/versions/{num}` - Konkretna wersja (snapshot)
+- `POST /plan/{id}/rollback` - Wróć do poprzedniej wersji
 - `POST /plan/{id}/days/{day}/remove` - Usuń POI z dnia
 - `POST /plan/{id}/days/{day}/replace` - Zamień POI (SMART_REPLACE)
 - `POST /plan/{id}/days/{day}/regenerate` - Regeneruj przedział czasowy
-- `POST /plan/{id}/rollback` - Wróć do poprzedniej wersji
+- `POST /plan/claim-guest-plans` 🔐 - Transfer guest plans to user
+- `GET /plan/my-plans` 🔐 - Lista planów użytkownika
 
-**Content & Payment:**
-- `GET /content/home` - Lista 8 destynacji
-- `GET /poi/{id}` - Szczegóły atrakcji
-- `POST /payment/create-checkout-session` - Mock Stripe
-- `POST /payment/stripe/webhook` - Mock webhook
-- `GET /health` - Health check
+**Payment (3):**
+- `POST /payment/create-checkout-session` 🔐 - Stripe checkout (REAL, test mode)
+- `POST /payment/stripe/webhook` - Stripe webhook handler
+- `GET /payment/session/{id}/status` 🔐 - Status płatności
 
-### Logika biznesowa (ETAP 1 + 2)
+**Content & POI (2):**
+- `GET /content/home` - Lista 8 destynacji (Zakopane + 7 placeholders)
+- `GET /poi/{id}` - Szczegóły konkretnej atrakcji
 
-**Single Day:**
+**Admin & Health (3):**
+- `POST /admin/reload-poi` - Reload POI database
+- `GET /health` - Health check (detailed)
+- `GET /` - API info
+
+🔐 = Wymaga autoryzacji (JWT Bearer token)
+
+### Logika biznesowa (ETAP 1 + ETAP 2)
+
+**Single Day (ETAP 1):**
 - Parking: 15 minut na start (tylko car mode)
 - Lunch break: ZAWSZE 12:00-13:30
-- Cost: (2×normalny) + (2×ulgowy) dla rodzin
-- Timing: 09:00 → 18:00/19:00
+- Cost calculation: (2×normalny) + (2×ulgowy) dla rodzin
+- Timeline: 09:00 → 18:00/19:00 (data-driven z POI)
 
 **Multi-Day (ETAP 2):**
-- Plan na 1-5 dni
-- Cross-day uniqueness: POI się nie powtarzają (dopuszczalne max 2x)
-- Core POI rotation: Morskie Oko nie zawsze pierwszy dzień
-- Energy system: Dzień 1 = heavy hiking OK, dzień 2-3 = lighter
+- Plan na 1-5 dni ✅
+- Cross-day POI uniqueness: >70% (POI się nie powtarzają między dniami)
+- Core POI rotation: Morskie Oko nie zawsze dzień 1 (priority shuffling)
+- Energy management: Dzień 1 = heavy hiking OK, późniejsze dni = lighter activities
+- Budget penalties: Premium POI (termy) = higher budget requirement
+
+**Authorization (ETAP 2):**
+- Supabase JWT (HS256) ✅
+- Optional auth: `/plan/preview` (backward compatibility)
+- Required auth: Payment endpoints, my-plans, claim-guest-plans
+- Guest → User flow: Plans created without auth can be transferred after signup
+
+**Payments (ETAP 2):**
+- Stripe integration (REAL API, test mode) ✅
+- Price: 19.99 PLN for plan purchase
+- Webhook handling: `checkout.session.completed`, `checkout.session.expired`
+- Database tracking: `payment_sessions` + `transactions` tables
 
 **Version Control (ETAP 2):**
 - Każda zmiana = nowa wersja w DB
