@@ -34,7 +34,8 @@ class Settings(BaseSettings):
 
     supabase_url: str = ""
     supabase_anon_key: str = ""
-    supabase_jwt_secret: str = ""
+    supabase_jwt_secret: str = ""  # Legacy HS256 secret (deprecated)
+    supabase_jwt_public_key: str = ""  # ES256 public key (recommended)
 
     # =========================
     # STRIPE PAYMENT (ETAP 2)

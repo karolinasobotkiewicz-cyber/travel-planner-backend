@@ -13,7 +13,12 @@ def decode_jwt(token: str) -> Dict:
     """
     Decode and validate Supabase JWT token.
     
-    Supabase uses HS256 algorithm with a shared secret.
+    Supports both ES256 (recommended, default for new Supabase projects) 
+    and HS256 (legacy) algorithms.
+    
+    ES256 uses asymmetric cryptography with a public key for verification.
+    HS256 uses symmetric cryptography with a shared secret.
+    
     Token structure includes:
     - sub: User ID (Supabase UUID)
     - email: User email
@@ -29,25 +34,35 @@ def decode_jwt(token: str) -> Dict:
         
     Raises:
         HTTPException 401: If token is invalid, expired, or malformed
+        HTTPException 500: If neither public key nor secret is configured
         
     Example:
-        token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        token = "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9..."
         payload = decode_jwt(token)
         user_id = payload["sub"]
         email = payload["email"]
     """
-    if not settings.supabase_jwt_secret:
+    # Determine which key/algorithm to use
+    if settings.supabase_jwt_public_key:
+        # ES256 (recommended): Use public key for verification
+        key = settings.supabase_jwt_public_key
+        algorithms = ["ES256"]
+    elif settings.supabase_jwt_secret:
+        # HS256 (legacy): Use shared secret
+        key = settings.supabase_jwt_secret
+        algorithms = ["HS256"]
+    else:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="JWT secret not configured"
+            detail="JWT verification key not configured (need SUPABASE_JWT_PUBLIC_KEY or SUPABASE_JWT_SECRET)"
         )
     
     try:
-        # Decode JWT using Supabase JWT secret
+        # Decode JWT using configured key and algorithm
         payload = jwt.decode(
             token,
-            settings.supabase_jwt_secret,
-            algorithms=["HS256"],
+            key,
+            algorithms=algorithms,
             options={
                 "verify_aud": False,  # Supabase doesn't use aud claim
                 "verify_signature": True,
