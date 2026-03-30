@@ -66,8 +66,14 @@ class PlanPostgreSQLRepository(IPlanRepository):
         try:
             plan_id = plan.plan_id
             
+            # Validate UUID format
+            try:
+                plan_uuid = uuid.UUID(plan_id)
+            except (ValueError, AttributeError, TypeError):
+                raise ValueError(f"Invalid plan_id UUID format: {plan_id}")
+            
             # Check if plan exists
-            existing_plan = self.db.query(Plan).filter(Plan.id == uuid.UUID(plan_id)).first()
+            existing_plan = self.db.query(Plan).filter(Plan.id == plan_uuid).first()
             
             if existing_plan:
                 # UPDATE existing plan
@@ -85,14 +91,14 @@ class PlanPostgreSQLRepository(IPlanRepository):
                 
                 # Get next version number
                 max_version = self.db.query(PlanVersion).filter(
-                    PlanVersion.plan_id == uuid.UUID(plan_id)
+                    PlanVersion.plan_id == plan_uuid
                 ).count()
                 next_version = max_version + 1
                 
                 # Create new version snapshot
                 new_version = PlanVersion(
                     id=uuid.uuid4(),
-                    plan_id=uuid.UUID(plan_id),
+                    plan_id=plan_uuid,
                     version_number=next_version,
                     change_type='regenerated',
                     parent_version_id=None,  # TODO: track parent when rollback is implemented
@@ -120,7 +126,7 @@ class PlanPostgreSQLRepository(IPlanRepository):
                 # Create initial version snapshot
                 initial_version = PlanVersion(
                     id=uuid.uuid4(),
-                    plan_id=uuid.UUID(plan_id),
+                    plan_id=plan_uuid,
                     version_number=1,
                     change_type='initial',
                     parent_version_id=None,
@@ -151,18 +157,25 @@ class PlanPostgreSQLRepository(IPlanRepository):
             plan_id: UUID string
             
         Returns:
-            PlanResponse or None if not found
+            PlanResponse or None if not found or invalid UUID
         """
         try:
+            # Validate UUID format before querying
+            try:
+                plan_uuid = uuid.UUID(plan_id)
+            except (ValueError, AttributeError, TypeError):
+                # Invalid UUID format - return None instead of crashing
+                return None
+            
             # Fetch plan metadata
-            plan = self.db.query(Plan).filter(Plan.id == uuid.UUID(plan_id)).first()
+            plan = self.db.query(Plan).filter(Plan.id == plan_uuid).first()
             
             if not plan:
                 return None
             
             # Fetch latest version (highest version_number)
             latest_version = self.db.query(PlanVersion).filter(
-                PlanVersion.plan_id == uuid.UUID(plan_id)
+                PlanVersion.plan_id == plan_uuid
             ).order_by(PlanVersion.version_number.desc()).first()
             
             if not latest_version:
@@ -187,10 +200,17 @@ class PlanPostgreSQLRepository(IPlanRepository):
             status: Status name (ready, pending, failed, etc.)
             
         Returns:
-            True if updated, False if plan not found
+            True if updated, False if plan not found or invalid UUID
         """
         try:
-            plan = self.db.query(Plan).filter(Plan.id == uuid.UUID(plan_id)).first()
+            # Validate UUID format
+            try:
+                plan_uuid = uuid.UUID(plan_id)
+            except (ValueError, AttributeError, TypeError):
+                # Invalid UUID - return False instead of crashing
+                return False
+            
+            plan = self.db.query(Plan).filter(Plan.id == plan_uuid).first()
             
             if not plan:
                 return False
@@ -217,10 +237,17 @@ class PlanPostgreSQLRepository(IPlanRepository):
             plan_id: UUID string
             
         Returns:
-            True if deleted, False if not found
+            True if deleted, False if not found or invalid UUID
         """
         try:
-            plan = self.db.query(Plan).filter(Plan.id == uuid.UUID(plan_id)).first()
+            # Validate UUID format
+            try:
+                plan_uuid = uuid.UUID(plan_id)
+            except (ValueError, AttributeError, TypeError):
+                # Invalid UUID - return False instead of crashing
+                return False
+            
+            plan = self.db.query(Plan).filter(Plan.id == plan_uuid).first()
             
             if not plan:
                 return False
@@ -243,17 +270,25 @@ class PlanPostgreSQLRepository(IPlanRepository):
             plan_id: UUID string
             
         Returns:
-            Metadata dict or None if not found
+            Metadata dict or None if not found or invalid UUID
         """
         try:
-            plan = self.db.query(Plan).filter(Plan.id == uuid.UUID(plan_id)).first()
+            # Validate UUID format before querying
+            try:
+                plan_uuid = uuid.UUID(plan_id)
+            except (ValueError, AttributeError, TypeError):
+                # Invalid UUID format - return None instead of crashing
+                # This handles legacy data or corrupted plan_ids gracefully
+                return None
+            
+            plan = self.db.query(Plan).filter(Plan.id == plan_uuid).first()
             
             if not plan:
                 return None
             
             # Get version count
             version_count = self.db.query(PlanVersion).filter(
-                PlanVersion.plan_id == uuid.UUID(plan_id)
+                PlanVersion.plan_id == plan_uuid
             ).count()
             
             return {
