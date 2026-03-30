@@ -9,6 +9,34 @@ from fastapi import HTTPException, status
 from app.infrastructure.config.settings import settings
 
 
+def _normalize_pem_key(key: str) -> str:
+    """
+    Normalize PEM key format by replacing literal \\n with actual newlines.
+    
+    Environment variables (especially from Render) may contain literal \\n 
+    characters instead of actual newlines. This function fixes that.
+    
+    Args:
+        key: PEM key string (may contain literal \\n or actual newlines)
+        
+    Returns:
+        Normalized PEM key with actual newline characters
+        
+    Example:
+        Input:  "-----BEGIN PUBLIC KEY-----\\nMFkw...\\n-----END PUBLIC KEY-----"
+        Output: "-----BEGIN PUBLIC KEY-----\nMFkw...\n-----END PUBLIC KEY-----"
+    """
+    # Replace literal \\n with actual newlines
+    # This handles cases where env vars contain escaped newlines
+    if "\\n" in key:
+        key = key.replace("\\n", "\n")
+    
+    # Remove any quotes that might have been added by env var parsing
+    key = key.strip('"').strip("'")
+    
+    return key
+
+
 def decode_jwt(token: str) -> Dict:
     """
     Decode and validate Supabase JWT token.
@@ -45,7 +73,8 @@ def decode_jwt(token: str) -> Dict:
     # Determine which key/algorithm to use
     if settings.supabase_jwt_public_key:
         # ES256 (recommended): Use public key for verification
-        key = settings.supabase_jwt_public_key
+        # Normalize the key format (replace literal \n with actual newlines)
+        key = _normalize_pem_key(settings.supabase_jwt_public_key)
         algorithms = ["ES256"]
     elif settings.supabase_jwt_secret:
         # HS256 (legacy): Use shared secret
