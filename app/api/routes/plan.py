@@ -132,6 +132,71 @@ def preview_plan(
     return plan
 
 
+@router.get("/my-plans")
+async def get_my_plans(
+    current_user: User = Depends(get_current_user),
+    plan_repo: PlanRepository = Depends(get_plan_repository)
+):
+    """
+    Get all plans for authenticated user (ETAP 2).
+    
+    Returns list of user's plans with metadata.
+    Frontend can use this for user dashboard / "My Plans" page.
+    
+    Args:
+        current_user: Authenticated user from JWT
+        plan_repo: Plan repository
+        
+    Returns:
+        {
+            "plans": [
+                {
+                    "plan_id": "uuid",
+                    "location": "Kraków",
+                    "days_count": 3,
+                    "created_at": "2025-01-30T12:00:00",
+                    "updated_at": "2025-01-30T14:30:00"
+                },
+                ...
+            ],
+            "total_count": 5
+        }
+        
+    Raises:
+        401: If not authenticated
+        500: Database error
+    """
+    try:
+        # Fetch all plans for this user
+        plans = plan_repo.get_by_user(current_user.id)
+        
+        # Convert to response format
+        plans_response = []
+        for plan in plans:
+            # Get metadata for each plan
+            metadata = plan_repo.get_metadata(plan.plan_id)
+            if metadata:
+                plans_response.append({
+                    "plan_id": plan.plan_id,
+                    "location": metadata.get("location", "Unknown"),
+                    "days_count": metadata.get("days_count", len(plan.days)),
+                    "created_at": metadata.get("created_at"),
+                    "updated_at": metadata.get("updated_at"),
+                    "version": plan.version
+                })
+        
+        return {
+            "plans": plans_response,
+            "total_count": len(plans_response)
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch user plans: {str(e)}"
+        )
+
+
 @router.get("/{plan_id}/status")
 def get_plan_status(
     plan_id: str,
@@ -828,69 +893,4 @@ async def claim_guest_plans(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to transfer guest plans: {str(e)}"
-        )
-
-
-@router.get("/my-plans")
-async def get_my_plans(
-    current_user: User = Depends(get_current_user),
-    plan_repo: PlanRepository = Depends(get_plan_repository)
-):
-    """
-    Get all plans for authenticated user (ETAP 2).
-    
-    Returns list of user's plans with metadata.
-    Frontend can use this for user dashboard / "My Plans" page.
-    
-    Args:
-        current_user: Authenticated user from JWT
-        plan_repo: Plan repository
-        
-    Returns:
-        {
-            "plans": [
-                {
-                    "plan_id": "uuid",
-                    "location": "Kraków",
-                    "days_count": 3,
-                    "created_at": "2025-01-30T12:00:00",
-                    "updated_at": "2025-01-30T14:30:00"
-                },
-                ...
-            ],
-            "total_count": 5
-        }
-        
-    Raises:
-        401: If not authenticated
-        500: Database error
-    """
-    try:
-        # Fetch all plans for this user
-        plans = plan_repo.get_by_user(current_user.id)
-        
-        # Convert to response format
-        plans_response = []
-        for plan in plans:
-            # Get metadata for each plan
-            metadata = plan_repo.get_metadata(plan.plan_id)
-            if metadata:
-                plans_response.append({
-                    "plan_id": plan.plan_id,
-                    "location": metadata.get("location", "Unknown"),
-                    "days_count": metadata.get("days_count", len(plan.days)),
-                    "created_at": metadata.get("created_at"),
-                    "updated_at": metadata.get("updated_at"),
-                    "version": plan.version
-                })
-        
-        return {
-            "plans": plans_response,
-            "total_count": len(plans_response)
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch user plans: {str(e)}"
         )
