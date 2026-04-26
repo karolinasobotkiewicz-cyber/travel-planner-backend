@@ -1074,6 +1074,12 @@ def score_poi(
 ):
     score = 0.0
 
+    # ETAP 3 PHASE 5 (27.04.2026): Get scoring_weights from router for POI scoring
+    # Router calculates trip-level multipliers (cultural_bonus, convenience_bonus, must_see_bonus)
+    # These weights customize scoring based on trip type (city_tourism vs mountain_hiking)
+    # Phase 4 applied weights to trail scoring, Phase 5 applies to POI scoring
+    scoring_weights = context.get("scoring_weights", {})
+
     # UAT FIX (18.02.2026 - Problem #10): Must_see conditional scoring
     # Tests 03, 06, 07, 08, 09: Wielka Krokiew appears in every plan
     # Problem: must_see * 2.0 bonus (20 points for Krokiew) dominates all other scoring
@@ -1091,16 +1097,21 @@ def score_poi(
         poi_matches_preferences = (tag_bonus > 0)
     
     # Apply conditional must_see bonus
+    # PHASE 5: Apply must_see_bonus multiplier from router (city_tourism gets 1.5x)
     must_see_value = safe_float(p.get("must_see"))
+    must_see_multiplier = scoring_weights.get("must_see_bonus", 1.0)
+    
     if poi_matches_preferences or not user_preferences:
         # Full bonus when: preferences match OR user has no preferences
-        score += must_see_value * 2.0
+        must_see_boost = must_see_value * 2.0 * must_see_multiplier  # 2.0 → 3.0 for city_tourism
+        score += must_see_boost
     else:
         # Reduced bonus when: user has preferences but POI doesn't match
-        score += must_see_value * 1.0  # 50% reduction
+        must_see_boost = must_see_value * 1.0 * must_see_multiplier  # 1.0 → 1.5 for city_tourism
+        score += must_see_boost
         if must_see_value > 5:  # Log for high must_see POI
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-            print(f"    [MUST_SEE REDUCED] {poi_name_safe}: {must_see_value * 1.0:.1f} (no preference match, user wants: {user_preferences})")
+            print(f"    [MUST_SEE REDUCED] {poi_name_safe}: {must_see_boost:.1f} (no preference match, user wants: {user_preferences}, must_see_bonus={must_see_multiplier})")
     
     score += safe_float(p.get("priority"))
 
@@ -1243,6 +1254,44 @@ def score_poi(
             score -= penalty
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [ADVENTURE PENALTY] {poi_name_safe}: -{penalty:.1f} (adventure style prefers active over culture)")
+    
+    # ETAP 3 PHASE 5 (27.04.2026): CULTURAL BONUS for city tourism
+    # City tourism trips boost museums, cultural sites, historical attractions
+    # Router calculates cultural_bonus=1.5 for city_tourism trip type
+    cultural_multiplier = scoring_weights.get("cultural_bonus", 1.0)
+    if cultural_multiplier > 1.0:
+        cultural_tags = {"museums", "museum_heritage", "culture", "history", "historical_sites", 
+                        "cultural_attractions", "art", "architecture"}
+        poi_tags = set(p.get("tags", []))
+        if cultural_tags & poi_tags:
+            # Apply cultural boost (multiplicative on current score)
+            cultural_boost = score * (cultural_multiplier - 1.0)  # 50% boost for city_tourism
+            score += cultural_boost
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [CULTURAL BOOST] {poi_name_safe}: +{cultural_boost:.1f} (city tourism + cultural tags, cultural_bonus={cultural_multiplier})")
+    
+    # ETAP 3 PHASE 5 (27.04.2026): CONVENIENCE BONUS for city tourism
+    # City tourism prioritizes accessible POI (low crowd_level, good location, easy access)
+    # Router calculates convenience_bonus=1.2 for city_tourism trip type
+    convenience_multiplier = scoring_weights.get("convenience_bonus", 1.0)
+    if convenience_multiplier > 1.0:
+        # Convenience indicators: low crowd_level (1-2), indoor space (weather-independent)
+        crowd_level_str = str(p.get("crowd_level", "")).strip()
+        try:
+            crowd_level = int(crowd_level_str) if crowd_level_str else 999
+        except (ValueError, TypeError):
+            crowd_level = 999
+        
+        space = p.get("space", "")
+        is_convenient = (crowd_level <= 2) or (space == "indoor")
+        
+        if is_convenient:
+            # Apply convenience boost (multiplicative on current score)
+            convenience_boost = score * (convenience_multiplier - 1.0)  # 20% boost for city_tourism
+            score += convenience_boost
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            convenience_reason = "low crowd" if crowd_level <= 2 else "indoor space"
+            print(f"    [CONVENIENCE BOOST] {poi_name_safe}: +{convenience_boost:.1f} (city tourism + {convenience_reason}, convenience_bonus={convenience_multiplier})")
     
     # FIX #16 (24.02.2026 - TEST-06 COMPREHENSIVE FIX): Explicit Termy boost for relaxation preference
     # CRITICAL: Termy are premium relaxation experiences that should DOMINATE when user wants relaxation.
