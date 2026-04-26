@@ -1350,6 +1350,205 @@ def score_poi(
             else:
                 score -= 25.0  # przed 15:00 final nie ma sensu
 
+    # =============================================================================
+    # ETAP 3 PHASE 3 (27.04.2026): TRAIL-SPECIFIC SCORING
+    # =============================================================================
+    # Trails have different characteristics than POI/restaurants
+    # - difficulty_level: easy/moderate/hard/extreme (affects family_kids groups)
+    # - exposure_level: low/medium/high/extreme (safety risk)
+    # - scenic_score: 0-10 (visual appeal, boost beautiful trails)
+    # - family_friendly: bool (pre-vetted safety)
+    # =============================================================================
+    
+    poi_type = p.get("type", "poi")  # NEW: type discrimination (trail|poi|restaurant)
+    
+    if poi_type == "trail":
+        poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+        
+        # 1. DIFFICULTY MATCHING (CRITICAL for family_kids safety)
+        # Family groups should ONLY get easy/moderate trails
+        # Hard/extreme trails get strong penalty (effectively exclude)
+        difficulty_level = str(p.get("difficulty_level", "")).lower()
+        target_group = user.get("target_group", "")
+        
+        if target_group == "family_kids":
+            if difficulty_level in ["hard", "extreme"]:
+                # HARD EXCLUSION: -200 pts (effectively remove from consideration)
+                difficulty_penalty = -200.0
+                score += difficulty_penalty
+                print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: {difficulty_penalty:.1f} (family_kids cannot do {difficulty_level} trails)")
+            
+            elif difficulty_level == "moderate":
+                # CAUTION: Small penalty for moderate trails (prefer easy)
+                difficulty_penalty = -15.0
+                score += difficulty_penalty
+                print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: {difficulty_penalty:.1f} (family_kids: moderate trail caution)")
+            
+            elif difficulty_level == "easy":
+                # BOOST: Reward easy trails for families
+                difficulty_boost = 20.0
+                score += difficulty_boost
+                print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: +{difficulty_boost:.1f} (family_kids: perfect easy trail)")
+        
+        elif target_group == "seniors":
+            # Seniors similar to families (avoid hard/extreme)
+            if difficulty_level in ["hard", "extreme"]:
+                difficulty_penalty = -150.0
+                score += difficulty_penalty
+                print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: {difficulty_penalty:.1f} (seniors cannot do {difficulty_level} trails)")
+            elif difficulty_level == "easy":
+                difficulty_boost = 15.0
+                score += difficulty_boost
+                print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: +{difficulty_boost:.1f} (seniors: perfect easy trail)")
+        
+        elif target_group in ["friends", "couples"]:
+            # Friends/couples: boost moderate/hard trails (challenge seekers)
+            if difficulty_level in ["moderate", "hard"]:
+                difficulty_boost = 15.0
+                score += difficulty_boost
+                print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: +{difficulty_boost:.1f} ({target_group}: {difficulty_level} trail bonus)")
+            
+            elif difficulty_level == "extreme":
+                # Even for friends, extreme gets caution penalty (safety)
+                difficulty_penalty = -25.0
+                score += difficulty_penalty
+                print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: {difficulty_penalty:.1f} ({target_group}: extreme trail caution)")
+        
+        # 2. EXPOSURE LEVEL PENALTY (safety risk - cliffs, ridges, steep slopes)
+        # High exposure = dangerous (falls risk), especially for families
+        exposure_level = str(p.get("exposure_level", "low")).lower()
+        
+        if exposure_level in ["high", "extreme"]:
+            if target_group == "family_kids":
+                # CRITICAL: Hard exclusion for families (safety priority)
+                exposure_penalty = -150.0
+                score += exposure_penalty
+                print(f"    [TRAIL EXPOSURE] {poi_name_safe}: {exposure_penalty:.1f} (family_kids: {exposure_level} exposure UNSAFE)")
+            
+            elif target_group == "seniors":
+                # Strong penalty for seniors (balance/mobility concerns)
+                exposure_penalty = -100.0
+                score += exposure_penalty
+                print(f"    [TRAIL EXPOSURE] {poi_name_safe}: {exposure_penalty:.1f} (seniors: {exposure_level} exposure risky)")
+            
+            else:
+                # Moderate penalty for other groups (still risky)
+                exposure_penalty = -30.0
+                score += exposure_penalty
+                print(f"    [TRAIL EXPOSURE] {poi_name_safe}: {exposure_penalty:.1f} ({target_group}: {exposure_level} exposure caution)")
+        
+        elif exposure_level == "medium":
+            if target_group in ["family_kids", "seniors"]:
+                # Mild penalty for medium exposure (caution)
+                exposure_penalty = -20.0
+                score += exposure_penalty
+                print(f"    [TRAIL EXPOSURE] {poi_name_safe}: {exposure_penalty:.1f} ({target_group}: medium exposure caution)")
+        
+        # Low exposure = bonus (safe trails)
+        elif exposure_level == "low":
+            if target_group in ["family_kids", "seniors"]:
+                exposure_boost = 15.0
+                score += exposure_boost
+                print(f"    [TRAIL EXPOSURE] {poi_name_safe}: +{exposure_boost:.1f} ({target_group}: low exposure safe)")
+        
+        # 3. SCENIC SCORE BONUS (boost beautiful trails - main appeal of hiking)
+        # Trails are chosen for views, not just exercise
+        # scenic_score: 0-10 scale (0=unremarkable, 10=breathtaking)
+        scenic_score = safe_float(p.get("scenic_score", 0))
+        
+        if scenic_score >= 8.0:
+            # Exceptional views (8-10): strong boost
+            scenic_boost = scenic_score * 8.0  # 64-80 points
+            score += scenic_boost
+            print(f"    [TRAIL SCENIC] {poi_name_safe}: +{scenic_boost:.1f} (exceptional views: {scenic_score}/10)")
+        
+        elif scenic_score >= 6.0:
+            # Good views (6-7): moderate boost
+            scenic_boost = scenic_score * 5.0  # 30-35 points
+            score += scenic_boost
+            print(f"    [TRAIL SCENIC] {poi_name_safe}: +{scenic_boost:.1f} (good views: {scenic_score}/10)")
+        
+        elif scenic_score >= 4.0:
+            # Decent views (4-5): mild boost
+            scenic_boost = scenic_score * 3.0  # 12-15 points
+            score += scenic_boost
+            print(f"    [TRAIL SCENIC] {poi_name_safe}: +{scenic_boost:.1f} (decent views: {scenic_score}/10)")
+        
+        # Below 4.0: no bonus (unremarkable trail)
+        
+        # 4. FAMILY-FRIENDLY PRE-VETTING (additional safety check)
+        # family_friendly field = manually vetted safe trails
+        # This is SEPARATE from difficulty/exposure (expert curation)
+        family_friendly = p.get("family_friendly", False)
+        
+        if target_group == "family_kids":
+            if family_friendly:
+                # BOOST: Expert-vetted family trail
+                family_boost = 30.0
+                score += family_boost
+                print(f"    [TRAIL FAMILY] {poi_name_safe}: +{family_boost:.1f} (expert-vetted family trail)")
+            else:
+                # PENALTY: Not vetted for families (caution)
+                family_penalty = -40.0
+                score += family_penalty
+                print(f"    [TRAIL FAMILY] {poi_name_safe}: {family_penalty:.1f} (not vetted for families)")
+        
+        # 5. DURATION MATCHING (shorter trails for families/seniors)
+        # Families/seniors prefer shorter trails (less fatigue)
+        duration_min = safe_int(p.get("duration_min", 0), 0)
+        duration_max = safe_int(p.get("duration_max", 0), 0)
+        avg_duration = (duration_min + duration_max) / 2 if duration_max > 0 else duration_min
+        
+        if target_group in ["family_kids", "seniors"]:
+            if avg_duration <= 120:  # ≤2 hours: short trail
+                duration_boost = 20.0
+                score += duration_boost
+                print(f"    [TRAIL DURATION] {poi_name_safe}: +{duration_boost:.1f} ({target_group}: short trail {avg_duration:.0f}min)")
+            
+            elif avg_duration > 240:  # >4 hours: long trail
+                duration_penalty = -30.0
+                score += duration_penalty
+                print(f"    [TRAIL DURATION] {poi_name_safe}: {duration_penalty:.1f} ({target_group}: too long {avg_duration:.0f}min)")
+        
+        elif target_group == "friends":
+            # Friends prefer longer, more challenging trails
+            if avg_duration >= 180:  # ≥3 hours: substantial hike
+                duration_boost = 15.0
+                score += duration_boost
+                print(f"    [TRAIL DURATION] {poi_name_safe}: +{duration_boost:.1f} (friends: substantial hike {avg_duration:.0f}min)")
+        
+        # 6. TRAIL TYPE BOOST (match user preferences)
+        # If user wants hiking/outdoor, boost ALL trails
+        user_preferences = user.get("preferences", [])
+        outdoor_prefs = {"hiking", "outdoor", "nature", "mountain_trails", "trekking"}
+        
+        if outdoor_prefs & set(user_preferences):
+            # User explicitly wants outdoor activities - boost trails
+            pref_boost = 25.0
+            score += pref_boost
+            print(f"    [TRAIL PREFERENCE] {poi_name_safe}: +{pref_boost:.1f} (user wants hiking/outdoor)")
+        
+        # 7. ELEVATION GAIN PENALTY (steep climbs hard for families/seniors)
+        elevation_gain = safe_int(p.get("elevation_gain_m", 0), 0)
+        
+        if target_group in ["family_kids", "seniors"]:
+            if elevation_gain > 400:  # >400m: steep climb
+                elevation_penalty = -35.0
+                score += elevation_penalty
+                print(f"    [TRAIL ELEVATION] {poi_name_safe}: {elevation_penalty:.1f} ({target_group}: steep climb {elevation_gain}m)")
+            
+            elif elevation_gain < 150:  # <150m: gentle trail
+                elevation_boost = 15.0
+                score += elevation_boost
+                print(f"    [TRAIL ELEVATION] {poi_name_safe}: +{elevation_boost:.1f} ({target_group}: gentle trail {elevation_gain}m)")
+        
+        elif target_group == "friends":
+            # Friends/couples like elevation gain (challenge)
+            if elevation_gain > 300:
+                elevation_boost = 12.0
+                score += elevation_boost
+                print(f"    [TRAIL ELEVATION] {poi_name_safe}: +{elevation_boost:.1f} (friends: challenging climb {elevation_gain}m)")
+
     return score
 
 
@@ -1623,13 +1822,64 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 lunch_end_min = time_to_minutes(lunch_end_time)
                 actual_lunch_duration = lunch_end_min - lunch_start_min
                 
+                # ETAP 3 PHASE 3 (27.04.2026): Intelligent lunch suggestions from RestaurantRepository
+                # Use context["restaurants_available"] to find nearby lunch spots
+                # Fallback to generic suggestions if no restaurants available
+                lunch_suggestions = ["Lunch", "Restauracja", "Odpoczynek"]  # Default fallback
+                
+                restaurants_available = context.get("restaurants_available", [])
+                if restaurants_available:
+                    # Filter for lunch spots (meal_type == "lunch")
+                    lunch_restaurants = [
+                        r for r in restaurants_available
+                        if r.get("meal_type") == "lunch"
+                    ]
+                    
+                    # If we have current location (last attraction), sort by proximity
+                    if plan:
+                        # Find last attraction for location context
+                        last_attraction = None
+                        for item in reversed(plan):
+                            if item.get("type") == "attraction" and item.get("poi"):
+                                last_attraction = item.get("poi")
+                                break
+                        
+                        if last_attraction and last_attraction.get("lat") and last_attraction.get("lng"):
+                            current_lat = last_attraction.get("lat")
+                            current_lng = last_attraction.get("lng")
+                            
+                            # Calculate distance to each restaurant
+                            for r in lunch_restaurants:
+                                r_lat = r.get("lat", 0)
+                                r_lng = r.get("lng", 0)
+                                if r_lat and r_lng:
+                                    distance = haversine_distance(current_lat, current_lng, r_lat, r_lng)
+                                    r["_distance"] = distance
+                                else:
+                                    r["_distance"] = 999.0  # Unknown location = far away
+                            
+                            # Sort by proximity
+                            lunch_restaurants.sort(key=lambda r: r.get("_distance", 999.0))
+                            print(f"[LUNCH] Sorted {len(lunch_restaurants)} lunch spots by proximity to {last_attraction.get('name', 'current location')}")
+                    
+                    # Take top 3 nearest restaurants
+                    if lunch_restaurants:
+                        lunch_suggestions = [r["name"] for r in lunch_restaurants[:3]]
+                        print(f"[LUNCH] Intelligent suggestions: {lunch_suggestions}")
+                    else:
+                        # No lunch restaurants available, try any restaurants
+                        any_restaurants = [r for r in restaurants_available if r.get("name")]
+                        if any_restaurants:
+                            lunch_suggestions = [r["name"] for r in any_restaurants[:3]]
+                            print(f"[LUNCH] Fallback suggestions (no lunch-specific): {lunch_suggestions}")
+                
                 plan.append(
                     {
                         "type": "lunch_break",
                         "start_time": lunch_start_time,
                         "end_time": lunch_end_time,
                         "duration_min": actual_lunch_duration,  # Use actual duration, not constant
-                        "suggestions": ["Lunch", "Restauracja", "Odpoczynek"],
+                        "suggestions": lunch_suggestions,  # ETAP 3: Intelligent suggestions
                     }
                 )
                 # FIX #3: Update 'now' with actual lunch duration (not constant)
@@ -1686,14 +1936,68 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 dinner_end_min = time_to_minutes(dinner_end_time)
                 actual_dinner_duration = dinner_end_min - dinner_start_min
                 
-                # Generate suggestions based on preferences
-                dinner_suggestions = ["Regionalna restauracja", "Bacówka", "Karcma góralska"]
-                if "local_food_experience" in user.get("preferences", []):
-                    dinner_suggestions = [
-                        "Regionalna restauracja z kuchnią góralską",
-                        "Bacówka z degustacją oscypka",
-                        "Karcma z tradycyjnymi potrawami"
+                # ETAP 3 PHASE 3 (27.04.2026): Intelligent dinner suggestions from RestaurantRepository
+                # Use context["restaurants_available"] to find nearby dinner spots
+                # Fallback to generic suggestions if no restaurants available
+                dinner_suggestions = ["Regionalna restauracja", "Bacówka", "Karcma góralska"]  # Default fallback
+                
+                restaurants_available = context.get("restaurants_available", [])
+                if restaurants_available:
+                    # Filter for dinner spots (meal_type == "dinner")
+                    dinner_restaurants = [
+                        r for r in restaurants_available
+                        if r.get("meal_type") == "dinner"
                     ]
+                    
+                    # If we have current location (last attraction), sort by proximity
+                    if plan:
+                        # Find last attraction for location context
+                        last_attraction = None
+                        for item in reversed(plan):
+                            if item.get("type") == "attraction" and item.get("poi"):
+                                last_attraction = item.get("poi")
+                                break
+                        
+                        if last_attraction and last_attraction.get("lat") and last_attraction.get("lng"):
+                            current_lat = last_attraction.get("lat")
+                            current_lng = last_attraction.get("lng")
+                            
+                            # Calculate distance to each restaurant
+                            for r in dinner_restaurants:
+                                r_lat = r.get("lat", 0)
+                                r_lng = r.get("lng", 0)
+                                if r_lat and r_lng:
+                                    distance = haversine_distance(current_lat, current_lng, r_lat, r_lng)
+                                    r["_distance"] = distance
+                                else:
+                                    r["_distance"] = 999.0  # Unknown location = far away
+                            
+                            # Sort by proximity
+                            dinner_restaurants.sort(key=lambda r: r.get("_distance", 999.0))
+                            print(f"[DINNER] Sorted {len(dinner_restaurants)} dinner spots by proximity to {last_attraction.get('name', 'current location')}")
+                    
+                    # Boost local food restaurants if user wants local_food_experience
+                    if "local_food_experience" in user.get("preferences", []):
+                        # Re-sort to prioritize regional cuisine
+                        regional_tags = {"regional_cuisine", "local_food", "traditional", "góralska"}
+                        for r in dinner_restaurants:
+                            r_tags = set(r.get("tags", []))
+                            if regional_tags & r_tags:
+                                r["_distance"] = r.get("_distance", 999.0) * 0.5  # 50% distance reduction = priority boost
+                        
+                        dinner_restaurants.sort(key=lambda r: r.get("_distance", 999.0))
+                        print(f"[DINNER] Boosted regional cuisine restaurants (local_food_experience preference)")
+                    
+                    # Take top 3 nearest/best restaurants
+                    if dinner_restaurants:
+                        dinner_suggestions = [r["name"] for r in dinner_restaurants[:3]]
+                        print(f"[DINNER] Intelligent suggestions: {dinner_suggestions}")
+                    else:
+                        # No dinner restaurants available, try any restaurants
+                        any_restaurants = [r for r in restaurants_available if r.get("name")]
+                        if any_restaurants:
+                            dinner_suggestions = [r["name"] for r in any_restaurants[:3]]
+                            print(f"[DINNER] Fallback suggestions (no dinner-specific): {dinner_suggestions}")
                 
                 plan.append(
                     {
@@ -1701,7 +2005,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         "start_time": dinner_start_time,
                         "end_time": dinner_end_time,
                         "duration_min": actual_dinner_duration,  # Use actual duration, not constant
-                        "suggestions": dinner_suggestions,
+                        "suggestions": dinner_suggestions,  # ETAP 3: Intelligent suggestions
                     }
                 )
                 # FIX #3: Update 'now' with actual dinner duration (not constant)

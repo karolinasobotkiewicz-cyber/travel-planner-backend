@@ -254,3 +254,176 @@ class Transaction(Base):
     
     def __repr__(self):
         return f"<Transaction(id={self.id}, amount={self.amount}, status={self.status})>"
+
+
+# ==========================================
+# ETAP 3: MULTI-CITY POI MODELS
+# ==========================================
+
+
+class RestaurantDB(Base):
+    """
+    Restaurants table - dining places across 15 cities (ETAP 3).
+    
+    Static reference data loaded from Planer - restauracje.xlsx.
+    310 restaurants (filtered to ~250 after meal_type validation).
+    
+    Used by meal optimizer for lunch/dinner selection.
+    Separate from POI for specialized filtering by meal_type.
+    """
+    __tablename__ = "restaurants"
+    
+    # Primary key
+    id = Column(String(100), primary_key=True)  # UUID generated from name+city+lat
+    
+    # Core identity
+    name = Column(String(255), nullable=False, index=True)
+    city = Column(String(100), nullable=False, index=True)
+    region = Column(String(100), nullable=True)
+    
+    # Location
+    lat = Column(Numeric(10, 7), nullable=False)  # 49.2969123
+    lng = Column(Numeric(10, 7), nullable=False)  # 19.9489456
+    address = Column(Text, nullable=True)
+    
+    # CRITICAL: meal type for optimizer
+    meal_type = Column(String(10), nullable=False, index=True)  # 'lunch' or 'dinner'
+    cuisine_type = Column(String(100), nullable=True)
+    place_type = Column(String(100), nullable=True)
+    
+    # Timing
+    visit_duration_min = Column(Integer, nullable=False, server_default='60')
+    visit_duration_max = Column(Integer, nullable=False, server_default='90')
+    opening_hours = Column(JSON, nullable=True)  # {'mon': '11:00-22:00', ...}
+    opening_hours_seasonal = Column(JSON, nullable=True)  # [{'season': 'summer', ...}]
+    
+    # Pricing
+    price_level = Column(Integer, nullable=False, server_default='2')  # 1-4
+    avg_meal_cost = Column(Integer, nullable=False, server_default='50')  # PLN
+    
+    # Characteristics
+    atmosphere = Column(String(100), nullable=True)
+    space = Column(String(50), nullable=True)  # indoor/outdoor/both
+    reservations_required = Column(sa.Boolean, nullable=False, server_default='false')
+    
+    # Target group (stored as JSON array)
+    target_group = Column(JSON, nullable=True)  # ['family_kids', 'couple']
+    children_friendly = Column(sa.Boolean, nullable=False, server_default='true')
+    
+    # Quality signals
+    popularity_score = Column(Numeric(4, 2), nullable=False, server_default='0.0')  # 0.00-10.00
+    rating = Column(Numeric(3, 2), nullable=True)  # 0.00-5.00
+    must_try = Column(sa.Boolean, nullable=False, server_default='false')
+    
+    # Parking
+    parking_name = Column(String(255), nullable=True)
+    parking_lat = Column(Numeric(10, 7), nullable=True)
+    parking_lng = Column(Numeric(10, 7), nullable=True)
+    parking_walk_time_min = Column(Integer, nullable=False, server_default='0')
+    
+    # Metadata
+    pro_tip = Column(Text, nullable=True)
+    image_key = Column(String(255), nullable=True)
+    link_website = Column(Text, nullable=True)
+    link_menu = Column(Text, nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Indexes
+    __table_args__ = (
+        sa.Index('idx_restaurants_city_meal_type', 'city', 'meal_type'),
+        sa.Index('idx_restaurants_location', 'lat', 'lng'),
+    )
+    
+    def __repr__(self):
+        return f"<RestaurantDB(id={self.id}, name={self.name}, city={self.city}, meal_type={self.meal_type})>"
+
+
+class TrailDB(Base):
+    """
+    Trails table - mountain hiking trails across 3 regions (ETAP 3).
+    
+    Static reference data loaded from Planer - szlaki.xlsx.
+    37 trails (Tatry, Kotlina Kłodzka, Karkonosze).
+    
+    Used by hiking optimizer for family_kids and adventure groups.
+    Separate from POI for specialized filtering by difficulty/exposure.
+    """
+    __tablename__ = "trails"
+    
+    # Primary key
+    id = Column(String(100), primary_key=True)  # UUID generated from trail_name+region+start_lat
+    
+    # Core identity
+    trail_name = Column(String(255), nullable=False, index=True)
+    peak_name = Column(String(255), nullable=True)
+    region = Column(String(100), nullable=False, index=True)  # Tatry, Kotlina Kłodzka, Karkonosze
+    
+    # Trail characteristics
+    trail_color = Column(String(50), nullable=True)  # red, blue, green, yellow, black
+    difficulty_level = Column(String(20), nullable=False, index=True)  # easy, moderate, hard, extreme
+    length_km = Column(Numeric(6, 2), nullable=False, server_default='0.0')
+    elevation_gain_m = Column(Integer, nullable=False, server_default='0')
+    
+    # Timing
+    time_min = Column(Integer, nullable=False, server_default='120')  # minutes
+    time_max = Column(Integer, nullable=False, server_default='180')  # minutes
+    best_season = Column(String(100), nullable=True)
+    
+    # CRITICAL: safety & filtering
+    family_friendly = Column(sa.Boolean, nullable=False, index=True)  # FILTER by this
+    exposure_level = Column(String(20), nullable=False, server_default='low')  # low, medium, high, extreme
+    weather_dependency = Column(String(20), nullable=False, server_default='medium')  # low, medium, high
+    technical_difficulty = Column(String(50), nullable=True)
+    
+    # Location (start point)
+    start_point_name = Column(String(255), nullable=True)
+    start_lat = Column(Numeric(10, 7), nullable=False)
+    start_lng = Column(Numeric(10, 7), nullable=False)
+    start_elevation_m = Column(Integer, nullable=False, server_default='0')
+    end_lat = Column(Numeric(10, 7), nullable=True)
+    end_lng = Column(Numeric(10, 7), nullable=True)
+    
+    # Target group (stored as JSON array)
+    target_group = Column(JSON, nullable=True)  # ['family_kids', 'adventure', 'nature_lovers']
+    children_min_age = Column(Integer, nullable=False, server_default='0')
+    
+    # Parking & access
+    parking_name = Column(String(255), nullable=True)
+    parking_lat = Column(Numeric(10, 7), nullable=True)
+    parking_lng = Column(Numeric(10, 7), nullable=True)
+    parking_walk_time_min = Column(Integer, nullable=False, server_default='0')
+    parking_type = Column(String(50), nullable=True)  # free/paid
+    parking_cost = Column(Integer, nullable=False, server_default='0')
+    
+    # Description
+    description_short = Column(Text, nullable=True)
+    description_long = Column(Text, nullable=True)
+    highlights = Column(Text, nullable=True)
+    pro_tip = Column(Text, nullable=True)
+    
+    # Scoring (internal)
+    popularity_score = Column(Numeric(4, 2), nullable=False, server_default='0.0')  # 0.00-10.00
+    scenic_score = Column(Numeric(4, 2), nullable=False, server_default='0.0')  # 0.00-10.00
+    must_do = Column(sa.Boolean, nullable=False, server_default='false')
+    
+    # Metadata
+    image_key = Column(String(255), nullable=True)
+    link_map = Column(Text, nullable=True)
+    link_description = Column(Text, nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Indexes
+    __table_args__ = (
+        sa.Index('idx_trails_region_difficulty', 'region', 'difficulty_level'),
+        sa.Index('idx_trails_family_friendly', 'family_friendly'),
+        sa.Index('idx_trails_location', 'start_lat', 'start_lng'),
+    )
+    
+    def __repr__(self):
+        return f"<TrailDB(id={self.id}, trail_name={self.trail_name}, region={self.region}, difficulty={self.difficulty_level})>"
