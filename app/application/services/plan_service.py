@@ -26,8 +26,9 @@ from app.domain.models.plan import (
 from app.application.services.trip_mapper import trip_input_to_engine_params
 from app.domain.planner.engine import build_day, plan_multiple_days, travel_time_minutes, is_open, haversine_distance
 from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
-from app.infrastructure.repositories import POIRepository
+from app.infrastructure.repositories import POIRepository, TrailRepository, RestaurantRepository  # ETAP 3 Phase 2
 from app.infrastructure.storage import build_poi_image_url  # 11.03.2026 - Supabase Storage
+from app.domain.router import detect_trip_type, TripType  # ETAP 3 Phase 2
 
 # ETAP 2 Day 5: Quality + Explainability
 from app.domain.planner.quality_checker import validate_day_quality, check_poi_quality
@@ -72,25 +73,74 @@ class PlanService:
         day_start = params["day_start"]
         day_end = params["day_end"]
         
-        # Load POIs z repository
-        all_pois = self.poi_repo.get_all()
+        # ============================================================
+        # ETAP 3 PHASE 2: INTELLIGENT TRIP TYPE ROUTING
+        # ============================================================
+        # Detect trip type and determine data sources
+        router_config = detect_trip_type(trip_input)
         
-        # HOTFIX #8 (03.02.2026): Engine expects normalized dicts z kluczami: 
-        # "target_groups", "kids_only", "name", etc.
-        # POI model ma inne field names (target_group singular, brak kids_only property)
-        # Zamiast POI.model_dump() używamy RAW dict z normalizer
-        from app.infrastructure.repositories.load_zakopane import load_zakopane_poi
+        print(f"\n[ROUTER] Trip Type Detection:")
+        print(f"  - Type: {router_config['trip_type']}")
+        print(f"  - Primary Source: {router_config['primary_source']}")
+        print(f"  - Use Trails: {router_config['use_trails']}")
+        print(f"  - Use POIs: {router_config['use_pois']}")
+        print(f"  - Use Restaurants: {router_config['use_restaurants']}")
+        print(f"  - Region: {router_config['region']}")
+        print(f"  - Confidence: {router_config['confidence']:.2f}")
+        print(f"  - Signals: {router_config['signals']}\n")
         
-        all_pois_dict = load_zakopane_poi(self.poi_repo.excel_path)
+        # Load data from appropriate sources
+        all_pois_dict = []
         
+        # Source 1: TrailDB (mountain hiking)
+        if router_config["use_trails"]:
+            try:
+                trail_repo = TrailRepository()
+                trails_db = trail_repo.get_by_region(router_config["region"])
+                trails_dict = [trail_repo.to_dict(trail) for trail in trails_db]
+                all_pois_dict.extend(trails_dict)
+                print(f"[ROUTER] Loaded {len(trails_dict)} trails from TrailDB (region: {router_config['region']})")
+            except Exception as e:
+                print(f"[ROUTER] WARNING: Failed to load trails: {e}")
+        
+        # Source 2: POI Excel (city tourism - LEGACY for Zakopane)
+        if router_config["use_pois"]:
+            try:
+                from app.infrastructure.repositories.load_zakopane import load_zakopane_poi
+                pois_excel = load_zakopane_poi(self.poi_repo.excel_path)
+                all_pois_dict.extend(pois_excel)
+                print(f"[ROUTER] Loaded {len(pois_excel)} POIs from Excel (legacy)")
+            except Exception as e:
+                print(f"[ROUTER] WARNING: Failed to load POIs: {e}")
+        
+        # Source 3: RestaurantDB (meals for all trip types)
+        # NOTE: Restaurants loaded separately for meal optimizer, not mixed with attractions
+        if router_config["use_restaurants"]:
+            try:
+                restaurant_repo = RestaurantRepository()
+                restaurants_db = restaurant_repo.get_by_city(router_config["region"])
+                # Store in context for meal planning (used later in _convert_engine_result_to_items)
+                context["restaurants_available"] = [restaurant_repo.to_dict(r) for r in restaurants_db]
+                print(f"[ROUTER] Loaded {len(restaurants_db)} restaurants from RestaurantDB (city: {router_config['region']})")
+            except Exception as e:
+                print(f"[ROUTER] WARNING: Failed to load restaurants: {e}")
+                context["restaurants_available"] = []
+        
+        # Store router config in context for engine customization
+        context["trip_type"] = router_config["trip_type"]
+        context["scoring_weights"] = router_config["scoring_weights"]
+        
+        # Fallback: If no data loaded, return empty plan
         if not all_pois_dict:
-            # FIXME: graceful handling gdy brak POI
-            # Na razie zwróć pusty plan
+            print("[ROUTER] ERROR: No data sources available - returning empty plan")
             return PlanResponse(
                 plan_id=str(uuid.uuid4()),
                 version=1,
                 days=[]
             )
+        
+        print(f"[ROUTER] TOTAL attractions/trails loaded: {len(all_pois_dict)}\n")
+        # ============================================================
         
         # ETAP 2 - DAY 3 (15.02.2026): Multi-day routing
         # Route to appropriate planner based on trip length
