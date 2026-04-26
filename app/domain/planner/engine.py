@@ -1363,6 +1363,11 @@ def score_poi(
     poi_type = p.get("type", "poi")  # NEW: type discrimination (trail|poi|restaurant)
     
     if poi_type == "trail":
+        # ETAP 3 PHASE 4 (27.04.2026): Get scoring_weights from router
+        # Router calculates trip-level multipliers (scenic_bonus, elevation_bonus, family_safety)
+        # These weights customize scoring based on trip type (mountain_hiking vs city_tourism)
+        scoring_weights = context.get("scoring_weights", {})
+        
         poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
         
         # 1. DIFFICULTY MATCHING (CRITICAL for family_kids safety)
@@ -1374,9 +1379,11 @@ def score_poi(
         if target_group == "family_kids":
             if difficulty_level in ["hard", "extreme"]:
                 # HARD EXCLUSION: -200 pts (effectively remove from consideration)
-                difficulty_penalty = -200.0
+                # PHASE 4: Apply family_safety multiplier from router
+                family_safety_multiplier = scoring_weights.get("family_safety", 1.0)
+                difficulty_penalty = -200.0 * family_safety_multiplier
                 score += difficulty_penalty
-                print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: {difficulty_penalty:.1f} (family_kids cannot do {difficulty_level} trails)")
+                print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: {difficulty_penalty:.1f} (family_kids cannot do {difficulty_level} trails, family_safety={family_safety_multiplier})")
             
             elif difficulty_level == "moderate":
                 # CAUTION: Small penalty for moderate trails (prefer easy)
@@ -1421,9 +1428,11 @@ def score_poi(
         if exposure_level in ["high", "extreme"]:
             if target_group == "family_kids":
                 # CRITICAL: Hard exclusion for families (safety priority)
-                exposure_penalty = -150.0
+                # PHASE 4: Apply exposure_penalty multiplier from router
+                exposure_multiplier = scoring_weights.get("exposure_penalty", 1.0)
+                exposure_penalty = -150.0 * exposure_multiplier
                 score += exposure_penalty
-                print(f"    [TRAIL EXPOSURE] {poi_name_safe}: {exposure_penalty:.1f} (family_kids: {exposure_level} exposure UNSAFE)")
+                print(f"    [TRAIL EXPOSURE] {poi_name_safe}: {exposure_penalty:.1f} (family_kids: {exposure_level} exposure UNSAFE, exposure_penalty={exposure_multiplier})")
             
             elif target_group == "seniors":
                 # Strong penalty for seniors (balance/mobility concerns)
@@ -1454,25 +1463,27 @@ def score_poi(
         # 3. SCENIC SCORE BONUS (boost beautiful trails - main appeal of hiking)
         # Trails are chosen for views, not just exercise
         # scenic_score: 0-10 scale (0=unremarkable, 10=breathtaking)
+        # PHASE 4: Apply scenic_bonus multiplier from router (mountain_hiking gets 1.5x)
         scenic_score = safe_float(p.get("scenic_score", 0))
+        scenic_multiplier = scoring_weights.get("scenic_bonus", 1.0)
         
         if scenic_score >= 8.0:
             # Exceptional views (8-10): strong boost
-            scenic_boost = scenic_score * 8.0  # 64-80 points
+            scenic_boost = scenic_score * 8.0 * scenic_multiplier  # 64-80 points (96-120 for mountain_hiking)
             score += scenic_boost
-            print(f"    [TRAIL SCENIC] {poi_name_safe}: +{scenic_boost:.1f} (exceptional views: {scenic_score}/10)")
+            print(f"    [TRAIL SCENIC] {poi_name_safe}: +{scenic_boost:.1f} (exceptional views: {scenic_score}/10, scenic_bonus={scenic_multiplier})")
         
         elif scenic_score >= 6.0:
             # Good views (6-7): moderate boost
-            scenic_boost = scenic_score * 5.0  # 30-35 points
+            scenic_boost = scenic_score * 5.0 * scenic_multiplier  # 30-35 points (45-52.5 for mountain_hiking)
             score += scenic_boost
-            print(f"    [TRAIL SCENIC] {poi_name_safe}: +{scenic_boost:.1f} (good views: {scenic_score}/10)")
+            print(f"    [TRAIL SCENIC] {poi_name_safe}: +{scenic_boost:.1f} (good views: {scenic_score}/10, scenic_bonus={scenic_multiplier})")
         
         elif scenic_score >= 4.0:
             # Decent views (4-5): mild boost
-            scenic_boost = scenic_score * 3.0  # 12-15 points
+            scenic_boost = scenic_score * 3.0 * scenic_multiplier  # 12-15 points (18-22.5 for mountain_hiking)
             score += scenic_boost
-            print(f"    [TRAIL SCENIC] {poi_name_safe}: +{scenic_boost:.1f} (decent views: {scenic_score}/10)")
+            print(f"    [TRAIL SCENIC] {poi_name_safe}: +{scenic_boost:.1f} (decent views: {scenic_score}/10, scenic_bonus={scenic_multiplier})")
         
         # Below 4.0: no bonus (unremarkable trail)
         
@@ -1544,10 +1555,12 @@ def score_poi(
         
         elif target_group == "friends":
             # Friends/couples like elevation gain (challenge)
+            # PHASE 4: Apply elevation_bonus multiplier from router (mountain_hiking gets 1.2x)
             if elevation_gain > 300:
-                elevation_boost = 12.0
+                elevation_multiplier = scoring_weights.get("elevation_bonus", 1.0)
+                elevation_boost = 12.0 * elevation_multiplier
                 score += elevation_boost
-                print(f"    [TRAIL ELEVATION] {poi_name_safe}: +{elevation_boost:.1f} (friends: challenging climb {elevation_gain}m)")
+                print(f"    [TRAIL ELEVATION] {poi_name_safe}: +{elevation_boost:.1f} (friends: challenging climb {elevation_gain}m, elevation_bonus={elevation_multiplier})")
 
     return score
 
