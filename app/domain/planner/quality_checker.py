@@ -3,6 +3,9 @@ Quality Checker - validates day quality and POI quality (ETAP 2 Day 5).
 
 Provides quality badges for days and individual POIs to help users understand
 what makes a good plan.
+
+BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #3):
+realistic_timing badge now validates timeline integrity (no overlaps) before assignment.
 """
 from typing import List, Dict, Any
 
@@ -61,12 +64,40 @@ def validate_day_quality(day_plan: Dict[str, Any], pois_data: List[Dict[str, Any
         badges.append("good_variety")
     
     # Badge 3: realistic_timing (attractions fit within day window with buffer)
+    # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #3):
+    # Before assigning realistic_timing badge, verify timeline integrity.
+    # Badge should only be given if:
+    #   1. Total duration <= 420 minutes (7 hours of activities)
+    #   2. NO timeline overlaps or critical gaps (validated by continuity check)
+    
     total_duration = sum(attr.get("duration_min", 0) for attr in attractions)
     # Standard day: 09:00-19:00 = 600 minutes
     # Subtract lunch (90 min) + transfers (~90 min for 5-6 attractions) = ~420 min available
     # Realistic = total_duration <= 420 minutes (7 hours of actual activities)
+    
     if total_duration <= 420:
-        badges.append("realistic_timing")
+        # NEW: Validate timeline integrity before assigning badge
+        from app.domain.planner.engine import _validate_and_fix_time_continuity, DAY_END
+        
+        day_end = day_plan.get("end_time", DAY_END)
+        
+        # BUGFIX: Pass items list, not dict (function expects list of items)
+        day_items = day_plan.get("items", [])
+        is_valid, issues, _ = _validate_and_fix_time_continuity(day_items, day_end)
+        
+        # Check for critical issues: overlaps or exceeds day boundary
+        has_critical_issues = any(
+            "OVERLAP" in issue or "EXCEEDS" in issue 
+            for issue in issues
+        )
+        
+        if not has_critical_issues:
+            badges.append("realistic_timing")
+        else:
+            # DEBUG: Log why realistic_timing was NOT assigned
+            print(f"[QUALITY BADGE] Skipping realistic_timing: {len(issues)} timeline issues found")
+            for issue in issues[:3]:  # Show first 3 issues
+                print(f"  - {issue}")
     
     # Badge 4: balanced_intensity (mix of light and intense)
     intensities = []

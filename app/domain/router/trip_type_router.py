@@ -140,11 +140,14 @@ class TripTypeRouter:
             if not cluster_config:
                 # Should not happen (LocationInput validator catches this)
                 # But handle gracefully
-                print(f"[ROUTER] WARNING: is_cluster=True but cluster '{location}' not found. Falling back to single-city.")
+                location_safe = str(location).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[ROUTER] WARNING: is_cluster=True but cluster '{location_safe}' not found. Falling back to single-city.")
             else:
                 # Return cluster configuration
-                print(f"[ROUTER] CLUSTER DETECTED: {cluster_config['name']}")
-                print(f"  - Cities: {cluster_config['cities']}")
+                cluster_name_safe = cluster_config['name'].encode('ascii', errors='ignore').decode('ascii')
+                cities_safe = [c.encode('ascii', errors='ignore').decode('ascii') for c in cluster_config['cities']]
+                print(f"[ROUTER] CLUSTER DETECTED: {cluster_name_safe}")
+                print(f"  - Cities: {cities_safe}")
                 print(f"  - Type: {cluster_config['type'].value}")
                 print(f"  - Total attractions: {cluster_config['total_attractions']}")
                 print(f"  - Total restaurants: {cluster_config['total_restaurants']}")

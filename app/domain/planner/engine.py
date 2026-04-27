@@ -349,7 +349,7 @@ def _log_preference_coverage(plan, user):
         print(f"  - Attractions in plan: {len(attractions)}")
         print(f"  - Suggestion: Check if POI tags cover these preferences or if scoring weights are too low")
     else:
-        print(f"[PREFERENCE COVERAGE] ✓ Day covers all top 3 preferences: {top_3_prefs}")
+        print(f"[PREFERENCE COVERAGE] [OK] Day covers all top 3 preferences: {top_3_prefs}")
 
 
 def _validate_and_fix_time_continuity(plan, day_end_str):
@@ -393,7 +393,9 @@ def _validate_and_fix_time_continuity(plan, day_end_str):
     # Sort by start time
     timed_items.sort(key=lambda x: x["start_min"])
     
-    # Check 1: Gaps between consecutive items
+    # Check 1: Gaps and overlaps between consecutive items
+    items_to_remove_keys = set()  # Track (start_time, end_time, type) to remove
+    
     for i in range(len(timed_items) - 1):
         current = timed_items[i]
         next_item = timed_items[i + 1]
@@ -411,12 +413,58 @@ def _validate_and_fix_time_continuity(plan, day_end_str):
             print(f"[TIME CONTINUITY] WARNING: {gap} min gap {gap_start}-{gap_end}")
         
         elif gap < 0:
-            # Overlap detected
+            # OVERLAP DETECTED - AUTO-FIX
+            overlap_duration = abs(gap)
             issues.append(
                 f"OVERLAP: {current.get('type')} (ends {current['end_time']}) "
-                f"overlaps with {next_item.get('type')} (starts {next_item['start_time']})"
+                f"overlaps with {next_item.get('type')} (starts {next_item['start_time']}) by {overlap_duration} min"
             )
-            print(f"[TIME CONTINUITY] ERROR: Overlap detected!")
+            print(f"[TIME CONTINUITY] ERROR: Overlap detected ({overlap_duration} min)!")
+            
+            # AUTO-FIX STRATEGY: Remove lower-priority item
+            # Priority: attraction > lunch/dinner > buffer > free_time
+            priority_map = {
+                "attraction": 4,
+                "lunch_break": 3,
+                "dinner_break": 3,
+                "parking_walk": 2,
+                "tickets_queue": 2,
+                "restroom": 2,
+                "photo_stop": 2,
+                "traffic_margin": 2,
+                "free_time": 1,
+                "accommodation_start": 0,
+                "accommodation_end": 0,
+            }
+            
+            current_priority = priority_map.get(current.get('type'), 1)
+            next_priority = priority_map.get(next_item.get('type'), 1)
+            
+            if current_priority > next_priority:
+                # Remove next_item (lower priority)
+                item_key = (next_item.get('start_time'), next_item.get('end_time'), next_item.get('type'))
+                items_to_remove_keys.add(item_key)
+                print(f"[OVERLAP FIX] Marking {next_item.get('type')} for removal (lower priority, {next_priority} < {current_priority})")
+            elif next_priority > current_priority:
+                # Remove current (lower priority)
+                item_key = (current.get('start_time'), current.get('end_time'), current.get('type'))
+                items_to_remove_keys.add(item_key)
+                print(f"[OVERLAP FIX] Marking {current.get('type')} for removal (lower priority, {current_priority} < {next_priority})")
+            else:
+                # Same priority - remove later one (next_item)
+                item_key = (next_item.get('start_time'), next_item.get('end_time'), next_item.get('type'))
+                items_to_remove_keys.add(item_key)
+                print(f"[OVERLAP FIX] Marking {next_item.get('type')} for removal (same priority, removing later item)")
+    
+    # Remove conflicting items from fixed_plan
+    if items_to_remove_keys:
+        original_count = len(fixed_plan)
+        fixed_plan = [
+            item for item in fixed_plan 
+            if (item.get('start_time'), item.get('end_time'), item.get('type')) not in items_to_remove_keys
+        ]
+        removed_count = original_count - len(fixed_plan)
+        print(f"[OVERLAP FIX] Removed {removed_count} conflicting items from plan")
     
     # Check 2: Last item vs day_end
     last_item = timed_items[-1]
@@ -694,9 +742,10 @@ def should_exclude_kids_poi_for_adults(poi, user):
     """
     poi_id = poi.get("id", "unknown")
     poi_name = poi.get("name", "unknown")
+    poi_name_safe = str(poi_name).encode('ascii', errors='ignore').decode('ascii')
     
     # FIX #10.6 + FIX #15: ALWAYS print when filter is called
-    print(f"\n🔍 [FIX #15 FILTER CALLED] {poi_id} - {poi_name}")
+    print(f"\n[FIX #15 FILTER CALLED] {poi_id} - {poi_name_safe}")
     
     poi_tags = set(poi.get("tags", []))
     poi_type_str = str(poi.get("type", "")).lower()
@@ -765,14 +814,14 @@ def should_exclude_kids_poi_for_adults(poi, user):
     if is_multi_purpose:
         # Multi-purpose POI (e.g., Termy with both kids and adult facilities) - ALLOW
         should_exclude = False
-        print(f"   ✅ [FIX #12] DECISION: ALLOW - Multi-purpose POI for {group_type}")
+        print(f"   [FIX #12] DECISION: ALLOW - Multi-purpose POI for {group_type}")
     else:
         # Pure kids POI - EXCLUDE for adults
         should_exclude = has_kids_tag or has_kids_type
         if should_exclude:
-            print(f"   ❌ [KIDS FILTER] DECISION: EXCLUDE - Kids-only POI for adult group")
+            print(f"   [KIDS FILTER] DECISION: EXCLUDE - Kids-only POI for adult group")
         else:
-            print(f"   ✅ DECISION: ALLOW - Not a kids POI")
+            print(f"   DECISION: ALLOW - Not a kids POI")
     
     return should_exclude
 
@@ -1305,7 +1354,7 @@ def score_poi(
     #   - Strong additive +60 pts boost when Termy + relaxation preference (overcome museum dominance)
     #   - Additional +30 pts if relax travel_style matches (total +90 pts)
     #   - Negate premium penalty for Termy (justified expense for relaxation goal)
-    # Expected impact: Termy 25 + 60 + 30 + 20 = 135 pts > Museums 73 pts ✅
+    # Expected impact: Termy 25 + 60 + 30 + 20 = 135 pts > Museums 73 pts [OK]
     user_preferences = user.get("preferences", [])
     if "relaxation" in user_preferences and is_termy_spa(p):
         # Base Termy boost for having relaxation preference
@@ -1653,6 +1702,23 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
     
     print(f"[MULTI-DAY] Termy limit for {num_days} days: max {max_termy_total} total")
     
+    # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #5): Track trail count across all days
+    # Problem: No limits on trails per trip (could have 5 trails in 3 days)
+    # Solution: Limit based on trip duration
+    #   - 2-3 days → max 1 trail
+    #   - 4-5 days → max 2 trails
+    #   - 6-7 days → max 3 trails
+    if num_days <= 3:
+        max_trails_total = 1
+    elif num_days <= 5:
+        max_trails_total = 2
+    else:
+        max_trails_total = 3
+    
+    global_trail_tracking = {"count": 0, "max": max_trails_total}
+    
+    print(f"[MULTI-DAY] Trail limit for {num_days} days: max {max_trails_total} total")
+    
     # Core POI distribution strategy
     # Get all core POIs (priority_level == 12)
     core_pois = [p for p in pois if is_core_poi(p)]
@@ -1693,6 +1759,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
         # Build day with global tracking
         # The global_used set will be updated inside build_day()
         # UAT FIX (18.02.2026 - Problem #6): Pass termy tracking dict
+        # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #5): Pass trail tracking dict
         day_plan = build_day(
             pois=pois,
             user=user,
@@ -1700,7 +1767,8 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
             day_start=day_start,
             day_end=day_end,
             global_used=global_used_pois,  # Pass reference to global set
-            global_termy_tracking=global_termy_tracking  # Pass termy limit tracker
+            global_termy_tracking=global_termy_tracking,  # Pass termy limit tracker
+            global_trail_tracking=global_trail_tracking  # Pass trail limit tracker
         )
         
         # Count POIs used in this day
@@ -1715,6 +1783,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
         print(f"[MULTI-DAY] Day {day_num + 1} complete: {day_poi_count} POIs ({day_core_count} core)")
         print(f"[MULTI-DAY] Global used POIs after Day {day_num + 1}: {len(global_used_pois)}")
         print(f"[MULTI-DAY] Global termy count after Day {day_num + 1}: {global_termy_tracking['count']}/{global_termy_tracking['max']}")
+        print(f"[MULTI-DAY] Global trail count after Day {day_num + 1}: {global_trail_tracking['count']}/{global_trail_tracking['max']}")
         
         all_day_plans.append(day_plan)
     
@@ -1726,7 +1795,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
 # =========================
 
 
-def build_day(pois, user, context, day_start=None, day_end=None, global_used=None, global_termy_tracking=None):
+def build_day(pois, user, context, day_start=None, day_end=None, global_used=None, global_termy_tracking=None, global_trail_tracking=None):
     """
     Build daily plan from POIs.
     
@@ -1777,6 +1846,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     # FIX #7 (02.02.2026): Track attraction counts for limits
     attraction_count = 0
     core_attraction_count = 0
+    
+    # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #4): Track trail day mode
+    # Problem: Trails treated like regular POI (trail + 5 POI + lunch + dinner)
+    # Solution: Trail = main activity, limit subsequent POI based on trail duration
+    trail_day_mode = False  # True after first trail added
+    trail_duration = 0      # Duration of trail in minutes
+    post_trail_poi_count = 0  # Count POI added after trail (max 1-2 for short trails)
     
     # CLIENT REQUIREMENT (04.02.2026): Track kids-focused POI for daily limit
     kids_focused_count = 0  # Max 1/day for non-family groups
@@ -2107,15 +2183,137 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 print(f"[FILTER] HARD BLOCK kids POI for adult group: {poi_name_safe}")
                 continue  # SKIP entirely - not applicable for adult groups
             
+            # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #5): Trail limit per trip
+            # CRITICAL: Limit trails based on trip duration (prevent trail overload)
+            # Problem: No limits on trails (could have 5 trails in 3-day trip)
+            # Solution: Check global trail counter before allowing trail
+            #   - 2-3 days → max 1 trail
+            #   - 4-5 days → max 2 trails  
+            #   - 6-7 days → max 3 trails
+            #
+            if p.get("type") == "trail" and global_trail_tracking is not None:
+                trails_remaining = global_trail_tracking["max"] - global_trail_tracking["count"]
+                if trails_remaining <= 0:
+                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                    print(f"[TRAIL LIMIT] EXCLUDED trail: {poi_name_safe} - global limit reached "
+                          f"({global_trail_tracking['count']}/{global_trail_tracking['max']} trails used)")
+                    continue  # SKIP - trail limit reached for entire trip
+            
+            # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #7): Trail timing - morning only
+            # CRITICAL: Trails must start early (08:00-10:00) to avoid afternoon/evening starts
+            # Problem: Trails scheduled at wrong times (trail start 14:00, 16:00)
+            # Solution: HARD FILTER trails by time-of-day (block if now >= 10:00 AM)
+            #
+            # Rationale:
+            #   - Mountain trails require daylight and safe descent time
+            #   - Starting after 10 AM risks finishing in darkness (trails are 3-13h long)
+            #   - Weather safety: early starts avoid afternoon storms in mountains
+            #
+            if p.get("type") == "trail":
+                TRAIL_CUTOFF_TIME = 600  # 10:00 AM in minutes (08:00=480, 10:00=600)
+                if now >= TRAIL_CUTOFF_TIME:
+                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                    print(f"[TRAIL TIMING] EXCLUDED trail: {poi_name_safe} - too late in day "
+                          f"(now={minutes_to_time(now)}, cutoff=10:00)")
+                    continue  # SKIP - trails must start before 10:00 AM
+            
+            # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #6): Trail preference filtering
+            # CRITICAL: Trails should ONLY be included if user has hiking/mountain preferences
+            # Problem: Trails added to plans even for culture/food-focused travelers
+            # Solution: HARD FILTER trails by user preferences (not just scoring penalty)
+            #
+            # Trails are ONLY allowed if user has ANY of:
+            #   - "mountain_trails" preference
+            #   - "hiking" preference
+            #   - "active_sport" preference
+            #   - "outdoor" preference (weak match)
+            # OR target_group = "adventure_seekers" (hiking assumed)
+            #
+            if p.get("type") == "trail":
+                user_prefs = user.get("preferences", [])
+                target_group = user.get("target_group", "")
+                
+                # Required preferences for trails (strong matches)
+                strong_hiking_prefs = {"mountain_trails", "hiking", "active_sport"}
+                
+                # Weak preferences (outdoor alone is not enough unless adventure_seekers)
+                weak_hiking_prefs = {"outdoor", "nature"}
+                
+                has_strong_pref = bool(set(user_prefs) & strong_hiking_prefs)
+                has_weak_pref = bool(set(user_prefs) & weak_hiking_prefs)
+                is_adventure_group = target_group == "adventure_seekers"
+                
+                # Trail filtering logic:
+                # - Strong pref → always allow
+                # - Adventure_seekers + weak pref → allow (assume hiking interest)
+                # - Adventure_seekers alone → allow (group type implies hiking)
+                # - Weak pref alone → block (outdoor != mountain hiking)
+                # - No prefs → block
+                
+                trail_allowed = has_strong_pref or is_adventure_group
+                
+                if not trail_allowed:
+                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                    print(f"[TRAIL FILTER] EXCLUDED trail: {poi_name_safe} - no hiking preferences "
+                          f"(user_prefs={user_prefs}, group={target_group})")
+                    continue  # SKIP - user not interested in mountain trails
+            
+            # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #4): Trail day restrictions
+            # CRITICAL: After trail added, restrict remaining POI based on trail duration
+            # Problem: Days with trail get 5+ POI like regular days
+            # Solution:
+            #   - Max 1 trail per day (skip additional trails)
+            #   - Long trail (>=4h) → NO more POI (only lunch/dinner)
+            #   - Short trail (<4h) → max 1-2 LIGHT POI (<=60min each)
+            #
+            if trail_day_mode:
+                # Rule 1: Only 1 trail per day
+                if p.get("type") == "trail":
+                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                    print(f"[TRAIL DAY] EXCLUDED additional trail: {poi_name_safe} - already have trail today")
+                    continue
+                
+                # Rule 2: Long trail (>=4h) → NO more POI
+                if trail_duration >= 240:  # 4 hours in minutes
+                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                    print(f"[TRAIL DAY] EXCLUDED POI: {poi_name_safe} - long trail "
+                          f"({minutes_to_time(trail_duration)}) allows no additional attractions")
+                    continue
+                
+                # Rule 3: Short trail (<4h) → max 2 light POI (<=60min)
+                if trail_duration < 240:
+                    # Get RAW POI duration (not choose_duration which may shorten it)
+                    # Trail day requires NATURALLY SHORT POI (<=60min base duration)
+                    if p.get("type") == "trail":
+                        p_raw_duration = p.get("duration_min", 0)
+                    else:
+                        p_raw_duration = p.get("czas_zwiedzania_min", 0)
+                    
+                    # Skip long POI (>60min natural duration)
+                    if p_raw_duration > 60:
+                        poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                        print(f"[TRAIL DAY] EXCLUDED POI: {poi_name_safe} - naturally too long "
+                              f"({p_raw_duration}min > 60min) for short trail day")
+                        continue
+                    
+                    # Limit to max 2 light POI after trail
+                    if post_trail_poi_count >= 2:
+                        poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                        print(f"[TRAIL DAY] EXCLUDED POI: {poi_name_safe} - already have "
+                              f"{post_trail_poi_count}/2 light POI after trail")
+                        continue
+            
             # FEEDBACK KLIENTKI (03.02.2026) - HARD FILTERS
             # STEP 1: Target group hard filter
             if should_exclude_by_target_group(p, user):
-                print(f"[FILTER] EXCLUDED by target_group: {p.get('Name', 'Unknown')} (poi_id={poi_id(p)}) - user={user.get('target_group')}, poi_groups={p.get('target_groups', [])}, kids_only={p.get('kids_only', False)}")
+                poi_name_safe = str(p.get('Name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[FILTER] EXCLUDED by target_group: {poi_name_safe} (poi_id={poi_id(p)}) - user={user.get('target_group')}, poi_groups={p.get('target_groups', [])}, kids_only={p.get('kids_only', False)}")
                 continue  # EXCLUDE - target group mismatch
             
             # STEP 2: Intensity hard filter
             if should_exclude_by_intensity(p, user):
-                print(f"[FILTER] EXCLUDED by intensity: {p.get('Name', 'Unknown')} (poi_id={poi_id(p)}) - user={user.get('target_group')}, poi_intensity={p.get('intensity', 'unknown')}")
+                poi_name_safe = str(p.get('Name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[FILTER] EXCLUDED by intensity: {poi_name_safe} (poi_id={poi_id(p)}) - user={user.get('target_group')}, poi_intensity={p.get('intensity', 'unknown')}")
                 continue  # EXCLUDE - intensity conflict
             
             # FIX #7: Check core POI limit
@@ -2731,6 +2929,31 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             core_attraction_count += 1
         print(f"[LIMITS] Added attraction: {attraction_count}/{limits['hard']} total, {core_attraction_count}/{limits['core_max']} core")
         
+        # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #4): Trail day logic
+        # If trail added, set trail_day_mode and limit subsequent POI
+        if best.get("type") == "trail":
+            trail_day_mode = True
+            
+            # Use RAW trail duration for rule logic (not shortened choose_duration result)
+            # choose_duration may shorten long trail to fit schedule, but we need
+            # to know the REAL trail duration to apply correct restrictions
+            trail_raw_duration = best.get("duration_min", 0)
+            trail_duration = trail_raw_duration  # Use RAW for rules, not best_duration
+            
+            print(f"[TRAIL DAY] Trail added (RAW duration: {minutes_to_time(trail_raw_duration)}, "
+                  f"allocated: {minutes_to_time(best_duration)}) - "
+                  f"limiting subsequent POI based on {minutes_to_time(trail_raw_duration)}")
+            
+            # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #5): Increment global trail counter
+            if global_trail_tracking is not None:
+                global_trail_tracking["count"] += 1
+                print(f"[TRAIL LIMIT] Global trail count: {global_trail_tracking['count']}/{global_trail_tracking['max']}")
+        else:
+            # If trail_day_mode active and adding non-trail POI, increment counter
+            if trail_day_mode:
+                post_trail_poi_count += 1
+                print(f"[TRAIL DAY] Added light POI after trail: {post_trail_poi_count}/2")
+        
         # CLIENT REQUIREMENT (04.02.2026): Increment kids-focused counter for non-family
         user_group = user.get("target_group", "")
         if user_group in ['solo', 'couples', 'friends', 'seniors']:
@@ -2769,14 +2992,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     # Check if POI matches this preference
                     if poi_type in type_matches or poi_tags & tag_matches:
                         covered_preferences.add(pref)
-                        print(f"[PREFERENCE COVERAGE] ✓ Covered preference '{pref}' with {poi_name(best)}")
+                        print(f"[PREFERENCE COVERAGE] [OK] Covered preference '{pref}' with {poi_name(best)}")
             
             # Log coverage status
             uncovered = set(top_3_prefs) - covered_preferences
             if uncovered:
                 print(f"[PREFERENCE COVERAGE] Still uncovered: {uncovered}")
             else:
-                print(f"[PREFERENCE COVERAGE] ✓ All top 3 preferences covered!")
+                print(f"[PREFERENCE COVERAGE] [OK] All top 3 preferences covered!")
 
         # update kultur
         if is_culture(best):
@@ -2958,7 +3181,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                                 # Check if POI matches this preference
                                 if poi_type in type_matches or poi_tags & tag_matches:
                                     covered_preferences.add(pref)
-                                    print(f"[PREFERENCE COVERAGE] ✓ Covered preference '{pref}' with soft POI {poi_name(p)}")
+                                    print(f"[PREFERENCE COVERAGE] [OK] Covered preference '{pref}' with soft POI {poi_name(p)}")
                     
                     soft_filled = True
                     break  # Fill one soft POI per gap
@@ -3148,7 +3371,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             
                             if poi_type in type_matches or poi_tags & tag_matches:
                                 covered_preferences.add(pref)
-                                print(f"[PREFERENCE COVERAGE] ✓ Covered preference '{pref}' with gap filler {poi_name(soft_best)}")
+                                print(f"[PREFERENCE COVERAGE] [OK] Covered preference '{pref}' with gap filler {poi_name(soft_best)}")
                 
                 last_poi = soft_best
                 remaining_to_end = end - now

@@ -35,8 +35,23 @@ class TrailRepository:
             self.session.close()
     
     def get_all(self) -> List[TrailDB]:
-        """Get all trails (37 total)."""
-        return self.session.query(TrailDB).all()
+        """
+        Get all trails (37 total).
+        
+        BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #2):
+        Added validation to detect trails with suspiciously short durations.
+        Trails should have time_max >= 120 min (2 hours minimum for proper hike).
+        """
+        trails = self.session.query(TrailDB).all()
+        
+        # VALIDATION: Check for unrealistic trail durations
+        for trail in trails:
+            if trail.time_max < 120 and trail.difficulty_level in ["moderate", "hard", "extreme"]:
+                print(f"[TRAIL VALIDATION WARNING] {trail.trail_name} ({trail.difficulty_level}) "
+                      f"has suspiciously short duration: {trail.time_min}-{trail.time_max} min. "
+                      f"Moderate/Hard/Extreme trails should be >= 120 min.")
+        
+        return trails
     
     def get_by_id(self, trail_id: str) -> Optional[TrailDB]:
         """Get trail by ID."""

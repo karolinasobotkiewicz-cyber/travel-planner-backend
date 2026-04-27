@@ -53,17 +53,24 @@ class LocationInput(BaseModel):
             # Validate cluster exists
             cluster = DestinationClusters.get_cluster(self.city)
             if not cluster:
+                # Encode Polish characters safely for Windows console
+                city_safe = self.city.encode('ascii', errors='ignore').decode('ascii')
+                available_safe = str(DestinationClusters.get_all_cluster_names()).encode('ascii', errors='ignore').decode('ascii')
                 raise ValueError(
-                    f"Unknown cluster: '{self.city}'. "
-                    f"Available clusters: {DestinationClusters.get_all_cluster_names()}"
+                    f"Unknown cluster: '{city_safe}'. "
+                    f"Available clusters: {available_safe}"
                 )
         else:
             # Auto-detect if city belongs to cluster (warning, not error)
             if DestinationClusters.is_cluster_city(self.city):
                 cluster = DestinationClusters.get_cluster(self.city)
+                # Encode Polish characters safely for Windows console
+                city_safe = self.city.encode('ascii', errors='ignore').decode('ascii')
+                cluster_name_safe = cluster['name'].encode('ascii', errors='ignore').decode('ascii')
+                cities_safe = str(cluster['cities']).encode('ascii', errors='ignore').decode('ascii')
                 print(
-                    f"[LocationInput] NOTICE: '{self.city}' belongs to cluster '{cluster['name']}'. "
-                    f"Set is_cluster=True to plan across all cities: {cluster['cities']}"
+                    f"[LocationInput] NOTICE: '{city_safe}' belongs to cluster '{cluster_name_safe}'. "
+                    f"Set is_cluster=True to plan across all cities: {cities_safe}"
                 )
         
         return self
