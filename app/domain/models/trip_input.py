@@ -2,18 +2,34 @@
 Pydantic models dla trip input request.
 Reprezentuje dane wejściowe od klienta dla generowania planu podróży.
 """
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Optional, Any
 from datetime import date
 
 
 class LocationInput(BaseModel):
-    """Lokalizacja podróży."""
+    """
+    Lokalizacja podróży.
+    
+    ETAP 3 PHASE 7: Extended to support destination clusters (multi-city).
+    
+    Usage:
+        Single city:
+            LocationInput(city="Kraków", country="Poland")
+        
+        Cluster:
+            LocationInput(city="Trójmiasto", country="Poland", is_cluster=True)
+            → Will load POI from Gdańsk, Gdynia, Sopot
+    """
 
-    city: str = Field(..., min_length=1, description="Miasto docelowe")
+    city: str = Field(..., min_length=1, description="Miasto docelowe lub nazwa clustera (e.g., 'Trójmiasto')")
     country: str = Field(default="Poland", description="Kraj")
     region_type: Optional[str] = Field(
-        default=None, description="Typ regionu: mountain, sea, city"
+        default=None, description="Typ regionu: mountain, sea, city, urban, spa_region"
+    )
+    is_cluster: bool = Field(
+        default=False, 
+        description="PHASE 7: True if city is a destination cluster (e.g., Trójmiasto, Kotlina Kłodzka)"
     )
 
     @field_validator("city")
@@ -22,6 +38,35 @@ class LocationInput(BaseModel):
         if not v or not v.strip():
             raise ValueError("City cannot be empty")
         return v.strip()
+    
+    @model_validator(mode='after')
+    def validate_cluster(self):
+        """
+        Validate cluster configuration (PHASE 7).
+        
+        If is_cluster=True, check if city is valid cluster name.
+        If city belongs to cluster, suggest setting is_cluster=True.
+        """
+        from app.domain.config import DestinationClusters
+        
+        if self.is_cluster:
+            # Validate cluster exists
+            cluster = DestinationClusters.get_cluster(self.city)
+            if not cluster:
+                raise ValueError(
+                    f"Unknown cluster: '{self.city}'. "
+                    f"Available clusters: {DestinationClusters.get_all_cluster_names()}"
+                )
+        else:
+            # Auto-detect if city belongs to cluster (warning, not error)
+            if DestinationClusters.is_cluster_city(self.city):
+                cluster = DestinationClusters.get_cluster(self.city)
+                print(
+                    f"[LocationInput] NOTICE: '{self.city}' belongs to cluster '{cluster['name']}'. "
+                    f"Set is_cluster=True to plan across all cities: {cluster['cities']}"
+                )
+        
+        return self
 
 
 class GroupInput(BaseModel):

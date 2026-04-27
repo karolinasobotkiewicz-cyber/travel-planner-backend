@@ -74,7 +74,7 @@ class PlanService:
         day_end = params["day_end"]
         
         # ============================================================
-        # ETAP 3 PHASE 2: INTELLIGENT TRIP TYPE ROUTING
+        # ETAP 3 PHASE 2 + PHASE 7: INTELLIGENT TRIP TYPE ROUTING
         # ============================================================
         # Detect trip type and determine data sources
         router_config = detect_trip_type(trip_input)
@@ -89,27 +89,58 @@ class PlanService:
         print(f"  - Confidence: {router_config['confidence']:.2f}")
         print(f"  - Signals: {router_config['signals']}\n")
         
+        # PHASE 7: Check if cluster
+        is_cluster = router_config['trip_type'] == 'cluster'
+        cities_to_load = router_config.get('cities', [trip_input.location.city])  # Multi-city or single
+        
+        if is_cluster:
+            print(f"[PHASE 7] CLUSTER MODE ACTIVE")
+            print(f"  - Cluster: {router_config['region']}")
+            print(f"  - Cities to load: {cities_to_load}")
+            print(f"  - Cluster type: {router_config['cluster_config']['type'].value}\n")
+        
         # Load data from appropriate sources
         all_pois_dict = []
         
-        # Source 1: TrailDB (mountain hiking)
+        # Source 1: TrailDB (mountain hiking or mountain clusters like Karkonosze)
         if router_config["use_trails"]:
             try:
                 trail_repo = TrailRepository()
-                trails_db = trail_repo.get_by_region(router_config["region"])
-                trails_dict = [trail_repo.to_dict(trail) for trail in trails_db]
-                all_pois_dict.extend(trails_dict)
-                print(f"[ROUTER] Loaded {len(trails_dict)} trails from TrailDB (region: {router_config['region']})")
+                
+                if is_cluster:
+                    # PHASE 7: Load trails from all cluster cities
+                    for city in cities_to_load:
+                        region_name = self._normalize_region_for_trails(city)
+                        trails_db = trail_repo.get_by_region(region_name)
+                        trails_dict = [trail_repo.to_dict(trail) for trail in trails_db]
+                        all_pois_dict.extend(trails_dict)
+                        print(f"[ROUTER] Loaded {len(trails_dict)} trails from TrailDB (city: {city}, region: {region_name})")
+                else:
+                    # Single-city mode
+                    trails_db = trail_repo.get_by_region(router_config["region"])
+                    trails_dict = [trail_repo.to_dict(trail) for trail in trails_db]
+                    all_pois_dict.extend(trails_dict)
+                    print(f"[ROUTER] Loaded {len(trails_dict)} trails from TrailDB (region: {router_config['region']})")
             except Exception as e:
                 print(f"[ROUTER] WARNING: Failed to load trails: {e}")
         
-        # Source 2: POI Excel (city tourism - LEGACY for Zakopane)
+        # Source 2: POI Excel (city tourism or all clusters)
         if router_config["use_pois"]:
             try:
-                from app.infrastructure.repositories.load_zakopane import load_zakopane_poi
-                pois_excel = load_zakopane_poi(self.poi_repo.excel_path)
-                all_pois_dict.extend(pois_excel)
-                print(f"[ROUTER] Loaded {len(pois_excel)} POIs from Excel (legacy)")
+                if is_cluster:
+                    # PHASE 7: Load POI from all cluster cities (multi_city_attractions.xlsx)
+                    import os
+                    from app.infrastructure.repositories.load_multi_city import load_multi_city_poi
+                    multi_city_excel_path = os.path.join("data", "multi_city_attractions.xlsx")
+                    pois_excel = load_multi_city_poi(multi_city_excel_path, cities_to_load)
+                    all_pois_dict.extend(pois_excel)
+                    print(f"[ROUTER] Loaded {len(pois_excel)} POIs from Excel (CLUSTER: {cities_to_load})")
+                else:
+                    # Single-city mode (legacy)
+                    from app.infrastructure.repositories.load_zakopane import load_zakopane_poi
+                    pois_excel = load_zakopane_poi(self.poi_repo.excel_path)
+                    all_pois_dict.extend(pois_excel)
+                    print(f"[ROUTER] Loaded {len(pois_excel)} POIs from Excel (legacy)")
             except Exception as e:
                 print(f"[ROUTER] WARNING: Failed to load POIs: {e}")
         
@@ -118,13 +149,26 @@ class PlanService:
         if router_config["use_restaurants"]:
             try:
                 restaurant_repo = RestaurantRepository()
-                restaurants_db = restaurant_repo.get_by_city(router_config["region"])
-                # Store in context for meal planning (used later in _convert_engine_result_to_items)
-                context["restaurants_available"] = [restaurant_repo.to_dict(r) for r in restaurants_db]
-                print(f"[ROUTER] Loaded {len(restaurants_db)} restaurants from RestaurantDB (city: {router_config['region']})")
+                
+                if is_cluster:
+                    # PHASE 7: Load restaurants from all cluster cities
+                    all_restaurants = []
+                    for city in cities_to_load:
+                        restaurants_db = restaurant_repo.get_by_city(city)
+                        all_restaurants.extend([restaurant_repo.to_dict(r) for r in restaurants_db])
+                        print(f"[ROUTER] Loaded {len(restaurants_db)} restaurants from RestaurantDB (city: {city})")
+                    context["restaurants_available"] = all_restaurants
+                    print(f"[ROUTER] TOTAL restaurants for cluster: {len(all_restaurants)}")
+                else:
+                    # Single-city mode
+                    restaurants_db = restaurant_repo.get_by_city(router_config["region"])
+                    context["restaurants_available"] = [restaurant_repo.to_dict(r) for r in restaurants_db]
+                    print(f"[ROUTER] Loaded {len(restaurants_db)} restaurants from RestaurantDB (city: {router_config['region']})")
             except Exception as e:
                 print(f"[ROUTER] WARNING: Failed to load restaurants: {e}")
                 context["restaurants_available"] = []
+        else:
+            context["restaurants_available"] = []
         
         # Store router config in context for engine customization
         context["trip_type"] = router_config["trip_type"]
@@ -690,6 +734,33 @@ class PlanService:
         
         return items
 
+    def _normalize_region_for_trails(self, city: str) -> str:
+        """
+        PHASE 7: Map city name to trail region name.
+        
+        Args:
+            city: City name from cluster
+        
+        Returns:
+            Region name for TrailRepository.get_by_region()
+        
+        Example:
+            >>> self._normalize_region_for_trails("Karpacz")
+            'Karkonosze'
+            >>> self._normalize_region_for_trails("Zakopane")
+            'Tatry'
+        """
+        # Mountain region mappings
+        if city in ["Zakopane"]:
+            return "Tatry"
+        elif city in ["Kłodzko", "Polanica-Zdrój", "Kudowa-Zdrój"]:
+            return "Kotlina Kłodzka"
+        elif city in ["Karpacz", "Jelenia Góra", "Szklarska Poręba"]:
+            return "Karkonosze"
+        else:
+            # Return as-is if no mapping found
+            return city
+    
     def _generate_parking_item(
         self,
         poi_dict: Dict[str, Any],  # POI jako dict z engine

@@ -1,18 +1,25 @@
 """
-Trip Type Router - Intelligent detection of trip characteristics (ETAP 3 Phase 2).
+Trip Type Router - Intelligent detection of trip characteristics (ETAP 3 Phase 2 + Phase 7).
 
 Analyzes TripInput to determine:
-1. Trip category: city_tourism, mountain_hiking, mixed
+1. Trip category: city_tourism, mountain_hiking, mixed, cluster
 2. Data sources needed: POI, TrailDB, RestaurantDB
 3. Engine configuration: routing priorities, scoring weights
 
+**PHASE 7 (27.04.2026): Destination Clusters Support**
+- Detects multi-city clusters (Trójmiasto, Kotlina Kłodzka, Karkonosze)
+- Returns config with all cities in cluster for data loading
+- Applies cluster-specific scoring weights
+
 **Decision Logic:**
+- **Cluster flag set** → cluster (multi-city data loading)
 - **Mountain region + outdoor preferences** → mountain_hiking (TrailDB primary)
 - **City region + cultural preferences** → city_tourism (POI primary)
 - **Mixed signals** → mixed (both data sources)
 """
 from typing import Dict, Any, List
 from app.domain.models.trip_input import TripInput
+from app.domain.config import DestinationClusters  # PHASE 7
 
 
 class TripType:
@@ -20,6 +27,7 @@ class TripType:
     CITY_TOURISM = "city_tourism"      # POI + RestaurantDB
     MOUNTAIN_HIKING = "mountain_hiking"  # TrailDB + RestaurantDB
     MIXED = "mixed"                     # POI + TrailDB + RestaurantDB
+    CLUSTER = "cluster"                 # PHASE 7: Multi-city cluster (all data sources)
 
 
 class TripTypeRouter:
@@ -121,6 +129,47 @@ class TripTypeRouter:
         preferences = trip_input.preferences or []
         travel_style = trip_input.travel_style or "balanced"
         group_type = trip_input.group.type  # 'solo', 'couples', 'friends', 'family_kids', 'seniors'
+        is_cluster = trip_input.location.is_cluster  # PHASE 7: Multi-city cluster
+        
+        # ================================================================
+        # PHASE 7: CLUSTER DETECTION (Priority over single-city logic)
+        # ================================================================
+        if is_cluster:
+            cluster_config = DestinationClusters.get_cluster(location)
+            
+            if not cluster_config:
+                # Should not happen (LocationInput validator catches this)
+                # But handle gracefully
+                print(f"[ROUTER] WARNING: is_cluster=True but cluster '{location}' not found. Falling back to single-city.")
+            else:
+                # Return cluster configuration
+                print(f"[ROUTER] CLUSTER DETECTED: {cluster_config['name']}")
+                print(f"  - Cities: {cluster_config['cities']}")
+                print(f"  - Type: {cluster_config['type'].value}")
+                print(f"  - Total attractions: {cluster_config['total_attractions']}")
+                print(f"  - Total restaurants: {cluster_config['total_restaurants']}")
+                
+                return {
+                    "trip_type": TripType.CLUSTER,
+                    "use_trails": cluster_config["region_type"] == "mountain",  # Only for Karkonosze
+                    "use_pois": True,  # Always use POI for clusters
+                    "use_restaurants": True,  # Always use restaurants
+                    "primary_source": "pois",
+                    "region": cluster_config["name"],  # Cluster name (for logging)
+                    "cities": cluster_config["cities"],  # PHASE 7: List of cities to load data from
+                    "cluster_config": cluster_config,  # Full cluster config for PlanService
+                    "scoring_weights": cluster_config["scoring_weights"],  # Cluster-specific weights
+                    "confidence": 1.0,  # Perfect confidence (explicit cluster flag)
+                    "signals": {
+                        "cluster_type": cluster_config["type"].value,
+                        "cluster_name": cluster_config["name"],
+                        "cluster_cities": cluster_config["cities"],
+                    }
+                }
+        
+        # ================================================================
+        # SINGLE-CITY DETECTION (Original Phase 2 logic)
+        # ================================================================
         
         # Score signals
         mountain_score = 0.0
