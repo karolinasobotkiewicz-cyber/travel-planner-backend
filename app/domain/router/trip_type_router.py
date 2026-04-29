@@ -217,8 +217,21 @@ class TripTypeRouter:
         if mountain_score > city_score and mountain_score >= 2.0:
             trip_type = TripType.MOUNTAIN_HIKING
             use_trails = True
-            use_pois = False  # Don't mix unless explicitly needed
+            use_pois = True  # PHASE 8 FIX (28.04.2026): Enable POI for gap filling
+            # Even pure hiking trips need POI for: morning pre-trail (museums), post-trail (termy), bad weather backup
+            # Engine will prioritize trails (via scoring) but have POI available for timeline optimization
             primary_source = "trails"
+            
+            # PHASE 8 FIX (27.04.2026): Override for family_kids with POI-specific preferences
+            # Families need POIs (Termy, Zoo, museums) even in mountain regions
+            # Detect POI-only preferences: water_attractions, relaxation, cultural
+            poi_only_prefs = {"water_attractions", "relaxation", "cultural", "museums", "zoo", "theme_parks"}
+            if group_type == "family_kids" and (set(preferences) & poi_only_prefs):
+                use_pois = True  # Enable POIs for families wanting attractions
+                trip_type = TripType.MIXED  # Upgrade to MIXED
+                primary_source = "pois"  # Prioritize POIs over trails
+                print(f"[ROUTER] OVERRIDE: family_kids + POI preferences → enabled use_pois=True")
+                
         elif city_score > mountain_score and city_score >= 2.0:
             trip_type = TripType.CITY_TOURISM
             use_trails = False

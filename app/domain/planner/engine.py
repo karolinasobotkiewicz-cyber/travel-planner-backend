@@ -968,6 +968,83 @@ def poi_name(p):
     return p.get("name", "Unnamed")
 
 
+# PHASE 8 FEATURE #7 (27.04.2026): POI classifier (main vs filler)
+# Formula: weight = time(40%) + priority(30%) + popularity(20%) + type(10%)
+# If weight ≥ 6.0 → main attraction (główna atrakcja dnia)
+# If weight < 6.0 → filler (wypełniacz)
+def classify_poi_weight(p):
+    """
+    Classify POI as 'main' or 'filler' based on weighted formula.
+    
+    Weight components:
+    - Time: 40% weight, scaled 0-3.0 (60min=1.0, 90min=1.5, 180min=3.0)
+    - Priority: 30% weight (core=3.0, recommended=2.0, optional=1.0)
+    - Popularity: 20% weight, scaled 0-2.0 (popularity 0.0-1.0 → 0.0-2.0)
+    - Type: 10% weight (monument/castle=0.7, museum=0.6, viewpoint=0.4, playground=0.3)
+    
+    Returns:
+        (classification, weight, breakdown) where:
+        - classification: "main" or "filler"
+        - weight: float (0-10 range, threshold 6.0)
+        - breakdown: dict with component scores
+    """
+    # Component 1: Time (max 3.0 points) - 40% weight
+    # Scaling: 60min=1.0, 90min=1.5, 120min=2.0, 180min=3.0
+    time_min = safe_int(p.get("time_min", 60), 60)
+    time_score = min(3.0, time_min / 60.0)
+    
+    # Component 2: Priority (max 3.0 points) - 30% weight
+    # core=3.0, recommended=2.0, optional=1.0
+    priority_str = safe_str(p.get("priority", "optional")).lower()
+    if "core" in priority_str:
+        priority_score = 3.0
+    elif "recommend" in priority_str:
+        priority_score = 2.0
+    else:
+        priority_score = 1.0
+    
+    # Component 3: Popularity (max 2.0 points) - 20% weight
+    # Scaling: 0.0-1.0 → 0.0-2.0
+    popularity = safe_float(p.get("popularity", 0.0))
+    popularity_score = popularity * 2.0
+    
+    # Component 4: Type (max 1.0 point) - 10% weight
+    # monument/castle=0.7, museum=0.6, park=0.5, viewpoint=0.4, playground=0.3
+    poi_type = safe_str(p.get("type", "")).lower()
+    type_weights = {
+        "castle": 0.7, "zamek": 0.7,
+        "monument": 0.7, "pomnik": 0.7,
+        "cathedral": 0.65, "katedra": 0.65,
+        "museum": 0.6, "muzeum": 0.6,
+        "palace": 0.6, "pałac": 0.6,
+        "park": 0.5,
+        "viewpoint": 0.4, "punkt_widokowy": 0.4,
+        "restaurant": 0.3, "restauracja": 0.3,
+        "playground": 0.3, "plac_zabaw": 0.3,
+        "parking": 0.2,
+    }
+    type_score = 0.4  # default
+    for type_key, type_value in type_weights.items():
+        if type_key in poi_type:
+            type_score = type_value
+            break
+    
+    # Total weight (0-9.0 max: 3.0 + 3.0 + 2.0 + 1.0)
+    total_weight = time_score + priority_score + popularity_score + type_score
+    
+    # Classification threshold: ≥6.0 = main, <6.0 = filler
+    classification = "main" if total_weight >= 6.0 else "filler"
+    
+    breakdown = {
+        "time": time_score,
+        "priority": priority_score,
+        "popularity": popularity_score,
+        "type": type_score,
+    }
+    
+    return (classification, total_weight, breakdown)
+
+
 def is_culture(p):
     t = safe_str(p.get("type"))
     return any(
@@ -1496,12 +1573,52 @@ def score_poi(
                 print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: +{difficulty_boost:.1f} (family_kids: perfect easy trail)")
         
         elif target_group == "seniors":
-            # Seniors similar to families (avoid hard/extreme)
+            # PHASE 8 FEATURE #3 (27.04.2026): Elastic trail rules for seniors
+            # Default: Only easy trails
+            # Moderate allowed ONLY if ALL: elevation ≤200m, length ≤4km, duration ≤120min, exposure=low
+            
             if difficulty_level in ["hard", "extreme"]:
+                # STRICT: Block hard/extreme trails
                 difficulty_penalty = -150.0
                 score += difficulty_penalty
                 print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: {difficulty_penalty:.1f} (seniors cannot do {difficulty_level} trails)")
+            
+            elif difficulty_level == "moderate":
+                # PHASE 8 FEATURE #3: Elastic moderate rules
+                # Check if trail meets ALL relaxed criteria
+                elevation_gain = p.get("elevation_gain_m", 0)
+                length_km = p.get("length_km", 0.0)
+                duration_min = p.get("duration_min", 0)
+                exposure = str(p.get("exposure_level", "low")).lower()
+                
+                meets_elevation = elevation_gain <= 200  # ≤200m climb
+                meets_length = length_km <= 4.0  # ≤4km distance
+                meets_duration = duration_min <= 120  # ≤2h time
+                meets_exposure = exposure == "low"  # Low exposure only
+                
+                if meets_elevation and meets_length and meets_duration and meets_exposure:
+                    # ALLOW: Moderate trail meets all relaxed criteria
+                    difficulty_boost = 5.0  # Small boost (less than easy)
+                    score += difficulty_boost
+                    print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: +{difficulty_boost:.1f} "
+                          f"(seniors: moderate trail ALLOWED - relaxed criteria met: "
+                          f"elevation={elevation_gain}m≤200, length={length_km:.1f}km≤4, "
+                          f"duration={duration_min}min≤120, exposure={exposure})")
+                else:
+                    # BLOCK: Moderate trail too demanding
+                    difficulty_penalty = -80.0  # Strong penalty
+                    score += difficulty_penalty
+                    failed_criteria = []
+                    if not meets_elevation: failed_criteria.append(f"elevation={elevation_gain}m>200")
+                    if not meets_length: failed_criteria.append(f"length={length_km:.1f}km>4")
+                    if not meets_duration: failed_criteria.append(f"duration={duration_min}min>120")
+                    if not meets_exposure: failed_criteria.append(f"exposure={exposure}≠low")
+                    
+                    print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: {difficulty_penalty:.1f} "
+                          f"(seniors: moderate trail too demanding - failed: {', '.join(failed_criteria)})")
+            
             elif difficulty_level == "easy":
+                # BOOST: Reward easy trails for seniors
                 difficulty_boost = 15.0
                 score += difficulty_boost
                 print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: +{difficulty_boost:.1f} (seniors: perfect easy trail)")
@@ -1659,6 +1776,47 @@ def score_poi(
                 elevation_boost = 12.0 * elevation_multiplier
                 score += elevation_boost
                 print(f"    [TRAIL ELEVATION] {poi_name_safe}: +{elevation_boost:.1f} (friends: challenging climb {elevation_gain}m, elevation_bonus={elevation_multiplier})")
+    
+    # PHASE 8 FEATURE #6 (27.04.2026): 3-tier POI fallback system
+    # Problem: Small cities (Sopot, Kudowa) have few POI matching ALL user preferences
+    # Solution: Apply tier-based multiplier based on preference match percentage
+    #   Tier 1: Target + ALL preferences (100% match) → score × 1.0 (no change)
+    #   Tier 2: Target + ≥50% preferences → score × 0.8
+    #   Tier 3: Only target, <50% preferences → score × 0.6
+    # This ensures small cities still get POI, but preference-matching POI ranked higher
+    
+    user_preferences = user.get("preferences", [])
+    
+    if user_preferences:
+        # Calculate preference match percentage
+        poi_tags = set(p.get("tags", []))
+        matched_preferences = set(user_preferences) & poi_tags
+        match_percentage = len(matched_preferences) / len(user_preferences) if user_preferences else 0.0
+        
+        # Determine tier and apply multiplier
+        if match_percentage >= 1.0:
+            # Tier 1: ALL preferences match
+            tier = 1
+            multiplier = 1.0
+            tier_name = "TIER 1 (100% match)"
+        elif match_percentage >= 0.5:
+            # Tier 2: ≥50% preferences match
+            tier = 2
+            multiplier = 0.8
+            tier_name = f"TIER 2 ({match_percentage*100:.0f}% match)"
+        else:
+            # Tier 3: <50% preferences match (only target group matches)
+            tier = 3
+            multiplier = 0.6
+            tier_name = f"TIER 3 ({match_percentage*100:.0f}% match)"
+        
+        # Apply tier multiplier
+        if multiplier < 1.0:
+            original_score = score
+            score *= multiplier
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [3-TIER FALLBACK] {poi_name_safe}: {original_score:.1f} → {score:.1f} "
+                  f"({tier_name}, matched: {matched_preferences}, user wants: {user_preferences})")
 
     return score
 
@@ -1850,9 +2008,51 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #4): Track trail day mode
     # Problem: Trails treated like regular POI (trail + 5 POI + lunch + dinner)
     # Solution: Trail = main activity, limit subsequent POI based on trail duration
+    # PHASE 8 FEATURE #2 (27.04.2026): Elastic trail day rules based on difficulty
+    #   - Heavy trail (hard/extreme, 4-5h): ONLY trail (max_poi_after = 0)
+    #   - Moderate trail (moderate, 3-4h): trail + max 1 light POI (max_poi_after = 1)
+    #   - Light trail (easy, <3h): trail + max 2 light POI (max_poi_after = 2)
     trail_day_mode = False  # True after first trail added
     trail_duration = 0      # Duration of trail in minutes
-    post_trail_poi_count = 0  # Count POI added after trail (max 1-2 for short trails)
+    trail_difficulty = ""   # Difficulty level: easy, moderate, hard, extreme (PHASE 8 #2)
+    max_poi_after_trail = 0  # Dynamic limit based on difficulty (PHASE 8 #2)
+    post_trail_poi_count = 0  # Count POI added after trail
+    
+    # PHASE 8 FEATURE #5 (27.04.2026): Driving time limits per cluster type
+    # Limits prevent excessive driving time (users don't want 3+ hours/day in car)
+    total_drive_time = 0  # Total driving minutes for this day
+    
+    # Get cluster type from context signals (set by router) or default to standalone_city
+    signals = context.get("signals", {})
+    cluster_type = signals.get("cluster_type", "standalone_city")
+    
+    # Define limits based on cluster type
+    DRIVE_LIMITS = {
+        "urban_organism": {"daily": 90, "single": 30},     # Trójmiasto: public transport
+        "regional_cluster": {"daily": 120, "single": 40},  # Kotlina: longer drives OK
+        "radius_based": {"daily": 90, "single": 35},       # Karkonosze: narrow mountain roads
+        "standalone_city": {"daily": 60, "single": 25}     # Kraków: minimal driving
+    }
+    
+    # Get limits for current cluster (default to standalone_city if unknown)
+    limits = DRIVE_LIMITS.get(cluster_type, DRIVE_LIMITS["standalone_city"])
+    max_daily_drive = limits["daily"]
+    max_single_drive = limits["single"]
+    
+    # BUGFIX (28.04.2026 - PHASE 8 TRAIL ROUTING FIX #9):
+    # CRITICAL: Relax drive limits for mountain_hiking to allow distant trailheads
+    # Problem: Heavy mountain trails (4-5h) need 26-40min drive from city center,
+    #          but standalone_city limits (max 25min single) exclude them all
+    # Solution: For mountain_hiking trips, use regional_cluster limits (40min single)
+    #          to allow access to major trailheads (Morskie Oko, Kościelisko, etc.)
+    # Rationale: Users booking mountain_hiking EXPECT longer drives to trailheads
+    trip_type = context.get("trip_type", "")
+    if trip_type == "mountain_hiking":
+        max_daily_drive = DRIVE_LIMITS["regional_cluster"]["daily"]  # 120min daily
+        max_single_drive = DRIVE_LIMITS["regional_cluster"]["single"]  # 40min single
+    
+    print(f"[DRIVE LIMITS] Cluster: {cluster_type}, max daily: {max_daily_drive}min, max single: {max_single_drive}min")
+    post_trail_poi_count = 0  # Count POI added after trail
     
     # CLIENT REQUIREMENT (04.02.2026): Track kids-focused POI for daily limit
     kids_focused_count = 0  # Max 1/day for non-family groups
@@ -2259,12 +2459,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     continue  # SKIP - user not interested in mountain trails
             
             # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #4): Trail day restrictions
-            # CRITICAL: After trail added, restrict remaining POI based on trail duration
-            # Problem: Days with trail get 5+ POI like regular days
+            # PHASE 8 FEATURE #2 (27.04.2026): Elastic trail day rules based on difficulty
+            # CRITICAL: After trail added, restrict remaining POI based on trail difficulty + duration
             # Solution:
             #   - Max 1 trail per day (skip additional trails)
-            #   - Long trail (>=4h) → NO more POI (only lunch/dinner)
-            #   - Short trail (<4h) → max 1-2 LIGHT POI (<=60min each)
+            #   - Heavy trail (hard/extreme, 4-5h) → NO more POI (only lunch/dinner)
+            #   - Moderate trail (moderate, 3-4h) → max 1 LIGHT POI (<=60min)
+            #   - Light trail (easy, <3h) → max 2 LIGHT POI (<=60min each)
             #
             if trail_day_mode:
                 # Rule 1: Only 1 trail per day
@@ -2273,15 +2474,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     print(f"[TRAIL DAY] EXCLUDED additional trail: {poi_name_safe} - already have trail today")
                     continue
                 
-                # Rule 2: Long trail (>=4h) → NO more POI
-                if trail_duration >= 240:  # 4 hours in minutes
+                # PHASE 8 FEATURE #2: Rule 2 - Dynamic POI limit based on trail difficulty
+                # Heavy trail (max_poi_after_trail = 0) → NO more POI
+                if max_poi_after_trail == 0:
                     poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-                    print(f"[TRAIL DAY] EXCLUDED POI: {poi_name_safe} - long trail "
-                          f"({minutes_to_time(trail_duration)}) allows no additional attractions")
+                    print(f"[TRAIL DAY] EXCLUDED POI: {poi_name_safe} - heavy trail "
+                          f"(difficulty={trail_difficulty}, {minutes_to_time(trail_duration)}) allows no additional attractions")
                     continue
                 
-                # Rule 3: Short trail (<4h) → max 2 light POI (<=60min)
-                if trail_duration < 240:
+                # PHASE 8 FEATURE #2: Rule 3 - Moderate/Light trail → max 1-2 light POI (<=60min)
+                if max_poi_after_trail > 0:
                     # Get RAW POI duration (not choose_duration which may shorten it)
                     # Trail day requires NATURALLY SHORT POI (<=60min base duration)
                     if p.get("type") == "trail":
@@ -2293,14 +2495,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if p_raw_duration > 60:
                         poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                         print(f"[TRAIL DAY] EXCLUDED POI: {poi_name_safe} - naturally too long "
-                              f"({p_raw_duration}min > 60min) for short trail day")
+                              f"({p_raw_duration}min > 60min) for trail day")
                         continue
                     
-                    # Limit to max 2 light POI after trail
-                    if post_trail_poi_count >= 2:
+                    # PHASE 8 FEATURE #2: Limit to max_poi_after_trail (1 for moderate, 2 for light)
+                    if post_trail_poi_count >= max_poi_after_trail:
                         poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                         print(f"[TRAIL DAY] EXCLUDED POI: {poi_name_safe} - already have "
-                              f"{post_trail_poi_count}/2 light POI after trail")
+                              f"{post_trail_poi_count}/{max_poi_after_trail} light POI after {trail_difficulty} trail")
                         continue
             
             # FEEDBACK KLIENTKI (03.02.2026) - HARD FILTERS
@@ -2398,6 +2600,23 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # New: 22 min = -11 penalty (strong preference for nearby)
             score -= travel * 0.5
             
+            # BUGFIX (28.04.2026 - PHASE 8 TRAIL ROUTING): Trail priority boost for mountain_hiking
+            # CRITICAL: Trails must be selected BEFORE cutoff time (10:00 AM)
+            # Problem: Engine selects high-scoring POI (termy, zoo) first, then `now` exceeds 10:00
+            #          Trail cutoff filter blocks all trails → 0 trails in plan
+            # Solution: Massive boost for trails in mountain_hiking BEFORE cutoff time
+            #          Ensures trails selected first (early morning) before other POI
+            trip_type = context.get("trip_type", "")
+            is_trail = p.get("type") == "trail"
+            TRAIL_CUTOFF = 600  # 10:00 AM in minutes
+            
+            if is_trail and trip_type == "mountain_hiking" and now < TRAIL_CUTOFF:
+                trail_early_boost = 300  # PHASE 8 FIX #5: Increased 150->300 to beat variety randomness
+                score += trail_early_boost
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[TRAIL PRIORITY] +{trail_early_boost} boost for trail: {poi_name_safe} "
+                      f"(mountain_hiking mode, now={minutes_to_time(now)} < 10:00)")
+            
             # FIX #7 (02.02.2026): Soft limit penalty
             # After soft limit, heavily penalize additional attractions
             if attraction_count >= limits["soft"]:
@@ -2448,8 +2667,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         # (not just 1% threshold) to enable rotation among top core POI
         # This prevents always selecting same high-scoring core (e.g., Morskie Oko)
         if best:
+            # BUGFIX (28.04.2026 - PHASE 8 TRAIL ROUTING FIX #4):
+            # CRITICAL: Skip core rotation for mountain_hiking to allow trails in main loop
+            # Problem: Core rotation selects museums/termy FIRST (priority_level=12), 
+            #          trails never selected because they lack core status
+            # Solution: For mountain_hiking trips, skip core rotation → trails compete 
+            #          in main loop where they have +150 boost → higher selection chance
+            # Rationale: Trails should be PRIMARY attraction for mountain_hiking, not museums
+            trip_type = context.get("trip_type", "")
+            skip_core_rotation = (trip_type == "mountain_hiking")
+            
             # Check if we need to select a core POI
-            if core_attraction_count < limits.get("core_min", 1):
+            if core_attraction_count < limits.get("core_min", 1) and not skip_core_rotation:
                 # CORE POI ROTATION LOGIC
                 # Collect ALL viable core POI candidates to enable rotation
                 core_candidates = []
@@ -2518,6 +2747,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         body_state=body_state, finale_done=finale_done,
                         daily_cost=daily_cost, daily_limit=daily_limit,  # FIX #14
                     )
+                    
+                    # BUGFIX (28.04.2026 - PHASE 8 TRAIL ROUTING): Trail priority boost in core rotation
+                    # CRITICAL: Apply same trail boost here as in main selection loop
+                    trip_type = ctx.get("trip_type", "")
+                    is_trail = p.get("type") == "trail"
+                    TRAIL_CUTOFF = 600  # 10:00 AM
+                    
+                    if is_trail and trip_type == "mountain_hiking" and start_time < TRAIL_CUTOFF:
+                        trail_early_boost = 300  # PHASE 8 FIX #5: Same as main loop (150->300)
+                        score += trail_early_boost
+                        poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                        print(f"[CORE ROTATION TRAIL] +{trail_early_boost} boost for trail: {poi_name_safe}")
                     
                     score += 50  # Core boost (same as main loop)
                     score -= travel * 0.5
@@ -2619,6 +2860,20 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     
                     score -= travel * 0.5
                     
+                    # BUGFIX (28.04.2026 - PHASE 8 TRAIL ROUTING FIX #6):
+                    # CRITICAL: Apply trail boost in variety logic (else branch)
+                    # Problem: When core rotation skipped (mountain_hiking), variety logic
+                    #          recalculates scores WITHOUT trail boost → trails lose advantage
+                    # Solution: Add same trail boost here as in main loop (+300)
+                    trip_type_variety = context.get("trip_type", "")  # Use 'context', not 'ctx'
+                    is_trail_variety = p.get("type") == "trail"
+                    TRAIL_CUTOFF_VARIETY = 600  # 10:00 AM
+                    
+                    if is_trail_variety and trip_type_variety == "mountain_hiking" and start_time < TRAIL_CUTOFF_VARIETY:
+                        trail_early_boost = 300  # Same as main loop and core rotation
+                        score += trail_early_boost
+                        # Debug print removed to avoid spam - already printed in main loop
+                    
                     if attraction_count >= limits["soft"]:
                         score -= 50
                     
@@ -2633,7 +2888,38 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 
                 # Randomize selection from top candidates
                 if len(candidates) > 1:
-                    selected = random.choice(candidates)
+                    # BUGFIX (28.04.2026 - PHASE 8 TRAIL ROUTING FIX #7):
+                    # CRITICAL: Don't randomize if trails have highest score
+                    # Problem: Trails get +300 boost → highest score, but random.choice()
+                    #          picks random candidate (may be non-trail with low score)
+                    # Solution: For mountain_hiking, if top candidate is trail, select it
+                    #          (disable variety randomness for trails)
+                    trip_type_selection = context.get("trip_type", "")
+                    trail_count_in_candidates = sum(1 for c in candidates if c["poi"].get("type") == "trail")
+                    
+                    # DEBUG (28.04.2026): Verify Fix #7 executing
+                    print(f"[FIX #7 CHECK] trip_type='{trip_type_selection}', trails={trail_count_in_candidates}/{len(candidates)}")
+                    
+                    if trip_type_selection == "mountain_hiking" and trail_count_in_candidates > 0:
+                        # Sort by score descending and check if top is trail
+                        sorted_candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)
+                        top_candidate = sorted_candidates[0]
+                        top_is_trail = top_candidate["poi"].get("type") == "trail"
+                        print(f"[FIX #7 CHECK] Top POI type={top_candidate['poi'].get('type')}, is_trail={top_is_trail}, score={top_candidate['score']:.1f}")
+                        
+                        if top_is_trail:
+                            # Top is trail → select it (no randomness)
+                            selected = top_candidate
+                            poi_name_safe = str(top_candidate["poi"].get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                            print(f"[TRAIL FORCED] Top is trail → selected at now={minutes_to_time(now)}: {poi_name_safe} (score={top_candidate['score']:.1f})")
+                        else:
+                            # Top is not trail → normal randomness
+                            selected = random.choice(candidates)
+                            print(f"[VARIETY] Top NOT trail → random selection")
+                    else:
+                        # Normal randomness for non-mountain or no trails
+                        selected = random.choice(candidates)
+                    
                     best = selected["poi"]
                     best_score = selected["score"]
                     best_travel = selected["travel"]
@@ -2789,6 +3075,29 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         transfer_time = (
             max(best_travel, MIN_TRANSFER_MIN) if last_poi else 0
         )
+        
+        # PHASE 8 FEATURE #5 (27.04.2026): Check driving time limits BEFORE adding transfer
+        # Prevent excessive driving time (users don't want 3+ hours/day in car)
+        if last_poi and transfer_time >= 10:  # Only count car drives (>=10 min)
+            # Check single drive limit
+            if transfer_time > max_single_drive:
+                poi_name_safe = str(poi_name(best)).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[DRIVE LIMIT] EXCLUDED POI: {poi_name_safe} - single drive too long "
+                      f"({transfer_time}min > {max_single_drive}min limit for {cluster_type})")
+                # BUGFIX (28.04.2026 - PHASE 8 INFINITE LOOP FIX #8):
+                # CRITICAL: Mark POI as used before continue to prevent retry loop
+                used.add(poi_id(best))
+                continue
+            
+            # Check daily drive limit
+            if total_drive_time + transfer_time > max_daily_drive:
+                poi_name_safe = str(poi_name(best)).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[DRIVE LIMIT] EXCLUDED POI: {poi_name_safe} - would exceed daily drive limit "
+                      f"({total_drive_time + transfer_time}min > {max_daily_drive}min for {cluster_type})")
+                # BUGFIX (28.04.2026 - PHASE 8 INFINITE LOOP FIX #8):
+                # CRITICAL: Mark POI as used before continue to prevent retry loop
+                used.add(poi_id(best))
+                continue
 
         # BUGFIX (17.02.2026): Check if POI + buffers would exceed day_end
         # Estimate buffer time: parking_walk (~5 min) + restroom (~5-10 min) + photo_stop (~10 min) = ~20-25 min
@@ -2812,6 +3121,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             )
 
             now += transfer_time
+            
+            # PHASE 8 FEATURE #5 (27.04.2026): Track total drive time for daily limit
+            if transfer_time >= 10:  # Only count car drives
+                total_drive_time += transfer_time
+                print(f"[DRIVE TRACKING] Added {transfer_time}min drive, total today: {total_drive_time}min / {max_daily_drive}min")
             
             # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #4): Add parking_walk buffer after car transfer
             # Client requirement: "Oś czasu ma dziury" - dodaj buffer parking_walk po transfer
@@ -2855,6 +3169,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             used.add(poi_id(best))
             now += 15  # Advance time slightly
             continue
+        
+        # PHASE 8 FEATURE #7 (27.04.2026): Classify POI as main/filler
+        poi_classification, poi_weight, poi_weight_breakdown = classify_poi_weight(best)
 
         plan.append(
             {
@@ -2867,9 +3184,20 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     "experience_role": best.get("experience_role"),
                     "is_culture": bool(is_culture(best)),
                     "body_state_after": get_next_body_state(best, body_state),
+                    "poi_class": poi_classification,  # PHASE 8 FEATURE #7: "main" or "filler"
+                    "poi_weight": round(poi_weight, 2),  # PHASE 8 FEATURE #7: classification weight
                 },
             }
         )
+        
+        # PHASE 8 FEATURE #7: Log POI classification
+        poi_name_safe = str(poi_name(best)).encode('ascii', errors='ignore').decode('ascii')
+        print(f"[POI CLASS] {poi_name_safe}: {poi_classification.upper()} "
+              f"(weight={poi_weight:.1f}, "
+              f"time={poi_weight_breakdown['time']:.1f}, "
+              f"priority={poi_weight_breakdown['priority']:.1f}, "
+              f"popularity={poi_weight_breakdown['popularity']:.1f}, "
+              f"type={poi_weight_breakdown['type']:.1f})")
 
         # HOTFIX #10.7: Debug logging - track which POI engine adds
         print(f"[ENGINE SELECTION] ADDED POI: id={poi_id(best)}, time={minutes_to_time(now)}")
@@ -2930,6 +3258,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         print(f"[LIMITS] Added attraction: {attraction_count}/{limits['hard']} total, {core_attraction_count}/{limits['core_max']} core")
         
         # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #4): Trail day logic
+        # PHASE 8 FEATURE #2 (27.04.2026): Elastic trail day rules based on difficulty
         # If trail added, set trail_day_mode and limit subsequent POI
         if best.get("type") == "trail":
             trail_day_mode = True
@@ -2940,9 +3269,26 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             trail_raw_duration = best.get("duration_min", 0)
             trail_duration = trail_raw_duration  # Use RAW for rules, not best_duration
             
-            print(f"[TRAIL DAY] Trail added (RAW duration: {minutes_to_time(trail_raw_duration)}, "
-                  f"allocated: {minutes_to_time(best_duration)}) - "
-                  f"limiting subsequent POI based on {minutes_to_time(trail_raw_duration)}")
+            # PHASE 8 FEATURE #2: Get trail difficulty for elastic rules
+            trail_difficulty = best.get("difficulty_level", "moderate").lower()
+            
+            # PHASE 8 FEATURE #2: Determine max POI after trail based on difficulty + duration
+            # Heavy trail (hard/extreme, 4-5h): ONLY trail (0 POI after)
+            # Moderate trail (moderate, 3-4h): trail + max 1 light POI
+            # Light trail (easy, <3h): trail + max 2 light POI
+            if trail_difficulty in ["hard", "extreme"] or trail_raw_duration >= 240:
+                max_poi_after_trail = 0  # No POI after heavy/long trails
+                trail_category = "heavy"
+            elif trail_difficulty == "moderate" or trail_raw_duration >= 180:
+                max_poi_after_trail = 1  # Max 1 POI after moderate trails
+                trail_category = "moderate"
+            else:  # easy or <3h
+                max_poi_after_trail = 2  # Max 2 POI after light trails
+                trail_category = "light"
+            
+            print(f"[TRAIL DAY] Trail added (difficulty={trail_difficulty}, RAW duration: {minutes_to_time(trail_raw_duration)}, "
+                  f"allocated: {minutes_to_time(best_duration)}, category={trail_category}) - "
+                  f"limiting subsequent POI: max {max_poi_after_trail} light attractions")
             
             # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #5): Increment global trail counter
             if global_trail_tracking is not None:
@@ -2952,7 +3298,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # If trail_day_mode active and adding non-trail POI, increment counter
             if trail_day_mode:
                 post_trail_poi_count += 1
-                print(f"[TRAIL DAY] Added light POI after trail: {post_trail_poi_count}/2")
+                print(f"[TRAIL DAY] Added light POI after {trail_difficulty} trail: {post_trail_poi_count}/{max_poi_after_trail}")
         
         # CLIENT REQUIREMENT (04.02.2026): Increment kids-focused counter for non-family
         user_group = user.get("target_group", "")
