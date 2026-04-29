@@ -454,22 +454,19 @@ class PlanService:
                 first_attraction = item
                 break
         
-        if has_car and first_attraction:
-            # BUGFIX: Parking musi kończyć się PRZED pierwszą atrakcją
-            # attraction_start = parking_end + walk_time
-            first_attr_start = first_attraction.get("start_time", day_start)
-            
-            # BUGFIX (31.01.2026 - Problem #2): Pass POI dict, not engine attraction item
-            # first_attraction = {"type": "attraction", "poi": {...}, "start_time": "..."}
-            # parking_item needs POI data for parking_address, parking_lat, parking_lng
-            first_poi = first_attraction.get("poi", {})
-            
-            parking_item = self._generate_parking_item(
-                first_poi,  # Pass POI dict with parking data
-                day_start,
-                first_attr_start  # Pass first attraction start time
-            )
-            items.append(parking_item)
+        # PHASE 8 Feature #1: PARKING AS INFO ONLY (not separate waypoint)
+        # REMOVED: ParkingItem creation at day start
+        # Parking info is now embedded in AttractionItem (ParkingInfo object)
+        # Backend uses parking data technically for walk_time calculations
+        # Frontend displays parking as info, not as separate timeline item
+        # 
+        # OLD CODE (pre-Phase 8):
+        # if has_car and first_attraction:
+        #     first_poi = first_attraction.get("poi", {})
+        #     parking_item = self._generate_parking_item(
+        #         first_poi, day_start, first_attr_start
+        #     )
+        #     items.append(parking_item)
         
         # 3. KONWERTUJ ITEMS Z ENGINE
         lunch_added = False  # Track czy engine dodał lunch
@@ -492,11 +489,27 @@ class PlanService:
             
             elif item_type == "lunch_break":
                 # 4. LUNCH_BREAK (4.12) - z engine
+                lunch_start = item.get("start_time", "12:00")
+                lunch_end = item.get("end_time", "13:30")
+                lunch_duration = item.get("duration_min", 90)
+                
+                # PHASE 8 FEATURE #4: Add meal buffer (10 min for finding restaurant, waiting for table)
+                # Adjust lunch start time back by 10 min to account for prep time
+                from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+                lunch_start_min = time_to_minutes(lunch_start)
+                buffered_lunch_start_min = lunch_start_min - 10
+                buffered_lunch_start = minutes_to_time(buffered_lunch_start_min)
+                
+                # Update duration to include buffer
+                lunch_duration += 10
+                
+                print(f"[TIMING BUFFERS] Lunch: +10min meal buffer (find restaurant, wait for table)")
+                
                 lunch_item = LunchBreakItem(
                     type=ItemType.LUNCH_BREAK,
-                    start_time=item.get("start_time", "12:00"),
-                    end_time=item.get("end_time", "13:30"),
-                    duration_min=item.get("duration_min", 90),  # Add duration_min from engine
+                    start_time=buffered_lunch_start,
+                    end_time=lunch_end,
+                    duration_min=lunch_duration,
                     suggestions=item.get("suggestions", [
                         "Restauracja w centrum",
                         "Food court",
@@ -552,69 +565,52 @@ class PlanService:
                     location_changed = True
                     # DEBUG: print(f"[PARKING DEBUG] {poi.get('Name')}: no prev location, assuming changed=True")
                 
-                # FIX #3.1: Removed current_parking_name requirement
-                # Create parking for ANY location change with car, even without parking_name in POI
+                # PHASE 8 Feature #1: Parking timing adjustment (no waypoint creation)
+                # Backend uses parking data for walk_time calculation
+                # But ParkingItem is NOT created as separate timeline waypoint
+                attr_start_time = item.get("start_time")  # Default: use engine time
+                
                 if (has_car and 
                     first_attraction_index > 0 and 
                     location_changed):
                     
-                    # Generate parking item before this attraction
+                    # Calculate adjusted attraction start time (accounting for parking + walk)
+                    # This ensures timeline realism even without ParkingItem waypoint
                     attr_start_time_orig = item.get("start_time")
                     
-                    # Calculate parking start: attraction_start - parking_duration - walk_time
                     from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
                     
-                    parking_duration = 15
+                    parking_duration = 15  # Backend assumption
                     walk_time_raw = poi.get("parking_walk_time_min")
                     walk_time = int(walk_time_raw) if walk_time_raw and walk_time_raw > 0 else 5
                     
                     attr_start_min = time_to_minutes(attr_start_time_orig)
                     parking_start_min = attr_start_min - parking_duration - walk_time
                     
-                    # BUGFIX (19.02.2026 - UAT Round 2, Bug #1): Parking overlap with transit
-                    # Ensure parking starts AFTER transit ends (never before/during transit!)
+                    # BUGFIX: Ensure parking starts AFTER transit ends
                     if items:
                         last_item = items[-1]
                         if last_item.type == ItemType.TRANSIT:
                             transit_end_min = time_to_minutes(last_item.end_time)
                             if parking_start_min < transit_end_min:
-                                # Overlap detected! Move parking to start right after transit
                                 parking_start_min = transit_end_min
                     
-                    # FIX #2 (20.02.2026 - UAT Round 3): CASCADE UPDATE
-                    # Problem: Round 2 fix adjusted parking_start but NOT attraction_start
-                    # Result: parking moved forward but attraction stayed → OVERLAP!
-                    # Solution: ALWAYS recalculate attraction start from actual parking times
-                    # Formula: attraction.start = parking.end + walk_time
+                    # CASCADE UPDATE: Recalculate attraction start from actual parking times
                     parking_end_min = parking_start_min + parking_duration
                     attr_start_min = parking_end_min + walk_time
                     attr_start_time = minutes_to_time(attr_start_min)  # Corrected start time
                     
-                    parking_start = minutes_to_time(parking_start_min)
-                    
-                    # Generate parking item
-                    parking_item = self._generate_parking_item(
-                        poi,
-                        parking_start,
-                        attr_start_time  # Use corrected time (includes walk_time!)
-                    )
-                    items.append(parking_item)
                     last_parking_name = current_parking_name
-                else:
-                    # No parking created for this attraction - use original engine time
-                    attr_start_time = item.get("start_time")
                 
                 # 5. ATTRACTION (4.11 - z cost estimation)
                 
                 # BUGFIX: Correct first attraction timing if parking exists
-                # FIX #2: Only adjust if this is first attraction (attr_start_time may already be set above)
+                # FIX #2: Only adjust if this is first attraction
                 if first_attraction_index == 0 and has_car and first_attraction:
                     # First attraction with parking - adjust start time
-                    # parking duration: 15 min, walk time: from POI
                     from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
                     
                     parking_duration = 15
-                    # BUGFIX (02.02.2026): Use actual POI parking_walk_time_min, not default 5
                     walk_time_raw = first_attraction.get("poi", {}).get("parking_walk_time_min")
                     walk_time = int(walk_time_raw) if walk_time_raw and walk_time_raw > 0 else 5
                     
@@ -648,6 +644,11 @@ class PlanService:
                 # Engine doesn't provide start_time/end_time for transfers
                 # Calculate from duration_min
                 duration = item.get("duration_min", 10)
+                
+                # PHASE 8 FEATURE #4: Add between-POI buffer (15 min for unexpected delays)
+                # This buffer accounts for: finding parking, walking, checking maps, restroom stops
+                duration += 15
+                print(f"[TIMING BUFFERS] Transit: +15min between-POI buffer (total: {duration}min)")
                 
                 # Use previous item's end_time as start, or default to 09:00
                 if items:
@@ -768,6 +769,14 @@ class PlanService:
         attraction_start: str  # First attraction start time
     ) -> ParkingItem:
         """
+        DEPRECATED (PHASE 8 Feature #1): Parking as info only, not waypoint.
+        
+        This function is no longer used in production code (Phase 8+).
+        ParkingInfo is now embedded in AttractionItem.
+        Kept for backward compatibility and testing.
+        
+        --- OLD DOCSTRING (pre-Phase 8) ---
+        
         4.10: Parking logic - 1 parking na start dnia.
         
         BUGFIX (31.01.2026 - Problem #2): Use POI parking data or fallback to POI location
@@ -846,6 +855,10 @@ class PlanService:
         
         ETAP 2 Day 5: Dodano explainability (why_selected) i quality badges.
         
+        PHASE 8 FEATURE #4 (27.04.2026): Realistic timing buffers
+        - Entry queue: +5 min for popular POI (popularity > 0.8)
+        - Trail prep: +15 min for trail type (equipment, parking, start)
+        
         Cost estimation (4.11):
         - ticket_normal jako baseline
         - family_kids: (2×normal + 2×reduced)
@@ -853,6 +866,25 @@ class PlanService:
         """
         # Engine zwraca dict z POI
         visit_min = poi_dict.get("time_min", 60)
+        
+        # PHASE 8 FEATURE #4: Apply timing buffers
+        poi_type = poi_dict.get("type", "poi")
+        popularity = poi_dict.get("popularity", 0.0)
+        
+        buffers_applied = []
+        
+        # Buffer 1: Entry queue for popular POI
+        if poi_type != "trail" and popularity > 0.8:
+            visit_min += 5
+            buffers_applied.append("queue +5min")
+        
+        # Buffer 2: Trail prep (equipment, parking, start)
+        if poi_type == "trail":
+            visit_min += 15
+            buffers_applied.append("trail prep +15min")
+        
+        if buffers_applied:
+            print(f"[TIMING BUFFERS] {poi_dict.get('name', 'Unknown')}: {', '.join(buffers_applied)}")
         
         end_time = self._add_minutes(start_time, visit_min)
         
@@ -938,9 +970,15 @@ class PlanService:
                 ticket_reduced=poi_dict.get("ticket_reduced", 0) or 0,
                 free_entry=poi_dict.get("free_entry", False) or False
             ),
+            # PHASE 8 Feature #1: Rozszerzona ParkingInfo (address, type, cost, lat/lng)
             parking=ParkingInfo(
                 name=poi_dict.get("parking_name") or "Brak parkingu",
-                walk_time_min=poi_dict.get("parking_walk_time_min", 5) or 5
+                address=poi_dict.get("parking_address", "") or poi_dict.get("address", ""),
+                parking_type=ParkingType.PAID if poi_dict.get("parking_type", "").lower() == "paid" else ParkingType.FREE,
+                cost=poi_dict.get("parking_cost", 0) or 0,
+                walk_time_min=poi_dict.get("parking_walk_time_min", 5) or 5,
+                lat=poi_dict.get("parking_lat"),
+                lng=poi_dict.get("parking_lng")
             ),
             pro_tip=poi_dict.get("pro_tip"),  # ADD pro_tip from POI
             why_selected=why_selected,  # ETAP 2 Day 5
@@ -1165,10 +1203,10 @@ class PlanService:
                     # FIX #7 (22.02.2026 - UAT Round 3, TEST-03 Issue):
                     # CRITICAL: Skip gap filling between transit and parking
                     # Problem: Engine adds transit, then plan_service adds parking, gap_filling detects gap
-                    # Solution: Transit→Parking is a natural sequence (travel + parking arrival), NO free_time needed
-                    # Client feedback (TEST-03): 3 occurrences of "transit → free_time → parking" pattern
+                    # Solution: Transit->Parking is a natural sequence (travel + parking arrival), NO free_time needed
+                    # Client feedback (TEST-03): 3 occurrences of "transit -> free_time -> parking" pattern
                     if item_type == 'transit' and next_type == 'parking':
-                        print(f"[GAP FILLING] ✗ SKIP transit→parking gap ({gap} min) - natural travel sequence")
+                        print(f"[GAP FILLING] SKIP transit->parking gap ({gap} min) - natural travel sequence")
                         continue
                     
                     # FIX #4.3 (20.02.2026): Removed skip condition for lunch_break
@@ -1210,7 +1248,7 @@ class PlanService:
                                     if free_duration < 5:  # Skip if too short
                                         print(f"[GAP FILLING] SKIP free_time - would exceed day_end")
                                         continue
-                                    print(f"[GAP FILLING] CAPPED free_time to day_end: {gap} min → {free_duration} min")
+                                    print(f"[GAP FILLING] CAPPED free_time to day_end: {gap} min -> {free_duration} min")
                             
                             free_time_start = minutes_to_time(current_end)
                             
@@ -1381,17 +1419,17 @@ class PlanService:
                                 if gap_duration < 5:  # Skip if too short
                                     print(f"[GAP FILLING] SKIP free_time - would exceed day_end ({current_end + gap} > {day_end_min})")
                                     continue
-                                print(f"[GAP FILLING] CAPPED free_time to day_end: {gap} min → {gap_duration} min")
+                                print(f"[GAP FILLING] CAPPED free_time to day_end: {gap} min -> {gap_duration} min")
                             else:
                                 # FIX #9: Cap at 60 min to avoid excessively long single free_time blocks
                                 gap_duration = min(gap, 60)
                                 if gap_duration < gap:
-                                    print(f"[GAP FILLING] CAPPED free_time: {gap} min → {gap_duration} min (max 60)")
+                                    print(f"[GAP FILLING] CAPPED free_time: {gap} min -> {gap_duration} min (max 60)")
                         else:
                             # FIX #9: Cap at 60 min even without day_end
                             gap_duration = min(gap, 60)
                             if gap_duration < gap:
-                                print(f"[GAP FILLING] CAPPED free_time: {gap} min → {gap_duration} min (max 60)")
+                                print(f"[GAP FILLING] CAPPED free_time: {gap} min -> {gap_duration} min (max 60)")
                         
                         free_time_start = minutes_to_time(current_end)
                         free_time_end = minutes_to_time(current_end + gap_duration)
@@ -1491,10 +1529,10 @@ class PlanService:
                             else:
                                 result.append(free_time_item)
                             
-                            print(f"[GAP FILLING] ✓ Added post-dinner free_time: {free_time_start}-{free_time_end} ({free_time_duration} min)")
+                            print(f"[GAP FILLING] Added post-dinner free_time: {free_time_start}-{free_time_end} ({free_time_duration} min)")
                     else:
                         # Add free_time as usual
-                        print(f"[GAP FILLING] Adding end-of-day free_time: {gap_to_end} min gap before day_end ({last_end_str} → {day_end_str})")
+                        print(f"[GAP FILLING] Adding end-of-day free_time: {gap_to_end} min gap before day_end ({last_end_str} -> {day_end_str})")
                         
                         # FIX #9 (22.02.2026): Reduced cap from 90 to 60 min for consistency
                         # Avoid excessively long free time blocks

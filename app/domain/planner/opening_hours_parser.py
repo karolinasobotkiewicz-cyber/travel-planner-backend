@@ -335,10 +335,15 @@ def is_poi_open_at_time(
         return False  # Closed on this day
     
     # 4. Check if visit fits within opening hours
+    # PHASE 8 FEATURE #4 (27.04.2026): Add 15-minute safety margin before closing
+    # Don't arrive just 1 minute before close - ensure at least 15 min buffer
     open_start, open_end = weekday_hours[weekday]
     visit_end = start_time_minutes + duration_minutes
     
-    return start_time_minutes >= open_start and visit_end <= open_end
+    # Safety margin: closing at 18:00 means last entry at 17:45
+    effective_close_time = open_end - 15
+    
+    return start_time_minutes >= open_start and visit_end <= effective_close_time
 
 
 # =========================

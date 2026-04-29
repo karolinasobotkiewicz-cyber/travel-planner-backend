@@ -498,7 +498,7 @@ def normalize_poi(p, index):
         "target_groups": normalize_list(p.get("target_groups") or p.get("Target group")),
         "children_min": children_min,
         "children_max": children_max,
-        "type": _safe_lower(p.get("type_of_attraction") or p.get("Type of attraction")),
+        "type": _safe_lower(p.get("type") or p.get("type_of_attraction") or p.get("Type of attraction")),  # PHASE 8 FIX: Prefer "type" from loader (poi/trail distinction)
         "tags": tags_list,  # CLIENT DATA UPDATE: Use parsed list from loader
         "experience_role": experience_role,
         "poi_role": poi_role,

@@ -82,7 +82,8 @@ failed_cities = []
 
 for city_name, region_type in SINGLE_CITIES:
     try:
-        print(f"\nTesting: {city_name} ({region_type})...")
+        city_name_safe = city_name.encode('ascii', errors='ignore').decode('ascii')
+        print(f"\nTesting: {city_name_safe} ({region_type})...")
         
         # Create trip input
         trip_input = TripInput(
@@ -124,12 +125,14 @@ for city_name, region_type in SINGLE_CITIES:
         assert len(plan.days) > 0, f"Plan has no days for {city_name}"
         
         day1_items = len(plan.days[0].items)
-        print(f"  [OK] {city_name}: {len(plan.days)} days, {day1_items} items (Day 1)")
+        print(f"  [OK] {city_name_safe}: {len(plan.days)} days, {day1_items} items (Day 1)")
         
         passed_cities.append(city_name)
         
     except Exception as e:
-        print(f"  [FAIL] {city_name}: {str(e)}")
+        city_name_safe = city_name.encode('ascii', errors='ignore').decode('ascii')
+        error_safe = str(e).encode('ascii', errors='ignore').decode('ascii')
+        print(f"  [FAIL] {city_name_safe}: {error_safe}")
         failed_cities.append((city_name, str(e)))
 
 print()
@@ -137,7 +140,9 @@ print(f"[RESULT] Single Cities: {len(passed_cities)}/15 passed")
 if failed_cities:
     print(f"[FAIL] Failed cities:")
     for city, error in failed_cities:
-        print(f"  - {city}: {error}")
+        city_safe = city.encode('ascii', errors='ignore').decode('ascii')
+        error_safe = error.encode('ascii', errors='ignore').decode('ascii')
+        print(f"  - {city_safe}: {error_safe}")
 else:
     print("[OK] All 15 single cities passed!")
 
@@ -159,8 +164,10 @@ failed_clusters = []
 
 for cluster_name, region_type, preferences, expected_cities in CLUSTERS:
     try:
-        print(f"\nTesting: {cluster_name} ({region_type})...")
-        print(f"  Expected cities: {expected_cities}")
+        cluster_name_safe = cluster_name.encode('ascii', errors='ignore').decode('ascii')
+        expected_cities_safe = [c.encode('ascii', errors='ignore').decode('ascii') for c in expected_cities]
+        print(f"\nTesting: {cluster_name_safe} ({region_type})...")
+        print(f"  Expected cities: {expected_cities_safe}")
         
         # Create trip input
         trip_input = TripInput(
@@ -197,7 +204,8 @@ for cluster_name, region_type, preferences, expected_cities in CLUSTERS:
         assert router_config["cities"] == expected_cities, f"Wrong cities for {cluster_name}: {router_config['cities']} vs {expected_cities}"
         
         print(f"  [OK] Router detected cluster: {router_config['trip_type']}")
-        print(f"  [OK] Cities: {router_config['cities']}")
+        router_cities_safe = [c.encode('ascii', errors='ignore').decode('ascii') for c in router_config['cities']]
+        print(f"  [OK] Cities: {router_cities_safe}")
         
         # Generate plan
         plan = plan_service.generate_plan(trip_input)
@@ -206,12 +214,14 @@ for cluster_name, region_type, preferences, expected_cities in CLUSTERS:
         assert len(plan.days) > 0, f"Plan has no days for {cluster_name}"
         
         day1_items = len(plan.days[0].items)
-        print(f"  [OK] {cluster_name}: {len(plan.days)} days, {day1_items} items (Day 1)")
+        print(f"  [OK] {cluster_name_safe}: {len(plan.days)} days, {day1_items} items (Day 1)")
         
         passed_clusters.append(cluster_name)
         
     except Exception as e:
-        print(f"  [FAIL] {cluster_name}: {str(e)}")
+        cluster_name_safe = cluster_name.encode('ascii', errors='ignore').decode('ascii')
+        error_safe = str(e).encode('ascii', errors='ignore').decode('ascii')
+        print(f"  [FAIL] {cluster_name_safe}: {error_safe}")
         failed_clusters.append((cluster_name, str(e)))
 
 print()
@@ -219,7 +229,9 @@ print(f"[RESULT] Clusters: {len(passed_clusters)}/3 passed")
 if failed_clusters:
     print(f"[FAIL] Failed clusters:")
     for cluster, error in failed_clusters:
-        print(f"  - {cluster}: {error}")
+        cluster_safe = cluster.encode('ascii', errors='ignore').decode('ascii')
+        error_safe = error.encode('ascii', errors='ignore').decode('ascii')
+        print(f"  - {cluster_safe}: {error_safe}")
 else:
     print("[OK] All 3 clusters passed!")
 

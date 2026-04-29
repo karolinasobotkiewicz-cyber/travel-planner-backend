@@ -47,13 +47,37 @@ class ParkingType(str, Enum):
 
 class ParkingInfo(BaseModel):
     """
-    Parking info zagnieżdżony w attraction.
+    Parking info zagnieżdżony w attraction (PHASE 8 - rozszerzony model).
+    Backend używa technicznie dla time calculations.
+    Frontend pokazuje jako info (nie osobny waypoint).
     Każda atrakcja ma własny parking object (powtarzający się celowo).
     """
 
     name: str = Field(..., description="Nazwa parkingu")
+    address: str = Field(
+        default="",
+        description="Adres parkingu (może być taki sam jak POI)"
+    )
+    parking_type: ParkingType = Field(
+        default=ParkingType.FREE,
+        description="Typ parkingu: paid/free"
+    )
+    cost: int = Field(
+        default=0,
+        ge=0,
+        description="Koszt parkowania w PLN (0 dla darmowego)"
+    )
     walk_time_min: int = Field(
         ..., ge=0, description="Czas spaceru do atrakcji w minutach"
+    )
+    # Opcjonalne współrzędne (dla advanced use cases)
+    lat: float | None = Field(
+        default=None,
+        description="Szerokość geograficzna parkingu (opcjonalne)"
+    )
+    lng: float | None = Field(
+        default=None,
+        description="Długość geograficzna parkingu (opcjonalne)"
     )
 
 

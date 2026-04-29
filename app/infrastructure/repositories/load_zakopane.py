@@ -200,9 +200,23 @@ def load_zakopane_poi(path: str):
         priority_raw = str(row.get("priority_level", "optional")).strip().lower()
         priority_level = priority_raw if priority_raw else "optional"
         
+        # PHASE 8 FIX (27.04.2026): Add "type" field for engine compatibility
+        # TrailRepository.to_dict() adds "type": "trail" for trails from TrailDB
+        # POI repository must add "type": "poi" for POIs from Excel
+        # This distinguishes POIs from trails in engine.py filtering logic
+        type_of_attraction_str = str(row.get("Type of attraction", "")).strip().lower()
+        
+        # Check if this is actually a trail (from old data before TrailDB migration)
+        # mountain_trails type should now come from TrailDB, but keep for backward compat
+        if "mountain_trail" in type_of_attraction_str or type_of_attraction_str == "trail":
+            poi_type = "trail"  # Old format - should migrate to TrailDB
+        else:
+            poi_type = "poi"  # Standard POI (museum, zoo, theme_park, etc.)
+        
         poi = {
             "id": poi_id,  # Lowercase for consistency
             "ID": poi_id,  # Keep uppercase for backward compat
+            "type": poi_type,  # PHASE 8 FIX (27.04.2026): Add "type" field ("poi" or "trail")
             "name": poi_name,  # Lowercase for consistency
             "Name": poi_name,  # Keep uppercase for backward compat
             "tags": tags_list,  # CLIENT DATA UPDATE: New field - list of tags
