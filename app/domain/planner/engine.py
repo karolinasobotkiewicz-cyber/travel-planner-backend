@@ -670,7 +670,8 @@ def is_kids_focused_poi(poi):
     poi_name = str(poi.get("name", "")).lower()
     name_indicators = [
         "mini zoo", "podwodny świat", "dom do góry nogami",
-        "myszogród", "playground", "kids park", "children"
+        "myszogród", "playground", "kids park", "children",
+        "papugarnia"  # FIX #19 HOTFIX (29.04.2026): Client explicitly mentioned Papugarnia in couples plans
     ]
     
     for indicator in name_indicators:
@@ -811,10 +812,19 @@ def should_exclude_kids_poi_for_adults(poi, user):
     is_multi_purpose = (has_kids_type or has_kids_tag) and (has_adult_type or has_adult_tag) and explicitly_targets_group
     print(f"   is_multi_purpose: {is_multi_purpose} = ({has_kids_type or has_kids_tag}) AND ({has_adult_type or has_adult_tag}) AND ({explicitly_targets_group})")
     
+    # FIX #19 HOTFIX 2 (29.04.2026): Also check is_kids_focused_poi() for name-based detection
+    # Problem: Papugarnia has no kids tags/types but is kids-focused (detected by name "papugarnia")
+    # Solution: Add name-based detection to hard block (not just penalty)
+    is_kids_by_name = is_kids_focused_poi(poi)
+    
     if is_multi_purpose:
         # Multi-purpose POI (e.g., Termy with both kids and adult facilities) - ALLOW
         should_exclude = False
         print(f"   [FIX #12] DECISION: ALLOW - Multi-purpose POI for {group_type}")
+    elif is_kids_by_name:
+        # FIX #19 HOTFIX 2: Kids-focused by name (even without kids tags/types) - EXCLUDE for adults
+        should_exclude = True
+        print(f"   [FIX #19 HOTFIX 2] DECISION: EXCLUDE - Kids-focused POI by name for {group_type}")
     else:
         # Pure kids POI - EXCLUDE for adults
         should_exclude = has_kids_tag or has_kids_type
@@ -1452,6 +1462,29 @@ def score_poi(
         score += penalty_negation
         print(f"    [TERMY BOOST] {poi_name_safe}: +{penalty_negation:.1f} (premium penalty negated - justified expense)")
     
+    # FIX #19 (29.04.2026 - CLIENT FEEDBACK): Penalty for kids-focused POI for non-family groups
+    # Problem: JSON 2 (couples + cultural + relaxation) has too many family attractions
+    #          Dom do góry nogami, Papugarnia appear in couples+cultural plan
+    # Requirement: Couples+cultural should get museums, galleries, termy, cultural sites
+    #             NOT kids attractions (aquarium, playground, upside-down house)
+    # Solution: Strong penalty for kids-focused POI when target_group != family_kids
+    #          Extra penalty if user has cultural/relaxation preferences (clear mismatch)
+    target_group = user.get("target_group", "solo")
+    if target_group != "family_kids" and is_kids_focused_poi(p):
+        # Base penalty: Kids POI inappropriate for non-family groups
+        kids_penalty = -80.0
+        score += kids_penalty
+        poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+        print(f"    [KIDS PENALTY] {poi_name_safe}: {kids_penalty:.1f} (target_group={target_group}, kids-focused POI inappropriate)")
+        
+        # Extra penalty if user has cultural/relaxation preferences
+        # These profiles CLEARLY don't want kids attractions
+        user_preferences = user.get("preferences", [])
+        if "cultural" in user_preferences or "relaxation" in user_preferences:
+            extra_penalty = -40.0  # Total -120 penalty for strong mismatch
+            score += extra_penalty
+            print(f"    [KIDS PENALTY] {poi_name_safe}: {extra_penalty:.1f} (cultural/relaxation preference conflicts with kids POI)")
+    
     # FIX #6 (02.02.2026): Priority_level bonus (core: +25, secondary: +10, optional: 0)
     score += calculate_priority_bonus(p, user)
     
@@ -1855,10 +1888,28 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
     # UAT FIX (18.02.2026 - Problem #6): Track termy/spa count across all days
     # Test 08: 5 termy in 7 days is too much
     # Limit: max 2-3 termy in 7+ day plans (1 termy per 2-3 days)
-    max_termy_total = max(2, num_days // 3)  # 2-day: 2 termy, 3-day: 2, 5-day: 2, 7-day: 3
+    
+    # FIX #15 (29.04.2026 - CLIENT FEEDBACK): Reduce termy limits
+    # Problem: JSON 2 had 3 termy in 3 days (Chochołowskie, Bukovina, Bania) - too much
+    # Requirement: Max 1-2 termy for 3 days (not 3)
+    # Solution: More restrictive limit (1 termy per 3 days), boost if relaxation priority
+    
+    # Base limit: 1 termy per 3 days
+    # 3-day: 1 termy, 5-day: 1 termy, 7-day: 2 termy, 9-day: 3 termy
+    max_termy_total = max(1, num_days // 3)
+    
+    # Boost limit if relaxation is TOP 2 preference (user really wants termy)
+    user_prefs = user.get("preferences", [])
+    if "relaxation" in user_prefs[:2]:  # Top 2 preference
+        # Allow +1 termy if relaxation is high priority
+        max_termy_total = min(max_termy_total + 1, num_days // 2)  # Max 1 termy per 2 days
+        print(f"[MULTI-DAY] Termy limit BOOSTED (relaxation top 2 pref): {max_termy_total} for {num_days} days")
+    else:
+        print(f"[MULTI-DAY] Termy limit (base): {max_termy_total} for {num_days} days")
+    
     global_termy_tracking = {"count": 0, "max": max_termy_total}
     
-    print(f"[MULTI-DAY] Termy limit for {num_days} days: max {max_termy_total} total")
+    print(f"[MULTI-DAY] Final termy limit: max {max_termy_total} termy for {num_days} days")
     
     # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #5): Track trail count across all days
     # Problem: No limits on trails per trip (could have 5 trails in 3 days)
@@ -1866,16 +1917,50 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
     #   - 2-3 days → max 1 trail
     #   - 4-5 days → max 2 trails
     #   - 6-7 days → max 3 trails
+    
+    # FIX #12 (29.04.2026 - CLIENT FEEDBACK): Adjust trail limits per target_group
+    # Problem: family_kids got 3 trails in 3 days (Nosal, Wielki Kopieniec, Sarnia Skała)
+    # Requirement: Max 1 trail for family_kids in 3-day plan
+    # Solution: More restrictive limits for family/seniors, standard for friends/solo
+    
+    # Base limit by trip length
     if num_days <= 3:
-        max_trails_total = 1
+        base_max_trails = 1
     elif num_days <= 5:
-        max_trails_total = 2
+        base_max_trails = 2
     else:
-        max_trails_total = 3
+        base_max_trails = 3
+    
+    # Adjust for target_group
+    target_group = user.get("target_group", "solo")
+    
+    if target_group == "family_kids":
+        # Family: VERY conservative (1 trail per 3-4 days)
+        # 3-day: 1 trail, 5-day: 1 trail, 7-day: 1 trail, 8-day: 2 trails
+        max_trails_total = max(1, num_days // 4)
+        print(f"[MULTI-DAY] Trail limit for family_kids: VERY conservative ({max_trails_total} trails for {num_days} days)")
+    
+    elif target_group == "seniors":
+        # Seniors: conservative (1 trail per 2-3 days)
+        # 3-day: 1 trail, 5-day: 1 trail, 7-day: 2 trails
+        max_trails_total = max(1, num_days // 3)
+        print(f"[MULTI-DAY] Trail limit for seniors: conservative ({max_trails_total} trails for {num_days} days)")
+    
+    elif target_group in ["friends", "solo"]:
+        # Friends/solo: allow more trails (base limit)
+        # 3-day: 1 trail, 5-day: 2 trails, 7-day: 3 trails
+        max_trails_total = base_max_trails
+        print(f"[MULTI-DAY] Trail limit for {target_group}: standard ({max_trails_total} trails for {num_days} days)")
+    
+    else:  # couples
+        # Couples: moderate (prefer variety, not just hiking)
+        # 3-day: 1 trail, 5-day: 1 trail, 7-day: 2 trails
+        max_trails_total = max(1, base_max_trails - 1)
+        print(f"[MULTI-DAY] Trail limit for couples: moderate ({max_trails_total} trails for {num_days} days)")
     
     global_trail_tracking = {"count": 0, "max": max_trails_total}
     
-    print(f"[MULTI-DAY] Trail limit for {num_days} days: max {max_trails_total} total")
+    print(f"[MULTI-DAY] Final trail limit: max {max_trails_total} trails for {num_days} days (target_group={target_group})")
     
     # Core POI distribution strategy
     # Get all core POIs (priority_level == 12)
@@ -1997,7 +2082,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     
     # ETAP 2 - DAY 3 (15.02.2026): Multi-day cross-day POI tracking
     # Initialize used set from global_used (if provided) to avoid duplicates across days
-    used = set(global_used) if global_used is not None else set()
+    # FIX #11 (29.04.2026 - CLIENT FEEDBACK): Use reference, not copy
+    # CRITICAL: set(global_used) creates COPY → changes don't propagate back
+    # Using direct reference ensures POI added in Day 1 are visible in Day 2/3
+    used = global_used if global_used is not None else set()
     
     last_poi = None
 
@@ -2123,6 +2211,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         # Enforce strict lunch time window (12:00-14:30)
         # - Insert lunch as soon as we reach 12:00
         # - If passed 14:30, insert lunch immediately with warning
+        
+        # FIX #14 (29.04.2026 - CLIENT FEEDBACK): Force lunch by LUNCH_TARGET (13:00), not LUNCH_EARLIEST
+        # Problem: Lunch scheduled at 15:41-16:31, 15:47-16:37 (way too late - should be 12:00-14:30)
+        # Root cause: Code waits until now >= 12:00 (lunch_earliest) but doesn't FORCE lunch
+        #             If POI before lunch runs until 15:41, lunch will be at 15:41 with warning
+        # Solution: Force lunch insertion when now >= LUNCH_TARGET (13:00) to stay within 12:00-14:30 window
+        # Rationale: Better to have lunch slightly early (12:30-13:30) than very late (15:41)
         if not lunch_done:
             lunch_earliest = time_to_minutes(LUNCH_EARLIEST)  # 12:00
             lunch_target = time_to_minutes(LUNCH_TARGET)      # 13:00
@@ -2131,14 +2226,25 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             should_insert_lunch = False
             is_late_lunch = False
             
-            # Case 1: We've reached earliest lunch time (12:00)
-            if now >= lunch_earliest:
+            # FIX #14: Change trigger from lunch_earliest (12:00) to lunch_target (13:00)
+            # This ensures lunch happens by 13:00-14:00, not delayed to 15:41
+            # Case 1: We've reached TARGET lunch time (13:00) - force lunch NOW
+            if now >= lunch_target:
                 should_insert_lunch = True
                 
                 # Case 1a: Already past latest lunch time (14:30) - late lunch!
                 if now > lunch_latest:
                     is_late_lunch = True
                     print(f"[LUNCH] WARNING: Late lunch scheduled at {minutes_to_time(now)} (should be by {LUNCH_LATEST})")
+            
+            # Case 2: We're past earliest (12:00) and approaching target (13:00)
+            # If adding another POI would push lunch past 14:00, insert lunch NOW
+            elif now >= lunch_earliest:
+                # Estimate next POI duration (conservative: 90 min)
+                estimated_next_poi_duration = 90
+                if now + estimated_next_poi_duration > lunch_latest - 30:  # Would push lunch past 14:00
+                    should_insert_lunch = True
+                    print(f"[LUNCH] PROACTIVE: Inserting lunch at {minutes_to_time(now)} to avoid late lunch (next POI would push past 14:00)")
             
             if should_insert_lunch:
                 lunch_start_time = minutes_to_time(now)

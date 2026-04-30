@@ -82,10 +82,21 @@ class ParkingInfo(BaseModel):
 
 
 class TicketInfo(BaseModel):
-    """Informacje o cenach biletów."""
+    """
+    Informacje o cenach biletów.
+    
+    FIX #18 (29.04.2026 - CLIENT FEEDBACK): cost_breakdown_note field
+    Problem: Szlaki mają ticket=0 but cost_estimate=200 (confusing - seems free but isn't)
+    Requirement: Explain that trails are free entry but have other costs (parking, transport, food)
+    Solution: Add optional note field explaining cost breakdown for free-entry attractions
+    """
 
     ticket_normal: int = Field(..., ge=0, description="Cena biletu normalnego")
     ticket_reduced: int = Field(..., ge=0, description="Cena biletu ulgowego")
+    cost_breakdown_note: str | None = Field(
+        default=None,
+        description="Notatka o kosztach (np. 'Szlak darmowy. Koszt: parking (20 PLN), dojazd, prowiant.')"
+    )
 
 
 # =========================
@@ -249,6 +260,11 @@ class FreeTimeItem(BaseModel):
     """
     Wolny czas między atrakcjami.
     Backend customizuje label kontekstowo.
+    
+    FIX #16 (29.04.2026 - CLIENT FEEDBACK): is_technical_buffer flag
+    Problem: Short free_time blocks (16-21 min) shown as separate "Czas wolny" items
+    Requirement: Hide buffers <30min from user (technical padding, not real free time)
+    Solution: Mark short free_time as technical buffers, frontend can filter them out
     """
 
     type: Literal[ItemType.FREE_TIME] = ItemType.FREE_TIME
@@ -258,6 +274,10 @@ class FreeTimeItem(BaseModel):
     label: str = Field(
         ...,
         description="Backend customizuje: 'Przerwa przed kolejną atrakcją'",
+    )
+    is_technical_buffer: bool = Field(
+        default=False,
+        description="True if this free_time is a short technical buffer (<30min) that should be hidden from UI"
     )
 
 

@@ -699,12 +699,14 @@ class PlanService:
             
             elif item_type == "free_time":
                 # 7. FREE_TIME - from engine fallback for gaps >20 min
+                duration_min = item.get("duration_min", 30)
                 free_time_item = FreeTimeItem(
                     type=ItemType.FREE_TIME,
                     start_time=item.get("start_time", "12:00"),
                     end_time=item.get("end_time", "12:30"),
-                    duration_min=item.get("duration_min", 30),
-                    label=item.get("description", "Czas wolny")
+                    duration_min=duration_min,
+                    label=item.get("description", "Czas wolny"),
+                    is_technical_buffer=(duration_min < 30)  # FIX #16: Mark short buffers
                 )
                 items.append(free_time_item)
         
@@ -948,6 +950,19 @@ class PlanService:
         else:
             cost_note = None  # Shouldn't happen, but handle gracefully
         
+        # FIX #18 (29.04.2026 - CLIENT FEEDBACK): Cost breakdown note for trails
+        # Problem: Trails show ticket=0 but cost_estimate=200 (confusing)
+        # Requirement: Explain that trails are free entry but have other costs
+        # Solution: Add note for trails with free entry but positive cost_estimate
+        poi_type = poi_dict.get("type", "poi")
+        cost_breakdown_note = None
+        if poi_type == "trail" and estimated_cost > 0:
+            ticket_normal = poi_dict.get("ticket_normal", 0) or 0
+            ticket_reduced = poi_dict.get("ticket_reduced", 0) or 0
+            if ticket_normal == 0 and ticket_reduced == 0:
+                # Trail is free entry but has cost_estimate (parking, transport, food)
+                cost_breakdown_note = "Szlak darmowy. Koszt: parking (~20 PLN), dojazd, prowiant."
+        
         return AttractionItem(
             type=ItemType.ATTRACTION,
             start_time=start_time,
@@ -968,7 +983,7 @@ class PlanService:
             ticket_info=TicketInfo(
                 ticket_normal=poi_dict.get("ticket_normal", 0) or 0,
                 ticket_reduced=poi_dict.get("ticket_reduced", 0) or 0,
-                free_entry=poi_dict.get("free_entry", False) or False
+                cost_breakdown_note=cost_breakdown_note  # FIX #18: Explain trail costs
             ),
             # PHASE 8 Feature #1: Rozszerzona ParkingInfo (address, type, cost, lat/lng)
             parking=ParkingInfo(
@@ -1258,7 +1273,8 @@ class PlanService:
                                 end_time=minutes_to_time(current_end + free_duration),
                                 duration_min=free_duration,
                                 label="Czas wolny",
-                                description="Spacer, kawa, odpoczynek"
+                                description="Spacer, kawa, odpoczynek",
+                                is_technical_buffer=(free_duration < 30)  # FIX #16: Mark short buffers
                             ))
                             continue
                         
@@ -1441,7 +1457,8 @@ class PlanService:
                             start_time=free_time_start,
                             end_time=free_time_end,
                             duration_min=gap_duration,
-                            label="Czas wolny"
+                            label="Czas wolny",
+                            is_technical_buffer=(gap_duration < 30)  # FIX #16: Mark short buffers
                         )
                         
                         result.append(free_time_item)
@@ -1521,7 +1538,8 @@ class PlanService:
                                 start_time=free_time_start,
                                 end_time=free_time_end,
                                 duration_min=free_time_duration,
-                                label="Wieczór: spacer, zakupy, relaks w hotelu"
+                                label="Wieczór: spacer, zakupy, relaks w hotelu",
+                                is_technical_buffer=(free_time_duration < 30)  # FIX #16: Mark short buffers
                             )
                             
                             if result[-1].dict()['type'] == 'day_end':
@@ -1545,7 +1563,8 @@ class PlanService:
                             start_time=free_time_start,
                             end_time=free_time_end,
                             duration_min=free_time_duration,
-                            label="Czas wolny na koniec dnia"
+                            label="Czas wolny na koniec dnia",
+                            is_technical_buffer=(free_time_duration < 30)  # FIX #16: Mark short buffers
                         )
                         
                         # Insert before DAY_END
