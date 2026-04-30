@@ -3324,6 +3324,88 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         if global_used is not None:
             global_used.add(poi_id(best))
         
+        # FIX #14 (29.04.2026 - CLIENT FEEDBACK): CRITICAL LUNCH CHECK AFTER POI
+        # Problem: POI duration can push 'now' past lunch_target (e.g., 12:30 + 2.5h = 15:00)
+        #          If we only check at loop start, lunch gets scheduled at 15:00+ (too late!)
+        # Solution: Check IMMEDIATELY after updating 'now' - if we're past lunch_target and
+        #          lunch not done, FORCE lunch insertion NOW before continuing
+        # This ensures lunch happens 12:00-14:30, never 15:41+
+        if not lunch_done:
+            lunch_target = time_to_minutes(LUNCH_TARGET)  # 13:00
+            lunch_latest = time_to_minutes(LUNCH_LATEST)  # 14:30
+            
+            # Check if POI pushed us past lunch time
+            if now >= lunch_target:
+                print(f"[LUNCH POST-POI CHECK] POI pushed now to {minutes_to_time(now)} (>= {LUNCH_TARGET}) - FORCING lunch NOW")
+                
+                # Insert lunch immediately
+                lunch_start_time = minutes_to_time(now)
+                lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
+                
+                # Check overlap before adding lunch
+                overlaps, conflict = _check_time_overlap(plan, lunch_start_time, lunch_end_time)
+                if overlaps:
+                    print(f"[OVERLAP DETECTED] lunch_break {lunch_start_time}-{lunch_end_time} conflicts with {conflict.get('type')} {conflict.get('start_time')}-{conflict.get('end_time')}")
+                    # Adjust lunch time - move to after conflicting item
+                    conflict_end_min = time_to_minutes(conflict.get('end_time', lunch_start_time))
+                    now = conflict_end_min
+                    lunch_start_time = minutes_to_time(now)
+                    lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
+                
+                # Calculate actual duration
+                lunch_start_min = time_to_minutes(lunch_start_time)
+                lunch_end_min = time_to_minutes(lunch_end_time)
+                actual_lunch_duration = lunch_end_min - lunch_start_min
+                
+                # Get lunch suggestions (same logic as main lunch block)
+                lunch_suggestions = ["Lunch", "Restauracja", "Odpoczynek"]
+                restaurants_available = context.get("restaurants_available", [])
+                if restaurants_available:
+                    lunch_restaurants = [r for r in restaurants_available if r.get("meal_type") == "lunch"]
+                    if lunch_restaurants and plan:
+                        # Find last attraction for proximity
+                        last_attraction = None
+                        for item in reversed(plan):
+                            if item.get("type") == "attraction" and item.get("poi"):
+                                last_attraction = item.get("poi")
+                                break
+                        
+                        if last_attraction and last_attraction.get("lat") and last_attraction.get("lng"):
+                            current_lat = last_attraction.get("lat")
+                            current_lng = last_attraction.get("lng")
+                            for r in lunch_restaurants:
+                                r_lat = r.get("lat", 0)
+                                r_lng = r.get("lng", 0)
+                                if r_lat and r_lng:
+                                    distance = haversine_distance(current_lat, current_lng, r_lat, r_lng)
+                                    r["_distance"] = distance
+                                else:
+                                    r["_distance"] = 999.0
+                            lunch_restaurants.sort(key=lambda r: r.get("_distance", 999.0))
+                        
+                        if lunch_restaurants:
+                            lunch_suggestions = [r["name"] for r in lunch_restaurants[:3]]
+                
+                plan.append({
+                    "type": "lunch_break",
+                    "start_time": lunch_start_time,
+                    "end_time": lunch_end_time,
+                    "duration_min": actual_lunch_duration,
+                    "suggestions": lunch_suggestions,
+                })
+                
+                now = lunch_end_min
+                lunch_done = True
+                fatigue = max(0, fatigue - 2)
+                
+                if now > lunch_latest:
+                    print(f"[LUNCH POST-POI] WARNING: Late lunch at {lunch_start_time} (should be by {LUNCH_LATEST})")
+                else:
+                    print(f"[LUNCH POST-POI] Lunch inserted at {lunch_start_time}-{lunch_end_time} (duration: {actual_lunch_duration} min)")
+                
+                # Continue to next iteration - don't add more POI until after lunch
+                continue
+        
         # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #4): Add restroom buffer after long attractions
         # Client requirement: Add realistic buffers for bathroom breaks
         if best_duration >= 60:  # Long attraction (60+ min)

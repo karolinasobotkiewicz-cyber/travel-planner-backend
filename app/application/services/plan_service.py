@@ -1462,6 +1462,46 @@ class PlanService:
                         )
                         
                         result.append(free_time_item)
+                        
+                        # FIX #17 (29.04.2026 - CLIENT FEEDBACK): Fill remaining gap after capped free_time
+                        # Problem: If gap = 142 min, code adds 60-min free_time, but leaves 82-min gap unfilled
+                        #          because loop continues to next item in original list
+                        # Solution: After adding capped free_time, check if remaining gap exists and fill it
+                        #           with additional free_time blocks (recursive filling)
+                        remaining_gap = gap - gap_duration
+                        current_fill_end = current_end + gap_duration
+                        
+                        while remaining_gap > 15:  # Continue filling if gap > 15 min remains
+                            # Calculate next free_time block duration (max 60 min)
+                            next_duration = min(remaining_gap, 60)
+                            
+                            # Cap at day_end if applicable
+                            if day_end_str:
+                                day_end_min = time_to_minutes(day_end_str)
+                                if current_fill_end + next_duration > day_end_min:
+                                    next_duration = day_end_min - current_fill_end
+                                    if next_duration < 5:  # Too short, skip
+                                        break
+                            
+                            next_free_time_start = minutes_to_time(current_fill_end)
+                            next_free_time_end = minutes_to_time(current_fill_end + next_duration)
+                            
+                            print(f"[GAP FILLING] FIX #17: Filling remaining {remaining_gap} min gap with additional free_time ({next_free_time_start}-{next_free_time_end})")
+                            
+                            next_free_time = FreeTimeItem(
+                                type=ItemType.FREE_TIME,
+                                start_time=next_free_time_start,
+                                end_time=next_free_time_end,
+                                duration_min=next_duration,
+                                label="Czas wolny",
+                                is_technical_buffer=(next_duration < 30)  # FIX #16
+                            )
+                            
+                            result.append(next_free_time)
+                            
+                            # Update for next iteration
+                            remaining_gap -= next_duration
+                            current_fill_end += next_duration
         
         # FIX #4 (15.02.2026): Add end-of-day free_time if gap >30 min before day_end
         # FIX #4.5 (20.02.2026): Changed threshold from 30 to 15 min to be consistent with main gap filling
