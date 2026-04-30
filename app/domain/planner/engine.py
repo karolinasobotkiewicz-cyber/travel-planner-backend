@@ -688,21 +688,25 @@ def is_termy_spa(poi):
     BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #9):
     Max 1 termy/spa per day for seniors to avoid exhaustion.
     
+    BUGFIX (30.04.2026 - CRITICAL): Case-insensitive matching
+    Problem: "termy" != "Terma" or "Termy" (case-sensitive)
+    Solution: Convert to lowercase before matching
+    
     Args:
         poi: POI dict
         
     Returns:
         bool: True if POI is termy/spa/thermal bath
     """
-    name = safe_str(poi.get("name", ""))
-    poi_type = safe_str(poi.get("type", ""))
+    name = safe_str(poi.get("name", "")).lower()
+    poi_type = safe_str(poi.get("type", "")).lower()
     tags = poi.get("tags") or []
-    tags_str = ",".join([safe_str(x) for x in tags]) if tags else ""
+    tags_str = ",".join([safe_str(x) for x in tags]).lower() if tags else ""
     
-    # Check name, type, or tags for termy/spa/thermal keywords
+    # Check name, type, or tags for termy/spa/thermal keywords (case-insensitive)
     return (
-        any(keyword in name for keyword in ["termy", "spa", "thermal", "basen termalny", "sauna"]) or
-        any(keyword in poi_type for keyword in ["termy", "spa", "thermal", "wellness"]) or
+        any(keyword in name for keyword in ["term", "spa", "thermal", "basen termalny", "sauna"]) or
+        any(keyword in poi_type for keyword in ["term", "spa", "thermal", "wellness"]) or
         any(keyword in tags_str for keyword in ["relax", "spa", "thermal", "wellness"])
     )
 
@@ -2846,6 +2850,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         if trails_remaining <= 0:
                             continue  # SKIP - trail limit reached for entire trip
                     
+                    # BUGFIX (30.04.2026 - CRITICAL): Termy limit enforcement in core rotation
+                    # Problem: Core rotation rescans POI without applying termy limit filter
+                    # Solution: Apply same termy limit check as main loop (lines 2657-2660)
+                    if global_termy_tracking is not None and is_termy_spa(p):
+                        if global_termy_tracking["count"] >= global_termy_tracking["max"]:
+                            continue  # SKIP - termy limit reached for entire trip
+                    
                     if is_core and core_attraction_count >= limits["core_max"]:
                         continue
                     
@@ -2969,6 +2980,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         trails_remaining = global_trail_tracking["max"] - global_trail_tracking["count"]
                         if trails_remaining <= 0:
                             continue  # SKIP - trail limit reached for entire trip
+                    
+                    # BUGFIX (30.04.2026 - CRITICAL): Termy limit enforcement in variety logic
+                    # Problem: Variety logic rescans POI without applying termy limit filter
+                    # Solution: Apply same termy limit check as main loop (lines 2657-2660)
+                    if global_termy_tracking is not None and is_termy_spa(p):
+                        if global_termy_tracking["count"] >= global_termy_tracking["max"]:
+                            continue  # SKIP - termy limit reached for entire trip
                     
                     # BUGFIX (16.02.2026 - Problem #9): Max 1 termy/spa per day for seniors
                     if user_group == 'seniors':
