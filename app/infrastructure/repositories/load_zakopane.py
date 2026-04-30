@@ -263,6 +263,8 @@ def load_zakopane_poi(path: str):
             "Seasonality of attractions": str(
                 row.get("Seasonality of attractions", "")
             ).strip(),
+            # CLIENT FEEDBACK (30.01.2026 - Requirements #2-3): Map for filter_by_season compatibility
+            "seasonality": str(row.get("Seasonality of attractions", "")).strip(),
             "Pro_tip": str(row.get("Pro_tip", "")).strip(),
             "parking_name": str(row.get("parking_name", "")).strip(),
             "parking_address": str(row.get("parking_address", "")).strip(),

@@ -604,22 +604,28 @@ class PlanService:
                 
                 # 5. ATTRACTION (4.11 - z cost estimation)
                 
+                # CLIENT FEEDBACK (30.01.2026 - Requirement #4): Parking timing fix
                 # BUGFIX: Correct first attraction timing if parking exists
                 # FIX #2: Only adjust if this is first attraction
+                # FIX #4 (30.04.2026): Use current item (not first_attraction variable) for walk_time
                 if first_attraction_index == 0 and has_car and first_attraction:
                     # First attraction with parking - adjust start time
                     from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
                     
                     parking_duration = 15
-                    walk_time_raw = first_attraction.get("poi", {}).get("parking_walk_time_min")
+                    # FIX #4: Use current item's walk_time (not first_attraction found before loop)
+                    walk_time_raw = item.get("poi", {}).get("parking_walk_time_min")
                     walk_time = int(walk_time_raw) if walk_time_raw and walk_time_raw > 0 else 5
                     
                     # Calculate corrected start time: day_start + parking + walk
+                    # Example: 09:00 + 15min parking + 5min walk = 09:20
                     corrected_start_min = time_to_minutes(day_start) + parking_duration + walk_time
                     attr_start_time = minutes_to_time(corrected_start_min)
                     
+                    print(f"[CLIENT_FEEDBACK #4] First attraction timing corrected: {day_start} + {parking_duration}min parking + {walk_time}min walk = {attr_start_time}")
+                    
                     # Track first parking name
-                    last_parking_name = first_attraction.get("poi", {}).get("parking_name", "")
+                    last_parking_name = item.get("poi", {}).get("parking_name", "")
                 
                 first_attraction_index += 1
                 
@@ -906,6 +912,23 @@ class PlanService:
         if lng_value is None or lng_value == 0.0:
             lng_value = poi_dict.get("lng", 0.0)
         
+        # CLIENT FEEDBACK (30.01.2026 - Requirement #5): Ticket prices mapping
+        # Extract ticket_normal/ticket_reduced with fallback (same pattern as lat/lng)
+        # POI dict may have capitalized OR lowercase keys from different data sources
+        ticket_normal_value = poi_dict.get("ticket_normal")
+        if ticket_normal_value is None or ticket_normal_value == 0:
+            ticket_normal_value = poi_dict.get("Ticket_normal", 0)
+        if ticket_normal_value is None:
+            ticket_normal_value = 0
+        ticket_normal_value = float(ticket_normal_value) if ticket_normal_value else 0.0
+        
+        ticket_reduced_value = poi_dict.get("ticket_reduced")
+        if ticket_reduced_value is None or ticket_reduced_value == 0:
+            ticket_reduced_value = poi_dict.get("Ticket_reduced", 0)
+        if ticket_reduced_value is None:
+            ticket_reduced_value = 0
+        ticket_reduced_value = float(ticket_reduced_value) if ticket_reduced_value else 0.0
+        
         # ETAP 2 Day 5: Generate explainability and quality badges
         if context is None:
             context = {}  # Fallback to empty context if not provided
@@ -957,9 +980,8 @@ class PlanService:
         poi_type = poi_dict.get("type", "poi")
         cost_breakdown_note = None
         if poi_type == "trail" and estimated_cost > 0:
-            ticket_normal = poi_dict.get("ticket_normal", 0) or 0
-            ticket_reduced = poi_dict.get("ticket_reduced", 0) or 0
-            if ticket_normal == 0 and ticket_reduced == 0:
+            # CLIENT_FEEDBACK #5: Use extracted ticket values (capitalized/lowercase fallback)
+            if ticket_normal_value == 0 and ticket_reduced_value == 0:
                 # Trail is free entry but has cost_estimate (parking, transport, food)
                 cost_breakdown_note = "Szlak darmowy. Koszt: parking (~20 PLN), dojazd, prowiant."
         
@@ -981,8 +1003,8 @@ class PlanService:
             cost_estimate=estimated_cost,  # Poprawiono z estimated_cost
             cost_note=cost_note,  # BUGFIX (19.02.2026 - Issue #7)
             ticket_info=TicketInfo(
-                ticket_normal=poi_dict.get("ticket_normal", 0) or 0,
-                ticket_reduced=poi_dict.get("ticket_reduced", 0) or 0,
+                ticket_normal=int(ticket_normal_value),  # CLIENT_FEEDBACK #5: Use extracted values
+                ticket_reduced=int(ticket_reduced_value),  # CLIENT_FEEDBACK #5: Use extracted values
                 cost_breakdown_note=cost_breakdown_note  # FIX #18: Explain trail costs
             ),
             # PHASE 8 Feature #1: Rozszerzona ParkingInfo (address, type, cost, lat/lng)

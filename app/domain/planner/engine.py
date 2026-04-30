@@ -1108,6 +1108,7 @@ def is_open(p, now, duration, season, context=None):
     # Extract date info from context
     if not context or "date" not in context:
         # No date context - use legacy simple validation
+        print(f"[is_open DEBUG] No date context - using legacy validation for {p.get('Name', 'UNKNOWN')}")
         day_start = time_to_minutes("09:00")
         day_end = time_to_minutes("20:00")
         return (now >= day_start) and (now < day_end)
@@ -1130,8 +1131,12 @@ def is_open(p, now, duration, season, context=None):
     
     current_date = (year, month, day)
     
+    # CLIENT FEEDBACK (30.01.2026 - Requirements #2-3): Debug opening_hours validation
+    poi_name = p.get("Name", "UNKNOWN")
+    print(f"[is_open DEBUG] {poi_name}: date={current_date}, weekday={weekday}, now={now}min, duration={duration}min")
+    
     # Use opening_hours_parser for proper validation
-    return is_poi_open_at_time(
+    result = is_poi_open_at_time(
         opening_hours=oh,
         opening_hours_seasonal=oh_seasonal,
         current_date=current_date,
@@ -1139,6 +1144,11 @@ def is_open(p, now, duration, season, context=None):
         start_time_minutes=now,
         duration_minutes=duration
     )
+    
+    if not result:
+        print(f"[is_open DEBUG] {poi_name}: CLOSED (validation failed)")
+    
+    return result
 
 
 # =========================
@@ -2675,6 +2685,26 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             duration = choose_duration(p, start_time, end, lunch_done)
             if duration <= 0:
                 continue
+
+            # CLIENT FEEDBACK (30.01.2026 - Requirement #6): Seasonal hard filter
+            # Problem: Out-of-season POI inserted (Zjazd pontonem in February)
+            # Solution: Explicitly check date range BEFORE is_open() validation
+            # This is defensive backup - is_open() should already do this, but double-check
+            from app.domain.planner.opening_hours_parser import find_current_season
+            
+            seasonal_data = p.get("opening_hours_seasonal")
+            if seasonal_data:
+                # Get current date from context
+                current_date_tuple = ctx.get("date")  # (year, month, day)
+                if current_date_tuple:
+                    # Check if POI is in season
+                    current_season = find_current_season(current_date_tuple, seasonal_data)
+                    if current_season is None:
+                        # Out of season - SKIP this POI
+                        poi_name = p.get("Name", "UNKNOWN")
+                        month = current_date_tuple[1]
+                        print(f"[SEASONAL FILTER] SKIP {poi_name} - out of season (month: {month})")
+                        continue
 
             if not is_open(p, start_time, duration, ctx["season"], ctx):
                 continue
