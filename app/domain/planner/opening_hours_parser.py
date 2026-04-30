@@ -206,7 +206,11 @@ def find_current_season(
     if not seasonal_list:
         return None
     
-    year, month, day = current_date
+    # Handle tuple with 3 or 4 values
+    if len(current_date) == 4:
+        year, month, day, weekday = current_date
+    else:
+        year, month, day = current_date
     current = (month, day)
     
     for season in seasonal_list:

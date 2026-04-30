@@ -1,0 +1,11 @@
+﻿python : C:\Users\matte\AppData\Local\Programs\Python\Python311\python.exe: can
+'t open file 'C:\\Users\\matte\\Desktop\\Backend Developer (Python) - silnik pl
+anowania podr├│┼╝y\\travel-planner-backend\\verify_phase8_5_fixes.py': [Errno 2
+] No such file or directory
+At line:1 char:32
++ ... YTHONIOENCODING='utf-8'; python verify_phase8_5_fixes.py 2>&1 | Out-F ...
++                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\Users\matte\...le or directory 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

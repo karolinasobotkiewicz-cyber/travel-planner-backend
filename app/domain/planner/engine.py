@@ -2701,9 +2701,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     current_season = find_current_season(current_date_tuple, seasonal_data)
                     if current_season is None:
                         # Out of season - SKIP this POI
-                        poi_name = p.get("Name", "UNKNOWN")
+                        poi_name_debug = p.get("Name", "UNKNOWN")
                         month = current_date_tuple[1]
-                        print(f"[SEASONAL FILTER] SKIP {poi_name} - out of season (month: {month})")
+                        print(f"[SEASONAL FILTER] SKIP {poi_name_debug} - out of season (month: {month})")
                         continue
 
             if not is_open(p, start_time, duration, ctx["season"], ctx):
@@ -2838,6 +2838,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if should_exclude_by_intensity(p, user):
                         continue
                     
+                    # BUGFIX (30.04.2026 - CRITICAL): Trail limit enforcement in core rotation
+                    # Problem: Core rotation rescans POI without applying trail limit filter
+                    # Solution: Apply same trail limit check as main loop (lines 2510-2517)
+                    if p.get("type") == "trail" and global_trail_tracking is not None:
+                        trails_remaining = global_trail_tracking["max"] - global_trail_tracking["count"]
+                        if trails_remaining <= 0:
+                            continue  # SKIP - trail limit reached for entire trip
+                    
                     if is_core and core_attraction_count >= limits["core_max"]:
                         continue
                     
@@ -2953,6 +2961,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if user_group in ['solo', 'couples', 'friends', 'seniors']:
                         if is_kids_focused_poi(p) and kids_focused_count >= 1:
                             continue
+                    
+                    # BUGFIX (30.04.2026 - CRITICAL): Trail limit enforcement in variety logic
+                    # Problem: Variety logic rescans POI without applying trail limit filter
+                    # Solution: Apply same trail limit check as main loop (lines 2510-2517)
+                    if p.get("type") == "trail" and global_trail_tracking is not None:
+                        trails_remaining = global_trail_tracking["max"] - global_trail_tracking["count"]
+                        if trails_remaining <= 0:
+                            continue  # SKIP - trail limit reached for entire trip
                     
                     # BUGFIX (16.02.2026 - Problem #9): Max 1 termy/spa per day for seniors
                     if user_group == 'seniors':
@@ -3354,6 +3370,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         if global_used is not None:
             global_used.add(poi_id(best))
         
+        # CRITICAL FIX (30.04.2026): Increment trail counter BEFORE any continue statements!
+        # BUG: Lunch post-POI check (line ~3420) does continue BEFORE reaching trail counter increment
+        #      This caused trails to be added without incrementing counter → limit never enforced
+        # Solution: Move trail counter increment HERE (immediately after adding POI, before lunch check)
+        if best.get("type") == "trail" and global_trail_tracking is not None:
+            global_trail_tracking["count"] += 1
+            print(f"[TRAIL LIMIT] Trail added - Global count: {global_trail_tracking['count']}/{global_trail_tracking['max']}")
+        
         # FIX #14 (29.04.2026 - CLIENT FEEDBACK): CRITICAL LUNCH CHECK AFTER POI
         # Problem: POI duration can push 'now' past lunch_target (e.g., 12:30 + 2.5h = 15:00)
         #          If we only check at loop start, lunch gets scheduled at 15:00+ (too late!)
@@ -3508,10 +3532,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                   f"allocated: {minutes_to_time(best_duration)}, category={trail_category}) - "
                   f"limiting subsequent POI: max {max_poi_after_trail} light attractions")
             
-            # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #5): Increment global trail counter
-            if global_trail_tracking is not None:
-                global_trail_tracking["count"] += 1
-                print(f"[TRAIL LIMIT] Global trail count: {global_trail_tracking['count']}/{global_trail_tracking['max']}")
+            # NOTE: Trail counter increment moved BEFORE lunch check (line ~3360) to avoid continue statement bug
         else:
             # If trail_day_mode active and adding non-trail POI, increment counter
             if trail_day_mode:

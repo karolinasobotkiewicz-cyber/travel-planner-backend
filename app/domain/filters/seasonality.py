@@ -12,7 +12,7 @@ def derive_season(date):
     Derive season from date.
     
     Args:
-        date: datetime object or date object
+        date: datetime object, date object, tuple (year, month, day[, weekday]), or string "YYYY-MM-DD"
     
     Returns:
         str: "winter", "spring", "summer", or "fall"
@@ -20,6 +20,13 @@ def derive_season(date):
     if isinstance(date, str):
         # Parse if string (format: YYYY-MM-DD)
         date = datetime.strptime(date, "%Y-%m-%d")
+    elif isinstance(date, tuple):
+        # Handle tuple (year, month, day) or (year, month, day, weekday)
+        if len(date) == 4:
+            year, month, day, weekday = date
+        else:
+            year, month, day = date
+        date = datetime(year, month, day)
     
     month = date.month
     

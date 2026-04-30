@@ -24,7 +24,9 @@ def trip_input_to_engine_params(
     dates = []
     for day_num in range(trip_input.trip_length.days):
         day_date = trip_input.trip_length.start_date + timedelta(days=day_num)
-        dates.append(day_date.strftime("%Y-%m-%d"))
+        # Return as tuple (year, month, day, weekday) - required by opening_hours_parser.py and engine.py
+        # weekday: 0=Monday, 6=Sunday
+        dates.append((day_date.year, day_date.month, day_date.day, day_date.weekday()))
 
     # Context dla engine
     context = {
