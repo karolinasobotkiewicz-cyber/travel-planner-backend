@@ -265,6 +265,10 @@ class FreeTimeItem(BaseModel):
     Problem: Short free_time blocks (16-21 min) shown as separate "Czas wolny" items
     Requirement: Hide buffers <30min from user (technical padding, not real free time)
     Solution: Mark short free_time as technical buffers, frontend can filter them out
+    
+    CLIENT FEEDBACK (30.01.2026): suggestions field
+    Problem: free_time without context looks like poor planning
+    Solution: Provide descriptive suggestions (spacer, kawa, zdjęcia, odpoczynek, lody)
     """
 
     type: Literal[ItemType.FREE_TIME] = ItemType.FREE_TIME
@@ -274,6 +278,10 @@ class FreeTimeItem(BaseModel):
     label: str = Field(
         ...,
         description="Backend customizuje: 'Przerwa przed kolejną atrakcją'",
+    )
+    suggestions: list[str] | None = Field(
+        default=None,
+        description="Activity suggestions (spacer, kawa, zdjęcia, odpoczynek, lody) - CLIENT FEEDBACK 30.01.2026"
     )
     is_technical_buffer: bool = Field(
         default=False,

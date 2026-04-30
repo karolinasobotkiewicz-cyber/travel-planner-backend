@@ -1279,11 +1279,25 @@ class PlanService:
                             continue
                         
                         # BUGFIX (31.01.2026 - Problem #4): TRY find POI first before free_time
+                        # CLIENT FEEDBACK (30.01.2026): Prefer SOFT POI for gaps >20 min
+                        # Soft POI criteria:
+                        # - intensity: low (or medium if very short)
+                        # - time_min: 10-30 min
+                        # - must_see_score: low (0-2)
+                        # - type: spacer, punkt widokowy, plac, deptak, krótka ekspozycja, mini atrakcja
+                        # - priority: low/filler
+                        
                         poi_found = False
                         best_poi = None
                         best_score = -9999
                         best_duration = 0
                         best_travel = 0
+                        
+                        # Determine if we should prioritize soft POI (gaps >20 min)
+                        prefer_soft_poi = gap > 20
+                        
+                        if prefer_soft_poi:
+                            print(f"[GAP FILLING] Gap {gap} min >20 → PRIORITIZING SOFT POI (low intensity, 10-30min, must_see 0-2)")
                         
                         for poi in all_pois:
                             poi_id = poi.get('id', '')
@@ -1349,10 +1363,50 @@ class PlanService:
                             elif not is_open(poi, int(poi_start), poi_duration, context.get('season', 'all'), context):
                                 continue  # Closed
                             
+                            # CLIENT FEEDBACK (30.01.2026): SOFT POI filtering for gaps >20 min
+                            # Check if POI matches soft POI criteria
+                            is_soft_poi = False
+                            if prefer_soft_poi:
+                                # Criteria 1: intensity=low (or medium if duration <20min)
+                                poi_intensity = str(poi.get('intensity', '')).lower()
+                                intensity_ok = (poi_intensity == 'low') or (poi_intensity == 'medium' and poi_duration < 20)
+                                
+                                # Criteria 2: time_min=10-30 min
+                                duration_ok = 10 <= poi_duration <= 30
+                                
+                                # Criteria 3: must_see_score low (0-2)
+                                must_see = poi.get('must_see_score', 0) or 0
+                                must_see_ok = must_see <= 2
+                                
+                                # Criteria 4: type=spacer, punkt widokowy, plac, deptak, krótka ekspozycja
+                                poi_type = str(poi.get('type', '')).lower()
+                                poi_tags = [str(t).lower() for t in poi.get('tags', []) if t]
+                                soft_types = ['viewpoint', 'square', 'promenade', 'walk', 'scenic', 'panorama', 'mini', 'krótka']
+                                type_ok = any(tag in soft_types for tag in poi_tags) or any(st in poi_type for st in ['viewpoint', 'square', 'walk'])
+                                
+                                # POI is soft if meets 3/4 criteria (flexible)
+                                criteria_met = sum([intensity_ok, duration_ok, must_see_ok, type_ok])
+                                is_soft_poi = criteria_met >= 3
+                                
+                                if is_soft_poi:
+                                    print(f"[SOFT POI] ✓ POI {poi.get('id')}: intensity={poi_intensity}, duration={poi_duration}min, must_see={must_see}, criteria={criteria_met}/4")
+                                else:
+                                    # For gaps >20 min, STRONGLY prefer soft POI - skip non-soft unless no alternatives
+                                    # This ensures gaps >20 min are filled with appropriate low-key activities
+                                    print(f"[SOFT POI] ✗ POI {poi.get('id')}: NOT soft (criteria={criteria_met}/4) - consider as fallback")
+                            
                             # Simple scoring: prefer nearby, short duration
                             # Shorter = better (fits in gaps)
                             # Closer = better (less travel)
                             score = 100 - travel * 0.5 - poi_duration * 0.2
+                            
+                            # CLIENT FEEDBACK (30.01.2026): BOOST soft POI score for gaps >20 min
+                            if prefer_soft_poi and is_soft_poi:
+                                score += 50  # Strong boost for soft POI in large gaps
+                                print(f"[SOFT POI] Score boost: {score-50:.1f} → {score:.1f} (soft POI)")
+                            elif prefer_soft_poi and not is_soft_poi:
+                                score -= 30  # Penalty for non-soft POI in large gaps (but still possible as fallback)
+                                print(f"[SOFT POI] Score penalty: {score+30:.1f} → {score:.1f} (non-soft fallback)")
                             
                             if score > best_score:
                                 best_poi = poi
@@ -1424,6 +1478,7 @@ class PlanService:
                         # Problem (TEST-03): 157-minute gap creates single massive "Czas wolny" block
                         # Solution: Cap at 60 min - large gaps will become multiple smaller free_time blocks
                         # Client feedback: 2.6-hour single gap looks like poor planning
+                        # CLIENT FEEDBACK (30.01.2026): For gaps >20 min, cap free_time at 30-40 min (soft activities)
                         day_end_str = context.get("day_end")
                         if day_end_str:
                             day_end_min = time_to_minutes(day_end_str)
@@ -1437,13 +1492,23 @@ class PlanService:
                                     continue
                                 print(f"[GAP FILLING] CAPPED free_time to day_end: {gap} min -> {gap_duration} min")
                             else:
-                                # FIX #9: Cap at 60 min to avoid excessively long single free_time blocks
-                                gap_duration = min(gap, 60)
-                                if gap_duration < gap:
-                                    print(f"[GAP FILLING] CAPPED free_time: {gap} min -> {gap_duration} min (max 60)")
+                                # CLIENT FEEDBACK (30.01.2026): Soft POI approach
+                                # For gaps >20 min: try soft POI first, then free_time max 30-40 min
+                                # For gaps ≤20 min: regular free_time max 60 min
+                                if prefer_soft_poi:  # gap > 20
+                                    gap_duration = min(gap, 40)  # Cap at 40 min for soft activities (kawa, spacer, odpoczynek)
+                                    if gap_duration < gap:
+                                        print(f"[GAP FILLING] SOFT POI FALLBACK: free_time capped at 40 min: {gap} min -> {gap_duration} min")
+                                else:
+                                    gap_duration = min(gap, 60)  # Original cap for smaller gaps
+                                    if gap_duration < gap:
+                                        print(f"[GAP FILLING] CAPPED free_time: {gap} min -> {gap_duration} min (max 60)")
                         else:
-                            # FIX #9: Cap at 60 min even without day_end
-                            gap_duration = min(gap, 60)
+                            # CLIENT FEEDBACK (30.01.2026): Apply same logic without day_end
+                            if prefer_soft_poi:
+                                gap_duration = min(gap, 40)
+                            else:
+                                gap_duration = min(gap, 60)
                             if gap_duration < gap:
                                 print(f"[GAP FILLING] CAPPED free_time: {gap} min -> {gap_duration} min (max 60)")
                         
@@ -1452,12 +1517,31 @@ class PlanService:
                         
                         print(f"[GAP FILLING] WARNING: LAST RESORT: No available POI, adding free_time ({free_time_start}-{free_time_end})")
                         
+                        # CLIENT FEEDBACK (30.01.2026): Descriptive suggestions for free_time
+                        # "spacer po centrum, kawa/herbata, czas wolny na zdjęcia, odpoczynek na ławce, lody/deser"
+                        free_time_suggestions = [
+                            "Spacer po centrum",
+                            "Kawa/herbata w kawiarni",
+                            "Czas na zdjęcia i relaks",
+                            "Odpoczynek na ławce",
+                            "Lody lub deser"
+                        ]
+                        
+                        # Choose suggestion based on duration
+                        if gap_duration < 20:
+                            label = "Krótki odpoczynek"
+                        elif gap_duration < 40:
+                            label = "Czas wolny"
+                        else:
+                            label = "Dłuższy odpoczynek"
+                        
                         free_time_item = FreeTimeItem(
                             type=ItemType.FREE_TIME,
                             start_time=free_time_start,
                             end_time=free_time_end,
                             duration_min=gap_duration,
-                            label="Czas wolny",
+                            label=label,
+                            suggestions=free_time_suggestions[:3],  # Top 3 suggestions
                             is_technical_buffer=(gap_duration < 30)  # FIX #16: Mark short buffers
                         )
                         
@@ -1488,12 +1572,21 @@ class PlanService:
                             
                             print(f"[GAP FILLING] FIX #17: Filling remaining {remaining_gap} min gap with additional free_time ({next_free_time_start}-{next_free_time_end})")
                             
+                            # Choose label based on duration (same as initial free_time)
+                            if next_duration < 20:
+                                next_label = "Krótki odpoczynek"
+                            elif next_duration < 40:
+                                next_label = "Czas wolny"
+                            else:
+                                next_label = "Dłuższy odpoczynek"
+                            
                             next_free_time = FreeTimeItem(
                                 type=ItemType.FREE_TIME,
                                 start_time=next_free_time_start,
                                 end_time=next_free_time_end,
                                 duration_min=next_duration,
-                                label="Czas wolny",
+                                label=next_label,
+                                suggestions=free_time_suggestions[:3] if 'free_time_suggestions' in locals() else None,  # Use same suggestions
                                 is_technical_buffer=(next_duration < 30)  # FIX #16
                             )
                             
