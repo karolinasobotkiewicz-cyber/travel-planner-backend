@@ -475,7 +475,10 @@ def _validate_and_fix_time_continuity(plan, day_end_str):
         # Significant time left until day_end - add free_time with smart label
         free_start = last_item["end_time"]
         free_end = day_end_str
-        free_duration = gap_to_day_end
+        # CRITICAL FIX (01.05.2026): Cap free_duration at 60 min (CLIENT FEEDBACK - Problem #7)
+        # Client requirement: All free_time blocks must be ≤60 min
+        # Original bug: free_duration = gap_to_day_end (uncapped, could be 120+ min)
+        free_duration = min(60, gap_to_day_end)  # Cap at 60 min
         
         # Check if free_time doesn't overlap with existing items
         overlaps, _ = _check_time_overlap(fixed_plan, free_start, free_end)
@@ -3204,7 +3207,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Remove 40 min limit, use smart labels
                     # Client feedback: 2-3h gaps need longer free_time, context-aware descriptions
                     # FIX #3 (22.02.2026): Also cap at day_end to prevent violations
-                    free_duration = min(120, remaining_time, end - now)  # Max 2h, AND respect day_end
+                    # CRITICAL FIX (01.05.2026): Changed cap from 120 to 60 min (CLIENT FEEDBACK - Problem #7)
+                    # Client requirement: All free_time blocks must be ≤60 min
+                    free_duration = min(60, remaining_time, end - now)  # Max 60 min, AND respect day_end
                     free_start_time = minutes_to_time(now)
                     free_end_time = minutes_to_time(now + free_duration)
                     
@@ -3798,7 +3803,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Change threshold 20→60, remove limit, smart labels
                 if not soft_filled and gap_duration > 60:
                     # FIX #3 (22.02.2026): Also cap at day_end to prevent violations
-                    free_duration = min(120, gap_duration, end - now)  # Max 2h, AND respect day_end
+                    # CRITICAL FIX (01.05.2026): Changed cap from 120 to 60 min (CLIENT FEEDBACK - Problem #7)
+                    # Client requirement: All free_time blocks must be ≤60 min
+                    free_duration = min(60, gap_duration, end - now)  # Max 60 min, AND respect day_end
                     free_start_time = minutes_to_time(now)
                     free_end_time = minutes_to_time(now + free_duration)
                     
@@ -3990,7 +3997,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # No soft POI available, add free_time with smart label
                 # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Remove 90 min limit, use smart labels
                 # FIX #3 (22.02.2026): Also cap at day_end to prevent violations
-                free_duration = min(180, remaining_to_end, end - now)  # Max 3h, AND respect day_end
+                # CRITICAL FIX (01.05.2026): Changed cap from 180 to 60 min (CLIENT FEEDBACK - Problem #7)
+                # Client requirement: All free_time blocks must be ≤60 min
+                free_duration = min(60, remaining_to_end, end - now)  # Max 60 min, AND respect day_end
                 free_start_time = minutes_to_time(now)
                 free_end_time = minutes_to_time(now + free_duration)
                 

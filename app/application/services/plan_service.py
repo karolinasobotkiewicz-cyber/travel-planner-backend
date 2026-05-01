@@ -1499,38 +1499,32 @@ class PlanService:
                         # Solution: Cap at 60 min - large gaps will become multiple smaller free_time blocks
                         # Client feedback: 2.6-hour single gap looks like poor planning
                         # CLIENT FEEDBACK (30.01.2026): For gaps >20 min, cap free_time at 30-40 min (soft activities)
+                        # CRITICAL FIX (01.05.2026): Apply cap FIRST, then check day_end (bug: day_end check bypassed cap)
+                        
+                        # STEP 1: Apply cap based on gap size (ALWAYS apply this first)
+                        if prefer_soft_poi:  # gap > 20
+                            gap_duration = min(gap, 40)  # Cap at 40 min for soft activities
+                        else:
+                            gap_duration = min(gap, 60)  # Cap at 60 min for smaller gaps
+                        
+                        # STEP 2: Check if cap reduced the gap
+                        if gap_duration < gap:
+                            print(f"[GAP FILLING] CAPPED free_time: {gap} min -> {gap_duration} min (max {40 if prefer_soft_poi else 60})")
+                        
+                        # STEP 3: Respect day_end - don't exceed it (cap again if needed)
                         day_end_str = context.get("day_end")
                         if day_end_str:
                             day_end_min = time_to_minutes(day_end_str)
-                            free_time_end_proposed = current_end + gap
+                            free_time_end_proposed = current_end + gap_duration
                             
-                            # If proposed end exceeds day_end, cap it
+                            # If proposed end exceeds day_end, cap it AGAIN
                             if free_time_end_proposed > day_end_min:
+                                original_gap_duration = gap_duration
                                 gap_duration = day_end_min - current_end
                                 if gap_duration < 5:  # Skip if too short
-                                    print(f"[GAP FILLING] SKIP free_time - would exceed day_end ({current_end + gap} > {day_end_min})")
+                                    print(f"[GAP FILLING] SKIP free_time - would exceed day_end ({free_time_end_proposed} > {day_end_min})")
                                     continue
-                                print(f"[GAP FILLING] CAPPED free_time to day_end: {gap} min -> {gap_duration} min")
-                            else:
-                                # CLIENT FEEDBACK (30.01.2026): Soft POI approach
-                                # For gaps >20 min: try soft POI first, then free_time max 30-40 min
-                                # For gaps ≤20 min: regular free_time max 60 min
-                                if prefer_soft_poi:  # gap > 20
-                                    gap_duration = min(gap, 40)  # Cap at 40 min for soft activities (kawa, spacer, odpoczynek)
-                                    if gap_duration < gap:
-                                        print(f"[GAP FILLING] SOFT POI FALLBACK: free_time capped at 40 min: {gap} min -> {gap_duration} min")
-                                else:
-                                    gap_duration = min(gap, 60)  # Original cap for smaller gaps
-                                    if gap_duration < gap:
-                                        print(f"[GAP FILLING] CAPPED free_time: {gap} min -> {gap_duration} min (max 60)")
-                        else:
-                            # CLIENT FEEDBACK (30.01.2026): Apply same logic without day_end
-                            if prefer_soft_poi:
-                                gap_duration = min(gap, 40)
-                            else:
-                                gap_duration = min(gap, 60)
-                            if gap_duration < gap:
-                                print(f"[GAP FILLING] CAPPED free_time: {gap} min -> {gap_duration} min (max 60)")
+                                print(f"[GAP FILLING] CAPPED to day_end: {original_gap_duration} min -> {gap_duration} min")
                         
                         free_time_start = minutes_to_time(current_end)
                         free_time_end = minutes_to_time(current_end + gap_duration)
@@ -1683,7 +1677,9 @@ class PlanService:
                         remaining_gap = gap_to_end - dinner_duration
                         if remaining_gap > 15:
                             free_time_start = dinner_end
-                            free_time_end = minutes_to_time(last_end_min + dinner_duration + min(remaining_gap, 90))
+                            # CRITICAL FIX (01.05.2026): Changed cap from 90 to 60 min (CLIENT FEEDBACK - Problem #7)
+                            # Client requirement: All free_time blocks must be ≤60 min
+                            free_time_end = minutes_to_time(last_end_min + dinner_duration + min(remaining_gap, 60))
                             free_time_duration = time_to_minutes(free_time_end) - time_to_minutes(free_time_start)
                             
                             free_time_item = FreeTimeItem(
