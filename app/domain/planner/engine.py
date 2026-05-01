@@ -3396,6 +3396,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             global_trail_tracking["count"] += 1
             print(f"[TRAIL LIMIT] Trail added - Global count: {global_trail_tracking['count']}/{global_trail_tracking['max']}")
         
+        # CRITICAL FIX (30.04.2026 - FIX #15): Increment termy counter BEFORE any continue statements!
+        # BUG: Same as trail counter bug - continue statement at line ~3420 (lunch post-POI check)
+        #      prevents termy increment code at line ~3575 from executing
+        # Solution: Move termy counter increment HERE (immediately after trail increment, before continue)
+        if global_termy_tracking is not None and is_termy_spa(best):
+            old_count = global_termy_tracking["count"]
+            global_termy_tracking["count"] += 1
+            best_name = safe_str(best.get('name', 'UNKNOWN'))
+            print(f"[TERMY LIMIT] Termy added: {best_name} - Global count: {old_count} → {global_termy_tracking['count']}/{global_termy_tracking['max']}")
+        
         # FIX #14 (29.04.2026 - CLIENT FEEDBACK): CRITICAL LUNCH CHECK AFTER POI
         # Problem: POI duration can push 'now' past lunch_target (e.g., 12:30 + 2.5h = 15:00)
         #          If we only check at loop start, lunch gets scheduled at 15:00+ (too late!)
@@ -3569,11 +3579,6 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             if is_termy_spa(best):
                 termy_count += 1
                 print(f"[LIMITS] Termy/spa POI added: {termy_count}/1 for seniors today")
-        
-        # UAT FIX (18.02.2026 - Problem #6): Increment global termy counter
-        if global_termy_tracking is not None and is_termy_spa(best):
-            global_termy_tracking["count"] += 1
-            print(f"[LIMITS] Global termy count: {global_termy_tracking['count']}/{global_termy_tracking['max']}")
         
         # FIX #5 (UAT Round 3 - 19.02.2026): Update preference coverage tracking
         # Track which of top 3 preferences have been covered by this POI

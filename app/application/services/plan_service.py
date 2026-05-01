@@ -1183,8 +1183,6 @@ class PlanService:
                 used_poi_ids.add(item.poi_id)
                 attraction_count += 1
         
-        print(f"[GAP FILLING] Current attractions: {attraction_count}/{hard_limit}")
-        
         for i, item in enumerate(items):
             result.append(item)
             item_dict = item.dict()
