@@ -115,6 +115,15 @@ def _explain_crowd_fit(
         # Don't say "quiet" for friends/adventure profiles
         if target_group == "friends" or travel_style == "adventure":
             return None  # Skip crowd reason for social/active profiles
+        
+        # FIX #18.3 (03.05.2026): Don't use "Peaceful atmosphere" for winter/seasonal activities
+        # For couples + winter activities (Kulig, etc.), profile_match already gives better reason
+        poi_tags_str = str(poi.get("tags", "")).lower()
+        poi_name = str(poi.get("name", "")).lower()
+        winter_indicators = ["kulig", "sleigh", "horse_riding", "seasonal_activity"]
+        if target_group == "couples" and any(ind in poi_name or ind in poi_tags_str for ind in winter_indicators):
+            return None  # Skip "Peaceful atmosphere" for winter activities
+        
         # For seniors/couples/relax profiles, mention peaceful aspect
         if target_group in ["seniors", "couples"] or travel_style == "relax":
             return "Peaceful atmosphere"
@@ -195,6 +204,15 @@ def _explain_travel_style_match(
     
     # Cultural style matching
     if travel_style == "cultural":
+        # FIX #18.3 (03.05.2026): Add local/seasonal activities (Kulig) as cultural experiences
+        poi_name = str(poi.get("name", "")).lower()
+        local_tradition_indicators = [
+            "kulig", "sleigh", "horse_riding", "seasonal_activity",
+            "local_tradition", "folklore", "highland"
+        ]
+        if any(indicator in poi_name or indicator in tags_str for indicator in local_tradition_indicators):
+            return "Local tradition (cultural experience)"
+        
         cultural_indicators = [
             "museum", "heritage", "history",
             "gallery", "art", "cultural"
@@ -241,6 +259,11 @@ def _explain_profile_match(
     BUGFIX (19.02.2026 - UAT Round 2, Issue #4):
     Add profile-based reasons as per client feedback.
     
+    FIX #18.3 (03.05.2026 - CLIENT FEEDBACK Problem #4):
+    Fix Kulig why_selected for couples profile.
+    Kulig should get "Winter experience" / "Local tradition" / "Romantic",
+    not "Peaceful atmosphere" from crowd_fit.
+    
     Args:
         poi: POI data dict
         user: User dict with target_group, travel_style
@@ -251,15 +274,28 @@ def _explain_profile_match(
     Example:
         "Great for group adventures" (friends + adventure)
         "Perfect for families with kids" (family + kids_attractions match)
+        "Romantic winter experience" (couples + seasonal_activity like Kulig)
     """
     target_group = user.get("target_group", "").lower()
     travel_style = user.get("travel_style", "").lower()
+    poi_tags_str = str(poi.get("tags", "")).lower()
+    poi_type = str(poi.get("type", "")).lower()
+    poi_name = str(poi.get("name", "")).lower()
+    
+    # FIX #18.3: Couples + Seasonal/Winter activities (e.g., Kulig)
+    if target_group == "couples":
+        # Check for winter/seasonal romantic activities
+        winter_indicators = ["kulig", "sleigh", "horse_riding", "seasonal_activity"]
+        if any(ind in poi_name or ind in poi_tags_str for ind in winter_indicators):
+            return "Romantic winter experience"
+        
+        # Check for romantic/cultural experiences
+        romantic_indicators = ["romantic", "cultural", "heritage", "scenic", "termy", "spa"]
+        if any(ind in poi_tags_str for ind in romantic_indicators):
+            return "Perfect for couples"
     
     # Friends + Adventure profile
     if target_group == "friends" and travel_style == "adventure":
-        poi_tags_str = str(poi.get("tags", "")).lower()
-        poi_type = str(poi.get("type", "")).lower()
-        
         # Check for group-friendly / adventure indicators
         adventure_indicators = ["trail", "hiking", "adventure", "active", "sport"]
         if any(ind in poi_tags_str or ind in poi_type for ind in adventure_indicators):
@@ -267,14 +303,12 @@ def _explain_profile_match(
     
     # Family + Kids profile
     if target_group == "family":
-        poi_tags_str = str(poi.get("tags", "")).lower()
         kids_indicators = ["kids", "children", "family", "playground", "interactive"]
         if any(ind in poi_tags_str for ind in kids_indicators):
             return "Perfect for families with kids"
     
     # Seniors + Relax
     if target_group == "seniors" and travel_style == "relax":
-        poi_tags_str = str(poi.get("tags", "")).lower()
         relax_indicators = ["spa", "termy", "wellness", "peaceful", "scenic"]
         if any(ind in poi_tags_str for ind in relax_indicators):
             return "Ideal for relaxed senior travel"

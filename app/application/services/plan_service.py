@@ -64,6 +64,9 @@ class PlanService:
         5. Dodanie cost estimation (4.11)
         6. Generowanie wszystkich item types (4.12)
         """
+        print("="*80, flush=True)
+        print("[PLAN_SERVICE] generate_plan() CALLED", flush=True)
+        print("="*80, flush=True)
         # Konwersja TripInput → engine params
         params = trip_input_to_engine_params(trip_input)
         
@@ -146,9 +149,40 @@ class PlanService:
         
         # Source 3: RestaurantDB (meals for all trip types)
         # NOTE: Restaurants loaded separately for meal optimizer, not mixed with attractions
+        
+        # FIX #18.5: Map region to city for restaurant lookups
+        # TrailDB uses regions ("Tatry"), RestaurantDB uses cities ("Zakopane")
+        region_to_city_map = {
+            "Tatry": "Zakopane",
+            "Karkonosze": "Karpacz",
+            "Kotlina Kłodzka": "Kłodzko"
+        }
+        restaurant_city = region_to_city_map.get(router_config["region"], router_config["region"])
+        
+        # DEBUG: Write to file to bypass print buffering issues
+        with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
+            debug_file.write(f"\n{'='*80}\n")
+            debug_file.write(f"[DEBUG] router_config check\n")
+            debug_file.write(f"[DEBUG] use_restaurants: {router_config.get('use_restaurants')}\n")
+            debug_file.write(f"[DEBUG] region: {router_config['region']}\n")
+            debug_file.write(f"[DEBUG] restaurant_city (after mapping): {restaurant_city}\n")
+            debug_file.write(f"[DEBUG] Router config keys: {list(router_config.keys())}\n")
+            debug_file.write(f"{'='*80}\n")
+        
+        print("="*80, flush=True)
+        print(f"[DEBUG] About to check use_restaurants: {router_config.get('use_restaurants')}", flush=True)
+        print(f"[DEBUG] Router config keys: {list(router_config.keys())}", flush=True)
+        print("="*80, flush=True)
+        
         if router_config["use_restaurants"]:
+            with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
+                debug_file.write(f"[DEBUG] use_restaurants=True, loading restaurants...\n")
+            print(f"[DEBUG] use_restaurants=True, loading restaurants...", flush=True)
             try:
                 restaurant_repo = RestaurantRepository()
+                with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
+                    debug_file.write(f"[DEBUG] RestaurantRepository created\n")
+                print(f"[DEBUG] RestaurantRepository created", flush=True)
                 
                 if is_cluster:
                     # PHASE 7: Load restaurants from all cluster cities
@@ -156,18 +190,34 @@ class PlanService:
                     for city in cities_to_load:
                         restaurants_db = restaurant_repo.get_by_city(city)
                         all_restaurants.extend([restaurant_repo.to_dict(r) for r in restaurants_db])
-                        print(f"[ROUTER] Loaded {len(restaurants_db)} restaurants from RestaurantDB (city: {city})")
+                        print(f"[ROUTER] Loaded {len(restaurants_db)} restaurants from RestaurantDB (city: {city})", flush=True)
                     context["restaurants_available"] = all_restaurants
-                    print(f"[ROUTER] TOTAL restaurants for cluster: {len(all_restaurants)}")
+                    print(f"[ROUTER] TOTAL restaurants for cluster: {len(all_restaurants)}", flush=True)
                 else:
                     # Single-city mode
-                    restaurants_db = restaurant_repo.get_by_city(router_config["region"])
+                    with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
+                        debug_file.write(f"[DEBUG] Single-city mode, restaurant_city={restaurant_city}\n")
+                    print(f"[DEBUG] Single-city mode, restaurant_city={restaurant_city}", flush=True)
+                    restaurants_db = restaurant_repo.get_by_city(restaurant_city)
+                    with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
+                        debug_file.write(f"[DEBUG] Loaded {len(restaurants_db)} RestaurantDB objects from DB\n")
+                    print(f"[DEBUG] Loaded {len(restaurants_db)} RestaurantDB objects from DB", flush=True)
                     context["restaurants_available"] = [restaurant_repo.to_dict(r) for r in restaurants_db]
-                    print(f"[ROUTER] Loaded {len(restaurants_db)} restaurants from RestaurantDB (city: {router_config['region']})")
+                    with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
+                        debug_file.write(f"[ROUTER] Loaded {len(restaurants_db)} restaurants from RestaurantDB (city: {restaurant_city})\n")
+                        debug_file.write(f"[DEBUG] Converted to dict, context has {len(context['restaurants_available'])} restaurants\n")
+                    print(f"[ROUTER] Loaded {len(restaurants_db)} restaurants from RestaurantDB (city: {restaurant_city})", flush=True)
+                    print(f"[DEBUG] Converted to dict, context has {len(context['restaurants_available'])} restaurants", flush=True)
             except Exception as e:
-                print(f"[ROUTER] WARNING: Failed to load restaurants: {e}")
+                import traceback
+                with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
+                    debug_file.write(f"[ROUTER] ERROR: Failed to load restaurants: {e}\n")
+                    debug_file.write(f"[ROUTER] Traceback: {traceback.format_exc()}\n")
+                print(f"[ROUTER] ERROR: Failed to load restaurants: {e}", flush=True)
+                print(f"[ROUTER] Traceback: {traceback.format_exc()}", flush=True)
                 context["restaurants_available"] = []
         else:
+            print(f"[DEBUG] use_restaurants=False, setting empty restaurants")
             context["restaurants_available"] = []
         
         # Store router config in context for engine customization
@@ -388,6 +438,10 @@ class PlanService:
                             print(f"[DAY_END ENFORCER] Day {day_num + 1}: Removed {item_type} {start_time_str}-{end_time_str} (starts after day_end {day_end})")
             
             day_items = cleaned_items
+            
+            # FIX #18 (03.05.2026 - CLIENT FEEDBACK MAY 3): Consolidate consecutive free_time blocks
+            # Apply BEFORE adding day_end to ensure day_end stays last
+            day_items = self._consolidate_consecutive_free_time_blocks(day_items)
             
             # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
             # This ensures day_end is always the last item in timeline
@@ -974,16 +1028,19 @@ class PlanService:
             cost_note = None  # Shouldn't happen, but handle gracefully
         
         # FIX #18 (29.04.2026 - CLIENT FEEDBACK): Cost breakdown note for trails
-        # Problem: Trails show ticket=0 but cost_estimate=200 (confusing)
-        # Requirement: Explain that trails are free entry but have other costs
-        # Solution: Add note for trails with free entry but positive cost_estimate
+        # FIX #18.2 (03.05.2026 - CLIENT FEEDBACK Problem #5): Set cost_estimate=0 for free trails
+        # Problem: Trails show ticket=0 but cost_estimate=200 (confusing for users)
+        # Requirement: Show cost_estimate=0 for free trails, explain optional costs in note
+        # Solution: Override estimated_cost to 0 for free trails, update cost_breakdown_note
         poi_type = poi_dict.get("type", "poi")
         cost_breakdown_note = None
-        if poi_type == "trail" and estimated_cost > 0:
-            # CLIENT_FEEDBACK #5: Use extracted ticket values (capitalized/lowercase fallback)
-            if ticket_normal_value == 0 and ticket_reduced_value == 0:
-                # Trail is free entry but has cost_estimate (parking, transport, food)
-                cost_breakdown_note = "Szlak darmowy. Koszt: parking (~20 PLN), dojazd, prowiant."
+        
+        # Check if trail is free (ticket_normal=0 AND ticket_reduced=0)
+        if poi_type == "trail" and ticket_normal_value == 0 and ticket_reduced_value == 0:
+            # Override cost_estimate to 0 for free trails
+            estimated_cost = 0
+            # Explain optional costs in note
+            cost_breakdown_note = "Wstęp na szlak darmowy. Opcjonalne koszty: parking (~20 PLN/dzień), prowiant."
         
         return AttractionItem(
             type=ItemType.ATTRACTION,
@@ -1541,8 +1598,22 @@ class PlanService:
                             "Lody lub deser"
                         ]
                         
+                        # FIX #18.1 (03.05.2026 - CLIENT FEEDBACK Problem #3):
+                        # Special label for gap right after day_start to avoid "day starts with rest" UX issue
+                        # Client quote: "plan zaczyna się od odpoczynku" looks weird
+                        is_day_start_gap = (item_type == 'day_start')
+                        
                         # Choose suggestion based on duration
-                        if gap_duration < 20:
+                        if is_day_start_gap:
+                            # Gap right after day_start → suggest preparation/travel
+                            label = "Przygotowanie / dojazd do pierwszej atrakcji"
+                            free_time_suggestions = [
+                                "Śniadanie w hotelu",
+                                "Przygotowanie do wyjścia",
+                                "Dojazd na parking",
+                                "Organizacja plecaka i sprzętu"
+                            ]
+                        elif gap_duration < 20:
                             label = "Krótki odpoczynek"
                         elif gap_duration < 40:
                             label = "Czas wolny"
@@ -1726,6 +1797,207 @@ class PlanService:
         
         print(f"[GAP FILLING] Final: {len(items)} -> {len(result)} items")
         return result
+
+    def _consolidate_consecutive_free_time_blocks(self, items: List[Any]) -> List[Any]:
+        """
+        FIX #18 (03.05.2026 - CLIENT FEEDBACK MAY 3): Consolidate consecutive free_time blocks.
+        
+        Problem:
+        - FIX #17 (29.04.2026) creates multiple 60-min free_time blocks to fill large gaps
+        - Result: 3-4 consecutive "Czas wolny" blocks looks repetitive and poorly planned
+        - Examples from client feedback:
+          * JSON 1 Day 3: Several 60-min free_time blocks in a row
+          * JSON 2 Day 1: 3 consecutive rest blocks after termy
+          * JSON 2 Day 3: 4 consecutive "Czas wolny do końca dnia" blocks
+        
+        Solution:
+        - Post-processing step after gap filling
+        - Merge consecutive free_time blocks with similar labels into single longer blocks
+        - Keep blocks separate if they have distinct contexts (e.g., "Przygotowanie" vs "Odpoczynek")
+        - Generate smart labels based on consolidated duration
+        
+        Benefits:
+        - Better UX - one "2-hour relax" instead of four "30-min free time" blocks
+        - Cleaner timeline appearance
+        - No changes to core algorithm needed (post-processing only)
+        
+        Args:
+            items: List of plan items (may contain consecutive free_time blocks)
+            
+        Returns:
+            Consolidated list with merged free_time blocks
+        """
+        if not items:
+            return items
+        
+        consolidated = []
+        i = 0
+        
+        while i < len(items):
+            item = items[i]
+            
+            # Non-free_time items pass through unchanged
+            if not hasattr(item, 'type') or item.type != ItemType.FREE_TIME:
+                consolidated.append(item)
+                i += 1
+                continue
+            
+            # Found free_time - check if next items are also free_time
+            free_time_group = [item]
+            j = i + 1
+            
+            while j < len(items):
+                next_item = items[j]
+                if hasattr(next_item, 'type') and next_item.type == ItemType.FREE_TIME:
+                    # Check if should merge with previous block
+                    if self._should_merge_free_time(free_time_group[-1], next_item):
+                        free_time_group.append(next_item)
+                        j += 1
+                    else:
+                        # Different context - don't merge
+                        break
+                else:
+                    # Not free_time - stop looking
+                    break
+            
+            # If we found multiple consecutive free_time blocks, merge them
+            if len(free_time_group) > 1:
+                merged = self._merge_free_time_blocks(free_time_group)
+                consolidated.append(merged)
+                print(f"[CONSOLIDATE] Merged {len(free_time_group)} free_time blocks into 1 ({merged.duration_min} min, {free_time_group[0].start_time}-{merged.end_time})")
+            else:
+                # Single free_time block - keep as is
+                consolidated.append(item)
+            
+            # Move to next unprocessed item
+            i = j if j > i + 1 else i + 1
+        
+        return consolidated
+
+    def _should_merge_free_time(self, block1: FreeTimeItem, block2: FreeTimeItem) -> bool:
+        """
+        Helper for _consolidate_consecutive_free_time_blocks.
+        
+        Determines if two consecutive free_time blocks should be merged.
+        
+        Merge if:
+        - Both have generic labels (Czas wolny, Odpoczynek, Relaks, etc.)
+        - Both are NOT technical buffers (technical buffers are intentionally short)
+        
+        Don't merge if:
+        - Either has a specific context label (e.g., "Przygotowanie", "Dojazd")
+        - Either is marked as technical buffer
+        
+        Args:
+            block1: First free_time block
+            block2: Second (consecutive) free_time block
+            
+        Returns:
+            True if blocks should be merged, False otherwise
+        """
+        # Don't merge technical buffers (intentionally short for padding)
+        if block1.is_technical_buffer or block2.is_technical_buffer:
+            return False
+        
+        # Generic label patterns that can be safely merged (use startswith for partial match)
+        # This allows matching "Czas wolny do końca dnia: kolacja, spacer..." with base pattern
+        generic_label_patterns = [
+            "Czas wolny",
+            "Odpoczynek",
+            "Relaks",
+            "Dłuższy odpoczynek",
+            "Krótki odpoczynek",
+            "Wieczór:",  # Matches "Wieczór: spacer, zakupy, relaks w hotelu"
+            "Czas wolny / relaks",
+            "Odpoczynek / spacer",
+        ]
+        
+        # Check if both labels start with generic patterns
+        label1_is_generic = any(block1.label.startswith(pattern) for pattern in generic_label_patterns)
+        label2_is_generic = any(block2.label.startswith(pattern) for pattern in generic_label_patterns)
+        
+        # Also check exact matches for short labels
+        exact_generic = [
+            "Czas wolny na koniec dnia"
+        ]
+        if block1.label in exact_generic:
+            label1_is_generic = True
+        if block2.label in exact_generic:
+            label2_is_generic = True
+        
+        # Merge if both labels are generic
+        return label1_is_generic and label2_is_generic
+
+    def _merge_free_time_blocks(self, blocks: List[FreeTimeItem]) -> FreeTimeItem:
+        """
+        Helper for _consolidate_consecutive_free_time_blocks.
+        
+        Merges multiple consecutive free_time blocks into a single block with:
+        - Start time from first block
+        - End time from last block
+        - Total duration = sum of all block durations
+        - Smart label based on total duration
+        - Combined suggestions (deduplicated)
+        - is_technical_buffer = False (consolidated blocks are real free time)
+        
+        Args:
+            blocks: List of consecutive FreeTimeItem objects to merge
+            
+        Returns:
+            Single FreeTimeItem representing the merged time period
+        """
+        if not blocks:
+            raise ValueError("Cannot merge empty list of free_time blocks")
+        
+        if len(blocks) == 1:
+            return blocks[0]
+        
+        # Get time boundaries
+        start_time = blocks[0].start_time
+        end_time = blocks[-1].end_time
+        total_duration = sum(b.duration_min for b in blocks)
+        
+        # Generate smart label based on total duration
+        if total_duration >= 180:  # 3+ hours
+            label = "Dłuższy odpoczynek / czas na własne aktywności"
+        elif total_duration >= 120:  # 2+ hours
+            label = "Dłuższy odpoczynek / spacer / relaks"
+        elif total_duration >= 90:  # 1.5+ hours
+            label = "Odpoczynek / spacer po okolicy"
+        elif total_duration >= 60:  # 1+ hour
+            label = "Czas wolny / relaks"
+        else:  # < 1 hour
+            label = "Odpoczynek"
+        
+        # Combine suggestions from all blocks (deduplicate)
+        all_suggestions = []
+        seen = set()
+        for block in blocks:
+            if hasattr(block, 'suggestions') and block.suggestions:
+                for suggestion in block.suggestions:
+                    if suggestion not in seen:
+                        all_suggestions.append(suggestion)
+                        seen.add(suggestion)
+        
+        # Use combined suggestions or default set
+        if not all_suggestions:
+            all_suggestions = [
+                "Spacer po centrum",
+                "Kawa/herbata w kawiarni",
+                "Czas na zdjęcia i relaks",
+                "Odpoczynek na ławce",
+                "Lody lub deser"
+            ]
+        
+        return FreeTimeItem(
+            type=ItemType.FREE_TIME,
+            start_time=start_time,
+            end_time=end_time,
+            duration_min=total_duration,
+            label=label,
+            suggestions=all_suggestions[:5],  # Max 5 suggestions
+            is_technical_buffer=False  # Consolidated blocks are NOT technical buffers
+        )
 
     def _add_minutes(self, time_str: str, minutes: int) -> str:
         """Helper: dodaje minuty do czasu HH:MM."""
