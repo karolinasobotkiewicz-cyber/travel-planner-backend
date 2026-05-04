@@ -306,9 +306,13 @@ class PlanService:
                 original_num_days = num_days
                 num_days = max(max_sustainable_days, 3)  # Minimum 3 days (don't go below)
                 
+                # CRITICAL: Modify trip_input.trip_length.days so trip_mapper uses adjusted value!
+                trip_input.trip_length.days = num_days
+                
                 sys.stderr.write(f"\n{'='*80}\n")
                 sys.stderr.write(f"[FIX #24] ⚠️ TRIGGERING: {original_num_days} days → {num_days} days\n")
                 sys.stderr.write(f"[FIX #24] Quality POI: {len(quality_pois)} (need ~{int(original_num_days * recommended_poi_per_day)})\n")
+                sys.stderr.write(f"[FIX #24] Modified trip_input.trip_length.days to {trip_input.trip_length.days}\n")
                 sys.stderr.write(f"{'='*80}\n")
                 sys.stderr.flush()
                 
