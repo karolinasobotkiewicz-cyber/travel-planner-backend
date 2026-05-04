@@ -465,20 +465,63 @@ def _validate_and_fix_time_continuity(plan, day_end_str):
         ]
         removed_count = original_count - len(fixed_plan)
         print(f"[OVERLAP FIX] Removed {removed_count} conflicting items from plan")
+        
+        # FIX #22 (03.05.2026 - CLIENT FEEDBACK Round 2 - Problem #1): Rebuild timed_items after removal
+        # Root cause: last_item = timed_items[-1] uses OLD list before overlap removal
+        # After removing overlapping items, timed_items[-1] may NOT be the actual last item
+        # Solution: Rebuild timed_items from fixed_plan after removal
+        timed_items = []
+        for item in fixed_plan:
+            if "start_time" in item and "end_time" in item:
+                item_copy = dict(item)
+                item_copy["start_min"] = time_to_minutes(item["start_time"])
+                item_copy["end_min"] = time_to_minutes(item["end_time"])
+                timed_items.append(item_copy)
+        timed_items.sort(key=lambda x: x["start_min"])
     
     # Check 2: Last item vs day_end
+    # FIX #22: Use timed_items[-1] from REBUILT list after overlap removal
+    if not timed_items:
+        # All items were removed - plan is empty, cannot add free_time
+        return True, issues, fixed_plan
+    
     last_item = timed_items[-1]
     gap_to_day_end = day_end_min - last_item["end_min"]
+    
+    # DEBUG: Show ALL timed_items when checking gap to day_end
+    print(f"[VALIDATION CHECK GAP] day_end={day_end_str} ({day_end_min} min), gap_to_day_end={gap_to_day_end} min")
+    print(f"[VALIDATION CHECK GAP] timed_items count: {len(timed_items)}")
+    for idx, ti in enumerate(timed_items[-5:] if len(timed_items) > 5 else timed_items):  # Show last 5 items
+        real_idx = idx if len(timed_items) <= 5 else len(timed_items) - 5 + idx
+        item_type = ti.get("type", "?")
+        item_start = ti.get("start_time", "?")
+        item_end = ti.get("end_time", "?")
+        print(f"  [{real_idx}] {item_type:15} {item_start}-{item_end}")
     
     # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Change threshold 30→60 min
     if gap_to_day_end > 60:
         # Significant time left until day_end - add free_time with smart label
         free_start = last_item["end_time"]
-        free_end = day_end_str
+        free_start_min = time_to_minutes(free_start)
+        
+        # DEBUG: Log last_item details
+        last_item_type = last_item.get("type", "UNKNOWN")
+        last_item_start = last_item.get("start_time", "N/A")
+        last_item_end = last_item.get("end_time", "N/A")
+        print(f"[VALIDATION FREE_TIME] last_item: {last_item_type} {last_item_start}-{last_item_end}, gap_to_day_end={gap_to_day_end} min")
+        
         # CRITICAL FIX (01.05.2026): Cap free_duration at 60 min (CLIENT FEEDBACK - Problem #7)
         # Client requirement: All free_time blocks must be ≤60 min
         # Original bug: free_duration = gap_to_day_end (uncapped, could be 120+ min)
         free_duration = min(60, gap_to_day_end)  # Cap at 60 min
+        
+        # FIX #20 (03.05.2026 - CLIENT FEEDBACK Round 2 - Problem #1): Calculate free_end from duration
+        # Root cause: free_end = day_end_str creates mismatch (duration=60 but end_time=19:00 = 116 min)
+        # This causes overlaps when engine adds items in "unused" time (17:04 + 60min = 18:04, not 19:00)
+        # Solution: Use free_duration to calculate free_end instead of day_end_str
+        free_end = minutes_to_time(free_start_min + free_duration)
+        
+        print(f"[VALIDATION FREE_TIME] Calculated: free_start={free_start}, free_duration={free_duration}, free_end={free_end}")
         
         # Check if free_time doesn't overlap with existing items
         overlaps, _ = _check_time_overlap(fixed_plan, free_start, free_end)
@@ -4002,6 +4045,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 free_duration = min(60, remaining_to_end, end - now)  # Max 60 min, AND respect day_end
                 free_start_time = minutes_to_time(now)
                 free_end_time = minutes_to_time(now + free_duration)
+                
+                # DEBUG: Log free_time calculation
+                print(f"[ENGINE MAIN LOOP FREE_TIME] now={now}, remaining_to_end={remaining_to_end}, free_duration={free_duration}")
+                print(f"[ENGINE MAIN LOOP FREE_TIME] Calculated: free_start={free_start_time}, free_end={free_end_time}")
                 
                 overlaps, conflict = _check_time_overlap(plan, free_start_time, free_end_time)
                 if not overlaps:

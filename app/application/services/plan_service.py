@@ -64,9 +64,12 @@ class PlanService:
         5. Dodanie cost estimation (4.11)
         6. Generowanie wszystkich item types (4.12)
         """
-        print("="*80, flush=True)
-        print("[PLAN_SERVICE] generate_plan() CALLED", flush=True)
-        print("="*80, flush=True)
+        import sys
+        sys.stderr.write("\n" + "="*80 + "\n")
+        sys.stderr.write("[PLAN_SERVICE] generate_plan() CALLED\n")
+        sys.stderr.write("="*80 + "\n")
+        sys.stderr.flush()
+        
         # Konwersja TripInput → engine params
         params = trip_input_to_engine_params(trip_input)
         
@@ -116,12 +119,32 @@ class PlanService:
                         region_name = self._normalize_region_for_trails(city)
                         trails_db = trail_repo.get_by_region(region_name)
                         trails_dict = [trail_repo.to_dict(trail) for trail in trails_db]
+                        
+                        # FIX #19.1 (03.05.2026): Map duration_min/max → time_min/max for engine compatibility
+                        # Engine's choose_duration() reads time_min/time_max (POI field names)
+                        # TrailDB uses duration_min/duration_max → must map before engine sees trails
+                        for trail in trails_dict:
+                            if "duration_min" in trail:
+                                trail["time_min"] = trail["duration_min"]
+                            if "duration_max" in trail:
+                                trail["time_max"] = trail["duration_max"]
+                        
                         all_pois_dict.extend(trails_dict)
                         print(f"[ROUTER] Loaded {len(trails_dict)} trails from TrailDB (city: {city}, region: {region_name})")
                 else:
                     # Single-city mode
                     trails_db = trail_repo.get_by_region(router_config["region"])
                     trails_dict = [trail_repo.to_dict(trail) for trail in trails_db]
+                    
+                    # FIX #19.1 (03.05.2026): Map duration_min/max → time_min/max for engine compatibility
+                    # Engine's choose_duration() reads time_min/time_max (POI field names)
+                    # TrailDB uses duration_min/duration_max → must map before engine sees trails
+                    for trail in trails_dict:
+                        if "duration_min" in trail:
+                            trail["time_min"] = trail["duration_min"]
+                        if "duration_max" in trail:
+                            trail["time_max"] = trail["duration_max"]
+                    
                     all_pois_dict.extend(trails_dict)
                     print(f"[ROUTER] Loaded {len(trails_dict)} trails from TrailDB (region: {router_config['region']})")
             except Exception as e:
@@ -240,6 +263,63 @@ class PlanService:
         # Route to appropriate planner based on trip length
         num_days = trip_input.trip_length.days
         
+        import sys
+        sys.stderr.write(f"\n{'='*80}\n")
+        sys.stderr.write(f"[DEBUG FIX #24] num_days = {num_days}\n")
+        sys.stderr.write(f"[DEBUG FIX #24] all_pois_dict length = {len(all_pois_dict)}\n")
+        sys.stderr.write(f"{'='*80}\n")
+        sys.stderr.flush()
+        
+        # FIX #24 (04.05.2026 - CLIENT FEEDBACK Round 2 - Problem #3 - Empty Days):
+        # POI sufficiency check BEFORE multi-day planning
+        # Problem: JSON 8 (7-day plan) had Days 5-7 with ZERO attractions (only free_time)
+        # Root cause: System generates 7-day plan when database has quality POI only for 4-5 days
+        # Solution: Count quality POI and auto-adjust num_days if insufficient
+        
+        if num_days > 1:
+            # Count quality POI (exclude generic, fallback, very low priority)
+            # IMPORTANT: priority_level can be TEXT ("core", "secondary", "optional") OR numeric (12, 10, 8)!
+            quality_pois = [
+                p for p in all_pois_dict  # ← all_pois_dict is a LIST, not dict
+                if (
+                    # Priority: TEXT format - core/secondary OR NUMERIC format - 8+
+                    (isinstance(p.get("priority_level"), str) and p.get("priority_level", "").strip().lower() in ["core", "secondary"])
+                    or (isinstance(p.get("priority_level"), (int, float)) and p.get("priority_level", 0) >= 8)
+                    or p.get("must_see", False)
+                    or p.get("must_see_score", 0) >= 7  # Must-see POI (7+)
+                    or p.get("popularity", 0) >= 0.5  # Popular POI
+                )
+            ]
+            
+            # Recommended POI per day: 2-3 attractions (avoid days with only 1 or 0 attractions)
+            recommended_poi_per_day = 2.5
+            max_sustainable_days = int(len(quality_pois) / recommended_poi_per_day)
+            
+            print(f"[FIX #24 POI SUFFICIENCY CHECK]")
+            print(f"  Total POI: {len(all_pois_dict)}")
+            print(f"  Quality POI (priority 8+, must_see, popularity 0.5+): {len(quality_pois)}")
+            print(f"  Requested days: {num_days}")
+            print(f"  Max sustainable days: {max_sustainable_days} (quality POI / {recommended_poi_per_day})")
+            
+            # If requested days > sustainable, auto-adjust
+            if num_days > max_sustainable_days:
+                original_num_days = num_days
+                num_days = max(max_sustainable_days, 3)  # Minimum 3 days (don't go below)
+                
+                sys.stderr.write(f"\n{'='*80}\n")
+                sys.stderr.write(f"[FIX #24] ⚠️ TRIGGERING: {original_num_days} days → {num_days} days\n")
+                sys.stderr.write(f"[FIX #24] Quality POI: {len(quality_pois)} (need ~{int(original_num_days * recommended_poi_per_day)})\n")
+                sys.stderr.write(f"{'='*80}\n")
+                sys.stderr.flush()
+                
+                print(f"  ⚠️ WARNING: Insufficient quality POI for {original_num_days}-day plan")
+                print(f"  📉 Auto-adjusting plan from {original_num_days} days → {num_days} days")
+                print(f"  💡 Reason: Only {len(quality_pois)} quality POI available (need ~{int(original_num_days * recommended_poi_per_day)} for {original_num_days} days)")
+                print(f"  ✅ Generating {num_days}-day plan with sufficient attractions per day")
+            else:
+                sys.stderr.write(f"\n[FIX #24] ✅ NO ADJUSTMENT: {num_days} days OK (quality POI: {len(quality_pois)}, max sustainable: {max_sustainable_days})\n")
+                sys.stderr.flush()
+        
         # Track POIs across all days (for multi-day)
         global_used_pois = set()
         
@@ -263,6 +343,25 @@ class PlanService:
                 day_end=day_end
             )
             
+            # DEBUG: Check engine_results immediately after multi-day planner - WRITE TO FILE
+            import os
+            os.makedirs("c:/temp", exist_ok=True)
+            with open("c:/temp/engine_results_debug.txt", "w", encoding="utf-8") as debug_file:
+                debug_file.write(f"[DEBUG ENGINE_RESULTS] Multi-day planner returned {len(engine_results)} results\n")
+                for idx, result in enumerate(engine_results):
+                    debug_file.write(f"  [DEBUG] Result {idx}: type={type(result)}, is_dict={isinstance(result, dict)}\n")
+                    if isinstance(result, dict):
+                        debug_file.write(f"    keys: {list(result.keys())[:10]}\n")  # First 10 keys
+                        plan_items = result.get("plan", [])
+                        debug_file.write(f"    plan items count: {len(plan_items)}\n")
+                        if plan_items:
+                            debug_file.write(f"    first item: {plan_items[0]}\n")
+                    else:
+                        debug_file.write(f"    value: {result}\n")
+                debug_file.write(f"[DEBUG ENGINE_RESULTS] End of engine results check\n")
+            
+            print(f"[DEBUG] Engine results debug written to c:/temp/engine_results_debug.txt", flush=True)
+            
         else:
             # Single-day plan: Use original build_day (Etap 1 behavior)
             print(f"[PLAN SERVICE] Single-day plan requested")
@@ -282,7 +381,10 @@ class PlanService:
         # Process each day's engine result
         days = []
         
+        print(f"[GENERATE_PLAN] Processing {len(engine_results)} engine results")
+        
         for day_num, engine_result in enumerate(engine_results):
+            print(f"[GENERATE_PLAN] Starting day_num={day_num} (Day {day_num + 1})")
             # HOTFIX #10.5: Debug logging - track POI IDs from engine
             engine_poi_ids = []
             for item in engine_result:
@@ -378,6 +480,8 @@ class PlanService:
             day_end_min = time_to_minutes(day_end)
             cleaned_items = []
             
+            print(f"[DAY {day_num + 1} PROCESSING] Starting with {len(day_items)} items")
+            
             for item in day_items:
                 # Get dict using model_dump() or dict()
                 if hasattr(item, 'model_dump'):
@@ -438,6 +542,28 @@ class PlanService:
                             print(f"[DAY_END ENFORCER] Day {day_num + 1}: Removed {item_type} {start_time_str}-{end_time_str} (starts after day_end {day_end})")
             
             day_items = cleaned_items
+            
+            # FIX #21 (03.05.2026 - CLIENT FEEDBACK Round 2 - Problem #1): Sort items by start_time
+            # Root cause: Items are added by engine/validation/gap_filling in different orders
+            # This creates chronological chaos where items appear out of order in response
+            # Example: free_time 17:08-18:08 appears BEFORE attraction 17:20-17:55
+            # Solution: Sort all items by start_time BEFORE consolidation
+            
+            # DEBUG FIX #23: Log items BEFORE sorting to identify overlap source
+            print(f"[DEBUG FIX #23] BEFORE SORTING Day {day_num + 1}:")
+            for item in day_items:
+                if hasattr(item, 'start_time') and hasattr(item, 'end_time') and hasattr(item, 'type'):
+                    item_type = item.type.value if hasattr(item.type, 'value') else str(item.type)
+                    print(f"  {item.start_time}-{item.end_time} {item_type}")
+            
+            day_items = self._sort_items_by_time(day_items)
+            
+            # DEBUG FIX #23: Log items AFTER sorting to check if sorting creates overlaps
+            print(f"[DEBUG FIX #23] AFTER SORTING Day {day_num + 1}:")
+            for item in day_items:
+                if hasattr(item, 'start_time') and hasattr(item, 'end_time') and hasattr(item, 'type'):
+                    item_type = item.type.value if hasattr(item.type, 'value') else str(item.type)
+                    print(f"  {item.start_time}-{item.end_time} {item_type}")
             
             # FIX #18 (03.05.2026 - CLIENT FEEDBACK MAY 3): Consolidate consecutive free_time blocks
             # Apply BEFORE adding day_end to ensure day_end stays last
@@ -547,21 +673,15 @@ class PlanService:
                 lunch_end = item.get("end_time", "13:30")
                 lunch_duration = item.get("duration_min", 90)
                 
-                # PHASE 8 FEATURE #4: Add meal buffer (10 min for finding restaurant, waiting for table)
-                # Adjust lunch start time back by 10 min to account for prep time
-                from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
-                lunch_start_min = time_to_minutes(lunch_start)
-                buffered_lunch_start_min = lunch_start_min - 10
-                buffered_lunch_start = minutes_to_time(buffered_lunch_start_min)
-                
-                # Update duration to include buffer
-                lunch_duration += 10
-                
-                print(f"[TIMING BUFFERS] Lunch: +10min meal buffer (find restaurant, wait for table)")
+                # FIX #23 (03.05.2026 - CLIENT FEEDBACK Round 2 - Problem #1 - Timeline Overlap):
+                # ROOT CAUSE: PHASE 8 FEATURE #4 moved lunch start_time BACKWARD by 10 min, creating overlaps
+                # BEFORE: Engine lunch 13:28-14:08, plan_service moved to 13:18-14:08 → overlaps with attraction ending 13:25
+                # SOLUTION: Keep engine's start_time (respects timeline continuity), don't shift backward
+                # Meal buffer concept can be communicated in suggestions/description instead
                 
                 lunch_item = LunchBreakItem(
                     type=ItemType.LUNCH_BREAK,
-                    start_time=buffered_lunch_start,
+                    start_time=lunch_start,  # FIX #23: Use engine's start_time (don't move backward!)
                     end_time=lunch_end,
                     duration_min=lunch_duration,
                     suggestions=item.get("suggestions", [
@@ -926,11 +1046,23 @@ class PlanService:
         - family_kids: (2×normal + 2×reduced)
         - free_entry: 0
         """
-        # Engine zwraca dict z POI
-        visit_min = poi_dict.get("time_min", 60)
+        # FIX #19 (03.05.2026 - CLIENT FEEDBACK Problem #2): Use trail-specific duration fields
+        # Problem: Trails show 60min (fallback) instead of real duration (4-13h for 86% of Tatry trails)
+        # Root cause: POI have "time_min" field, Trails have "duration_min" and "duration_max" fields
+        # Solution: Check poi_type and use appropriate duration field
+        # FIX #19.1: duration_min/max → time_min/max mapping done during trail loading (lines ~118-130)
+        poi_type = poi_dict.get("type", "poi")
+        
+        if poi_type == "trail":
+            # Trails: Use duration_max for realistic planning (most people need max time, not minimum)
+            # TrailDB stores time_min/time_max → to_dict() converts to duration_min/duration_max
+            # FIX #19.1 also maps duration_min/max → time_min/max during loading for engine compatibility
+            visit_min = poi_dict.get("duration_max", poi_dict.get("duration_min", 60))
+        else:
+            # POI: Use time_min field from Excel
+            visit_min = poi_dict.get("time_min", 60)
         
         # PHASE 8 FEATURE #4: Apply timing buffers
-        poi_type = poi_dict.get("type", "poi")
         popularity = poi_dict.get("popularity", 0.0)
         
         buffers_applied = []
@@ -1796,6 +1928,98 @@ class PlanService:
                         print(f"[GAP FILLING] ✓ Added end-of-day free_time: {free_time_start}-{free_time_end} ({free_time_duration} min)")
         
         print(f"[GAP FILLING] Final: {len(items)} -> {len(result)} items")
+        return result
+
+    def _sort_items_by_time(self, items: List[Any]) -> List[Any]:
+        """
+        FIX #21 (03.05.2026 - CLIENT FEEDBACK Round 2 - Problem #1): Sort items by start_time.
+        
+        Problem:
+        - Items are added by engine, validation, and gap_filling in different orders
+        - This creates chronological chaos where items appear out of order in response
+        - Example from JSON 1 Day 1:
+          * 17:04–17:20 free_time "Krótki odpoczynek"
+          * 17:08–18:08 free_time "Czas wolny do końca dnia"  ← Added by validation
+          * 17:20–17:55 attraction "Muzeum"                    ← Added by engine earlier
+          * 18:08–19:00 free_time                              ← Added by gap filling
+        - Items are NOT in chronological order!
+        
+        Solution:
+        - Sort all items by start_time before consolidation
+        - Keep day_start first and day_end last (special handling)
+        - This ensures timeline is chronologically correct
+        
+        Args:
+            items: List of plan items (may be in wrong order)
+            
+        Returns:
+            Items sorted by start_time (chronological order)
+        """
+        if not items:
+            return items
+        
+        print(f"[SORT ITEMS] Sorting {len(items)} items by start_time")
+        
+        from app.domain.planner.time_utils import time_to_minutes
+        
+        # Separate day_start and day_end (keep them at boundaries)
+        day_start_item = None
+        day_end_item = None
+        sortable_items = []
+        
+        for item in items:
+            item_dict = item.dict()
+            item_type = item_dict.get('type')
+            
+            if item_type == 'day_start':
+                day_start_item = item
+            elif item_type == 'day_end':
+                day_end_item = item
+            else:
+                sortable_items.append(item)
+        
+        # Sort by start_time (or time field for items without start_time)
+        def get_sort_key(item):
+            item_dict = item.dict()
+            start_time = item_dict.get('start_time')
+            if start_time:
+                return time_to_minutes(start_time)
+            # Fallback for items without start_time (e.g., some special items)
+            time_field = item_dict.get('time')
+            if time_field:
+                return time_to_minutes(time_field)
+            # Items without any time field go to end (shouldn't happen)
+            return 9999
+        
+        # DEBUG: Log items BEFORE sort
+        print(f"[SORT ITEMS] BEFORE SORT: {len(sortable_items)} items")
+        for idx, item in enumerate(sortable_items[10:18] if len(sortable_items) > 10 else sortable_items[:8]):  # Items 10-17
+            item_dict = item.dict()
+            item_type = item_dict.get('type')
+            start_time = item_dict.get('start_time', 'N/A')
+            sort_key = get_sort_key(item)
+            print(f"  [{idx+10 if len(sortable_items) > 10 else idx}] sort_key={sort_key:4} {item_type:12} {start_time}")
+        
+        sortable_items.sort(key=get_sort_key)
+        
+        # DEBUG: Log sorted items to verify order
+        print(f"[SORT ITEMS] AFTER SORT (Day ?): {len(sortable_items)} items")
+        for idx, item in enumerate(sortable_items[:10]):  # First 10 items
+            item_dict = item.dict()
+            item_type = item_dict.get('type')
+            start_time = item_dict.get('start_time', 'N/A')
+            end_time = item_dict.get('end_time', 'N/A')
+            name = item_dict.get('name') or item_dict.get('label', '')[:30]
+            print(f"  [{idx}] {item_type:12} {start_time}-{end_time}  {name}")
+        
+        # Reconstruct list: day_start first, sorted items, day_end last
+        result = []
+        if day_start_item:
+            result.append(day_start_item)
+        result.extend(sortable_items)
+        if day_end_item:
+            result.append(day_end_item)
+        
         return result
 
     def _consolidate_consecutive_free_time_blocks(self, items: List[Any]) -> List[Any]:

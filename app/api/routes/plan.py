@@ -105,6 +105,11 @@ def preview_plan(
     - Plan is linked to guest_id
     - Guest can claim plans after signup via /claim-guest-plans
     """
+    print("\n" + "="*80, flush=True)
+    print("[ROUTER] preview_plan() START", flush=True)
+    print(f"[ROUTER] Days requested: {trip_input.trip_length.days}", flush=True)
+    print("="*80 + "\n", flush=True)
+    
     # Utworz service z POI repository
     plan_service = PlanService(poi_repo)
     
