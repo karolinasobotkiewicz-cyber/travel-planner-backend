@@ -303,16 +303,24 @@ class PlanService:
             
             # If requested days > sustainable, auto-adjust
             if num_days > max_sustainable_days:
+                from datetime import timedelta
+                
                 original_num_days = num_days
                 num_days = max(max_sustainable_days, 3)  # Minimum 3 days (don't go below)
                 
-                # CRITICAL: Modify trip_input.trip_length.days so trip_mapper uses adjusted value!
-                trip_input.trip_length.days = num_days
+                # CRITICAL: Recalculate dates array with adjusted num_days
+                # dates was created from original trip_input.trip_length.days (e.g., 7)
+                # but we need only num_days dates (e.g., 6)
+                start_date = trip_input.trip_length.start_date
+                dates = []
+                for day_num in range(num_days):
+                    day_date = start_date + timedelta(days=day_num)
+                    dates.append((day_date.year, day_date.month, day_date.day, day_date.weekday()))
                 
                 sys.stderr.write(f"\n{'='*80}\n")
                 sys.stderr.write(f"[FIX #24] ⚠️ TRIGGERING: {original_num_days} days → {num_days} days\n")
                 sys.stderr.write(f"[FIX #24] Quality POI: {len(quality_pois)} (need ~{int(original_num_days * recommended_poi_per_day)})\n")
-                sys.stderr.write(f"[FIX #24] Modified trip_input.trip_length.days to {trip_input.trip_length.days}\n")
+                sys.stderr.write(f"[FIX #24] Recalculated dates array: {len(dates)} dates\n")
                 sys.stderr.write(f"{'='*80}\n")
                 sys.stderr.flush()
                 
