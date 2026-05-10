@@ -114,3 +114,20 @@ def root():
         "docs": "/docs",
         "health": "/health",
     }
+
+
+@app.get("/debug/module-paths")
+def debug_module_paths():
+    """Debug: Show where modules are loaded from."""
+    import sys
+    import app.application.services.plan_service as plan_service_module
+    
+    return {
+        "plan_service_file": plan_service_module.__file__,
+        "module_version_id": getattr(plan_service_module, 'MODULE_VERSION_ID', 'NOT_FOUND'),
+        "has_FIX24_code": hasattr(plan_service_module.PlanService.generate_plan, '__code__') and 
+                          "FIX #24" in open(plan_service_module.__file__, 'r', encoding='utf-8').read(),
+        "sys_prefix": sys.prefix,
+        "sys_executable": sys.executable
+    }
+# Force reload 3

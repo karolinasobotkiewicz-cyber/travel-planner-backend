@@ -105,6 +105,9 @@ def preview_plan(
     - Plan is linked to guest_id
     - Guest can claim plans after signup via /claim-guest-plans
     """
+    import sys
+    sys.stderr.write("🔥🔥🔥 preview_plan() FUNCTION ENTRY - LINE 108! 🔥🔥🔥\n")
+    sys.stderr.flush()
     print("\n" + "="*80, flush=True)
     print("[ROUTER] preview_plan() START", flush=True)
     print(f"[ROUTER] Days requested: {trip_input.trip_length.days}", flush=True)

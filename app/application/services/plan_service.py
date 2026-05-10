@@ -3,7 +3,7 @@ Plan Service - generowanie planów podróży.
 Łączy: TripInput → engine → PlanResponse
 """
 print("🚨🚨🚨 MODULE LOADING: plan_service.py imported 🚨🚨🚨", flush=True)
-MODULE_VERSION_ID = "FIX24.5.2_MAY08_VERY_CONSERVATIVE"  # UNIQUE ID FOR VERIFICATION
+MODULE_VERSION_ID = "FIX24.6_MAY10_CONSOLIDATION_FIX"  # UNIQUE ID FOR VERIFICATION
 import uuid
 from typing import List, Dict, Any
 
@@ -2101,6 +2101,11 @@ class PlanService:
         if not items:
             return items
         
+        # DEBUG PROBLEM #4: Log inputs to consolidation
+        print(f"\n[CONSOLIDATE DEBUG] Received {len(items)} items", flush=True)
+        free_time_count = sum(1 for item in items if hasattr(item, 'type') and item.type == ItemType.FREE_TIME)
+        print(f"[CONSOLIDATE DEBUG] Free time count: {free_time_count}", flush=True)
+        
         consolidated = []
         i = 0
         
@@ -2121,7 +2126,9 @@ class PlanService:
                 next_item = items[j]
                 if hasattr(next_item, 'type') and next_item.type == ItemType.FREE_TIME:
                     # Check if should merge with previous block
-                    if self._should_merge_free_time(free_time_group[-1], next_item):
+                    should_merge = self._should_merge_free_time(free_time_group[-1], next_item)
+                    print(f"[CONSOLIDATE DEBUG] Checking merge: block {i} ({getattr(free_time_group[-1], 'duration_min', '?')}min, tech_buffer={getattr(free_time_group[-1], 'is_technical_buffer', None)}) + block {j} ({getattr(next_item, 'duration_min', '?')}min, tech_buffer={getattr(next_item, 'is_technical_buffer', None)}) → {should_merge}", flush=True)
+                    if should_merge:
                         free_time_group.append(next_item)
                         j += 1
                     else:
@@ -2166,9 +2173,25 @@ class PlanService:
         Returns:
             True if blocks should be merged, False otherwise
         """
-        # Don't merge technical buffers (intentionally short for padding)
-        if block1.is_technical_buffer or block2.is_technical_buffer:
-            return False
+        # FIX #24.6 (10.05.2026 - CLIENT FEEDBACK Round 2 - Problem #4): Fix consecutive FREE_TIME regression
+        # ROOT CAUSE: Line 2177 blocks merge if EITHER block is technical_buffer
+        # PROBLEM: Technical buffer (short padding) followed by genuine free_time should merge
+        # SOLUTION: Only block merge if SECOND block is technical_buffer UNLESS it's end-of-day free_time
+        # ALLOW: technical_buffer → genuine free_time (consolidate padding with subsequent free time)
+        # ALLOW: genuine free_time → end-of-day technical_buffer (consolidate with short end-of-day block)
+        # BLOCK: anything → technical_buffer padding (keep intentional padding separate)
+        
+        # Exception: "Czas wolny na koniec dnia" is marked as technical_buffer if < 30min,
+        # but it's genuine free_time that should merge with preceding free_time blocks
+        if block2.is_technical_buffer:
+            # Check if block2 is end-of-day free_time (not padding)
+            end_of_day_labels = ["Czas wolny na koniec dnia", "Czas wolny", "Krótki odpoczynek"]
+            is_end_of_day = any(block2.label.startswith(pattern) for pattern in end_of_day_labels)
+            if not is_end_of_day:
+                return False
+            # If block2 is end-of-day, continue to label check (allow merge)
+        # If block1 is technical_buffer but block2 is not, allow merge (transition case)
+        # If both are not technical_buffer, continue to label check below (existing behavior)
         
         # Generic label patterns that can be safely merged (use startswith for partial match)
         # This allows matching "Czas wolny do końca dnia: kolacja, spacer..." with base pattern
