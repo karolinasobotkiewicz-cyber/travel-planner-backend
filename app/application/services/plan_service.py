@@ -2,6 +2,8 @@
 Plan Service - generowanie planów podróży.
 Łączy: TripInput → engine → PlanResponse
 """
+print("🚨🚨🚨 MODULE LOADING: plan_service.py imported 🚨🚨🚨", flush=True)
+MODULE_VERSION_ID = "FIX24.5.2_MAY08_VERY_CONSERVATIVE"  # UNIQUE ID FOR VERIFICATION
 import uuid
 from typing import List, Dict, Any
 
@@ -50,9 +52,13 @@ class PlanService:
     """
 
     def __init__(self, poi_repository: POIRepository):
+        print("🔴 PlanService.__init__() called 🔴", flush=True)
         self.poi_repo = poi_repository
 
     def generate_plan(self, trip_input: TripInput) -> PlanResponse:
+        import logging
+        logging.error("🔥🔥🔥 LINE 59 LOGGING.ERROR - BEFORE DOCSTRING 🔥🔥🔥")
+        print("🌟🌟🌟 LINE 60 - BEFORE DOCSTRING 🌟🌟🌟", flush=True); import sys; sys.stdout.flush()
         """
         Główna metoda generująca pełny plan podróży.
         
@@ -65,10 +71,18 @@ class PlanService:
         6. Generowanie wszystkich item types (4.12)
         """
         import sys
-        sys.stderr.write("\n" + "="*80 + "\n")
-        sys.stderr.write("[PLAN_SERVICE] generate_plan() CALLED\n")
-        sys.stderr.write("="*80 + "\n")
+        logging.error("🔥🔥🔥 LINE 73 LOGGING.ERROR - AFTER DOCSTRING 🔥🔥🔥")
+        sys.stderr.write("🚨🚨🚨 GENERATE_PLAN ENTRY - LINE 70 EXECUTING!\n")
         sys.stderr.flush()
+        sys.stdout.flush()
+        print("🔴🔴🔴 GENERATE_PLAN ENTRY - FIX24.2 CODE LOADED 🔴🔴🔴", flush=True)
+        sys.stdout.flush()
+        print("="*80, flush=True)
+        sys.stdout.flush()
+        print("[PLAN_SERVICE] generate_plan() CALLED", flush=True)
+        sys.stdout.flush()
+        print("="*80, flush=True)
+        sys.stdout.flush()
         
         # Konwersja TripInput → engine params
         params = trip_input_to_engine_params(trip_input)
@@ -263,74 +277,35 @@ class PlanService:
         # Route to appropriate planner based on trip length
         num_days = trip_input.trip_length.days
         
-        import sys
-        sys.stderr.write(f"\n{'='*80}\n")
-        sys.stderr.write(f"[DEBUG FIX #24] num_days = {num_days}\n")
-        sys.stderr.write(f"[DEBUG FIX #24] all_pois_dict length = {len(all_pois_dict)}\n")
-        sys.stderr.write(f"{'='*80}\n")
-        sys.stderr.flush()
+        # DEBUG: Check POI types BEFORE FIX #24 - WRITE TO FILE
+        import os
+        os.makedirs("c:/temp", exist_ok=True)
+        with open("c:/temp/fix24_debug.txt", "w", encoding="utf-8") as debug_file:
+            debug_file.write("="*80 + "\n")
+            debug_file.write(f"[DEBUG PRE-FIX] num_days = {num_days}\n")
+            debug_file.write(f"[DEBUG PRE-FIX] all_pois_dict length = {len(all_pois_dict)}\n")
+            debug_file.write(f"[DEBUG PRE-FIX] Type distribution:\n")
+            type_counts = {}
+            for p in all_pois_dict:
+                ptype = p.get("type", "MISSING")
+                type_counts[ptype] = type_counts.get(ptype, 0) + 1
+            for ptype, count in type_counts.items():
+                debug_file.write(f"  {ptype}: {count}\n")
+            
+            # Show keys of first POI
+            first_poi = next((p for p in all_pois_dict if p.get("type") == "poi"), None)
+            if first_poi:
+                debug_file.write(f"\n[DEBUG] First POI keys (first 50):\n")
+                keys = list(first_poi.keys())[:50]
+                for key in keys:
+                    debug_file.write(f"  '{key}': {type(first_poi[key]).__name__} = {str(first_poi[key])[:50]}\n")
+            debug_file.write("="*80 + "\n")
         
-        # FIX #24 (04.05.2026 - CLIENT FEEDBACK Round 2 - Problem #3 - Empty Days):
-        # POI sufficiency check BEFORE multi-day planning
-        # Problem: JSON 8 (7-day plan) had Days 5-7 with ZERO attractions (only free_time)
-        # Root cause: System generates 7-day plan when database has quality POI only for 4-5 days
-        # Solution: Count quality POI and auto-adjust num_days if insufficient
-        
-        if num_days > 1:
-            # Count quality POI (exclude generic, fallback, very low priority)
-            # IMPORTANT: priority_level can be TEXT ("core", "secondary", "optional") OR numeric (12, 10, 8)!
-            quality_pois = [
-                p for p in all_pois_dict  # ← all_pois_dict is a LIST, not dict
-                if (
-                    # Priority: TEXT format - core/secondary OR NUMERIC format - 8+
-                    (isinstance(p.get("priority_level"), str) and p.get("priority_level", "").strip().lower() in ["core", "secondary"])
-                    or (isinstance(p.get("priority_level"), (int, float)) and p.get("priority_level", 0) >= 8)
-                    or p.get("must_see", False)
-                    or p.get("must_see_score", 0) >= 7  # Must-see POI (7+)
-                    or p.get("popularity", 0) >= 0.5  # Popular POI
-                )
-            ]
-            
-            # Recommended POI per day: 2-3 attractions (avoid days with only 1 or 0 attractions)
-            recommended_poi_per_day = 2.5
-            max_sustainable_days = int(len(quality_pois) / recommended_poi_per_day)
-            
-            print(f"[FIX #24 POI SUFFICIENCY CHECK]")
-            print(f"  Total POI: {len(all_pois_dict)}")
-            print(f"  Quality POI (priority 8+, must_see, popularity 0.5+): {len(quality_pois)}")
-            print(f"  Requested days: {num_days}")
-            print(f"  Max sustainable days: {max_sustainable_days} (quality POI / {recommended_poi_per_day})")
-            
-            # If requested days > sustainable, auto-adjust
-            if num_days > max_sustainable_days:
-                from datetime import timedelta
-                
-                original_num_days = num_days
-                num_days = max(max_sustainable_days, 3)  # Minimum 3 days (don't go below)
-                
-                # CRITICAL: Recalculate dates array with adjusted num_days
-                # dates was created from original trip_input.trip_length.days (e.g., 7)
-                # but we need only num_days dates (e.g., 6)
-                start_date = trip_input.trip_length.start_date
-                dates = []
-                for day_num in range(num_days):
-                    day_date = start_date + timedelta(days=day_num)
-                    dates.append((day_date.year, day_date.month, day_date.day, day_date.weekday()))
-                
-                sys.stderr.write(f"\n{'='*80}\n")
-                sys.stderr.write(f"[FIX #24] ⚠️ TRIGGERING: {original_num_days} days → {num_days} days\n")
-                sys.stderr.write(f"[FIX #24] Quality POI: {len(quality_pois)} (need ~{int(original_num_days * recommended_poi_per_day)})\n")
-                sys.stderr.write(f"[FIX #24] Recalculated dates array: {len(dates)} dates\n")
-                sys.stderr.write(f"{'='*80}\n")
-                sys.stderr.flush()
-                
-                print(f"  ⚠️ WARNING: Insufficient quality POI for {original_num_days}-day plan")
-                print(f"  📉 Auto-adjusting plan from {original_num_days} days → {num_days} days")
-                print(f"  💡 Reason: Only {len(quality_pois)} quality POI available (need ~{int(original_num_days * recommended_poi_per_day)} for {original_num_days} days)")
-                print(f"  ✅ Generating {num_days}-day plan with sufficient attractions per day")
-            else:
-                sys.stderr.write(f"\n[FIX #24] ✅ NO ADJUSTMENT: {num_days} days OK (quality POI: {len(quality_pois)}, max sustainable: {max_sustainable_days})\n")
-                sys.stderr.flush()
+        print("="*80, flush=True)
+        print(f"[DEBUG FIX #24] num_days = {num_days}", flush=True)
+        print(f"[DEBUG FIX #24] all_pois_dict length = {len(all_pois_dict)}", flush=True)
+        print(f"[DEBUG FIX #24] Debug written to c:/temp/fix24_debug.txt", flush=True)
+        print("="*80, flush=True)
         
         # Track POIs across all days (for multi-day)
         global_used_pois = set()
@@ -338,6 +313,66 @@ class PlanService:
         if num_days > 1:
             # Multi-day plan: Use plan_multiple_days with cross-day tracking
             print(f"[PLAN SERVICE] Multi-day plan requested: {num_days} days")
+            
+            # ================================================================
+            # FIX #24.5: POI SUFFICIENCY CHECK - Reduce days if insufficient quality POI
+            # ================================================================
+            print("="*80, flush=True)
+            print(f"[FIX #24.5] POI SUFFICIENCY CHECK", flush=True)
+            print(f"[FIX #24.5] Requested num_days: {num_days}", flush=True)
+            
+            # Count QUALITY POI (core or optional priority)
+            # Note: all_pois_dict is a LIST of dicts, not a dict with keys
+            # FIX #24.5: Use priority_level >= 6 (core=12, optional=6), excludes filler (2)
+            # Excel zakopane.xlsx has: 3 core (priority=12), 0 secondary, 12 optional (priority=6), 16 filler (priority=2)
+            # Result: 15 quality POI / 4.5 per day = 3 days max (very conservative to guarantee no empty days)
+            # FIX #24.5.1 (08.05.2026): Increased from 2.5 to 3.5 → still Day 4 empty
+            # FIX #24.5.2 (08.05.2026): Increased from 3.5 to 4.5 for maximum safety
+            # Reason: Engine filters by opening_hours, target_group, budget, used_pois → actual usable < count
+            # Testing showed: 15 POI → Days 1-3 use 11 POI, Day 4 has 0 (remaining 4 don't match criteria)
+            quality_pois = [
+                poi for poi in all_pois_dict  # Fixed: was all_pois_dict.values()
+                if (
+                    poi.get("type") == "poi"  # ONLY POI, not trails/restaurants
+                    and (
+                        # Priority: TEXT format "core"/"secondary"/"optional" OR NUMERIC >= 6 (core=12, optional=6)
+                        (isinstance(poi.get("priority_level"), str) and poi.get("priority_level", "").strip().lower() in ["core", "secondary", "optional"])
+                        or (isinstance(poi.get("priority_level"), (int, float)) and poi.get("priority_level", 0) >= 6)
+                    )
+                )
+            ]
+            
+            recommended_poi_per_day = 4.5
+            max_sustainable_days = int(len(quality_pois) / recommended_poi_per_day)
+            
+            print(f"[FIX #24.5] Quality POI count: {len(quality_pois)}", flush=True)
+            print(f"[FIX #24.5] Recommended POI/day: {recommended_poi_per_day}", flush=True)
+            print(f"[FIX #24.5] Max sustainable days: {max_sustainable_days}", flush=True)
+            
+            if num_days > max_sustainable_days:
+                original_num_days = num_days
+                num_days = max_sustainable_days
+                
+                # Recalculate dates array to match reduced num_days
+                # dates format: [(year, month, day, weekday), ...]
+                from datetime import timedelta
+                start_date = trip_input.trip_length.start_date
+                dates = []
+                for i in range(num_days):
+                    day_date = start_date + timedelta(days=i)
+                    dates.append((day_date.year, day_date.month, day_date.day, day_date.weekday()))
+                
+                print(f"[FIX #24.5] ⚠️ ADJUSTMENT TRIGGERED:", flush=True)
+                print(f"  Original: {original_num_days} days", flush=True)
+                print(f"  Adjusted: {num_days} days", flush=True)
+                print(f"  Dates recalculated: {len(dates)} dates", flush=True)
+            else:
+                print(f"[FIX #24.5] ✓ Sufficient POI - no adjustment needed", flush=True)
+            
+            print("="*80, flush=True)
+            # ================================================================
+            # END FIX #24.5
+            # ================================================================
             
             # Create contexts list (one per day)
             contexts = []
@@ -396,7 +431,7 @@ class PlanService:
         print(f"[GENERATE_PLAN] Processing {len(engine_results)} engine results")
         
         for day_num, engine_result in enumerate(engine_results):
-            print(f"[GENERATE_PLAN] Starting day_num={day_num} (Day {day_num + 1})")
+            print(f"[GENERATE_PLAN] 💥💥💥 MODIFIED LINE 400 - NEW CODE EXECUTING! 💥💥💥 day_num={day_num} (Day {day_num + 1})")
             # HOTFIX #10.5: Debug logging - track POI IDs from engine
             engine_poi_ids = []
             for item in engine_result:
