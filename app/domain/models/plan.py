@@ -3,7 +3,7 @@ Pydantic models dla plan response.
 Zgodne z UWAGI_API_CONTRACT_v2.md (wyjaśnienia od klientki 25.01.2026).
 """
 from pydantic import BaseModel, Field
-from typing import List, Union, Literal
+from typing import List, Union, Literal, Dict, Any
 from enum import Enum
 
 
@@ -371,6 +371,10 @@ class PlanResponse(BaseModel):
     version: int = Field(default=1, description="Wersja planu")
     days: List[DayPlan] = Field(
         default_factory=list, description="Lista dni z items"
+    )
+    warnings: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Lista ostrzeżeń dotyczących planu (np. brak POI dla preferencji)"
     )
 
     class Config:

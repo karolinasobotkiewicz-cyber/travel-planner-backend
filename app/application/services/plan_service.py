@@ -184,8 +184,20 @@ class PlanService:
             except Exception as e:
                 print(f"[ROUTER] WARNING: Failed to load POIs: {e}")
         
+        import sys
+        sys.stderr.write("\n" + "🚀"*50 + "\n")
+        sys.stderr.write("[DEBUG LINE 189] AFTER POI LOADING, BEFORE RESTAURANT CODE\n")
+        sys.stderr.write("🚀"*50 + "\n\n")
+        sys.stderr.flush()
+        
         # Source 3: RestaurantDB (meals for all trip types)
         # NOTE: Restaurants loaded separately for meal optimizer, not mixed with attractions
+        
+        import sys
+        sys.stderr.write("\n" + "🔥"*50 + "\n")
+        sys.stderr.write("[RESTAURANT DEBUG LINE 190] WE ARE HERE!\n")
+        sys.stderr.write("🔥"*50 + "\n\n")
+        sys.stderr.flush()
         
         # FIX #18.5: Map region to city for restaurant lookups
         # TrailDB uses regions ("Tatry"), RestaurantDB uses cities ("Zakopane")
@@ -195,6 +207,10 @@ class PlanService:
             "Kotlina Kłodzka": "Kłodzko"
         }
         restaurant_city = region_to_city_map.get(router_config["region"], router_config["region"])
+        
+        sys.stderr.write(f"[RESTAURANT DEBUG LINE 205] restaurant_city={restaurant_city}\n")
+        sys.stderr.write(f"[RESTAURANT DEBUG LINE 206] use_restaurants={router_config.get('use_restaurants')}\n")
+        sys.stderr.flush()
         
         # DEBUG: Write to file to bypass print buffering issues
         with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
@@ -261,8 +277,14 @@ class PlanService:
         context["trip_type"] = router_config["trip_type"]
         context["scoring_weights"] = router_config["scoring_weights"]
         
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"⚠️⚠️⚠️ [DEBUG LINE 280] all_pois_dict length: {len(all_pois_dict)}")
+        logger.error(f"⚠️⚠️⚠️ [DEBUG LINE 281] Checking if empty... if empty, will RETURN early!")
+        
         # Fallback: If no data loaded, return empty plan
         if not all_pois_dict:
+            logger.error("🚨🚨🚨 [EARLY RETURN LINE 287] Returning empty plan - NO RESTAURANTS LOADED!")
             print("[ROUTER] ERROR: No data sources available - returning empty plan")
             return PlanResponse(
                 plan_id=str(uuid.uuid4()),
@@ -271,6 +293,52 @@ class PlanService:
             )
         
         print(f"[ROUTER] TOTAL attractions/trails loaded: {len(all_pois_dict)}\n")
+        # ============================================================
+        
+        # ============================================================
+        # FIX #Problem7 (Round 2 - 13.05.2026): Underground preference validation
+        # ============================================================
+        # Problem: User requests "underground" preference, but no underground POI exist in database
+        # Solution: Detect missing preference support, add warning, fallback to history_mystery
+        # Requirement from CLIENT_FEEDBACK_03_05_2026_ROUND2_MASTER_LIST.md
+        
+        plan_warnings = []  # Collect warnings to add to PlanResponse
+        user_preferences = user.get("preferences", [])
+        
+        if "underground" in user_preferences:
+            print("[PREFERENCE VALIDATION] Checking 'underground' preference...")
+            
+            # Check if any POI has underground-related tags
+            underground_tags = ["underground", "cave", "mine", "podziemi", "jaskini"]
+            has_underground_poi = any(
+                any(tag.lower() in str(poi.get("tags", "")).lower() for tag in underground_tags)
+                for poi in all_pois_dict
+            )
+            
+            if not has_underground_poi:
+                # No underground POI available - add warning and fallback
+                warning = {
+                    "type": "preference_not_available",
+                    "preference": "underground",
+                    "message": "Brak atrakcji podziemnych w wybranej lokalizacji (Zakopane)",
+                    "fallback": "history_mystery",
+                    "action_taken": "Preferencja 'underground' zastąpiona przez 'history_mystery'"
+                }
+                plan_warnings.append(warning)
+                
+                # Replace 'underground' with 'history_mystery' in user preferences
+                user["preferences"] = [
+                    "history_mystery" if pref == "underground" else pref
+                    for pref in user_preferences
+                ]
+                
+                print(f"[PREFERENCE VALIDATION] ⚠️ WARNING: {warning['message']}")
+                print(f"[PREFERENCE VALIDATION] ✓ Fallback applied: underground → history_mystery")
+                print(f"[PREFERENCE VALIDATION] Updated preferences: {user['preferences']}")
+            else:
+                print("[PREFERENCE VALIDATION] ✓ Underground POI available")
+        # ============================================================
+        # END FIX #Problem7
         # ============================================================
         
         # ETAP 2 - DAY 3 (15.02.2026): Multi-day routing
@@ -636,7 +704,8 @@ class PlanService:
         return PlanResponse(
             plan_id=plan_id,
             version=1,
-            days=days
+            days=days,
+            warnings=plan_warnings  # FIX #Problem7: Include preference validation warnings
         )
 
     def _convert_engine_result_to_items(
