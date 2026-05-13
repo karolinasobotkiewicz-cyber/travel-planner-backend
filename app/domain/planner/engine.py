@@ -1485,6 +1485,25 @@ def score_poi(
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [BUDGET BOOST] {poi_name_safe}: +{budget_boost:.1f} (utilization={utilization*100:.0f}%, POI cost={poi_cost:.0f} PLN)")
     
+    # FIX #Problem8 (13.05.2026 - Round 2): Budget overflow penalty
+    # Problem: test-10 budget level 1 (200 PLN/day), first POI = Terma Bania 190 PLN (95% of limit)
+    # Issue: First attraction consumes almost entire daily budget, leaving no room for variety
+    # Solution: Heavy penalty for POI costing >70% of daily_limit when budget barely used
+    if daily_limit is not None and daily_limit > 0:
+        poi_cost = calculate_poi_cost_for_group(p, user)
+        cost_ratio = poi_cost / daily_limit  # What % of daily budget this POI consumes
+        utilization = daily_cost / daily_limit  # What % of budget already spent
+        
+        # Only penalize expensive POI when budget is still mostly available (utilization < 50%)
+        # This prevents expensive POI from being selected first, but allows them later if needed
+        if cost_ratio > 0.70 and utilization < 0.50:
+            # Penalty scales with how expensive the POI is relative to budget
+            # 70% cost → -50 points, 80% cost → -60 points, 95% cost → -80 points
+            overflow_penalty = -50 * (cost_ratio / 0.70)
+            score += overflow_penalty
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [BUDGET OVERFLOW PENALTY] {poi_name_safe}: {overflow_penalty:.1f} (cost={poi_cost:.0f} PLN = {cost_ratio*100:.0f}% of {daily_limit} PLN limit)")
+    
     # BUGFIX (19.02.2026 - UAT Round 2, Issue #5): Travel style preference boost
     # Problem: Tests 03, 05, 06, 09 show travel_style not properly boosting matching preferences
     # Test 03: friends+adventure gets museums instead of trails (active_sport ignored)

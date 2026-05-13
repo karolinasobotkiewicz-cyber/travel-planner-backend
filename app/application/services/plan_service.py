@@ -701,6 +701,72 @@ class PlanService:
         # Generuj plan_id
         plan_id = str(uuid.uuid4())
         
+        # FIX #Problem8 (13.05.2026 - Round 2): Budget overflow warning
+        # Check if any day's cost exceeds or approaches daily_limit
+        daily_limit = None
+        budget_dict = user.get("budget", {})
+        if isinstance(budget_dict, dict):
+            daily_limit = budget_dict.get("daily_limit")
+        
+        if daily_limit is not None and daily_limit > 0:
+            print(f"[BUDGET WARNING CHECK] Daily limit: {daily_limit} PLN")
+            
+            for day_plan in days:
+                day_num = day_plan.day
+                day_cost = 0
+                expensive_items = []  # Track items that cost >70% of daily limit
+                
+                # Sum up all costs in this day
+                for item in day_plan.items:
+                    item_cost = 0
+                    if hasattr(item, 'cost_estimate') and item.cost_estimate:
+                        item_cost = item.cost_estimate
+                    elif hasattr(item, 'total_cost') and item.total_cost:
+                        item_cost = item.total_cost
+                    
+                    if item_cost > 0:
+                        day_cost += item_cost
+                        
+                        # Check if single item consumes >70% of budget
+                        cost_ratio = item_cost / daily_limit
+                        if cost_ratio > 0.70:
+                            item_name = getattr(item, 'name', None) or getattr(item, 'poi_name', 'Unknown')
+                            expensive_items.append({
+                                "name": item_name,
+                                "cost": item_cost,
+                                "percentage": int(cost_ratio * 100)
+                            })
+                
+                print(f"[BUDGET WARNING CHECK] Day {day_num}: {day_cost:.0f} PLN / {daily_limit} PLN ({day_cost/daily_limit*100:.0f}%)")
+                
+                # Add warning if day cost exceeds daily limit
+                if day_cost > daily_limit:
+                    warning = {
+                        "type": "budget_exceeded",
+                        "day": day_num,
+                        "daily_limit": daily_limit,
+                        "actual_cost": int(day_cost),
+                        "overage": int(day_cost - daily_limit),
+                        "message": f"Dzień {day_num}: Koszt przekracza dzienny limit o {int(day_cost - daily_limit)} PLN"
+                    }
+                    plan_warnings.append(warning)
+                    print(f"[BUDGET WARNING] ⚠️ Day {day_num} exceeds budget: {day_cost:.0f} > {daily_limit} PLN")
+                
+                # Add warning if single item consumes >70% of daily budget
+                if expensive_items:
+                    for item_info in expensive_items:
+                        warning = {
+                            "type": "budget_constraint_active",
+                            "day": day_num,
+                            "daily_limit": daily_limit,
+                            "expensive_item": item_info["name"],
+                            "item_cost": item_info["cost"],
+                            "percentage_of_budget": item_info["percentage"],
+                            "message": f"Dzień {day_num}: '{item_info['name']}' pochłania {item_info['percentage']}% dziennego budżetu ({item_info['cost']} PLN z {daily_limit} PLN limitu)"
+                        }
+                        plan_warnings.append(warning)
+                        print(f"[BUDGET WARNING] ⚠️ Day {day_num}: Expensive item '{item_info['name']}' = {item_info['percentage']}% of budget")
+        
         return PlanResponse(
             plan_id=plan_id,
             version=1,
