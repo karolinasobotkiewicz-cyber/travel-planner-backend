@@ -1,4 +1,5 @@
 # type: ignore
+print("🚨🚨🚨 MODULE engine.py LOADING - FRESH CODE 🚨🚨🚨")
 import math
 import random
 from math import radians, sin, cos, sqrt, atan2
@@ -1269,6 +1270,11 @@ def score_poi(
     daily_limit=None,  # FIX #14: Added for budget utilization boost
 ):
     score = 0.0
+    
+    # DEBUG: Verify function is called
+    poi_id = p.get("id", "unknown")
+    with open("score_debug.txt", "a", encoding="utf-8") as f:
+        f.write(f"[SCORE_POI ENTRY] poi_id={poi_id}\n")
 
     # ETAP 3 PHASE 5 (27.04.2026): Get scoring_weights from router for POI scoring
     # Router calculates trip-level multipliers (cultural_bonus, convenience_bonus, must_see_bonus)
@@ -1309,7 +1315,24 @@ def score_poi(
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [MUST_SEE REDUCED] {poi_name_safe}: {must_see_boost:.1f} (no preference match, user wants: {user_preferences}, must_see_bonus={must_see_multiplier})")
     
-    score += safe_float(p.get("priority"))
+    # FIX #Problem6 (CLIENT FEEDBACK 03.05.2026 - Round 2): Conditional priority bonus
+    # Tests 03, 07, 09, 10: High-priority generic POI (museums, viewpoints) dominate plans
+    # Problem: priority_level bonus (+12 for poi_20 Wielka Krokiew) applied unconditionally
+    # Test-10: water_attractions user gets poi_20 (viewpoint, priority 12) instead of termy (priority 6, matching tags)
+    # Solution: Like must_see, reduce priority bonus when POI doesn't match user preferences
+    priority_value = safe_float(p.get("priority"))
+    
+    if poi_matches_preferences or not user_preferences:
+        # Full priority bonus when preferences match OR user has no preferences
+        priority_boost = priority_value
+        score += priority_boost
+    else:
+        # Reduced priority bonus (50%) when user has preferences but POI doesn't match
+        priority_boost = priority_value * 0.5
+        score += priority_boost
+        if priority_value >= 10:  # Log for high-priority POI
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [PRIORITY REDUCED] {poi_name_safe}: {priority_boost:.1f} (no preference match, user wants: {user_preferences}, raw priority={priority_value})")
 
     # dopasowanie - existing modules
     score += calculate_family_score(p, user)
@@ -1349,6 +1372,95 @@ def score_poi(
     # ETAP 1 ROZSZERZONY - preferences + travel_style
     score += calculate_preference_score(p, user)
     score += calculate_travel_style_score(p, user)
+    
+    # FIX #Problem6 (CLIENT FEEDBACK 03.05.2026 - Round 2): Strong preference boost + mismatch penalty
+    # Tests 03, 07, 09, 10: Generic high-priority POI dominate despite strong user preferences
+    # Test-03: active_sport+mountain_trails gets museums (poi_22, poi_24, poi_26) instead of szlaki
+    # Test-07: underground preference gets szlaki instead of underground POI
+    # Test-09: nature_landscape+relaxation gets museums/kulig instead of termy
+    # Test-10: water_attractions+relaxation gets poi_20 (Wielka Krokiew) instead of termy
+    # Problem: Existing preference scoring (+15-30 pts) insufficient to overcome priority bonus (+12)
+    # Solution: Strong boost when matching (+50-100 pts), penalty when mismatching (-30 pts)
+    
+    # Calculate top 3 user preferences (highest priority)
+    top_3_preferences = set(user_preferences[:3]) if user_preferences else set()
+    poi_tags_set = set(p.get("tags", []))
+    travel_style = user.get("travel_style", "")
+    
+    # DEBUG: Log values for troubleshooting
+    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+    print(f"[PREF DEBUG] POI={poi_name_safe} | user_prefs={user_preferences} | top_3={top_3_preferences} | poi_tags={poi_tags_set}")
+    
+    # Check if POI matches ANY of top 3 preferences
+    if top_3_preferences and poi_tags_set:
+        # Check for tag overlap between user preferences and POI tags
+        # USER_PREFERENCES_TO_TAGS maps preferences to expected tags
+        # Import needed for special case detection
+        from app.domain.scoring.tag_preferences import USER_PREFERENCES_TO_TAGS
+        
+        # Check each top 3 preference
+        strong_match = False
+        match_count = 0
+        
+        for pref in top_3_preferences:
+            pref_mapping = USER_PREFERENCES_TO_TAGS.get(pref, {})
+            expected_tags = set(pref_mapping.get("tags", []))
+            
+            # Check if POI has ANY of the expected tags
+            if expected_tags & poi_tags_set:
+                match_count += 1
+                strong_match = True
+        
+        if strong_match:
+            # Strong preference boost: +50 pts base, +25 pts per additional matching preference
+            preference_boost = 50.0 + (match_count - 1) * 25.0
+            score += preference_boost
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            with open("score_debug.txt", "a", encoding="utf-8") as f:
+                f.write(f"    [PREFERENCE BOOST] {poi_name_safe}: +{preference_boost:.1f} ({match_count} top-3 matches: {top_3_preferences})\n")
+            
+            # SPECIAL HANDLERS - extra boosts for specific preference combinations
+            
+            # 1. water_attractions: Termy should dominate (thermal_baths tags)
+            if "water_attractions" in top_3_preferences:
+                if "thermal_baths" in poi_tags_set or "hot_springs" in poi_tags_set:
+                    extra_boost = 30.0
+                    score += extra_boost
+                    print(f"    [WATER EXTRA] {poi_name_safe}: +{extra_boost:.1f} (thermal_baths match)")
+            
+            # 2. active_sport + mountain_trails: Szlaki should dominate over museums
+            if ("active_sport" in top_3_preferences or "mountain_trails" in top_3_preferences):
+                if "hiking" in poi_tags_set or "mountain_trails" in poi_tags_set or "alpine_activities" in poi_tags_set:
+                    extra_boost = 30.0
+                    score += extra_boost
+                    print(f"    [ACTIVE EXTRA] {poi_name_safe}: +{extra_boost:.1f} (mountain activity match)")
+            
+            # 3. relaxation + relax style: Low-intensity activities prioritized
+            if "relaxation" in top_3_preferences and travel_style == "relax":
+                if "low_intensity_activity" in poi_tags_set or "thermal_relax_focus" in poi_tags_set or "relax_zone" in poi_tags_set:
+                    extra_boost = 30.0
+                    score += extra_boost
+                    print(f"    [RELAX EXTRA] {poi_name_safe}: +{extra_boost:.1f} (low-intensity relax match)")
+        
+        elif user_preferences:  # User has preferences but POI doesn't match ANY
+            # Mismatch penalty: User wants specific experiences, POI provides something else
+            # Apply penalty for high-priority generic POI (museums, galleries, viewpoints, landmarks)
+            poi_type = str(p.get("type_of_attraction", "")).lower()
+            generic_types = ["museum", "gallery", "historic_building", "viewpoint"]
+            
+            # FIX #Problem6 (Round 2): Extend tag check to cover viewpoints/landmarks
+            is_generic = any(t in poi_type for t in generic_types) or \
+                         any(t in str(p.get("tags", [])).lower() for t in [
+                             "museum", "gallery", "architecture_heritage", 
+                             "viewpoint", "scenic_spot", "landmark", "photo_spot"
+                         ])
+            
+            if is_generic and priority_value >= 6:  # Generic high-priority POI
+                mismatch_penalty = -30.0
+                score += mismatch_penalty
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                with open("score_debug.txt", "a", encoding="utf-8") as f:
+                    f.write(f"    [MISMATCH PENALTY] {poi_name_safe}: {mismatch_penalty} (generic POI, user wants: {top_3_preferences})\n")
     
     # FIX #17 (24.02.2026 - TEST-06 COMPREHENSIVE FIX): Enhanced budget utilization boost
     # Problem: FIX #14 (+30 pts at <30%) insufficient for high daily_limit (500 zł/day).
@@ -1878,12 +1990,27 @@ def score_poi(
     #   Tier 3: Only target, <50% preferences → score × 0.6
     # This ensures small cities still get POI, but preference-matching POI ranked higher
     
+    # FIX #Problem6 (CLIENT FEEDBACK 03.05.2026): 3-TIER FALLBACK must use USER_PREFERENCES_TO_TAGS mapping
+    # BUG: Original code compared user_preferences (preference NAMES) vs poi_tags (tag NAMES) directly
+    #      ['water_attractions'] vs ['thermal_baths'] → no intersection → 0% match
+    # FIX: Use tag_preferences.py mapping to convert preferences to tags before comparison
+    
     user_preferences = user.get("preferences", [])
     
     if user_preferences:
-        # Calculate preference match percentage
+        from app.domain.scoring.tag_preferences import USER_PREFERENCES_TO_TAGS
+        
+        # Calculate preference match percentage using proper tag mapping
         poi_tags = set(p.get("tags", []))
-        matched_preferences = set(user_preferences) & poi_tags
+        matched_preferences = set()
+        
+        for pref in user_preferences:
+            pref_mapping = USER_PREFERENCES_TO_TAGS.get(pref, {})
+            expected_tags = set(pref_mapping.get("tags", []))
+            # Check if POI has ANY of the expected tags for this preference
+            if expected_tags & poi_tags:
+                matched_preferences.add(pref)
+        
         match_percentage = len(matched_preferences) / len(user_preferences) if user_preferences else 0.0
         
         # Determine tier and apply multiplier
@@ -1908,9 +2035,15 @@ def score_poi(
             original_score = score
             score *= multiplier
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-            print(f"    [3-TIER FALLBACK] {poi_name_safe}: {original_score:.1f} → {score:.1f} "
-                  f"({tier_name}, matched: {matched_preferences}, user wants: {user_preferences})")
+            with open("score_debug.txt", "a", encoding="utf-8") as f:
+                f.write(f"    [3-TIER FALLBACK] {poi_name_safe}: {original_score:.1f} → {score:.1f} "
+                      f"({tier_name}, matched: {matched_preferences}, user wants: {user_preferences})\n")
 
+    # Final score logging
+    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+    with open("score_debug.txt", "a", encoding="utf-8") as f:
+        f.write(f"[FINAL SCORE] {poi_id} ({poi_name_safe}): {score:.1f}\n")
+    
     return score
 
 
@@ -1940,6 +2073,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
     Returns:
         List of day plans (list of dicts, one per day)
     """
+    print(f"[PLAN_MULTIPLE_DAYS CALLED] num_days={len(contexts)}")
     num_days = len(contexts)
     
     # Global tracking across ALL days
@@ -1958,12 +2092,17 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
     # 3-day: 1 termy, 5-day: 1 termy, 7-day: 2 termy, 9-day: 3 termy
     max_termy_total = max(1, num_days // 3)
     
-    # Boost limit if relaxation is TOP 2 preference (user really wants termy)
+    # FIX #Problem6 (Round 2 - 11.05.2026): Expand boost for water_attractions preference
+    # Problem: Test-10 (2 days, water_attractions + relaxation) limited to 1 termy, user expects 2
+    # Root cause: Boost only triggered by relaxation in TOP 2, and cap was num_days // 2 (blocks 2-day boost)
+    # Solution: Trigger boost if water_attractions OR relaxation in TOP 3, remove restrictive cap
+    # Boost limit if relaxation OR water_attractions in TOP 3 preferences
+    # Rationale: Both preferences strongly indicate user wants termy/spa experiences
     user_prefs = user.get("preferences", [])
-    if "relaxation" in user_prefs[:2]:  # Top 2 preference
-        # Allow +1 termy if relaxation is high priority
-        max_termy_total = min(max_termy_total + 1, num_days // 2)  # Max 1 termy per 2 days
-        print(f"[MULTI-DAY] Termy limit BOOSTED (relaxation top 2 pref): {max_termy_total} for {num_days} days")
+    if "relaxation" in user_prefs[:3] or "water_attractions" in user_prefs[:3]:
+        # Allow +1 termy, capped at num_days (max 1 termy per day for strong preference)
+        max_termy_total = min(max_termy_total + 1, num_days)
+        print(f"[MULTI-DAY] Termy limit BOOSTED (water/relax top-3): {max_termy_total} for {num_days} days")
     else:
         print(f"[MULTI-DAY] Termy limit (base): {max_termy_total} for {num_days} days")
     
@@ -2111,6 +2250,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         global_used: Optional set of POI IDs already used in previous days (for multi-day planning)
         global_termy_tracking: Optional dict {"count": int, "max": int} for tracking termy/spa across all days
     """
+    print("[BUILD_DAY CALLED] Starting build_day")
     ctx = _get_context(context)
     
     # SEASONALITY HARD FILTER (ETAP 1 enhancement - 29.01.2026)
@@ -2330,7 +2470,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # Use context["restaurants_available"] to find nearby lunch spots
                 # Fallback to generic suggestions if no restaurants available
                 lunch_suggestions = ["Lunch", "Restauracja", "Odpoczynek"]  # Default fallback
-                
+
                 restaurants_available = context.get("restaurants_available", [])
                 if restaurants_available:
                     # Filter for lunch spots (meal_type == "lunch")
@@ -2759,6 +2899,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             if not is_open(p, start_time, duration, ctx["season"], ctx):
                 continue
 
+            poi_id_debug = p.get("id", "unknown")
+            print(f"[BEFORE SCORE_POI] About to score poi_id={poi_id_debug}")
             score = score_poi(
                 p=p,
                 user=user,
@@ -2773,6 +2915,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 daily_cost=daily_cost,  # FIX #14
                 daily_limit=daily_limit,  # FIX #14
             )
+            
+            poi_name_debug = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"[AFTER SCORE_POI] poi_id={poi_id_debug} ({poi_name_debug}): score={score:.1f}, best_so_far={best_score:.1f}")
             
             # FEEDBACK KLIENTKI (03.02.2026): Boost core POI if core_min not met
             # If we need core POI and this is core, add massive bonus
