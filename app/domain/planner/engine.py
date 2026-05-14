@@ -2382,7 +2382,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     kids_focused_count = 0  # Max 1/day for non-family groups
     
     # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #9): Track termy/spa for daily limit
-    termy_count = 0  # Max 1/day for seniors
+    # FIX #Problem10 (14.05.2026): Max 1/day for ALL groups (not just seniors)
+    termy_count = 0  # Max 1 termy/spa per day
     
     # FIX #5 (UAT Round 3 - 19.02.2026): Track preference coverage for top 3 preferences
     # Client feedback: "Część atrakcji jest zoo/rozrywka mimo prefs museum_heritage + cultural"
@@ -2902,10 +2903,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     continue  # Skip - already have 1 kids-focused POI today
             
             # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #9): Max 1 termy/spa per day for seniors
-            if user_group == 'seniors':
-                if is_termy_spa(p) and termy_count >= 1:
-                    print(f"[LIMITS] Skip termy/spa POI ID: {poi_id(p)} (already have {termy_count}/1 for seniors)")
-                    continue  # Skip - already have 1 termy/spa today
+            # FIX #Problem10 (14.05.2026): Apply to ALL groups (not just seniors)
+            if is_termy_spa(p) and termy_count >= 1:
+                print(f"[LIMITS] Skip termy/spa POI ID: {poi_id(p)} (already have {termy_count}/1 termy per day)")
+                continue  # Skip - already have 1 termy/spa today
             
             # UAT FIX (18.02.2026 - Problem #6): Global termy limit across all days
             # Test 08: 5 termy in 7 days is too much (max 2-3)
@@ -3851,11 +3852,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 kids_focused_count += 1
                 print(f"[LIMITS] Kids-focused POI added: {kids_focused_count}/1 for today")
         
-        # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #9): Increment termy counter for seniors
-        if user_group == 'seniors':
-            if is_termy_spa(best):
-                termy_count += 1
-                print(f"[LIMITS] Termy/spa POI added: {termy_count}/1 for seniors today")
+        # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #9): Increment termy counter
+        # FIX #Problem10 (14.05.2026): Apply to ALL groups (not just seniors)
+        if is_termy_spa(best):
+            termy_count += 1
+            print(f"[LIMITS] Termy/spa POI added: {termy_count}/1 per day")
         
         # FIX #5 (UAT Round 3 - 19.02.2026): Update preference coverage tracking
         # Track which of top 3 preferences have been covered by this POI
@@ -4037,10 +4038,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             print(f"[LIMITS] Kids-focused POI added (soft): {kids_focused_count}/1 for today")
                     
                     # BUGFIX (16.02.2026 - Problem #9): Increment termy counter for seniors (soft POI)
-                    if user_group == 'seniors':
-                        if is_termy_spa(p):
-                            termy_count += 1
-                            print(f"[LIMITS] Termy/spa POI added (soft): {termy_count}/1 for seniors today")
+                    # FIX #Problem10 (14.05.2026): Apply to ALL groups (not just seniors)
+                    if is_termy_spa(p):
+                        termy_count += 1
+                        print(f"[LIMITS] Termy/spa POI added (soft): {termy_count}/1 per day")
                     
                     # UAT FIX (18.02.2026 - Problem #6): Increment global termy counter (gap filler)
                     if global_termy_tracking is not None and is_termy_spa(p):
@@ -4230,9 +4231,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if user_group in ['solo', 'couples', 'friends', 'seniors']:
                     if is_kids_focused_poi(soft_best):
                         kids_focused_count += 1
-                if user_group == 'seniors':
-                    if is_termy_spa(soft_best):
-                        termy_count += 1
+                # FIX #Problem10 (14.05.2026): Apply to ALL groups (not just seniors)
+                if is_termy_spa(soft_best):
+                    termy_count += 1
                 
                 # Update budget
                 # FIX #2 (22.02.2026): Use unified cost calculation
