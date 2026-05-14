@@ -2,8 +2,6 @@
 Plan Service - generowanie planów podróży.
 Łączy: TripInput → engine → PlanResponse
 """
-print("🚨🚨🚨 MODULE LOADING: plan_service.py imported 🚨🚨🚨", flush=True)
-MODULE_VERSION_ID = "FIX24.6_MAY10_CONSOLIDATION_FIX"  # UNIQUE ID FOR VERIFICATION
 import uuid
 from typing import List, Dict, Any
 
@@ -52,13 +50,9 @@ class PlanService:
     """
 
     def __init__(self, poi_repository: POIRepository):
-        print("🔴 PlanService.__init__() called 🔴", flush=True)
         self.poi_repo = poi_repository
 
     def generate_plan(self, trip_input: TripInput) -> PlanResponse:
-        import logging
-        logging.error("🔥🔥🔥 LINE 59 LOGGING.ERROR - BEFORE DOCSTRING 🔥🔥🔥")
-        print("🌟🌟🌟 LINE 60 - BEFORE DOCSTRING 🌟🌟🌟", flush=True); import sys; sys.stdout.flush()
         """
         Główna metoda generująca pełny plan podróży.
         
@@ -70,19 +64,6 @@ class PlanService:
         5. Dodanie cost estimation (4.11)
         6. Generowanie wszystkich item types (4.12)
         """
-        import sys
-        logging.error("🔥🔥🔥 LINE 73 LOGGING.ERROR - AFTER DOCSTRING 🔥🔥🔥")
-        sys.stderr.write("🚨🚨🚨 GENERATE_PLAN ENTRY - LINE 70 EXECUTING!\n")
-        sys.stderr.flush()
-        sys.stdout.flush()
-        print("🔴🔴🔴 GENERATE_PLAN ENTRY - FIX24.2 CODE LOADED 🔴🔴🔴", flush=True)
-        sys.stdout.flush()
-        print("="*80, flush=True)
-        sys.stdout.flush()
-        print("[PLAN_SERVICE] generate_plan() CALLED", flush=True)
-        sys.stdout.flush()
-        print("="*80, flush=True)
-        sys.stdout.flush()
         
         # Konwersja TripInput → engine params
         params = trip_input_to_engine_params(trip_input)
@@ -184,20 +165,10 @@ class PlanService:
             except Exception as e:
                 print(f"[ROUTER] WARNING: Failed to load POIs: {e}")
         
-        import sys
-        sys.stderr.write("\n" + "🚀"*50 + "\n")
-        sys.stderr.write("[DEBUG LINE 189] AFTER POI LOADING, BEFORE RESTAURANT CODE\n")
-        sys.stderr.write("🚀"*50 + "\n\n")
-        sys.stderr.flush()
-        
         # Source 3: RestaurantDB (meals for all trip types)
         # NOTE: Restaurants loaded separately for meal optimizer, not mixed with attractions
         
         import sys
-        sys.stderr.write("\n" + "🔥"*50 + "\n")
-        sys.stderr.write("[RESTAURANT DEBUG LINE 190] WE ARE HERE!\n")
-        sys.stderr.write("🔥"*50 + "\n\n")
-        sys.stderr.flush()
         
         # FIX #18.5: Map region to city for restaurant lookups
         # TrailDB uses regions ("Tatry"), RestaurantDB uses cities ("Zakopane")
@@ -208,34 +179,9 @@ class PlanService:
         }
         restaurant_city = region_to_city_map.get(router_config["region"], router_config["region"])
         
-        sys.stderr.write(f"[RESTAURANT DEBUG LINE 205] restaurant_city={restaurant_city}\n")
-        sys.stderr.write(f"[RESTAURANT DEBUG LINE 206] use_restaurants={router_config.get('use_restaurants')}\n")
-        sys.stderr.flush()
-        
-        # DEBUG: Write to file to bypass print buffering issues
-        with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
-            debug_file.write(f"\n{'='*80}\n")
-            debug_file.write(f"[DEBUG] router_config check\n")
-            debug_file.write(f"[DEBUG] use_restaurants: {router_config.get('use_restaurants')}\n")
-            debug_file.write(f"[DEBUG] region: {router_config['region']}\n")
-            debug_file.write(f"[DEBUG] restaurant_city (after mapping): {restaurant_city}\n")
-            debug_file.write(f"[DEBUG] Router config keys: {list(router_config.keys())}\n")
-            debug_file.write(f"{'='*80}\n")
-        
-        print("="*80, flush=True)
-        print(f"[DEBUG] About to check use_restaurants: {router_config.get('use_restaurants')}", flush=True)
-        print(f"[DEBUG] Router config keys: {list(router_config.keys())}", flush=True)
-        print("="*80, flush=True)
-        
         if router_config["use_restaurants"]:
-            with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
-                debug_file.write(f"[DEBUG] use_restaurants=True, loading restaurants...\n")
-            print(f"[DEBUG] use_restaurants=True, loading restaurants...", flush=True)
             try:
                 restaurant_repo = RestaurantRepository()
-                with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
-                    debug_file.write(f"[DEBUG] RestaurantRepository created\n")
-                print(f"[DEBUG] RestaurantRepository created", flush=True)
                 
                 if is_cluster:
                     # PHASE 7: Load restaurants from all cluster cities
@@ -248,43 +194,23 @@ class PlanService:
                     print(f"[ROUTER] TOTAL restaurants for cluster: {len(all_restaurants)}", flush=True)
                 else:
                     # Single-city mode
-                    with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
-                        debug_file.write(f"[DEBUG] Single-city mode, restaurant_city={restaurant_city}\n")
-                    print(f"[DEBUG] Single-city mode, restaurant_city={restaurant_city}", flush=True)
                     restaurants_db = restaurant_repo.get_by_city(restaurant_city)
-                    with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
-                        debug_file.write(f"[DEBUG] Loaded {len(restaurants_db)} RestaurantDB objects from DB\n")
-                    print(f"[DEBUG] Loaded {len(restaurants_db)} RestaurantDB objects from DB", flush=True)
                     context["restaurants_available"] = [restaurant_repo.to_dict(r) for r in restaurants_db]
-                    with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
-                        debug_file.write(f"[ROUTER] Loaded {len(restaurants_db)} restaurants from RestaurantDB (city: {restaurant_city})\n")
-                        debug_file.write(f"[DEBUG] Converted to dict, context has {len(context['restaurants_available'])} restaurants\n")
                     print(f"[ROUTER] Loaded {len(restaurants_db)} restaurants from RestaurantDB (city: {restaurant_city})", flush=True)
-                    print(f"[DEBUG] Converted to dict, context has {len(context['restaurants_available'])} restaurants", flush=True)
             except Exception as e:
                 import traceback
-                with open("c:/temp/restaurant_debug.txt", "a", encoding="utf-8") as debug_file:
-                    debug_file.write(f"[ROUTER] ERROR: Failed to load restaurants: {e}\n")
-                    debug_file.write(f"[ROUTER] Traceback: {traceback.format_exc()}\n")
                 print(f"[ROUTER] ERROR: Failed to load restaurants: {e}", flush=True)
                 print(f"[ROUTER] Traceback: {traceback.format_exc()}", flush=True)
                 context["restaurants_available"] = []
         else:
-            print(f"[DEBUG] use_restaurants=False, setting empty restaurants")
             context["restaurants_available"] = []
         
         # Store router config in context for engine customization
         context["trip_type"] = router_config["trip_type"]
         context["scoring_weights"] = router_config["scoring_weights"]
         
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"⚠️⚠️⚠️ [DEBUG LINE 280] all_pois_dict length: {len(all_pois_dict)}")
-        logger.error(f"⚠️⚠️⚠️ [DEBUG LINE 281] Checking if empty... if empty, will RETURN early!")
-        
         # Fallback: If no data loaded, return empty plan
         if not all_pois_dict:
-            logger.error("🚨🚨🚨 [EARLY RETURN LINE 287] Returning empty plan - NO RESTAURANTS LOADED!")
             print("[ROUTER] ERROR: No data sources available - returning empty plan")
             return PlanResponse(
                 plan_id=str(uuid.uuid4()),
@@ -346,34 +272,6 @@ class PlanService:
         num_days = trip_input.trip_length.days
         
         # DEBUG: Check POI types BEFORE FIX #24 - WRITE TO FILE
-        import os
-        os.makedirs("c:/temp", exist_ok=True)
-        with open("c:/temp/fix24_debug.txt", "w", encoding="utf-8") as debug_file:
-            debug_file.write("="*80 + "\n")
-            debug_file.write(f"[DEBUG PRE-FIX] num_days = {num_days}\n")
-            debug_file.write(f"[DEBUG PRE-FIX] all_pois_dict length = {len(all_pois_dict)}\n")
-            debug_file.write(f"[DEBUG PRE-FIX] Type distribution:\n")
-            type_counts = {}
-            for p in all_pois_dict:
-                ptype = p.get("type", "MISSING")
-                type_counts[ptype] = type_counts.get(ptype, 0) + 1
-            for ptype, count in type_counts.items():
-                debug_file.write(f"  {ptype}: {count}\n")
-            
-            # Show keys of first POI
-            first_poi = next((p for p in all_pois_dict if p.get("type") == "poi"), None)
-            if first_poi:
-                debug_file.write(f"\n[DEBUG] First POI keys (first 50):\n")
-                keys = list(first_poi.keys())[:50]
-                for key in keys:
-                    debug_file.write(f"  '{key}': {type(first_poi[key]).__name__} = {str(first_poi[key])[:50]}\n")
-            debug_file.write("="*80 + "\n")
-        
-        print("="*80, flush=True)
-        print(f"[DEBUG FIX #24] num_days = {num_days}", flush=True)
-        print(f"[DEBUG FIX #24] all_pois_dict length = {len(all_pois_dict)}", flush=True)
-        print(f"[DEBUG FIX #24] Debug written to c:/temp/fix24_debug.txt", flush=True)
-        print("="*80, flush=True)
         
         # Track POIs across all days (for multi-day)
         global_used_pois = set()
@@ -458,25 +356,6 @@ class PlanService:
                 day_end=day_end
             )
             
-            # DEBUG: Check engine_results immediately after multi-day planner - WRITE TO FILE
-            import os
-            os.makedirs("c:/temp", exist_ok=True)
-            with open("c:/temp/engine_results_debug.txt", "w", encoding="utf-8") as debug_file:
-                debug_file.write(f"[DEBUG ENGINE_RESULTS] Multi-day planner returned {len(engine_results)} results\n")
-                for idx, result in enumerate(engine_results):
-                    debug_file.write(f"  [DEBUG] Result {idx}: type={type(result)}, is_dict={isinstance(result, dict)}\n")
-                    if isinstance(result, dict):
-                        debug_file.write(f"    keys: {list(result.keys())[:10]}\n")  # First 10 keys
-                        plan_items = result.get("plan", [])
-                        debug_file.write(f"    plan items count: {len(plan_items)}\n")
-                        if plan_items:
-                            debug_file.write(f"    first item: {plan_items[0]}\n")
-                    else:
-                        debug_file.write(f"    value: {result}\n")
-                debug_file.write(f"[DEBUG ENGINE_RESULTS] End of engine results check\n")
-            
-            print(f"[DEBUG] Engine results debug written to c:/temp/engine_results_debug.txt", flush=True)
-            
         else:
             # Single-day plan: Use original build_day (Etap 1 behavior)
             print(f"[PLAN SERVICE] Single-day plan requested")
@@ -499,7 +378,6 @@ class PlanService:
         print(f"[GENERATE_PLAN] Processing {len(engine_results)} engine results")
         
         for day_num, engine_result in enumerate(engine_results):
-            print(f"[GENERATE_PLAN] 💥💥💥 MODIFIED LINE 400 - NEW CODE EXECUTING! 💥💥💥 day_num={day_num} (Day {day_num + 1})")
             # HOTFIX #10.5: Debug logging - track POI IDs from engine
             engine_poi_ids = []
             for item in engine_result:
@@ -664,21 +542,12 @@ class PlanService:
             # Example: free_time 17:08-18:08 appears BEFORE attraction 17:20-17:55
             # Solution: Sort all items by start_time BEFORE consolidation
             
-            # DEBUG FIX #23: Log items BEFORE sorting to identify overlap source
-            print(f"[DEBUG FIX #23] BEFORE SORTING Day {day_num + 1}:")
-            for item in day_items:
-                if hasattr(item, 'start_time') and hasattr(item, 'end_time') and hasattr(item, 'type'):
-                    item_type = item.type.value if hasattr(item.type, 'value') else str(item.type)
-                    print(f"  {item.start_time}-{item.end_time} {item_type}")
-            
             day_items = self._sort_items_by_time(day_items)
             
-            # DEBUG FIX #23: Log items AFTER sorting to check if sorting creates overlaps
-            print(f"[DEBUG FIX #23] AFTER SORTING Day {day_num + 1}:")
-            for item in day_items:
-                if hasattr(item, 'start_time') and hasattr(item, 'end_time') and hasattr(item, 'type'):
-                    item_type = item.type.value if hasattr(item.type, 'value') else str(item.type)
-                    print(f"  {item.start_time}-{item.end_time} {item_type}")
+            # FIX #Problem9 (14.05.2026): Remove timeline overlaps after sorting
+            # Root cause: Gap filling can add both POI and free_time independently, creating overlaps
+            # Solution: After sorting, remove overlapping items (prefer non-free_time items)
+            day_items = self._remove_timeline_overlaps(day_items, day_num + 1)
             
             # FIX #18 (03.05.2026 - CLIENT FEEDBACK MAY 3): Consolidate consecutive free_time blocks
             # Apply BEFORE adding day_end to ensure day_end stays last
@@ -1657,6 +1526,29 @@ class PlanService:
                                     print(f"[GAP FILLING] CAPPED free_time to day_end: {gap} min -> {free_duration} min")
                             
                             free_time_start = minutes_to_time(current_end)
+                            free_time_end = minutes_to_time(current_end + free_duration)
+                            
+                            # FIX #Problem9 (14.05.2026): Check for overlap before adding free_time
+                            # Bug: Gap filling adds free_time without checking if it overlaps with existing items
+                            # This can happen when POI selection changes due to lunch timing fixes
+                            # Solution: Convert result to dict list, check overlap, skip if conflict
+                            result_dicts = [item.dict() if hasattr(item, 'dict') else item for item in result]
+                            overlaps_detected = False
+                            for existing_item in result_dicts:
+                                if 'start_time' in existing_item and 'end_time' in existing_item:
+                                    exist_start = time_to_minutes(existing_item['start_time'])
+                                    exist_end = time_to_minutes(existing_item['end_time'])
+                                    free_start_min = current_end
+                                    free_end_min = current_end + free_duration
+                                    
+                                    # Check if time ranges overlap
+                                    if not (free_end_min <= exist_start or free_start_min >= exist_end):
+                                        overlaps_detected = True
+                                        print(f"[GAP FILLING] OVERLAP DETECTED: free_time {free_time_start}-{free_time_end} would conflict with {existing_item.get('type')} {existing_item.get('start_time')}-{existing_item.get('end_time')} - SKIPPING")
+                                        break
+                            
+                            if overlaps_detected:
+                                continue  # Skip adding this free_time
                             
                             result.append(FreeTimeItem(
                                 type=ItemType.FREE_TIME,
@@ -1944,7 +1836,27 @@ class PlanService:
                             is_technical_buffer=(gap_duration < 30)  # FIX #16: Mark short buffers
                         )
                         
-                        result.append(free_time_item)
+                        # FIX #Problem9 (14.05.2026): Check for overlap before adding free_time (location 2)
+                        result_dicts_2 = [item.dict() if hasattr(item, 'dict') else item for item in result]
+                        overlaps_detected_2 = False
+                        for existing_item_2 in result_dicts_2:
+                            if 'start_time' in existing_item_2 and 'end_time' in existing_item_2:
+                                exist_start_2 = time_to_minutes(existing_item_2['start_time'])
+                                exist_end_2 = time_to_minutes(existing_item_2['end_time'])
+                                free_start_min_2 = current_end
+                                free_end_min_2 = current_end + gap_duration
+                                
+                                # Check if time ranges overlap
+                                if not (free_end_min_2 <= exist_start_2 or free_start_min_2 >= exist_end_2):
+                                    overlaps_detected_2 = True
+                                    print(f"[GAP FILLING] OVERLAP DETECTED (location 2): free_time {free_time_start}-{free_time_end} would conflict with {existing_item_2.get('type')} {existing_item_2.get('start_time')}-{existing_item_2.get('end_time')} - SKIPPING")
+                                    break
+                        
+                        if not overlaps_detected_2:
+                            result.append(free_time_item)
+                        else:
+                            # Skip this free_time and the remaining gap filling loop below
+                            continue
                         
                         # FIX #17 (29.04.2026 - CLIENT FEEDBACK): Fill remaining gap after capped free_time
                         # Problem: If gap = 142 min, code adds 60-min free_time, but leaves 82-min gap unfilled
@@ -2110,6 +2022,96 @@ class PlanService:
                         print(f"[GAP FILLING] ✓ Added end-of-day free_time: {free_time_start}-{free_time_end} ({free_time_duration} min)")
         
         print(f"[GAP FILLING] Final: {len(items)} -> {len(result)} items")
+        return result
+
+    def _remove_timeline_overlaps(self, items: List[Any], day_num: int) -> List[Any]:
+        """
+        FIX #Problem9 (14.05.2026): Remove overlapping items from timeline.
+        
+        Problem:
+        - Gap filling can add both POI and free_time independently
+        - This creates overlaps when POI selection changes (e.g. due to lunch timing fixes)
+        - Example from test-03: attraction 18:17-18:52 overlaps with free_time 18:19-19:19
+        
+        Strategy:
+        - Iterate through sorted items
+        - If current item overlaps with previous: remove the less important one
+        - Priority: attraction/meal > free_time (prefer non-free_time)
+        
+        Args:
+            items: Sorted list of timeline items
+            day_num: Day number for logging
+            
+        Returns:
+            List of items without overlaps
+        """
+        if not items:
+            return items
+        
+        result = []
+        prev_item = None
+        overlaps_removed = 0
+        
+        for item in items:
+            # Get time ranges
+            item_dict = item.dict() if hasattr(item, 'dict') else item
+            item_type = item_dict.get('type')
+            item_start_str = item_dict.get('start_time') or item_dict.get('time')
+            item_end_str = item_dict.get('end_time')
+            
+            # Skip items without time info (like day_start, day_end handled separately)
+            if not item_start_str:
+                result.append(item)
+                continue
+            
+            item_start = time_to_minutes(item_start_str)
+            item_end = time_to_minutes(item_end_str) if item_end_str else item_start
+            
+            # Check overlap with previous item
+            if prev_item is not None:
+                prev_dict = prev_item.dict() if hasattr(prev_item, 'dict') else prev_item
+                prev_type = prev_dict.get('type')
+                prev_end_str = prev_dict.get('end_time')
+                
+                if prev_end_str:
+                    prev_end = time_to_minutes(prev_end_str)
+                    
+                    # Check if overlap: current starts before previous ends
+                    if item_start < prev_end:
+                        # OVERLAP DETECTED
+                        overlap_min = prev_end - item_start
+                        
+                        # Determine which item to keep
+                        # Priority: non-free_time > free_time
+                        prev_is_free = prev_type == 'free_time' or prev_type == ItemType.FREE_TIME
+                        curr_is_free = item_type == 'free_time' or item_type == ItemType.FREE_TIME
+                        
+                        if curr_is_free and not prev_is_free:
+                            # Current is free_time, previous is attraction/meal - SKIP current
+                            print(f"[OVERLAP HEAL] Day {day_num}: Removed free_time {item_start_str}-{item_end_str} (overlaps {overlap_min}min with {prev_type})")
+                            overlaps_removed += 1
+                            continue
+                        elif prev_is_free and not curr_is_free:
+                            # Previous is free_time, current is attraction/meal - REMOVE previous, keep current
+                            print(f"[OVERLAP HEAL] Day {day_num}: Removed previous free_time (overlaps {overlap_min}min with {item_type} {item_start_str}-{item_end_str})")
+                            result.pop()  # Remove previous free_time
+                            overlaps_removed += 1
+                            # Don't update prev_item yet - will be set below
+                        else:
+                            # Both same priority (both free_time or both non-free_time) - keep first
+                            print(f"[OVERLAP HEAL] Day {day_num}: Removed {item_type} {item_start_str}-{item_end_str} (overlaps {overlap_min}min with previous {prev_type})")
+                            overlaps_removed += 1
+                            continue
+            
+            # Add current item and update prev_item
+            result.append(item)
+            prev_item = item
+        
+        if overlaps_removed > 0:
+            print(f"[OVERLAP HEAL] Day {day_num}: Removed {overlaps_removed} overlapping items")
+        else:
+            print(f"[OVERLAP HEAL] Day {day_num}: No overlaps detected")
+        
         return result
 
     def _sort_items_by_time(self, items: List[Any]) -> List[Any]:

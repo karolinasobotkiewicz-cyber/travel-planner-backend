@@ -1,5 +1,4 @@
 # type: ignore
-print("🚨🚨🚨 MODULE engine.py LOADING - FRESH CODE 🚨🚨🚨")
 import math
 import random
 from math import radians, sin, cos, sqrt, atan2
@@ -1223,15 +1222,31 @@ def energy_cost(p, duration, context):
 # =========================
 
 
-def choose_duration(p, now, end, lunch_done):
+def choose_duration(p, now, end, lunch_done, user=None):
     tmin = safe_int(p.get("time_min"), 30)
     tmax = safe_int(p.get("time_max"), 60)
 
     if end - now < tmin:
         return 0
 
-    lunch_target = time_to_minutes(LUNCH_TARGET)
-    lunch_latest = time_to_minutes(LUNCH_LATEST)
+    # FIX #Problem9 (13.05.2026 - Round 2): Use group-specific lunch timing
+    # If user is provided, compute group-specific timing; otherwise use defaults
+    # BUGFIX: trip_mapper.py maps group.type → user["target_group"], NOT user["group"]["type"]
+    if user:
+        group_type = user.get("target_group")
+        
+        if group_type == "family_kids":
+            lunch_target = time_to_minutes("12:30")
+            lunch_latest = time_to_minutes("13:30")
+        elif group_type == "seniors":
+            lunch_target = time_to_minutes("12:45")
+            lunch_latest = time_to_minutes("13:30")
+        else:
+            lunch_target = time_to_minutes(LUNCH_TARGET)
+            lunch_latest = time_to_minutes(LUNCH_LATEST)
+    else:
+        lunch_target = time_to_minutes(LUNCH_TARGET)
+        lunch_latest = time_to_minutes(LUNCH_LATEST)
 
     # jesli lunch nie zrobiony, sprawdź czy POI zmieści tmin przed lunchem
     if not lunch_done and now < lunch_latest:
@@ -1247,7 +1262,22 @@ def choose_duration(p, now, end, lunch_done):
     # To daje bardziej realistyczne czasy niż zawsze max
     preferred_duration = tmin + int(0.7 * (tmax - tmin))
     
-    return min(preferred_duration, end - now)
+    # FIX #Problem9 (14.05.2026): CAP duration at max_before_lunch to prevent pushing lunch late
+    # BUG: Even if POI is allowed (tmin < max_before_lunch), preferred_duration could be much longer
+    #      Example: now=10:00, lunch_target=12:30, tmin=60, preferred=150 → POI ends at 12:30 (150min)
+    #               This pushes lunch to 12:30+, then POST-POI CHECK inserts it late (14:48)
+    # Solution: Cap duration at max_before_lunch to ensure POI ends BEFORE lunch time
+    # BUGFIX (14.05.2026): Only apply cap if max_before_lunch > 0 to avoid negative durations
+    if not lunch_done and now < lunch_latest:
+        # max_before_lunch is already calculated above (lines 1255-1257)
+        # Cap duration only if we have positive time before lunch
+        if max_before_lunch > 0:
+            return min(preferred_duration, end - now, max_before_lunch)
+        else:
+            # This shouldn't happen (POI would be blocked above), but safety check
+            return 0
+    else:
+        return min(preferred_duration, end - now)
 
 
 # =========================
@@ -1271,11 +1301,6 @@ def score_poi(
 ):
     score = 0.0
     
-    # DEBUG: Verify function is called
-    poi_id = p.get("id", "unknown")
-    with open("score_debug.txt", "a", encoding="utf-8") as f:
-        f.write(f"[SCORE_POI ENTRY] poi_id={poi_id}\n")
-
     # ETAP 3 PHASE 5 (27.04.2026): Get scoring_weights from router for POI scoring
     # Router calculates trip-level multipliers (cultural_bonus, convenience_bonus, must_see_bonus)
     # These weights customize scoring based on trip type (city_tourism vs mountain_hiking)
@@ -1415,9 +1440,6 @@ def score_poi(
             # Strong preference boost: +50 pts base, +25 pts per additional matching preference
             preference_boost = 50.0 + (match_count - 1) * 25.0
             score += preference_boost
-            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-            with open("score_debug.txt", "a", encoding="utf-8") as f:
-                f.write(f"    [PREFERENCE BOOST] {poi_name_safe}: +{preference_boost:.1f} ({match_count} top-3 matches: {top_3_preferences})\n")
             
             # SPECIAL HANDLERS - extra boosts for specific preference combinations
             
@@ -1458,9 +1480,6 @@ def score_poi(
             if is_generic and priority_value >= 6:  # Generic high-priority POI
                 mismatch_penalty = -30.0
                 score += mismatch_penalty
-                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-                with open("score_debug.txt", "a", encoding="utf-8") as f:
-                    f.write(f"    [MISMATCH PENALTY] {poi_name_safe}: {mismatch_penalty} (generic POI, user wants: {top_3_preferences})\n")
     
     # FIX #17 (24.02.2026 - TEST-06 COMPREHENSIVE FIX): Enhanced budget utilization boost
     # Problem: FIX #14 (+30 pts at <30%) insufficient for high daily_limit (500 zł/day).
@@ -2053,16 +2072,7 @@ def score_poi(
         if multiplier < 1.0:
             original_score = score
             score *= multiplier
-            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-            with open("score_debug.txt", "a", encoding="utf-8") as f:
-                f.write(f"    [3-TIER FALLBACK] {poi_name_safe}: {original_score:.1f} → {score:.1f} "
-                      f"({tier_name}, matched: {matched_preferences}, user wants: {user_preferences})\n")
 
-    # Final score logging
-    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-    with open("score_debug.txt", "a", encoding="utf-8") as f:
-        f.write(f"[FINAL SCORE] {poi_id} ({poi_name_safe}): {score:.1f}\n")
-    
     return score
 
 
@@ -2288,6 +2298,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     if ctx["daylight_end"]:
         end = min(end, time_to_minutes(ctx["daylight_end"]))
 
+    # FIX #Problem9 DEBUG: Simple print to verify execution
+    print(f"🔥🔥🔥 build_day() CALLED: target_group={user.get('target_group')} 🔥🔥🔥", flush=True)
+    
+    # FIX #Problem9 DEBUG: Marker to confirm function execution
+    with open(r"C:\Users\matte\Desktop\build_day_called.txt", "a", encoding="utf-8") as f:
+        f.write(f"build_day called: target_group={user.get('target_group')}\n")
+    
     # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #10):
     # Standardize all items to use start_time/end_time (not "time")
     plan = [{
@@ -2437,10 +2454,35 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         #             If POI before lunch runs until 15:41, lunch will be at 15:41 with warning
         # Solution: Force lunch insertion when now >= LUNCH_TARGET (13:00) to stay within 12:00-14:30 window
         # Rationale: Better to have lunch slightly early (12:30-13:30) than very late (15:41)
+        
+        # FIX #Problem9 (13.05.2026 - Round 2): Group-specific lunch timing
+        # Problem: test-05 (family_kids) and test-06 (seniors) get lunch at 14:48-15:28 (too late)
+        # Issue: Children and seniors need earlier lunch than general travelers
+        # Solution: Adjust lunch timing based on target_group
+        # BUGFIX: trip_mapper.py maps group.type → user["target_group"], NOT user["group"]["type"]
         if not lunch_done:
-            lunch_earliest = time_to_minutes(LUNCH_EARLIEST)  # 12:00
-            lunch_target = time_to_minutes(LUNCH_TARGET)      # 13:00
-            lunch_latest = time_to_minutes(LUNCH_LATEST)      # 14:30
+            # Get group type from user["target_group"] (mapped by trip_mapper.py)
+            group_type = user.get("target_group")
+            
+            # Set lunch timing based on group type
+            if group_type == "family_kids":
+                # Families with kids: lunch 12:30-13:30 (preferred 12:30)
+                lunch_earliest = time_to_minutes("12:00")  # Allow from 12:00
+                lunch_target = time_to_minutes("12:30")    # Target 12:30
+                lunch_latest = time_to_minutes("13:30")    # Latest 13:30
+                print(f"[LUNCH TIMING] family_kids: target 12:30, latest 13:30")
+            elif group_type == "seniors":
+                # Seniors: lunch 12:45-13:30 (preferred 12:45)
+                lunch_earliest = time_to_minutes("12:00")  # Allow from 12:00
+                lunch_target = time_to_minutes("12:45")    # Target 12:45
+                lunch_latest = time_to_minutes("13:30")    # Latest 13:30
+                print(f"[LUNCH TIMING] seniors: target 12:45, latest 13:30")
+            else:
+                # Default: lunch 13:00-14:30 (preferred 13:00)
+                lunch_earliest = time_to_minutes(LUNCH_EARLIEST)  # 12:00
+                lunch_target = time_to_minutes(LUNCH_TARGET)      # 13:00
+                lunch_latest = time_to_minutes(LUNCH_LATEST)      # 14:30
+                print(f"[LUNCH TIMING] default: target 13:00, latest 14:30")
 
             should_insert_lunch = False
             is_late_lunch = False
@@ -2535,6 +2577,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         if any_restaurants:
                             lunch_suggestions = [r["name"] for r in any_restaurants[:3]]
                             print(f"[LUNCH] Fallback suggestions (no lunch-specific): {lunch_suggestions}")
+                
+                # FIX #Problem9 DEBUG: Log lunch insertion with group_type
+                group_type_debug = user.get("target_group")
+                print(f"[DEBUG #Problem9] INSERTING LUNCH: time={lunch_start_time}-{lunch_end_time}, group_type={group_type_debug}, lunch_target={lunch_target}, lunch_latest={lunch_latest}")
                 
                 plan.append(
                     {
@@ -2891,7 +2937,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             if start_time >= end:
                 continue
 
-            duration = choose_duration(p, start_time, end, lunch_done)
+            duration = choose_duration(p, start_time, end, lunch_done, user)
             if duration <= 0:
                 continue
 
@@ -3098,7 +3144,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if start_time >= end:
                         continue
                     
-                    duration = choose_duration(p, start_time, end, lunch_done)
+                    duration = choose_duration(p, start_time, end, lunch_done, user)
                     if duration <= 0:
                         continue
                     
@@ -3220,7 +3266,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if start_time >= end:
                         continue
                     
-                    duration = choose_duration(p, start_time, end, lunch_done)
+                    duration = choose_duration(p, start_time, end, lunch_done, user)
                     if duration <= 0:
                         continue
                     
@@ -3591,7 +3637,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         if daily_limit is not None:
             print(f"[BUDGET] POI cost: {poi_cost_total:.0f} PLN, daily total: {daily_cost:.0f}/{daily_limit} PLN")
 
+        # DEBUG #Problem9 (14.05.2026): Track now update to diagnose overlap
+        old_now = now
         now += best_duration
+        if minutes_to_time(old_now) >= "18:00":
+            print(f"[PROBLEM9 DEBUG] EVENING POI: {poi_name(best)}, start={minutes_to_time(old_now)}, duration={best_duration}, new_now={minutes_to_time(now)}, end={minutes_to_time(old_now + best_duration)}")
         energy -= energy_cost(best, best_duration, ctx)
         fatigue += 1
         used.add(poi_id(best))
@@ -3624,13 +3674,28 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         # Solution: Check IMMEDIATELY after updating 'now' - if we're past lunch_target and
         #          lunch not done, FORCE lunch insertion NOW before continuing
         # This ensures lunch happens 12:00-14:30, never 15:41+
+        
+        # FIX #Problem9 (13.05.2026 - Round 2): Apply group-specific lunch timing to POST-POI CHECK
+        # This is the SECOND lunch insertion point - must use same timing rules as main loop
+        # BUGFIX: trip_mapper.py maps group.type → user["target_group"], NOT user["group"]["type"]
         if not lunch_done:
-            lunch_target = time_to_minutes(LUNCH_TARGET)  # 13:00
-            lunch_latest = time_to_minutes(LUNCH_LATEST)  # 14:30
+            # Get group type from user["target_group"] (mapped by trip_mapper.py)
+            group_type = user.get("target_group")
+            
+            # Set lunch timing based on group type (SAME as main lunch checkpoint)
+            if group_type == "family_kids":
+                lunch_target = time_to_minutes("12:30")    # Target 12:30
+                lunch_latest = time_to_minutes("13:30")    # Latest 13:30
+            elif group_type == "seniors":
+                lunch_target = time_to_minutes("12:45")    # Target 12:45
+                lunch_latest = time_to_minutes("13:30")    # Latest 13:30
+            else:
+                lunch_target = time_to_minutes(LUNCH_TARGET)  # 13:00
+                lunch_latest = time_to_minutes(LUNCH_LATEST)  # 14:30
             
             # Check if POI pushed us past lunch time
             if now >= lunch_target:
-                print(f"[LUNCH POST-POI CHECK] POI pushed now to {minutes_to_time(now)} (>= {LUNCH_TARGET}) - FORCING lunch NOW")
+                print(f"[LUNCH POST-POI CHECK] POI pushed now to {minutes_to_time(now)} (>= target {lunch_target}) - FORCING lunch NOW")
                 
                 # Insert lunch immediately
                 lunch_start_time = minutes_to_time(now)
@@ -3843,7 +3908,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if test_start >= end:
                     continue
                 
-                test_duration = choose_duration(p, test_start, end, lunch_done)
+                test_duration = choose_duration(p, test_start, end, lunch_done, user)
                 if test_duration <= 0:
                     continue
                 
