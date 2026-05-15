@@ -65,6 +65,10 @@ class PlanService:
         6. Generowanie wszystkich item types (4.12)
         """
         
+        print("\n" + "🔴"*50, flush=True)
+        print("🔴 TEST #Problem11: generate_plan() CALLED", flush=True)
+        print("🔴"*50 + "\n", flush=True)
+        
         # Konwersja TripInput → engine params
         params = trip_input_to_engine_params(trip_input)
         
@@ -684,6 +688,63 @@ class PlanService:
             if item.get("type") == "attraction":
                 first_attraction = item
                 break
+        
+        # FIX #Problem11 (14.05.2026 - CLIENT FEEDBACK Round 2): Transit to first attraction
+        # Problem: Brak transitu od hotelu/bazy do pierwszej atrakcji na start dnia
+        # Solution: Jeśli pierwsza atrakcja jest poza Zakopane (>10 min dojazdu), dodaj transit
+        if has_car and first_attraction:
+            from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+            from app.domain.planner.engine import travel_time_minutes
+            
+            first_poi = first_attraction.get("poi", {})
+            first_address = first_poi.get("address", "")
+            
+            # Zakopane centrum (hotel default location) - GPS coordinates
+            hotel_location = {
+                "lat": 49.2992,  # Zakopane centrum (Krupówki)
+                "lng": 19.9496
+            }
+            
+            # Check if first attraction is outside Zakopane
+            # Criteria: Address contains towns outside Zakopane (Białka, Bukowina, Chochołów, etc.)
+            outside_town_keywords = ["Białka", "Bukowina", "Chochołów", "Witów", "Murzasichle"]
+            is_outside_zakopane = any(keyword in first_address for keyword in outside_town_keywords)
+            
+            # Or calculate distance from Zakopane centrum
+            first_lat = first_poi.get("lat")  # lowercase! POI from engine has lowercase keys
+            first_lng = first_poi.get("lng")  # lowercase! POI from engine has lowercase keys
+            
+            if not is_outside_zakopane and first_lat and first_lng:
+                from app.domain.planner.engine import haversine_distance
+                distance_km = haversine_distance(hotel_location["lat"], hotel_location["lng"], first_lat, first_lng)
+                # Consider outside if distance > 5 km from centrum
+                is_outside_zakopane = distance_km > 5.0
+            
+            # Calculate transit time if outside
+            if is_outside_zakopane and first_lat and first_lng:
+                first_poi_location = {"lat": first_lat, "lng": first_lng}
+                context_for_transit = {
+                    "has_car": True,
+                    "transport": "car"
+                }
+                transit_time_min = travel_time_minutes(hotel_location, first_poi_location, context_for_transit)
+                
+                # Add transit only if > 10 minutes (per requirement)
+                if transit_time_min > 10:
+                    day_start_min = time_to_minutes(day_start)
+                    transit_start_min = day_start_min
+                    transit_end_min = day_start_min + transit_time_min
+                    
+                    transit_to_first = TransitItem(
+                        type=ItemType.TRANSIT,
+                        start_time=minutes_to_time(transit_start_min),
+                        end_time=minutes_to_time(transit_end_min),
+                        duration_min=transit_time_min,
+                        mode=TransitMode.CAR,
+                        from_location="Zakopane (Hotel)",
+                        to_location=first_poi.get("Name", "First Attraction")
+                    )
+                    items.append(transit_to_first)
         
         # PHASE 8 Feature #1: PARKING AS INFO ONLY (not separate waypoint)
         # REMOVED: ParkingItem creation at day start
