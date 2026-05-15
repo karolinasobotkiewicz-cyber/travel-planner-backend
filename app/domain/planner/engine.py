@@ -609,18 +609,21 @@ GROUP_DAILY_ENERGY = {
 # Problem: TEST-06 has 8-hour days (10:00-18:00) but seniors hit hard limit after ~3 hours.
 # Result: 10% budget usage, Day 3 practically empty (1 POI + 6h free time).
 # Solution: Increase seniors to soft=5, hard=7 (matching couples) to allow proper day filling.
+# FIX #Problem12 (15.05.2026 - CLIENT FEEDBACK Round 2): Reduce POI limits for seniors/family_kids
+# Problem: Seniors+relax get 5 POI per day (too intensive)
+# Solution: seniors=3, family_kids=4, relax modifier=-1 applied later
 GROUP_ATTRACTION_LIMITS = {
     "family_kids": {
-        "soft": 6,  # Start penalty after 6
-        "hard": 7,  # Absolute max
+        "soft": 3,  # Start penalty after 3
+        "hard": 4,  # Absolute max (was 7)
         "core_min": 1,  # Minimum core POI
         "core_max": 2,  # Maximum core POI
     },
     "seniors": {
-        "soft": 5,
-        "hard": 7,  # FIX #13: Increased from 5 to 7 (was causing early stop, empty Day 3)
+        "soft": 2,  # Start penalty after 2 (was 5)
+        "hard": 3,  # Absolute max (was 7)
         "core_min": 1,
-        "core_max": 2,  # FIX #13: Increased from 1 to 2 (allow more must-see coverage)
+        "core_max": 2,
     },
     "solo": {
         "soft": 7,
@@ -2396,6 +2399,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         "core_min": 1,
         "core_max": 2,
     })
+    
+    # FIX #Problem12 (15.05.2026 - CLIENT FEEDBACK Round 2): Travel style modifier
+    # Problem: Relax style should reduce POI count further
+    # Solution: relax=-1 POI from base limit
+    travel_style = user.get("travel_style", "")
+    if travel_style == "relax":
+        limits["soft"] = max(1, limits["soft"] - 1)  # Prevent going below 1
+        limits["hard"] = max(1, limits["hard"] - 1)  # Prevent going below 1
+        print(f"[LIMITS] Travel style 'relax' modifier applied: soft={limits['soft']}, hard={limits['hard']}")
 
     # HUMAN STATE
     culture_streak = 0
