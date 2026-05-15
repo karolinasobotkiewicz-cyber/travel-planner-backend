@@ -1229,6 +1229,44 @@ def choose_duration(p, now, end, lunch_done, user=None):
     tmin = safe_int(p.get("time_min"), 30)
     tmax = safe_int(p.get("time_max"), 60)
 
+    # FIX #Problem13 (15.05.2026 - Round 2): TYPE-BASED minimum duration enforcement
+    # Safeguard: Even if Excel has low time_min, enforce type-specific minimums
+    # to prevent unreasonably short visits (e.g., museum with 5 min)
+    MIN_DURATION_BY_TYPE = {
+        "museum": 30,
+        "gallery": 20,
+        "church": 15,
+        "viewpoint": 15,
+        "trail": 60,
+    }
+    
+    # Identify POI type category from "type" field or name keywords
+    poi_name = safe_str(p.get("name", "")).lower()
+    poi_type_str = safe_str(p.get("type", "")).lower()
+    
+    # Check for type-specific minimum duration requirement
+    type_min_duration = 0
+    if "museum" in poi_type_str or "muzeum" in poi_name:
+        type_min_duration = MIN_DURATION_BY_TYPE["museum"]
+    elif "gallery" in poi_type_str or "galeria" in poi_name:
+        type_min_duration = MIN_DURATION_BY_TYPE["gallery"]
+    elif "church" in poi_type_str or "kaplica" in poi_name or "kościół" in poi_name:
+        type_min_duration = MIN_DURATION_BY_TYPE["church"]
+    elif "viewpoint" in poi_type_str or "punkt widokowy" in poi_name:
+        type_min_duration = MIN_DURATION_BY_TYPE["viewpoint"]
+    elif "trail" in poi_type_str or "szlak" in poi_name:
+        type_min_duration = MIN_DURATION_BY_TYPE["trail"]
+    
+    # Use the HIGHER of: POI's time_min OR type-based minimum
+    # This ensures Excel data can set higher requirements, but types enforce floor
+    effective_min = max(tmin, type_min_duration)
+    
+    if end - now < effective_min:
+        if type_min_duration > 0:
+            print(f"[DURATION] Skipping {p.get('name', 'unknown')} - insufficient time ({end - now} min < {effective_min} min type-based minimum)")
+        return 0
+
+    # Legacy check (now redundant but kept for clarity)
     if end - now < tmin:
         return 0
 
