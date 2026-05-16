@@ -143,7 +143,22 @@ def _parse_seasonal_list(seasonal_str: str) -> Optional[List[Dict[str, str]]]:
     return seasons if seasons else None
 
 
-def load_zakopane_poi(path: str):
+def load_zakopane_poi(path: str, city_filter: Optional[str] = None):
+    """
+    Load POIs from Excel file with optional city filtering.
+    
+    Args:
+        path: Path to Excel file (e.g., "data/zakopane.xlsx")
+        city_filter: Optional city name to filter POIs (e.g., "Zakopane", "Gdańsk")
+                     If None, loads all POIs from Excel (legacy behavior)
+    
+    Returns:
+        List of POI dictionaries matching the city filter
+    
+    FIX: Cross-city POI contamination (15.05.2026)
+    Problem: System showed Zakopane POIs regardless of location.city in request
+    Solution: Added city_filter parameter to filter POIs by City column
+    """
     df = pd.read_excel(path)
 
     print("KOLUMNY:", list(df.columns))
@@ -281,6 +296,18 @@ def load_zakopane_poi(path: str):
         pois.append(poi)
 
     print(f"ZALADOWANO POI: {len(pois)}")
+
+    # FIX: Cross-city POI contamination (15.05.2026)
+    # Filter POIs by city BEFORE normalization (normalize_poi() drops City field)
+    if city_filter:
+        original_count = len(pois)
+        pois = [p for p in pois if p.get("City", "").lower() == city_filter.lower()]
+        print(f"[POI FILTER] City: {city_filter} → Filtered {original_count} → {len(pois)} POIs")
+        
+        if len(pois) == 0:
+            print(f"[POI FILTER] WARNING: No POIs found for city '{city_filter}' - check City column in Excel")
+    else:
+        print(f"[POI FILTER] No city filter applied - returning all {len(pois)} POIs")
 
     pois = normalize_pois(pois)
 

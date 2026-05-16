@@ -181,6 +181,8 @@ class AttractionItem(BaseModel):
     lat: float = Field(..., description="Szerokość geograficzna")
     lng: float = Field(..., description="Długość geograficzna")
     address: str = Field(..., description="Adres atrakcji")
+    # FIX: Cross-city POI contamination (15.05.2026) - preserve city for filtering validation
+    city: str = Field(default="", description="Miasto/miejscowość POI")
 
     # Media (11.03.2026 - Supabase Storage integration)
     image_key: str | None = Field(

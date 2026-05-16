@@ -162,10 +162,13 @@ class PlanService:
                     print(f"[ROUTER] Loaded {len(pois_excel)} POIs from Excel (CLUSTER: {cities_to_load})")
                 else:
                     # Single-city mode (legacy)
+                    # FIX: Cross-city POI contamination (15.05.2026)
+                    # Pass trip_input.location.city to filter POIs by City column
                     from app.infrastructure.repositories.load_zakopane import load_zakopane_poi
-                    pois_excel = load_zakopane_poi(self.poi_repo.excel_path)
+                    requested_city = trip_input.location.city
+                    pois_excel = load_zakopane_poi(self.poi_repo.excel_path, city_filter=requested_city)
                     all_pois_dict.extend(pois_excel)
-                    print(f"[ROUTER] Loaded {len(pois_excel)} POIs from Excel (legacy)")
+                    print(f"[ROUTER] Loaded {len(pois_excel)} POIs from Excel (city: {requested_city})")
             except Exception as e:
                 print(f"[ROUTER] WARNING: Failed to load POIs: {e}")
         
@@ -1298,6 +1301,8 @@ class PlanService:
             lat=lat_value,
             lng=lng_value,
             address=poi_dict.get("address", ""),
+            # FIX: Cross-city POI contamination (15.05.2026) - pass city field to AttractionItem
+            city=poi_dict.get("city", ""),
             # 11.03.2026 - Supabase Storage integration
             image_key=poi_dict.get("image_key"),
             image_url=build_poi_image_url(poi_dict.get("image_key", "")),

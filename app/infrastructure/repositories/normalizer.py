@@ -486,6 +486,7 @@ def normalize_poi(p, index):
         "name": _safe_str(p.get("name") or p.get("Name")),
         "description_short": _safe_str(p.get("Description_short")),
         "address": _safe_str(p.get("Address")),
+        "city": _safe_str(p.get("City")),  # FIX: Cross-city POI contamination (15.05.2026) - preserve City for filtering and display
         "lat": _safe_float(p.get("Lat")),
         "lng": _safe_float(p.get("Lng")),
         "time_min": int(_safe_float(p.get("time_min"), 30)),
