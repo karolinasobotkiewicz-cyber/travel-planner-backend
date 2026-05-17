@@ -127,6 +127,13 @@ class PlanService:
                                 trail["time_min"] = trail["duration_min"]
                             if "duration_max" in trail:
                                 trail["time_max"] = trail["duration_max"]
+                            # FIX #25 (17.05.2026): Add city field for trail items (was empty in output)
+                            if not trail.get("city"):
+                                trail["city"] = city
+                            # FIX #27 (17.05.2026): Add tags to trails so adventure/preference scoring works
+                            # trail_repository.to_dict() has no 'tags' → adventure boost/penalty never applied
+                            if not trail.get("tags"):
+                                trail["tags"] = ["hiking", "mountain_trails", "active_sport", "outdoor", "alpine_activities"]
                         
                         all_pois_dict.extend(trails_dict)
                         print(f"[ROUTER] Loaded {len(trails_dict)} trails from TrailDB (city: {city}, region: {region_name})")
@@ -143,6 +150,12 @@ class PlanService:
                             trail["time_min"] = trail["duration_min"]
                         if "duration_max" in trail:
                             trail["time_max"] = trail["duration_max"]
+                        # FIX #25 (17.05.2026): Add city field for trail items (was empty in output)
+                        if not trail.get("city"):
+                            trail["city"] = trip_input.location.city
+                        # FIX #27 (17.05.2026): Add tags to trails so adventure/preference scoring works
+                        if not trail.get("tags"):
+                            trail["tags"] = ["hiking", "mountain_trails", "active_sport", "outdoor", "alpine_activities"]
                     
                     all_pois_dict.extend(trails_dict)
                     print(f"[ROUTER] Loaded {len(trails_dict)} trails from TrailDB (region: {router_config['region']})")
@@ -329,27 +342,16 @@ class PlanService:
             
             print(f"[FIX #24.5] Quality POI count: {len(quality_pois)}", flush=True)
             print(f"[FIX #24.5] Recommended POI/day: {recommended_poi_per_day}", flush=True)
-            print(f"[FIX #24.5] Max sustainable days: {max_sustainable_days}", flush=True)
+            print(f"[FIX #24.5] Max sustainable days (informational): {max_sustainable_days}", flush=True)
             
-            if num_days > max_sustainable_days:
-                original_num_days = num_days
-                num_days = max_sustainable_days
-                
-                # Recalculate dates array to match reduced num_days
-                # dates format: [(year, month, day, weekday), ...]
-                from datetime import timedelta
-                start_date = trip_input.trip_length.start_date
-                dates = []
-                for i in range(num_days):
-                    day_date = start_date + timedelta(days=i)
-                    dates.append((day_date.year, day_date.month, day_date.day, day_date.weekday()))
-                
-                print(f"[FIX #24.5] ⚠️ ADJUSTMENT TRIGGERED:", flush=True)
-                print(f"  Original: {original_num_days} days", flush=True)
-                print(f"  Adjusted: {num_days} days", flush=True)
-                print(f"  Dates recalculated: {len(dates)} dates", flush=True)
-            else:
-                print(f"[FIX #24.5] ✓ Sufficient POI - no adjustment needed", flush=True)
+            # FIX #24.5 DISABLED: Day reduction was too aggressive.
+            # Zakopane has only 11 quality POIs → max_sustainable_days=2 even for 3-7 day plans.
+            # Engine handles low-quality POI counts by using filler POIs (priority=2) for later days.
+            # Only block plan generation if there are literally zero POIs at all.
+            if len(all_pois_dict) == 0:
+                raise ValueError("No POIs available for the requested destination.")
+            
+            print(f"[FIX #24.5] ✓ No day adjustment - engine will handle POI distribution", flush=True)
             
             print("="*80, flush=True)
             # ================================================================
@@ -1323,11 +1325,13 @@ class PlanService:
                 cost_breakdown_note=cost_breakdown_note  # FIX #18: Explain trail costs
             ),
             # PHASE 8 Feature #1: Rozszerzona ParkingInfo (address, type, cost, lat/lng)
+            # FIX #26 (17.05.2026): parking cost 0 → null (unknown cost, not "free")
+            _raw_parking_cost = poi_dict.get("parking_cost")
             parking=ParkingInfo(
                 name=poi_dict.get("parking_name") or "Brak parkingu",
                 address=poi_dict.get("parking_address", "") or poi_dict.get("address", ""),
                 parking_type=ParkingType.PAID if poi_dict.get("parking_type", "").lower() == "paid" else ParkingType.FREE,
-                cost=poi_dict.get("parking_cost", 0) or 0,
+                cost=int(_raw_parking_cost) if _raw_parking_cost else None,
                 walk_time_min=poi_dict.get("parking_walk_time_min", 5) or 5,
                 lat=poi_dict.get("parking_lat"),
                 lng=poi_dict.get("parking_lng")

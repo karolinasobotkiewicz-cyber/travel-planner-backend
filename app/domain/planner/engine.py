@@ -1404,6 +1404,20 @@ def score_poi(
     score += calculate_family_score(p, user)
     score += calculate_budget_score(p, user)
     score += calculate_premium_penalty(p, user)  # CLIENT REQUIREMENT (08.02.2026): Premium experience penalty at budget/standard levels
+
+    # FIX #28 (17.05.2026): Poor value-for-time penalty at budget_level=1
+    # Issue: "Figury Woskowe" (30min, 45 PLN) appears at budget_level=1 - bad value ratio
+    # Rule: cost_per_min > 1.2 PLN/min AND budget_level <= 1 → heavy penalty
+    _budget_level = safe_int(user.get("budget_level", 2), 2)
+    _ticket_normal = float(p.get("ticket_normal") or 0)
+    _time_min_poi = float(p.get("time_min") or 60)
+    if _budget_level <= 1 and _time_min_poi > 0 and _ticket_normal > 0:
+        _cost_per_min = _ticket_normal / _time_min_poi
+        if _cost_per_min > 1.2:  # > 1.2 PLN/min at budget level = poor value
+            _poor_value_penalty = -35.0
+            score += _poor_value_penalty
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [POOR VALUE PENALTY] {poi_name_safe}: {_poor_value_penalty} (cost_per_min={_cost_per_min:.2f} PLN/min at budget_level={_budget_level})")
     score += calculate_crowd_score(p, user, current_time_minutes=now)  # Added current_time for peak_hours
     
     # BUGFIX (19.02.2026 - UAT Round 2, Issue #6): Crowd_tolerance penalty using crowd_level
@@ -1634,10 +1648,20 @@ def score_poi(
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [ADVENTURE PENALTY] {poi_name_safe}: -{penalty:.1f} (adventure style conflicts with family attractions)")
         
-        # Mild penalty for museums for adventure travelers (not forbidden, just lower priority)
-        museum_tags = {"museums", "museum_heritage", "culture"}
+        # FIX #27 (17.05.2026): Museum penalty for adventure travelers.
+        # Bug: old set {museums, museum_heritage, culture} didn't match actual Zakopane tags
+        # (themed_museum, regional_heritage, multimedia_exhibition, etc.) → penalty never applied!
+        # Fix: Expanded to cover actual tag values used in POI data.
+        museum_tags = {
+            "museums", "museum_heritage", "culture",  # legacy tags
+            "themed_museum", "regional_heritage", "mountain_culture",  # Zakopane actual
+            "multimedia_exhibition", "interactive_exhibits", "interactive_exhibit",
+            "local_history", "architecture_heritage", "historic_building",
+            "composer_artist_house", "intimate_small_museum", "ethnographic_museum",
+            "art_gallery", "temporary_exhibitions"
+        }
         if museum_tags & poi_tags:
-            penalty = score * 0.2  # 20% penalty
+            penalty = score * 0.35  # 35% penalty (was 20% and not matching)
             score -= penalty
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [ADVENTURE PENALTY] {poi_name_safe}: -{penalty:.1f} (adventure style prefers active over culture)")
