@@ -1300,6 +1300,8 @@ class PlanService:
             # Explain optional costs in note
             cost_breakdown_note = "Wstęp na szlak darmowy. Opcjonalne koszty: parking (~20 PLN/dzień), prowiant."
         
+        # FIX #26 (17.05.2026): parking cost 0 → null (unknown cost, not "free")
+        _raw_parking_cost = poi_dict.get("parking_cost")
         return AttractionItem(
             type=ItemType.ATTRACTION,
             start_time=start_time,
@@ -1325,8 +1327,6 @@ class PlanService:
                 cost_breakdown_note=cost_breakdown_note  # FIX #18: Explain trail costs
             ),
             # PHASE 8 Feature #1: Rozszerzona ParkingInfo (address, type, cost, lat/lng)
-            # FIX #26 (17.05.2026): parking cost 0 → null (unknown cost, not "free")
-            _raw_parking_cost = poi_dict.get("parking_cost")
             parking=ParkingInfo(
                 name=poi_dict.get("parking_name") or "Brak parkingu",
                 address=poi_dict.get("parking_address", "") or poi_dict.get("address", ""),
