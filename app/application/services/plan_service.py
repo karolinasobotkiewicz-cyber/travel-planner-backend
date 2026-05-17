@@ -161,14 +161,23 @@ class PlanService:
                     all_pois_dict.extend(pois_excel)
                     print(f"[ROUTER] Loaded {len(pois_excel)} POIs from Excel (CLUSTER: {cities_to_load})")
                 else:
-                    # Single-city mode (legacy)
+                    # Single-city mode
                     # FIX: Cross-city POI contamination (15.05.2026)
                     # Pass trip_input.location.city to filter POIs by City column
+                    import os
                     from app.infrastructure.repositories.load_zakopane import load_zakopane_poi
+                    from app.infrastructure.repositories.load_multi_city import load_multi_city_poi
                     requested_city = trip_input.location.city
                     pois_excel = load_zakopane_poi(self.poi_repo.excel_path, city_filter=requested_city)
+                    if len(pois_excel) == 0:
+                        # FIX: Fallback to multi_city_attractions.xlsx for cities not in zakopane.xlsx
+                        # Supports: Kraków, Warszawa, Gdańsk, Wrocław, Poznań, etc.
+                        multi_city_excel_path = os.path.join("data", "multi_city_attractions.xlsx")
+                        pois_excel = load_multi_city_poi(multi_city_excel_path, [requested_city])
+                        print(f"[ROUTER] Loaded {len(pois_excel)} POIs from multi_city Excel (city: {requested_city})")
+                    else:
+                        print(f"[ROUTER] Loaded {len(pois_excel)} POIs from Excel (city: {requested_city})")
                     all_pois_dict.extend(pois_excel)
-                    print(f"[ROUTER] Loaded {len(pois_excel)} POIs from Excel (city: {requested_city})")
             except Exception as e:
                 print(f"[ROUTER] WARNING: Failed to load POIs: {e}")
         
