@@ -723,7 +723,12 @@ class PlanService:
         # FIX #Problem11 (14.05.2026 - CLIENT FEEDBACK Round 2): Transit to first attraction
         # Problem: Brak transitu od hotelu/bazy do pierwszej atrakcji na start dnia
         # Solution: Jeśli pierwsza atrakcja jest poza Zakopane (>10 min dojazdu), dodaj transit
-        if has_car and first_attraction:
+        # FIX #37 (19.05.2026): Gate this Zakopane-specific logic only for Zakopane city.
+        # Bug: For Kraków, the first POI is ~90km from Zakopane centrum, so is_outside_zakopane=True
+        # and a spurious transit "Zakopane (Hotel) → Wawel" was generated.
+        _is_zakopane_trip = (trip_input.location.city or "").lower() in ("zakopane",) or \
+                            (trip_input.location.region_type or "").lower() == "mountain"
+        if has_car and first_attraction and _is_zakopane_trip:
             from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
             from app.domain.planner.engine import travel_time_minutes
             

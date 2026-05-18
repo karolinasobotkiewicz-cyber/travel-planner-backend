@@ -15,7 +15,56 @@ Usage:
 """
 import pandas as pd
 from typing import List, Dict, Any
-from app.infrastructure.repositories.normalizer import normalize_priority
+
+# FIX #38 (20.05.2026): Priority level mapping for multi_city Excel
+# multi_city_attractions.xlsx uses 'high'/'medium'/'low' naming scheme
+# Engine's calculate_priority_bonus() expects 'core'/'secondary'/'optional' strings
+# normalize_priority('high') = 0 (BUG) → 'high' must map to 'core' string directly
+_PRIORITY_LEVEL_MAP = {
+    'high': 'core',       # +25 bonus in calculate_priority_bonus()
+    'medium': 'secondary', # +10 bonus
+    'low': 'optional',    # 0 bonus (filler)
+}
+
+_CROWD_LEVEL_MAP = {
+    'low': 1,
+    'medium': 2,
+    'high': 3,
+}
+
+def _map_priority_level(raw) -> str:
+    """Map multi_city priority strings to engine-compatible strings."""
+    s = str(raw).strip().lower() if raw else 'optional'
+    return _PRIORITY_LEVEL_MAP.get(s, 'optional')
+
+def _map_crowd_level(raw) -> int:
+    """Map multi_city crowd strings to int (1=low, 2=medium, 3=high)."""
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return 1
+    s = str(raw).strip().lower()
+    return _CROWD_LEVEL_MAP.get(s, 1)
+
+def _map_intensity_level(raw) -> int:
+    """Map multi_city intensity strings to int."""
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return 1
+    s = str(raw).strip().lower()
+    return {'low': 1, 'medium': 2, 'high': 3}.get(s, 1)
+
+
+def _safe_child_age(raw):
+    """Safely parse child age from Excel - returns None if not a valid int."""
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return None
+    if isinstance(raw, pd.Timestamp):
+        return None
+    s = str(raw).strip()
+    if not s or s == '-':
+        return None
+    try:
+        return int(float(s))
+    except (ValueError, TypeError):
+        return None
 
 
 def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, Any]]:
@@ -82,51 +131,51 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             "address": row.get('Address', ''),
             
             # Description
-            "description_short": row.get('Description_Short', ''),
-            "description_long": row.get('Description_Long', ''),
+            "description_short": row.get('Description_short', ''),
+            "description_long": row.get('Description_long', ''),
             
-            # Timing
-            "duration_min": int(row.get('Duration_Min', 30)),
-            "duration_max": int(row.get('Duration_Max', 60)),
-            "best_time": row.get('Best_Time', 'any'),
+            # Timing  # FIX #38: Excel uses time_min/time_max (not Duration_Min/Max)
+            "duration_min": int(row.get('time_min', 30)) if pd.notna(row.get('time_min')) else 30,
+            "duration_max": int(row.get('time_max', 60)) if pd.notna(row.get('time_max')) else 60,
+            "best_time": row.get('recommended_time_of_day', 'any'),
             
-            # Opening hours
-            "opening_hours": row.get('Opening_Hours', ''),
-            "opening_days": row.get('Opening_Days', 'Mon-Sun'),
+            # Opening hours  # FIX #38: Excel uses 'Opening hours' (with space)
+            "opening_hours": row.get('Opening hours', ''),
+            "opening_days": row.get('opening_days', 'Mon-Sun'),
             
-            # Popularity & scoring
-            "popularity_score": float(row.get('Popularity_Score', 0.5)),
-            "priority_level": normalize_priority(row.get('Priority_Level', 'medium')),
+            # Popularity & scoring  # FIX #38: Excel uses lowercase column names
+            "popularity_score": float(row.get('popularity_score', 0.5)) if pd.notna(row.get('popularity_score')) else 0.5,
+            "priority_level": _map_priority_level(row.get('priority_level', 'medium')),
             
-            # Categorization
-            "category": row.get('Category', 'attraction'),
-            "subcategory": row.get('Subcategory', ''),
+            # Categorization  # FIX #38: Excel uses 'Type of attraction', no 'Category' column
+            "category": row.get('Type of attraction', row.get('Category', 'attraction')),
+            "subcategory": row.get('Activity_style', row.get('Subcategory', '')),
             "tags": str(row.get('Tags', '')).split(',') if pd.notna(row.get('Tags')) else [],
             
-            # Target groups
-            "target_group": str(row.get('Target_Group', 'all')).split(',') if pd.notna(row.get('Target_Group')) else ['all'],
+            # Target groups  # FIX #38: Excel uses 'Target group' (with space)
+            "target_group": str(row.get('Target group', 'all')).split(',') if pd.notna(row.get('Target group')) else ['all'],
             "family_friendly": _parse_bool(row.get('Family_Friendly', True)),
-            "child_age_min": int(row.get('Child_Age_Min', 0)) if pd.notna(row.get('Child_Age_Min')) else None,
+            "child_age_min": _safe_child_age(row.get("Children's age")),
             
             # Accessibility
             "wheelchair_accessible": _parse_bool(row.get('Wheelchair_Accessible', False)),
             "dog_friendly": _parse_bool(row.get('Dog_Friendly', False)),
             
-            # Costs
-            "cost_level": int(row.get('Cost_Level', 1)),
-            "ticket_price": float(row.get('Ticket_Price', 0.0)) if pd.notna(row.get('Ticket_Price')) else None,
+            # Costs  # FIX #38: Excel uses ticket_normal/ticket_reduced, not Ticket_Price
+            "cost_level": int(row.get('Cost_Level', 1)) if pd.notna(row.get('Cost_Level')) else 1,
+            "ticket_price": float(row.get('ticket_normal', 0.0)) if pd.notna(row.get('ticket_normal')) else None,
             "ticket_required": _parse_bool(row.get('Ticket_Required', False)),
             "free_admission": _parse_bool(row.get('Free_Admission', False)),
             
-            # Weather & season
-            "indoor": _parse_bool(row.get('Indoor', False)),
-            "outdoor": _parse_bool(row.get('Outdoor', True)),
-            "season": row.get('Season', 'all'),
-            "weather_dependent": _parse_bool(row.get('Weather_Dependent', False)),
+            # Weather & season  # FIX #38: Excel uses 'weather_dependency', 'Seasonality of attractions'
+            "indoor": str(row.get('Space', '')).strip().lower() == 'indoor',
+            "outdoor": str(row.get('Space', '')).strip().lower() in ('outdoor', 'mixed', ''),
+            "season": row.get('Seasonality of attractions', row.get('Season', 'all')),
+            "weather_dependent": str(row.get('weather_dependency', 'all_weather')).strip().lower() not in ('all_weather', 'all weather', ''),
             
-            # Intensity & crowd
-            "intensity_level": int(row.get('Intensity_Level', 1)),
-            "crowd_level": int(row.get('Crowd_Level', 1)),
+            # Intensity & crowd  # FIX #38: Excel uses string values for crowd_level and Intensity
+            "intensity_level": _map_intensity_level(row.get('Intensity', row.get('Intensity_Level'))),
+            "crowd_level": _map_crowd_level(row.get('crowd_level')),
             "quiet": _parse_bool(row.get('Quiet', False)),
             
             # Parking & transport
@@ -139,8 +188,8 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             "photo_url": row.get('Photo_URL', ''),
             "website": row.get('Website', ''),
             
-            # Tips & warnings
-            "pro_tip": row.get('Pro_Tip', ''),
+            # Tips & warnings  # FIX #38: Excel uses 'Pro_tip' (not Pro_Tip)
+            "pro_tip": row.get('Pro_tip', ''),
             "warning": row.get('Warning', ''),
             
             # Nearby services
@@ -149,7 +198,7 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             "wc_nearby": _parse_bool(row.get('WC_Nearby', False)),
             
             # Energy impact (Etap 2 - multi-day planning)
-            "energy_cost": int(row.get('Intensity_Level', 1)),  # Map intensity to energy cost
+            "energy_cost": _map_intensity_level(row.get('Intensity', row.get('Intensity_Level', 1))),
             
             # Booking
             "booking_required": _parse_bool(row.get('Booking_Required', False)),
