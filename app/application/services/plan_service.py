@@ -421,6 +421,13 @@ class PlanService:
                 trip_input
             )
             
+            # FIX #32 (19.05.2026): Add engine-placed POIs to global_used_pois BEFORE gap filling
+            # Without this, gap filling for day N+1 could re-use POIs placed by the engine in day N.
+            # Only gap-filling POIs were being tracked; engine POIs were invisible to plan_service's tracker.
+            for item in day_items:
+                if hasattr(item, 'poi_id') and item.poi_id:
+                    global_used_pois.add(item.poi_id)
+            
             # CRITICAL: Fill gaps >20 min AFTER transit times are calculated
             # This must run here because:
             # 1. Parking shifts first attraction time
@@ -570,6 +577,16 @@ class PlanService:
             # FIX #18 (03.05.2026 - CLIENT FEEDBACK MAY 3): Consolidate consecutive free_time blocks
             # Apply BEFORE adding day_end to ensure day_end stays last
             day_items = self._consolidate_consecutive_free_time_blocks(day_items)
+            
+            # FIX #35 (18.05.2026): Remove remaining technical buffers from final output
+            # After consolidation, any still-marked is_technical_buffer items are tiny padding
+            # blocks that look unnatural to users (e.g. "16 min", "17 min", "18 min").
+            # Merged blocks get is_technical_buffer=False so they are kept.
+            before_filter = len(day_items)
+            day_items = [item for item in day_items if not getattr(item, "is_technical_buffer", False)]
+            removed = before_filter - len(day_items)
+            if removed:
+                print(f"[FIX #35] Day {day_num + 1}: removed {removed} technical buffer item(s) from output")
             
             # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
             # This ensures day_end is always the last item in timeline
@@ -2049,22 +2066,27 @@ class PlanService:
                         
                         print(f"[GAP FILLING] ✓ Added end-of-day dinner_break: {dinner_start}-{dinner_end} ({dinner_duration} min)")
                         
-                        # Add remaining time as free_time if gap is still large
+                        # FIX #30 (18.05.2026): Fill ALL remaining time after dinner to day_end
+                        # Each free_time block is capped at 60 min per client requirement (Problem #7),
+                        # but we now add MULTIPLE blocks to fully cover the gap to day_end.
                         remaining_gap = gap_to_end - dinner_duration
-                        if remaining_gap > 15:
-                            free_time_start = dinner_end
-                            # CRITICAL FIX (01.05.2026): Changed cap from 90 to 60 min (CLIENT FEEDBACK - Problem #7)
-                            # Client requirement: All free_time blocks must be ≤60 min
-                            free_time_end = minutes_to_time(last_end_min + dinner_duration + min(remaining_gap, 60))
-                            free_time_duration = time_to_minutes(free_time_end) - time_to_minutes(free_time_start)
+                        current_ft_start = time_to_minutes(dinner_end)
+                        ft_block_num = 0
+                        while remaining_gap > 15:
+                            ft_block_num += 1
+                            ft_block_duration = min(remaining_gap, 60)  # Keep ≤60 min per block
+                            ft_block_end_min = current_ft_start + ft_block_duration
+                            ft_block_start_str = minutes_to_time(current_ft_start)
+                            ft_block_end_str = minutes_to_time(ft_block_end_min)
                             
+                            ft_label = "Wieczór: spacer, zakupy, relaks w hotelu" if ft_block_num == 1 else "Czas wolny wieczorny"
                             free_time_item = FreeTimeItem(
                                 type=ItemType.FREE_TIME,
-                                start_time=free_time_start,
-                                end_time=free_time_end,
-                                duration_min=free_time_duration,
-                                label="Wieczór: spacer, zakupy, relaks w hotelu",
-                                is_technical_buffer=(free_time_duration < 30)  # FIX #16: Mark short buffers
+                                start_time=ft_block_start_str,
+                                end_time=ft_block_end_str,
+                                duration_min=ft_block_duration,
+                                label=ft_label,
+                                is_technical_buffer=(ft_block_duration < 30)
                             )
                             
                             if result[-1].dict()['type'] == 'day_end':
@@ -2072,33 +2094,44 @@ class PlanService:
                             else:
                                 result.append(free_time_item)
                             
-                            print(f"[GAP FILLING] Added post-dinner free_time: {free_time_start}-{free_time_end} ({free_time_duration} min)")
+                            print(f"[GAP FILLING] Added post-dinner free_time block #{ft_block_num}: {ft_block_start_str}-{ft_block_end_str} ({ft_block_duration} min)")
+                            current_ft_start = ft_block_end_min
+                            remaining_gap -= ft_block_duration
                     else:
                         # Add free_time as usual
                         print(f"[GAP FILLING] Adding end-of-day free_time: {gap_to_end} min gap before day_end ({last_end_str} -> {day_end_str})")
                         
-                        # FIX #9 (22.02.2026): Reduced cap from 90 to 60 min for consistency
-                        # Avoid excessively long free time blocks
-                        free_time_duration = min(gap_to_end, 60)
-                        free_time_start = last_end_str
-                        free_time_end = minutes_to_time(last_end_min + free_time_duration)
-                        
-                        end_of_day_item = FreeTimeItem(
-                            type=ItemType.FREE_TIME,
-                            start_time=free_time_start,
-                            end_time=free_time_end,
-                            duration_min=free_time_duration,
-                            label="Czas wolny na koniec dnia",
-                            is_technical_buffer=(free_time_duration < 30)  # FIX #16: Mark short buffers
-                        )
-                        
-                        # Insert before DAY_END
-                        if result[-1].dict()['type'] == 'day_end':
-                            result.insert(-1, end_of_day_item)
-                        else:
-                            result.append(end_of_day_item)
-                        
-                        print(f"[GAP FILLING] ✓ Added end-of-day free_time: {free_time_start}-{free_time_end} ({free_time_duration} min)")
+                        # FIX #30 (18.05.2026): Fill the FULL gap to day_end using multiple ≤60 min blocks.
+                        # Previously capped at 60 min, leaving up to 59 min unfilled before day_end.
+                        current_ft_start_min = last_end_min
+                        remaining_eod_gap = gap_to_end
+                        eod_block_num = 0
+                        while remaining_eod_gap > 15:
+                            eod_block_num += 1
+                            # FIX #9 cap kept per block to respect ≤60 min client requirement
+                            eod_block_duration = min(remaining_eod_gap, 60)
+                            eod_block_end_min = current_ft_start_min + eod_block_duration
+                            eod_block_start_str = minutes_to_time(current_ft_start_min)
+                            eod_block_end_str = minutes_to_time(eod_block_end_min)
+                            
+                            eod_label = "Czas wolny na koniec dnia" if eod_block_num == 1 else "Czas wolny wieczorny"
+                            end_of_day_item = FreeTimeItem(
+                                type=ItemType.FREE_TIME,
+                                start_time=eod_block_start_str,
+                                end_time=eod_block_end_str,
+                                duration_min=eod_block_duration,
+                                label=eod_label,
+                                is_technical_buffer=(eod_block_duration < 30)
+                            )
+                            
+                            if result[-1].dict()['type'] == 'day_end':
+                                result.insert(-1, end_of_day_item)
+                            else:
+                                result.append(end_of_day_item)
+                            
+                            print(f"[GAP FILLING] ✓ Added end-of-day free_time block #{eod_block_num}: {eod_block_start_str}-{eod_block_end_str} ({eod_block_duration} min)")
+                            current_ft_start_min = eod_block_end_min
+                            remaining_eod_gap -= eod_block_duration
         
         print(f"[GAP FILLING] Final: {len(items)} -> {len(result)} items")
         return result

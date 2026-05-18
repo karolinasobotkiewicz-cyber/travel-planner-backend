@@ -620,8 +620,8 @@ GROUP_ATTRACTION_LIMITS = {
         "core_max": 2,  # Maximum core POI
     },
     "seniors": {
-        "soft": 2,  # Start penalty after 2 (was 5)
-        "hard": 3,  # Absolute max (was 7)
+        "soft": 4,  # FIX #34 (18.05.2026): 4 (was 2 - days 2-3 empty with relax modifier dropping to 1)
+        "hard": 5,  # FIX #34 (18.05.2026): 5 (was 3 - too restrictive for 8h days)
         "core_min": 1,
         "core_max": 2,
     },
@@ -1154,8 +1154,10 @@ def is_open(p, now, duration, season, context=None):
     oh = p.get("opening_hours")
     oh_seasonal = p.get("opening_hours_seasonal")
     
-    # If no opening_hours specified, assume always open
-    if not oh:
+    # FIX #33 (18.05.2026): Only skip validation when BOTH opening_hours and seasonal are absent.
+    # Previously: `if not oh: return True` — this incorrectly ignored oh_seasonal!
+    # Example: KULIGI has oh=None but oh_seasonal=[{winter hours}] → must check seasonal.
+    if not oh and not oh_seasonal:
         return True
     
     # Extract date info from context
@@ -1604,26 +1606,37 @@ def score_poi(
             print(f"    [RELAX PENALTY] {poi_name_safe}: -{penalty:.1f} (relax style conflicts with active)")
 
     elif travel_style == "adventure":
-        # Boost active POI for adventure travelers
-        active_tags = {"active_sport", "hiking", "climbing", "mountain_trails", "outdoor", "sports"}
-        if active_tags & poi_tags:
-            boost = score * 0.5  # 50% boost
-            score += boost
-            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-            print(f"    [ADVENTURE BOOST] {poi_name_safe}: +{boost:.1f} (adventure style + active tags)")
+        # FIX #36 (19.05.2026): Gate active/mountain boosts on user having outdoor preferences.
+        # Bug: JSON 7 (underground+history+museum + adventure) had Kopieniec mountain trail selected
+        # because the 50%+100% adventure boost applied to ALL adventure plans regardless of preferences.
+        # Fix: Only apply active/mountain boosts when user preferences include at least one outdoor pref.
+        outdoor_preference_keys = {"hiking", "outdoor", "nature", "mountain_trails", "trekking", "active_sport", "climbing"}
+        user_has_outdoor_prefs = bool(outdoor_preference_keys & set(user_preferences))
         
-        # FIX #11 (22.02.2026 - UAT Round 3, TEST-03 HYBRID Solution):
-        # CRITICAL: Mountain POI boost for adventure + mountain_trails preference
-        # Problem: TEST-03 (adventure + mountain_trails) gets museums > hiking trails
-        # Only 1/11 POIs was hiking (9%), 6/11 were museums (54%)
-        # Solution: Strong boost (100%) for mountain/hiking POIs to prioritize over indoor attractions
-        mountain_tags = {"hiking", "mountain_trail", "scenic_viewpoint", "cable_car", 
-                        "funicular", "mountain_lake", "alpine", "trekking", "peak"}
-        if mountain_tags & poi_tags:
-            boost = score * 1.0  # 100% boost (DOUBLE score for mountain POIs)
-            score += boost
+        if user_has_outdoor_prefs:
+            # Boost active POI for adventure travelers with outdoor preferences
+            active_tags = {"active_sport", "hiking", "climbing", "mountain_trails", "outdoor", "sports"}
+            if active_tags & poi_tags:
+                boost = score * 0.5  # 50% boost
+                score += boost
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [ADVENTURE BOOST] {poi_name_safe}: +{boost:.1f} (adventure style + active tags + outdoor prefs)")
+            
+            # FIX #11 (22.02.2026 - UAT Round 3, TEST-03 HYBRID Solution):
+            # CRITICAL: Mountain POI boost for adventure + mountain_trails preference
+            # Problem: TEST-03 (adventure + mountain_trails) gets museums > hiking trails
+            # Only 1/11 POIs was hiking (9%), 6/11 were museums (54%)
+            # Solution: Strong boost (100%) for mountain/hiking POIs to prioritize over indoor attractions
+            mountain_tags = {"hiking", "mountain_trail", "scenic_viewpoint", "cable_car", 
+                            "funicular", "mountain_lake", "alpine", "trekking", "peak"}
+            if mountain_tags & poi_tags:
+                boost = score * 1.0  # 100% boost (DOUBLE score for mountain POIs)
+                score += boost
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [MOUNTAIN BOOST] {poi_name_safe}: +{boost:.1f} (adventure + mountain tags)")
+        else:
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-            print(f"    [MOUNTAIN BOOST] {poi_name_safe}: +{boost:.1f} (adventure + mountain tags)")
+            print(f"    [ADVENTURE BOOST] {poi_name_safe}: skipped active/mountain boost (no outdoor preferences)")
         
         # FIX #8 (22.02.2026 - UAT Round 3, TEST-03 Issue):
         # CRITICAL: Hard penalty for relaxation/wellness/spa POI for adventure travelers
@@ -1661,7 +1674,7 @@ def score_poi(
             "art_gallery", "temporary_exhibitions"
         }
         if museum_tags & poi_tags:
-            penalty = score * 0.35  # 35% penalty (was 20% and not matching)
+            penalty = score * 0.55  # FIX #31 (18.05.2026): 55% penalty (was 35% - still too many museums in adventure plans)
             score -= penalty
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [ADVENTURE PENALTY] {poi_name_safe}: -{penalty:.1f} (adventure style prefers active over culture)")

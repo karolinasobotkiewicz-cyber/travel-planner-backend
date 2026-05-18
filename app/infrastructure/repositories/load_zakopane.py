@@ -293,6 +293,15 @@ def load_zakopane_poi(path: str, city_filter: Optional[str] = None):
             "Tags": tags_str,  # Original string for backward compat
         }
 
+        # FIX #29 (18.05.2026): Wax/Figury Woskowe attractions should only appear for family_kids
+        # Rationale: Wax figure exhibitions are primarily appealing to children, not adults.
+        # Detection: POI name contains "figur" + "woskow" (handles "Wystawa Figur Woskowych")
+        _poi_name_lower = poi_name.lower()
+        if "figur" in _poi_name_lower and ("woskow" in _poi_name_lower or "wax" in _poi_name_lower):
+            poi["Target group"] = ["family_kids"]
+            poi["target_groups"] = ["family_kids"]
+            print(f"[FIX #29] Restricted wax/figury poi '{poi_name}' → target_groups=['family_kids']")
+
         pois.append(poi)
 
     print(f"ZALADOWANO POI: {len(pois)}")
