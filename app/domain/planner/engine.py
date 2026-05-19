@@ -3194,6 +3194,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         if trails_remaining <= 0:
                             continue  # SKIP - trail limit reached for entire trip
                     
+                    # FIX #40 (CLIENT FEEDBACK): Trail per-day enforcement in core rotation
+                    # Same fix as variety logic - core rotation also lacked trail_day_mode check
+                    if p.get("type") == "trail" and trail_day_mode:
+                        continue  # SKIP - already have 1 trail today (per-day trail limit)
+                    
                     # BUGFIX (30.04.2026 - CRITICAL): Termy limit enforcement in core rotation
                     # Problem: Core rotation rescans POI without applying termy limit filter
                     # Solution: Apply same termy limit check as main loop (lines 2657-2660)
@@ -3324,6 +3329,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         trails_remaining = global_trail_tracking["max"] - global_trail_tracking["count"]
                         if trails_remaining <= 0:
                             continue  # SKIP - trail limit reached for entire trip
+                    
+                    # FIX #40 (CLIENT FEEDBACK): Trail per-day enforcement in variety rescan
+                    # Problem: trail_day_mode check only existed in main scoring loop (~line 2929)
+                    #          Variety logic re-scanned POIs without this check → trail snuck into
+                    #          candidates even when trail_day_mode=True. FIX #7 then FORCED selection.
+                    # Solution: Apply trail_day_mode check here too.
+                    if p.get("type") == "trail" and trail_day_mode:
+                        continue  # SKIP - already have 1 trail today (per-day trail limit)
                     
                     # BUGFIX (30.04.2026 - CRITICAL): Termy limit enforcement in variety logic
                     # Problem: Variety logic rescans POI without applying termy limit filter

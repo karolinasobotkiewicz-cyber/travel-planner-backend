@@ -933,6 +933,7 @@ class PlanService:
                 if first_attraction_index == 0 and has_car and first_attraction:
                     # First attraction with parking - adjust start time
                     from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+                    from app.domain.planner.engine import is_open as engine_is_open
                     
                     parking_duration = 15
                     # FIX #4: Use current item's walk_time (not first_attraction found before loop)
@@ -942,9 +943,26 @@ class PlanService:
                     # Calculate corrected start time: day_start + parking + walk
                     # Example: 09:00 + 15min parking + 5min walk = 09:20
                     corrected_start_min = time_to_minutes(day_start) + parking_duration + walk_time
-                    attr_start_time = minutes_to_time(corrected_start_min)
                     
-                    print(f"[CLIENT_FEEDBACK #4] First attraction timing corrected: {day_start} + {parking_duration}min parking + {walk_time}min walk = {attr_start_time}")
+                    # FIX #41 (Issue E): Check if POI is actually open at forced start time.
+                    # Problem: Engine correctly schedules late-opening POIs (e.g. Kulig at 15:40),
+                    # but this block forces first attraction to day_start+20min regardless.
+                    # Solution: Only use corrected start if POI is open then; else keep engine time.
+                    poi_for_check = item.get("poi", {})
+                    poi_duration_for_check = poi_for_check.get("time_min", 60)
+                    corrected_is_open = engine_is_open(
+                        poi_for_check,
+                        corrected_start_min,
+                        poi_duration_for_check,
+                        context.get("season", "all"),
+                        context
+                    )
+                    if corrected_is_open:
+                        attr_start_time = minutes_to_time(corrected_start_min)
+                        print(f"[CLIENT_FEEDBACK #4] First attraction timing corrected: {day_start} + {parking_duration}min parking + {walk_time}min walk = {attr_start_time}")
+                    else:
+                        # Keep engine's scheduled time (POI not open at day start)
+                        print(f"[FIX #41] First attraction NOT open at {minutes_to_time(corrected_start_min)} - keeping engine time {attr_start_time}")
                     
                     # Track first parking name
                     last_parking_name = item.get("poi", {}).get("parking_name", "")
@@ -1034,7 +1052,7 @@ class PlanService:
                     end_time=item.get("end_time", "12:30"),
                     duration_min=duration_min,
                     label=item.get("description", "Czas wolny"),
-                    is_technical_buffer=(duration_min < 30)  # FIX #16: Mark short buffers
+                    is_technical_buffer=(duration_min < 5)  # FIX #39: Only filter truly tiny (<5min) artifacts
                 )
                 items.append(free_time_item)
         
@@ -1588,19 +1606,13 @@ class PlanService:
                     # FIX #4.3 (20.02.2026): Removed skip condition for lunch_break
                     # Client requirement (test-02): ALL gaps >15 min must be filled, including before meal breaks
                     
-                    # BUGFIX (02.02.2026 - FIX #2): Skip free_time if next attraction opens soon
-                    # Check if gap is caused by waiting for opening hours
-                    if next_type == 'attraction' and gap > 0:
-                        next_poi = next_item.get('poi')
-                        if next_poi and context.get('date'):
-                            # Check if POI is already open or opens within gap
-                            poi_start_time = current_end
-                            poi_duration = next_poi.get('time_min', 30)
-                            
-                            # If POI is open now, don't add free_time - attraction can start earlier
-                            if is_open(next_poi, int(poi_start_time), poi_duration, context.get('season', 'all'), context):
-                                print(f"[GAP FILLING] ✗ SKIP filling {gap} min gap - next attraction is already open, can start earlier")
-                                continue
+                    # FIX #39 (CLIENT FEEDBACK): REMOVED is_open skip that was hiding gaps
+                    # BEFORE: If next attraction is open NOW, skip gap filling (assume attraction starts earlier)
+                    # PROBLEM: Attraction start time was already fixed by parking computation (+15min)
+                    #          so the attraction NEVER started earlier, leaving invisible gaps in the timeline
+                    # EXAMPLE: transit ends 12:20, attraction starts 12:36 (parking took 16min)
+                    #          is_open() returned True → gap filling skipped → 12:20-12:36 was INVISIBLE
+                    # FIX: Always fill gaps >15 min regardless of POI open status
                     
                     # FIX #4 (15.02.2026): Lower threshold from 20 to 15 min
                     if gap > 15:
@@ -1658,7 +1670,7 @@ class PlanService:
                                 duration_min=free_duration,
                                 label="Czas wolny",
                                 description="Spacer, kawa, odpoczynek",
-                                is_technical_buffer=(free_duration < 30)  # FIX #16: Mark short buffers
+                                is_technical_buffer=(free_duration < 5)  # FIX #39: Only filter truly tiny (<5min) artifacts
                             ))
                             continue
                         
@@ -1934,7 +1946,7 @@ class PlanService:
                             duration_min=gap_duration,
                             label=label,
                             suggestions=free_time_suggestions[:3],  # Top 3 suggestions
-                            is_technical_buffer=(gap_duration < 30)  # FIX #16: Mark short buffers
+                            is_technical_buffer=(gap_duration < 5)  # FIX #39: Only filter truly tiny (<5min) artifacts
                         )
                         
                         # FIX #Problem9 (14.05.2026): Check for overlap before adding free_time (location 2)
@@ -1999,7 +2011,7 @@ class PlanService:
                                 duration_min=next_duration,
                                 label=next_label,
                                 suggestions=free_time_suggestions[:3] if 'free_time_suggestions' in locals() else None,  # Use same suggestions
-                                is_technical_buffer=(next_duration < 30)  # FIX #16
+                                is_technical_buffer=(next_duration < 5)  # FIX #39
                             )
                             
                             result.append(next_free_time)
@@ -2091,7 +2103,7 @@ class PlanService:
                                 end_time=ft_block_end_str,
                                 duration_min=ft_block_duration,
                                 label=ft_label,
-                                is_technical_buffer=(ft_block_duration < 30)
+                                is_technical_buffer=(ft_block_duration < 5)  # FIX #39
                             )
                             
                             if result[-1].dict()['type'] == 'day_end':
@@ -2126,7 +2138,7 @@ class PlanService:
                                 end_time=eod_block_end_str,
                                 duration_min=eod_block_duration,
                                 label=eod_label,
-                                is_technical_buffer=(eod_block_duration < 30)
+                                is_technical_buffer=(eod_block_duration < 5)  # FIX #39
                             )
                             
                             if result[-1].dict()['type'] == 'day_end':
