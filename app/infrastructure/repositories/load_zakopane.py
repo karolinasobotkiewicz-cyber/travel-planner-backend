@@ -308,9 +308,21 @@ def load_zakopane_poi(path: str, city_filter: Optional[str] = None):
 
     # FIX: Cross-city POI contamination (15.05.2026)
     # Filter POIs by city BEFORE normalization (normalize_poi() drops City field)
+    # FIX #42 (Issue F): Zakopane-region termy (poi_16-19) are in nearby villages but
+    # are legitimate day-trip destinations from Zakopane. Include all Zakopane-region
+    # cities so these POIs are not silently excluded, causing sparse days 4-7.
+    ZAKOPANE_REGION_CITIES = {
+        "zakopane", "szaflary", "chochołów", "białka tatrzańska",
+        "bukowina tatrzańska", "kościelisko", "poronin"
+    }
     if city_filter:
         original_count = len(pois)
-        pois = [p for p in pois if p.get("City", "").lower() == city_filter.lower()]
+        city_filter_lower = city_filter.lower()
+        # For Zakopane region requests, include all nearby villages/towns
+        if city_filter_lower in ZAKOPANE_REGION_CITIES:
+            pois = [p for p in pois if p.get("City", "").lower() in ZAKOPANE_REGION_CITIES]
+        else:
+            pois = [p for p in pois if p.get("City", "").lower() == city_filter_lower]
         print(f"[POI FILTER] City: {city_filter} → Filtered {original_count} → {len(pois)} POIs")
         
         if len(pois) == 0:

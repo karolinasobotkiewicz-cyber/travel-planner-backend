@@ -1291,8 +1291,15 @@ def choose_duration(p, now, end, lunch_done, user=None):
         lunch_target = time_to_minutes(LUNCH_TARGET)
         lunch_latest = time_to_minutes(LUNCH_LATEST)
 
+    # FIX #45 (20.05.2026 - Issue F root fix): Trails span the entire day including lunch.
+    # Mountain trails are 90min-13h activities that naturally cross lunch time.
+    # Blocking trails by max_before_lunch eliminates ALL trails with tmin > ~220min,
+    # leaving only 1-2 short trails for the entire 7-day trip.
+    # Solution: Skip the lunch pre-filter entirely for trail type POIs.
+    is_trail_poi = p.get("type") == "trail"
+
     # jesli lunch nie zrobiony, sprawdź czy POI zmieści tmin przed lunchem
-    if not lunch_done and now < lunch_latest:
+    if not is_trail_poi and not lunch_done and now < lunch_latest:
         max_before_lunch = (
             lunch_target - now if now < lunch_target else lunch_latest - now
         )
@@ -1311,8 +1318,9 @@ def choose_duration(p, now, end, lunch_done, user=None):
     #               This pushes lunch to 12:30+, then POST-POI CHECK inserts it late (14:48)
     # Solution: Cap duration at max_before_lunch to ensure POI ends BEFORE lunch time
     # BUGFIX (14.05.2026): Only apply cap if max_before_lunch > 0 to avoid negative durations
-    if not lunch_done and now < lunch_latest:
-        # max_before_lunch is already calculated above (lines 1255-1257)
+    # FIX #45: Trails skip the lunch cap — they span the entire day including lunch
+    if not is_trail_poi and not lunch_done and now < lunch_latest:
+        # max_before_lunch is already calculated above
         # Cap duration only if we have positive time before lunch
         if max_before_lunch > 0:
             return min(preferred_duration, end - now, max_before_lunch)
@@ -2263,9 +2271,24 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
         # 3-day: 1 trail, 5-day: 1 trail, 7-day: 2 trails
         max_trails_total = max(1, base_max_trails - 1)
         print(f"[MULTI-DAY] Trail limit for couples: moderate ({max_trails_total} trails for {num_days} days)")
-    
+
+    # FIX #43 (20.05.2026 - Issue F complement): Boost trail limit for mountain_trails preference.
+    # Problem: 7-day mountain_trails trip (test-08, couples) only gets 2 trail slots.
+    # After 2 trail days + 2 termy days, only ~11 culture POIs remain for 3 days → Days 6-7 empty.
+    # Root cause: TrailDB has 10+ trails available but global_trail_limit blocks all after Day 2.
+    # Solution: When mountain_trails is a top-3 preference, add extra trail slots so TrailDB
+    # trails fill the mountain days rather than exhausting the small culture POI pool.
+    # Mountain_trails trip → couples wanting trails, not just city museums!
+    user_prefs_top3 = user.get("preferences", [])[:3]
+    if "mountain_trails" in user_prefs_top3:
+        boost = max(1, num_days // 3)  # 3-day: +1, 5-day: +1, 7-day: +2
+        old_limit = max_trails_total
+        # Cap: leave at least 2 non-trail days for variety (termy, culture)
+        max_trails_total = min(num_days - 2, max_trails_total + boost)
+        print(f"[MULTI-DAY] Trail limit BOOSTED for mountain_trails preference: {old_limit} → {max_trails_total} (+{boost})")
+
     global_trail_tracking = {"count": 0, "max": max_trails_total}
-    
+
     print(f"[MULTI-DAY] Final trail limit: max {max_trails_total} trails for {num_days} days (target_group={target_group})")
     
     # Core POI distribution strategy
@@ -2991,6 +3014,19 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             
             # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #9): Max 1 termy/spa per day for seniors
             # FIX #Problem10 (14.05.2026): Apply to ALL groups (not just seniors)
+            # FIX #44 (20.05.2026 - Issue F): Defer termy/spa before noon when trail slots remain
+            # When mountain_trails is a top-3 preference and trail slots are still open,
+            # block termy/spa before 12:00 — mornings should be reserved for trail activities.
+            if is_termy_spa(p) and global_trail_tracking is not None and not trail_day_mode:
+                _trails_remaining_f44 = global_trail_tracking["max"] - global_trail_tracking["count"]
+                _user_prefs_f44 = user.get("preferences", [])[:3]
+                _TERMY_MORNING_BLOCK = 720  # 12:00 PM in minutes
+                if _trails_remaining_f44 > 0 and "mountain_trails" in _user_prefs_f44 and now < _TERMY_MORNING_BLOCK:
+                    _poi_name_f44 = str(p.get('Name', p.get('name', 'Unknown'))).encode('ascii', errors='ignore').decode('ascii')
+                    print(f"[TERMY DEFER] Deferring {_poi_name_f44} — trail slots remain "
+                          f"({global_trail_tracking['count']}/{global_trail_tracking['max']}), "
+                          f"morning reserved for trails (now={minutes_to_time(now)} < 12:00)")
+                    continue
             if is_termy_spa(p) and termy_count >= 1:
                 print(f"[LIMITS] Skip termy/spa POI ID: {poi_id(p)} (already have {termy_count}/1 termy per day)")
                 continue  # Skip - already have 1 termy/spa today
