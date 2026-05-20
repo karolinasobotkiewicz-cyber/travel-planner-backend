@@ -1428,6 +1428,23 @@ def score_poi(
             score += _poor_value_penalty
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [POOR VALUE PENALTY] {poi_name_safe}: {_poor_value_penalty} (cost_per_min={_cost_per_min:.2f} PLN/min at budget_level={_budget_level})")
+
+    # FIX #49 (20.05.2026): Budget level 3 premium boost
+    # Issue: budget_level=3 (900 PLN/day) users not getting premium restaurants/spa
+    # Zakopane premium POIs: Terma Bania (~190 PLN), Termy Gorący Potok (~236 PLN)
+    # Solution: Boost expensive POIs (+60) and penalize cheap ones (-30) for premium travelers
+    if _budget_level >= 3:
+        if _ticket_normal >= 100:  # Premium experience (100+ PLN/person)
+            _premium_boost = 60.0
+            score += _premium_boost
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [PREMIUM BOOST] {poi_name_safe}: +{_premium_boost:.1f} (ticket={_ticket_normal:.0f} PLN, budget_level={_budget_level})")
+        elif _ticket_normal > 0 and _ticket_normal <= 20:  # Cheap POI at premium budget = mismatch
+            _cheap_penalty = -30.0
+            score += _cheap_penalty
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [CHEAP PENALTY] {poi_name_safe}: {_cheap_penalty:.1f} (ticket={_ticket_normal:.0f} PLN too cheap for budget_level={_budget_level})")
+
     score += calculate_crowd_score(p, user, current_time_minutes=now)  # Added current_time for peak_hours
     
     # BUGFIX (19.02.2026 - UAT Round 2, Issue #6): Crowd_tolerance penalty using crowd_level
@@ -1613,6 +1630,24 @@ def score_poi(
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [RELAX PENALTY] {poi_name_safe}: -{penalty:.1f} (relax style conflicts with active)")
 
+        # FIX #48 (20.05.2026): Museum penalty for relax/water users without museum preference
+        # Issue: Muzeum Tatrzańskie appears for water_attractions/relax users (test-10) as filler
+        # Adventure already has 55% museum penalty; relax users with no museum pref need similar protection
+        _museum_tags_48 = {
+            "museums", "museum_heritage", "culture",
+            "themed_museum", "regional_heritage", "mountain_culture",
+            "multimedia_exhibition", "interactive_exhibits", "interactive_exhibit",
+            "local_history", "architecture_heritage", "historic_building",
+            "composer_artist_house", "intimate_small_museum", "ethnographic_museum",
+            "art_gallery", "temporary_exhibitions"
+        }
+        _user_prefs_48 = user.get("preferences", [])
+        if _museum_tags_48 & poi_tags and "museum_heritage" not in _user_prefs_48:
+            _museum_relax_penalty = score * 0.35  # 35% penalty for relax users with no museum preference
+            score -= _museum_relax_penalty
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [RELAX MUSEUM PENALTY] {poi_name_safe}: -{_museum_relax_penalty:.1f} (relax style + no museum_heritage pref)")
+
     elif travel_style == "adventure":
         # FIX #36 (19.05.2026): Gate active/mountain boosts on user having outdoor preferences.
         # Bug: JSON 7 (underground+history+museum + adventure) had Kopieniec mountain trail selected
@@ -1642,6 +1677,20 @@ def score_poi(
                 score += boost
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                 print(f"    [MOUNTAIN BOOST] {poi_name_safe}: +{boost:.1f} (adventure + mountain tags)")
+
+        # FIX #53 (20.05.2026): Boost group activities / escape rooms / kulig for adventure travelers
+        # Issue: Friends+adventure (test-03) gets museums/galleries instead of escape rooms, kulig
+        # These are indoor group activities that don't require outdoor prefs but ARE adventure-appropriate
+        _group_activity_tags = {"escape_room", "kulig", "group_activity", "winter_sports",
+                                 "active_entertainment", "team_activity", "horror_attraction"}
+        if _group_activity_tags & poi_tags:
+            _ga_target = user.get("target_group", "")
+            if _ga_target in ("friends", "solo", "couples"):
+                _ga_boost = score * 0.8  # 80% boost (strong preference for group activities)
+                score += _ga_boost
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [GROUP ACTIVITY BOOST] {poi_name_safe}: +{_ga_boost:.1f} (adventure + group activity tags + {_ga_target})")
+
         else:
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [ADVENTURE BOOST] {poi_name_safe}: skipped active/mountain boost (no outdoor preferences)")
@@ -2321,13 +2370,33 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
     
     # Build each day with cross-day tracking
     all_day_plans = []
-    
+
+    # FIX #50+#51 (20.05.2026): Consecutive-day protection flags
+    # FIX #50: Prevent termy on two consecutive days (rest-day logic)
+    # FIX #51: Force recovery day (no trails) after heavy trail (>=240 min)
+    _prev_day_had_termy = False
+    _prev_day_had_heavy_trail = False
+
     for day_num in range(num_days):
         context = contexts[day_num]
         
         print(f"\n[MULTI-DAY] === Building Day {day_num + 1}/{num_days} ===")
         print(f"[MULTI-DAY] Global used POIs so far: {len(global_used_pois)}")
-        
+
+        # FIX #50: Temporarily block termy on this day if previous day had termy
+        _termy_count_save = None
+        if _prev_day_had_termy and num_days > 1:
+            _termy_count_save = global_termy_tracking["count"]
+            global_termy_tracking["count"] = global_termy_tracking["max"]
+            print(f"[FIX #50] Day {day_num + 1}: Blocking termy (consecutive-day restriction)")
+
+        # FIX #51: Temporarily block trails on this day if previous day had heavy trail
+        _trail_count_save = None
+        if _prev_day_had_heavy_trail and num_days > 1:
+            _trail_count_save = global_trail_tracking["count"]
+            global_trail_tracking["count"] = global_trail_tracking["max"]
+            print(f"[FIX #51] Day {day_num + 1}: Recovery day - blocking all trails")
+
         # Build day with global tracking
         # The global_used set will be updated inside build_day()
         # UAT FIX (18.02.2026 - Problem #6): Pass termy tracking dict
@@ -2342,6 +2411,29 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
             global_termy_tracking=global_termy_tracking,  # Pass termy limit tracker
             global_trail_tracking=global_trail_tracking  # Pass trail limit tracker
         )
+
+        # FIX #50+#51: Restore counts (restriction was temporary; day didn't consume those slots)
+        if _termy_count_save is not None:
+            global_termy_tracking["count"] = _termy_count_save
+        if _trail_count_save is not None:
+            global_trail_tracking["count"] = _trail_count_save
+
+        # FIX #50: Check if today had termy (to block termy tomorrow)
+        _prev_day_had_termy = any(
+            item.get("type") == "attraction" and is_termy_spa(item.get("poi") or {})
+            for item in day_plan
+        )
+        # FIX #51: Check if today had a heavy trail (to force recovery day tomorrow)
+        _prev_day_had_heavy_trail = any(
+            item.get("type") == "attraction" and
+            item.get("poi", {}).get("type") == "trail" and
+            item.get("poi", {}).get("duration_min", 0) >= 240
+            for item in day_plan
+        )
+        if _prev_day_had_termy:
+            print(f"[FIX #50] Day {day_num + 1} had termy - next day will skip termy")
+        if _prev_day_had_heavy_trail:
+            print(f"[FIX #51] Day {day_num + 1} had heavy trail (>=240min) - next day is recovery")
         
         # Count POIs used in this day
         day_poi_count = 0
@@ -2940,6 +3032,26 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                           f"(user_prefs={user_prefs}, group={target_group})")
                     continue  # SKIP - user not interested in mountain trails
             
+            # FIX #47 (20.05.2026): Trail intensity matching to travel_style
+            # Problem: Relax users (Json9) and seniors (Json6) got heavy 360+min trails
+            # Solution: Hard-cap trail duration based on travel_style + target_group
+            #   - travel_style == "relax" → max 180min trails (Sarnia, Kopieniec)
+            #   - target_group == "seniors" → max 150min trails (Nosal, Kopieniec only)
+            if p.get("type") == "trail":
+                trail_dur = p.get("duration_min", 0)
+                travel_style_val = user.get("travel_style", "")
+                target_group_val = user.get("target_group", "")
+                max_trail_dur = None
+                if target_group_val == "seniors":
+                    max_trail_dur = 150  # FIX #54: seniors only get short trails
+                elif travel_style_val == "relax":
+                    max_trail_dur = 180  # FIX #47: relax users get at most 3h trails
+                if max_trail_dur is not None and trail_dur > max_trail_dur:
+                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                    print(f"[TRAIL INTENSITY] EXCLUDED trail: {poi_name_safe} - duration {trail_dur}min > "
+                          f"max {max_trail_dur}min for style={travel_style_val}/group={target_group_val}")
+                    continue  # SKIP - trail too demanding for this user
+
             # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #4): Trail day restrictions
             # PHASE 8 FEATURE #2 (27.04.2026): Elastic trail day rules based on difficulty
             # CRITICAL: After trail added, restrict remaining POI based on trail difficulty + duration
@@ -3235,6 +3347,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if p.get("type") == "trail" and trail_day_mode:
                         continue  # SKIP - already have 1 trail today (per-day trail limit)
                     
+                    # FIX #47/#54 (20.05.2026): Trail intensity filter in core rotation
+                    if p.get("type") == "trail":
+                        _cr_trail_dur = p.get("duration_min", 0)
+                        _cr_style = user.get("travel_style", "")
+                        _cr_group = user.get("target_group", "")
+                        _cr_max = 150 if _cr_group == "seniors" else (180 if _cr_style == "relax" else None)
+                        if _cr_max and _cr_trail_dur > _cr_max:
+                            continue  # SKIP - trail too demanding
+
                     # BUGFIX (30.04.2026 - CRITICAL): Termy limit enforcement in core rotation
                     # Problem: Core rotation rescans POI without applying termy limit filter
                     # Solution: Apply same termy limit check as main loop (lines 2657-2660)
@@ -3374,6 +3495,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if p.get("type") == "trail" and trail_day_mode:
                         continue  # SKIP - already have 1 trail today (per-day trail limit)
                     
+                    # FIX #47/#54 (20.05.2026): Trail intensity filter in variety loop
+                    if p.get("type") == "trail":
+                        _var_trail_dur = p.get("duration_min", 0)
+                        _var_style = user.get("travel_style", "")
+                        _var_group = user.get("target_group", "")
+                        _var_max = 150 if _var_group == "seniors" else (180 if _var_style == "relax" else None)
+                        if _var_max and _var_trail_dur > _var_max:
+                            continue  # SKIP - trail too demanding
+
                     # BUGFIX (30.04.2026 - CRITICAL): Termy limit enforcement in variety logic
                     # Problem: Variety logic rescans POI without applying termy limit filter
                     # Solution: Apply same termy limit check as main loop (lines 2657-2660)
@@ -3795,6 +3925,23 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             global_trail_tracking["count"] += 1
             print(f"[TRAIL LIMIT] Trail added - Global count: {global_trail_tracking['count']}/{global_trail_tracking['max']}")
         
+        # FIX #46 (20.05.2026 - CRITICAL BUG): Set trail_day_mode HERE before any continue statement
+        # ROOT CAUSE: post-POI lunch check at ~line 3836 has `continue` that jumps back to while loop
+        #             SKIPPING the trail_day_mode = True at line ~3947 → trail_day_mode never set!
+        #             This allowed a SECOND trail to be added on the same day (Bug #1 from client)
+        # Solution: Set trail_day_mode + max_poi_after_trail HERE, before lunch post-POI check
+        if best.get("type") == "trail" and not trail_day_mode:
+            trail_day_mode = True
+            _trail_raw_dur_early = best.get("duration_min", 0)
+            _trail_diff_early = best.get("difficulty_level", "moderate").lower()
+            if _trail_diff_early in ["hard", "extreme"] or _trail_raw_dur_early >= 240:
+                max_poi_after_trail = 0
+            elif _trail_diff_early == "moderate" or _trail_raw_dur_early >= 180:
+                max_poi_after_trail = 1
+            else:
+                max_poi_after_trail = 2
+            print(f"[FIX #46] trail_day_mode=True set early (before lunch check) - max_poi_after_trail={max_poi_after_trail}")
+
         # CRITICAL FIX (30.04.2026 - FIX #15): Increment termy counter BEFORE any continue statements!
         # BUG: Same as trail counter bug - continue statement at line ~3420 (lunch post-POI check)
         #      prevents termy increment code at line ~3575 from executing
@@ -4260,6 +4407,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         max_gap_fill = 2  # Max 2 additional light activities
         
         while remaining_to_end > 90 and gap_fill_attempts < max_gap_fill:
+            # FIX #52 (20.05.2026): Block gap fill culture/activity POIs on heavy trail days
+            # Heavy trail (max_poi_after_trail=0) should end with free_time only, not culture visits
+            # This prevents e.g. gallery/church after 7h Giewont trek
+            if trail_day_mode and max_poi_after_trail == 0:
+                print(f"[FIX #52] Gap fill blocked: heavy trail day (trail_day_mode + max_poi_after_trail=0)")
+                break
+
             # Find soft POI (light activity: 30-60 min, low must_see)
             soft_best = None
             soft_score = -9999
@@ -4301,9 +4455,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if daily_cost + poi_cost_total > daily_limit:
                         continue
                 
-                # Soft POI criteria: 10-60 min, must_see <= 7
+                # Soft POI criteria: 15-60 min, must_see <= 7
+                # FIX #55 (20.05.2026): Raised min from 10 to 15 min (block 8-min Kaplica fillers)
                 time_min = p.get("time_min", 60)
-                if time_min < 10 or time_min > 60:
+                if time_min < 15 or time_min > 60:
                     continue
                 must_see_score = p.get("must_see", p.get("must_see_score", 10))
                 if must_see_score > 7:
