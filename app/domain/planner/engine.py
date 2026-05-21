@@ -2577,7 +2577,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #9): Track termy/spa for daily limit
     # FIX #Problem10 (14.05.2026): Max 1/day for ALL groups (not just seniors)
     termy_count = 0  # Max 1 termy/spa per day
-    
+
+    # FIX #58 (21.05.2026): Track museums per day for adventure profile (hard cap = 1)
+    daily_museum_count = 0
+
     # FIX #5 (UAT Round 3 - 19.02.2026): Track preference coverage for top 3 preferences
     # Client feedback: "Część atrakcji jest zoo/rozrywka mimo prefs museum_heritage + cultural"
     # Goal: Enforce at least 1 attraction per top 3 user preference per day
@@ -2956,7 +2959,34 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                 print(f"[FILTER] HARD BLOCK kids POI for adult group: {poi_name_safe}")
                 continue  # SKIP entirely - not applicable for adult groups
-            
+
+            # FIX #57 (21.05.2026): Skip POIs where parking walk is too long for family_kids/seniors
+            # Issue: walk_time_min=25 (e.g. Nosal) unacceptable for family with small children/seniors
+            _walk_min = int(p.get("parking_walk_time_min", 0) or 0)
+            if _walk_min > 0:
+                _tg_57 = user.get("target_group", "")
+                if _tg_57 == "family_kids" and _walk_min > 15:
+                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                    print(f"[WALK FILTER] EXCLUDED: {poi_name_safe} - parking walk {_walk_min}min > 15 (family_kids limit)")
+                    continue
+                elif _tg_57 == "seniors" and _walk_min > 20:
+                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                    print(f"[WALK FILTER] EXCLUDED: {poi_name_safe} - parking walk {_walk_min}min > 20 (seniors limit)")
+                    continue
+
+            # FIX #58 (21.05.2026): Hard cap: max 1 museum per day for adventure profile
+            # Issue: Adventure plans fill with museums after trails/active POIs are exhausted
+            if travel_style == "adventure" and daily_museum_count >= 1:
+                _mus_tags_58 = {"themed_museum", "regional_heritage", "museum_heritage", "museums",
+                                "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                                "interactive_exhibit", "local_history", "architecture_heritage",
+                                "art_gallery", "temporary_exhibitions", "composer_artist_house",
+                                "intimate_small_museum", "ethnographic_museum"}
+                if _mus_tags_58 & set(p.get("tags", [])):
+                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                    print(f"[MUSEUM CAP] EXCLUDED: {poi_name_safe} - max 1 museum/day for adventure (daily_museum_count={daily_museum_count})")
+                    continue
+
             # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #5): Trail limit per trip
             # CRITICAL: Limit trails based on trip duration (prevent trail overload)
             # Problem: No limits on trails (could have 5 trails in 3-day trip)
@@ -3046,6 +3076,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     max_trail_dur = 150  # FIX #54: seniors only get short trails
                 elif travel_style_val == "relax":
                     max_trail_dur = 180  # FIX #47: relax users get at most 3h trails
+                elif travel_style_val == "balanced":
+                    max_trail_dur = 240  # FIX #56: balanced users get at most 4h trails (Hala Gasienicowa max)
                 if max_trail_dur is not None and trail_dur > max_trail_dur:
                     poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                     print(f"[TRAIL INTENSITY] EXCLUDED trail: {poi_name_safe} - duration {trail_dur}min > "
@@ -3352,7 +3384,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         _cr_trail_dur = p.get("duration_min", 0)
                         _cr_style = user.get("travel_style", "")
                         _cr_group = user.get("target_group", "")
-                        _cr_max = 150 if _cr_group == "seniors" else (180 if _cr_style == "relax" else None)
+                        _cr_max = 150 if _cr_group == "seniors" else (180 if _cr_style == "relax" else (240 if _cr_style == "balanced" else None))  # FIX #56
                         if _cr_max and _cr_trail_dur > _cr_max:
                             continue  # SKIP - trail too demanding
 
@@ -3500,7 +3532,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         _var_trail_dur = p.get("duration_min", 0)
                         _var_style = user.get("travel_style", "")
                         _var_group = user.get("target_group", "")
-                        _var_max = 150 if _var_group == "seniors" else (180 if _var_style == "relax" else None)
+                        _var_max = 150 if _var_group == "seniors" else (180 if _var_style == "relax" else (240 if _var_style == "balanced" else None))  # FIX #56
                         if _var_max and _var_trail_dur > _var_max:
                             continue  # SKIP - trail too demanding
 
@@ -4140,6 +4172,17 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         if is_termy_spa(best):
             termy_count += 1
             print(f"[LIMITS] Termy/spa POI added: {termy_count}/1 per day")
+
+        # FIX #58: Increment daily museum counter for adventure profile
+        if travel_style == "adventure":
+            _mus_cnt_tags = {"themed_museum", "regional_heritage", "museum_heritage", "museums",
+                             "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                             "interactive_exhibit", "local_history", "architecture_heritage",
+                             "art_gallery", "temporary_exhibitions", "composer_artist_house",
+                             "intimate_small_museum", "ethnographic_museum"}
+            if _mus_cnt_tags & set(best.get("tags", [])):
+                daily_museum_count += 1
+                print(f"[MUSEUM CAP] Museum added today: {daily_museum_count}/1 (adventure)")
         
         # FIX #5 (UAT Round 3 - 19.02.2026): Update preference coverage tracking
         # Track which of top 3 preferences have been covered by this POI
@@ -4404,7 +4447,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         
         # Try to add 1-2 light activities to fill the gap
         gap_fill_attempts = 0
-        max_gap_fill = 2  # Max 2 additional light activities
+        # FIX #60 (21.05.2026): More attempts for large gaps or family_kids (reduces free_time blocks)
+        _is_large_gap = remaining_to_end > 180
+        _is_family = user.get("target_group") == "family_kids"
+        max_gap_fill = 4 if (_is_large_gap or _is_family) else 2
         
         while remaining_to_end > 90 and gap_fill_attempts < max_gap_fill:
             # FIX #52 (20.05.2026): Block gap fill culture/activity POIs on heavy trail days
@@ -4457,11 +4503,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 
                 # Soft POI criteria: 15-60 min, must_see <= 7
                 # FIX #55 (20.05.2026): Raised min from 10 to 15 min (block 8-min Kaplica fillers)
+                # FIX #60 (21.05.2026): Allow up to 90min POIs when gap > 180min (reduce free_time)
                 time_min = p.get("time_min", 60)
-                if time_min < 15 or time_min > 60:
+                _gap_max_time = 90 if remaining_to_end > 180 else 60
+                if time_min < 15 or time_min > _gap_max_time:
                     continue
                 must_see_score = p.get("must_see", p.get("must_see_score", 10))
-                if must_see_score > 7:
+                _gap_must_see_limit = 8 if remaining_to_end > 180 else 7
+                if must_see_score > _gap_must_see_limit:
                     continue
                 
                 # Calculate travel + duration
