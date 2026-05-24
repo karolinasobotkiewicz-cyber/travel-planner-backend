@@ -161,11 +161,16 @@ def load_zakopane_poi(path: str, city_filter: Optional[str] = None):
     """
     df = pd.read_excel(path)
 
+    # CLIENT DATA UPDATE (22.05.2026): Strip trailing spaces from column names
+    # New "Planer - miasta atrakcje.xlsx" has trailing spaces in "Target group ", "Budget type ", etc.
+    df.columns = df.columns.str.strip()
+
     print("KOLUMNY:", list(df.columns))
 
     # CLIENT DATA UPDATE (05.02.2026): Handle zakopane2.xlsx structure
     # Column 1 (index 1) is Name but labeled as numeric 0
-    name_col = df.columns[1] if len(df.columns) > 1 else "Name"
+    # CLIENT DATA UPDATE (22.05.2026): New file uses "Name" as column name directly
+    name_col = "Name" if "Name" in df.columns else (df.columns[1] if len(df.columns) > 1 else "Name")
 
     pois = []
 

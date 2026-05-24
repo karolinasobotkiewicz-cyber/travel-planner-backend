@@ -2581,6 +2581,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     # FIX #58 (21.05.2026): Track museums per day for adventure profile (hard cap = 1)
     daily_museum_count = 0
 
+    # FIX #64 (22.05.2026): Track experience-type dedup to prevent same-type POI on the same day
+    # Problem: Iluzja Park + Dom do góry nogami both have illusion_kids tag → boring same-experience day
+    # Solution: tags in UNIQUE_EXPERIENCE_TAGS can appear at most once per day
+    UNIQUE_EXPERIENCE_TAGS = {
+        "illusion_kids", "escape_room", "ice_rink", "bowling", "wax_figures",
+        "cave_tour", "zipline", "quad_atv", "horse_riding", "kulig",
+    }
+    daily_used_experience_tags: set = set()  # experience tags already used today
+
     # FIX #5 (UAT Round 3 - 19.02.2026): Track preference coverage for top 3 preferences
     # Client feedback: "Część atrakcji jest zoo/rozrywka mimo prefs museum_heritage + cultural"
     # Goal: Enforce at least 1 attraction per top 3 user preference per day
@@ -2740,12 +2749,32 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
                 restaurants_available = context.get("restaurants_available", [])
                 if restaurants_available:
-                    # Filter for lunch spots (meal_type == "lunch")
+                    # FIX #65 (22.05.2026): meal_type can be comma-separated e.g. "lunch,dinner"
+                    # Use "in" check instead of exact equality
                     lunch_restaurants = [
                         r for r in restaurants_available
-                        if r.get("meal_type") == "lunch"
+                        if "lunch" in (r.get("meal_type") or "").lower()
                     ]
-                    
+
+                    # FIX #59 (22.05.2026): Cuisine filter for local_food_experience preference
+                    # Problem: Giga Buła (burgers/american) suggested to users who prefer local cuisine
+                    # Solution: If user has local_food_experience preference, exclude fast-food/foreign
+                    #           cuisines and prefer polish/regional restaurants
+                    user_prefs_for_lunch = user.get("preferences", [])
+                    if "local_food_experience" in user_prefs_for_lunch:
+                        NON_LOCAL_CUISINES = {"american", "burgers", "street_food", "fast_food", "italian", "asian"}
+                        regional_restaurants = [
+                            r for r in lunch_restaurants
+                            if not (set(
+                                [c.strip().lower() for c in (r.get("cuisine_type") or "").split(",")]
+                            ) & NON_LOCAL_CUISINES)
+                        ]
+                        if regional_restaurants:
+                            lunch_restaurants = regional_restaurants
+                            print(f"[LUNCH FIX#59] local_food_experience: filtered to {len(lunch_restaurants)} regional/polish restaurants")
+                        else:
+                            print(f"[LUNCH FIX#59] local_food_experience: no regional-only restaurants found, using all")
+
                     # If we have current location (last attraction), sort by proximity
                     if plan:
                         # Find last attraction for location context
@@ -2858,10 +2887,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 
                 restaurants_available = context.get("restaurants_available", [])
                 if restaurants_available:
-                    # Filter for dinner spots (meal_type == "dinner")
+                    # FIX #65 (22.05.2026): meal_type can be comma-separated e.g. "lunch,dinner"
+                    # Use "in" check instead of exact equality
                     dinner_restaurants = [
                         r for r in restaurants_available
-                        if r.get("meal_type") == "dinner"
+                        if "dinner" in (r.get("meal_type") or "").lower()
                     ]
                     
                     # If we have current location (last attraction), sort by proximity
@@ -2987,6 +3017,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     print(f"[MUSEUM CAP] EXCLUDED: {poi_name_safe} - max 1 museum/day for adventure (daily_museum_count={daily_museum_count})")
                     continue
 
+            # FIX #64 (22.05.2026): Experience-type dedup (max 1 per day per unique experience tag)
+            # Problem: Iluzja Park + Dom do góry nogami both have illusion_kids → same experience twice
+            _poi_exp_tags = UNIQUE_EXPERIENCE_TAGS & set(p.get("tags", []))
+            if _poi_exp_tags & daily_used_experience_tags:
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[DEDUP FIX#64] EXCLUDED: {poi_name_safe} - experience tags {_poi_exp_tags} already used today")
+                continue
+
             # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #5): Trail limit per trip
             # CRITICAL: Limit trails based on trip duration (prevent trail overload)
             # Problem: No limits on trails (could have 5 trails in 3-day trip)
@@ -3002,7 +3040,36 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     print(f"[TRAIL LIMIT] EXCLUDED trail: {poi_name_safe} - global limit reached "
                           f"({global_trail_tracking['count']}/{global_trail_tracking['max']} trails used)")
                     continue  # SKIP - trail limit reached for entire trip
-            
+
+            # FIX #61 (22.05.2026): Extra safety - block high-exposure trails in winter for seniors/relax
+            # This supplements FIX #60 (seasonality field in to_dict).
+            # Edge case: if best_season="all_year" but trail is actually dangerous in winter
+            # (e.g. high exposure), enforce additional block.
+            # Rules:
+            #   - exposure_level="high" in winter months [12,1,2] → block for ALL users
+            #   - exposure_level in ["medium","high"] in winter → block for seniors
+            #   - exposure_level="high" in shoulder months [3,11] → block for seniors
+            if p.get("type") == "trail":
+                _trail_date = context.get("date")
+                if _trail_date:
+                    _trail_month = _trail_date[1]
+                    _trail_exposure = (p.get("exposure_level") or "").lower()
+                    _trail_target = user.get("target_group", "")
+                    _is_winter = _trail_month in (12, 1, 2)
+                    _is_shoulder = _trail_month in (3, 11)
+                    _block_trail = False
+                    if _is_winter and _trail_exposure == "high":
+                        _block_trail = True  # No high-exposure in winter for anyone
+                    elif _is_winter and _trail_exposure in ("medium", "high") and _trail_target == "seniors":
+                        _block_trail = True  # No medium/high exposure in winter for seniors
+                    elif _is_shoulder and _trail_exposure == "high" and _trail_target == "seniors":
+                        _block_trail = True  # No high-exposure in shoulder months for seniors
+                    if _block_trail:
+                        poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                        print(f"[TRAIL SAFETY FIX#61] EXCLUDED trail: {poi_name_safe} - "
+                              f"exposure={_trail_exposure}, month={_trail_month}, group={_trail_target}")
+                        continue
+
             # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #7): Trail timing - morning only
             # CRITICAL: Trails must start early (08:00-10:00) to avoid afternoon/evening starts
             # Problem: Trails scheduled at wrong times (trail start 14:00, 16:00)
@@ -3892,6 +3959,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         overlaps, conflict = _check_time_overlap(plan, attraction_start_time, attraction_end_time)
         if overlaps:
             print(f"[OVERLAP DETECTED] attraction {poi_name(best)} {attraction_start_time}-{attraction_end_time} conflicts with {conflict.get('type')} {conflict.get('start_time')}-{conflict.get('end_time')}")
+            # FIX #62 (22.05.2026): Phantom transfer prevention
+            # If we already appended a transfer/parking_walk to plan for this POI, remove them
+            # before continuing, otherwise plan will have a transfer without a destination POI.
+            while plan and plan[-1].get("type") in ("transfer", "parking_walk", "buffer"):
+                removed = plan.pop()
+                now -= removed.get("duration_min", 0)
+                # Also rollback drive tracking if it was a car transfer
+                if removed.get("type") == "transfer" and removed.get("duration_min", 0) >= 10:
+                    total_drive_time = max(0, total_drive_time - removed.get("duration_min", 0))
+                print(f"[FIX#62] Rolled back phantom {removed.get('type')} ({removed.get('duration_min',0)}min)")
             # Skip this POI, mark as used to avoid retry, continue loop
             used.add(poi_id(best))
             now += 15  # Advance time slightly
@@ -4183,6 +4260,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             if _mus_cnt_tags & set(best.get("tags", [])):
                 daily_museum_count += 1
                 print(f"[MUSEUM CAP] Museum added today: {daily_museum_count}/1 (adventure)")
+
+        # FIX #64: Track used experience tags for dedup
+        _added_exp_tags = UNIQUE_EXPERIENCE_TAGS & set(best.get("tags", []))
+        if _added_exp_tags:
+            daily_used_experience_tags.update(_added_exp_tags)
+            print(f"[DEDUP FIX#64] Registered experience tags: {_added_exp_tags}")
         
         # FIX #5 (UAT Round 3 - 19.02.2026): Update preference coverage tracking
         # Track which of top 3 preferences have been covered by this POI

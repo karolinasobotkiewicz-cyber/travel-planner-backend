@@ -105,7 +105,7 @@ USER_PREFERENCES_TO_TAGS = {
         "tag_bonus": 25,
     },
     "nature_landscapes": {
-        "type_match": ["nature_outdoor", "scenic_viewpoint"],
+        "type_match": ["nature_outdoor", "scenic_viewpoint", "nature_landscape"],
         "type_bonus": 30,
         "tags": [
             "mountain_viewpoint",
@@ -194,19 +194,28 @@ USER_PREFERENCES_TO_TAGS = {
     },
     # UAT FIX (18.02.2026): Missing preferences from Test 02, 04
     "local_food_experience": {
-        "type_match": ["restaurant", "food_experience", "cultural_attraction"],
+        "type_match": ["restaurant", "food_experience", "cultural_attraction", "local_food_experience", "food_market"],
         "type_bonus": 30,
+        # FIX #67 (22.05.2026): Add tags present in new Planer file POIs (Bacówka, Dom Oscypka, Targowisko)
+        # New POIs use: local_food, regional_cuisine, bacowka (no accent), food_market, street_food, local_experience
         "tags": [
             "local_cuisine",
             "regional_food",
             "traditional_restaurant",
             "bacówka",
+            "bacowka",  # FIX #67: No-accent variant (new POI data)
             "highlander_cuisine",
             "food_tasting",
             "local_specialties",
             "mountain_food",
             "oscypek",
             "regional_dishes",
+            "local_food",        # FIX #67: New POI tag
+            "regional_cuisine",  # FIX #67: New POI tag
+            "food_market",       # FIX #67: Targowisko pod Gubałówką tag
+            "street_food",       # FIX #67: Targowisko pod Gubałówką tag
+            "local_experience",  # FIX #67: Targowisko pod Gubałówką tag
+            "traditional_food",  # FIX #67: New POI tag
         ],
         "tag_bonus": 25,
     },
@@ -281,7 +290,10 @@ USER_PREFERENCES_TO_TAGS = {
     },
     "nature_landscape": {
         # Alias for "nature_landscapes" (singular vs plural)
-        "type_match": ["nature_outdoor", "scenic_viewpoint"],
+        # FIX #66 (22.05.2026): Add "nature_landscape" itself to type_match
+        # Excel stores type as "active_sport, nature_landscape" - split+check already works,
+        # but "nature_landscape" was missing from the match list
+        "type_match": ["nature_outdoor", "scenic_viewpoint", "nature_landscape"],
         "type_bonus": 30,
         "tags": [
             "mountain_viewpoint",

@@ -18,7 +18,30 @@ class TrailRepository:
         trails = repo.get_by_region("Tatry")
         family_trails = repo.get_family_friendly("Tatry")
     """
-    
+
+    @staticmethod
+    def _parse_best_season(best_season: str) -> list:
+        """
+        FIX #60 (22.05.2026): Parse best_season string into seasonality list for filter_by_season().
+        
+        filter_by_season() checks poi.get("seasonality") as a list.
+        Empty list [] means "available all year" (passes always).
+        
+        best_season values from Excel:
+            "all_year"             → []                              (always available)
+            "summer"               → ["summer"]
+            "spring, summer, autumn" → ["spring", "summer", "autumn"]
+            "summer,autumn"        → ["summer", "autumn"]
+        """
+        if not best_season or str(best_season).strip().lower() in ("", "nan", "none"):
+            return []  # Unknown = no restriction (safe default)
+        cleaned = str(best_season).strip().lower()
+        if "all_year" in cleaned or "all year" in cleaned:
+            return []  # No restriction - trail open year-round
+        # Split by comma or space, strip each token
+        parts = [s.strip() for s in cleaned.replace(",", " ").split() if s.strip()]
+        return parts
+
     def __init__(self, session: Optional[Session] = None):
         """
         Initialize repository.
@@ -203,6 +226,9 @@ class TrailRepository:
             "duration_min": trail.time_min,
             "duration_max": trail.time_max,
             "best_season": trail.best_season,
+            # FIX #60 (22.05.2026): Expose seasonality list so filter_by_season() works for trails
+            # Previously trails had no "seasonality" key → filter always passed (all trails shown in winter)
+            "seasonality": self._parse_best_season(trail.best_season),
             
             # Safety & filtering
             "family_friendly": trail.family_friendly,
