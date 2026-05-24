@@ -574,6 +574,21 @@ class PlanService:
             # Solution: After sorting, remove overlapping items (prefer non-free_time items)
             day_items = self._remove_timeline_overlaps(day_items, day_num + 1)
             
+            # FIX #71 (23.05.2026): Remove orphaned trailing transit items
+            # Root cause: Engine occasionally outputs a transfer at end of day (after last attraction)
+            # with no following attraction. FIX #62 in engine handles the overlap case, but
+            # the trailing case (day-end break before POI is added) can still slip through.
+            # Solution: strip any transit/transfer/parking items at the very end of the day list.
+            TRANSIT_TYPES = {ItemType.TRANSIT, "transfer", "parking_walk", "buffer", "tickets_queue"}
+            while day_items:
+                last = day_items[-1]
+                item_type_check = getattr(last, "type", None) or (last.get("type") if isinstance(last, dict) else None)
+                if item_type_check in TRANSIT_TYPES:
+                    day_items.pop()
+                    print(f"[FIX #71] Removed orphaned trailing {item_type_check} at end of day {day_num + 1}")
+                else:
+                    break
+            
             # FIX #18 (03.05.2026 - CLIENT FEEDBACK MAY 3): Consolidate consecutive free_time blocks
             # Apply BEFORE adding day_end to ensure day_end stays last
             day_items = self._consolidate_consecutive_free_time_blocks(day_items)
@@ -1223,7 +1238,15 @@ class PlanService:
             # Trails: Use duration_max for realistic planning (most people need max time, not minimum)
             # TrailDB stores time_min/time_max → to_dict() converts to duration_min/duration_max
             # FIX #19.1 also maps duration_min/max → time_min/max during loading for engine compatibility
-            visit_min = poi_dict.get("duration_max", poi_dict.get("duration_min", 60))
+            # FIX #69 (23.05.2026): Excel trails (Morskie Oko etc.) use time_max/time_min keys,
+            # NOT duration_max/duration_min. Without this fallback → 60min default → 75min total (WRONG).
+            visit_min = (
+                poi_dict.get("duration_max") or
+                poi_dict.get("time_max") or   # Excel trail fallback
+                poi_dict.get("duration_min") or
+                poi_dict.get("time_min") or   # Excel trail fallback
+                60
+            )
         else:
             # POI: Use time_min field from Excel
             visit_min = poi_dict.get("time_min", 60)
@@ -1411,16 +1434,42 @@ class PlanService:
         if free_entry:
             return 0
         
-        ticket_normal = poi_dict.get("ticket_normal", 0) or 0
-        ticket_reduced = poi_dict.get("ticket_reduced", 0) or 0
+        # FIX #68 (23.05.2026): Distinguish genuinely-free POI (ticket=0) from unknown price (ticket=None/NaN)
+        # Root cause: Excel has no "free_entry" column → free_entry always False.
+        # POIs like Krupówki, Kaplica have ticket_normal=0, ticket_reduced=0 → should be cost=0.
+        # Previously: 0+0 with free_entry=False → 50 PLN/person fallback (WRONG).
+        import math as _math
+        def _parse_ticket(val):
+            """Return float if valid number, None if missing/NaN/empty."""
+            if val is None:
+                return None
+            try:
+                f = float(val)
+                if _math.isnan(f):
+                    return None
+                return f
+            except (TypeError, ValueError):
+                return None
+        
+        ticket_normal_raw = poi_dict.get("ticket_normal")
+        ticket_reduced_raw = poi_dict.get("ticket_reduced")
+        t_normal = _parse_ticket(ticket_normal_raw)
+        t_reduced = _parse_ticket(ticket_reduced_raw)
+        
+        # Explicitly zero for both → genuinely free
+        if t_normal == 0 and t_reduced == 0:
+            return 0
+        
+        ticket_normal = t_normal if t_normal is not None else 0
+        ticket_reduced = t_reduced if t_reduced is not None else 0
         
         # Extract user info
         group_type = user.get("target_group", "solo")
         group_size = user.get("group_size", 1)
         children_age = user.get("children_age")  # Only relevant for family_kids
         
-        # BUGFIX: Fallback for POI without price data (like DINO PARK with "brak danych")
-        if ticket_normal == 0 and ticket_reduced == 0 and not free_entry:
+        # BUGFIX: Fallback for POI without price data (both tickets unknown/None)
+        if t_normal is None and t_reduced is None and not free_entry:
             # Use reasonable default: 50 PLN per person
             default_price = 50
             return group_size * default_price

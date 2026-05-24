@@ -3471,10 +3471,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         if is_kids_focused_poi(p) and kids_focused_count >= 1:
                             continue
                     
-                    # BUGFIX (16.02.2026 - Problem #9): Max 1 termy/spa per day for seniors
-                    if user_group == 'seniors':
-                        if is_termy_spa(p) and termy_count >= 1:
-                            continue
+                    # FIX #70 (23.05.2026): Apply termy/spa daily limit to ALL groups (not just seniors)
+                    # Root cause: Problem #10 fix only applied to main loop; sub-loops still seniors-only.
+                    if is_termy_spa(p) and termy_count >= 1:
+                        continue
                     
                     # BUDGET HARD FILTER
                     # FIX #2 (22.02.2026): Use unified cost calculation
@@ -3610,10 +3610,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         if global_termy_tracking["count"] >= global_termy_tracking["max"]:
                             continue  # SKIP - termy limit reached for entire trip
                     
-                    # BUGFIX (16.02.2026 - Problem #9): Max 1 termy/spa per day for seniors
-                    if user_group == 'seniors':
-                        if is_termy_spa(p) and termy_count >= 1:
-                            continue
+                    # FIX #70 (23.05.2026): Apply termy/spa daily limit to ALL groups (not just seniors)
+                    if is_termy_spa(p) and termy_count >= 1:
+                        continue
                     
                     # BUDGET HARD FILTER (FIX 07.02.2026): Apply to candidate collection
                     # FIX #2 (22.02.2026): Use unified cost calculation
@@ -4360,10 +4359,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         if is_kids_focused_poi(p) and kids_focused_count >= 1:
                             continue  # Skip - already have 1 kids-focused POI today
                     
-                    # BUGFIX (16.02.2026 - Problem #9): Max 1 termy/spa per day for seniors
-                    if user_group == 'seniors':
-                        if is_termy_spa(p) and termy_count >= 1:
-                            continue  # Skip - already have 1 termy/spa today
+                    # FIX #70 (23.05.2026): Apply termy/spa daily limit to ALL groups (not just seniors)
+                    if is_termy_spa(p) and termy_count >= 1:
+                        continue  # Skip - already have 1 termy/spa today (all groups)
                     
                     # UAT FIX (18.02.2026 - Problem #6): Check global termy limit
                     if global_termy_tracking is not None and is_termy_spa(p):
@@ -4571,9 +4569,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if user_group in ['solo', 'couples', 'friends', 'seniors']:
                     if is_kids_focused_poi(p) and kids_focused_count >= 1:
                         continue
-                if user_group == 'seniors':
-                    if is_termy_spa(p) and termy_count >= 1:
-                        continue
+                # FIX #70 (23.05.2026): Apply termy/spa daily limit to ALL groups (not just seniors)
+                if is_termy_spa(p) and termy_count >= 1:
+                    continue
                 if attraction_count >= limits["hard"]:
                     break
                 
