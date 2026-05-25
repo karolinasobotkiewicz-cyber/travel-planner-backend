@@ -363,7 +363,12 @@ def explain_poi_selection(
     
     # Priority 1: Must-see / Highly recommended (priority_level)
     priority_val = poi.get("priority_level", 0)
-    priority = int(priority_val) if priority_val else 0
+    # FIX #75: priority_level may be a string ("core") from multi_city loader
+    if isinstance(priority_val, str):
+        _pl_map = {"core": 12, "secondary": 6, "optional": 0}
+        priority = _pl_map.get(priority_val.strip().lower(), 0)
+    else:
+        priority = int(priority_val) if priority_val else 0
     if priority == 12:
         reasons.append("Must-see attraction in Zakopane")
     elif priority >= 11:

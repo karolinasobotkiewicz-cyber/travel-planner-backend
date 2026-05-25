@@ -52,6 +52,14 @@ def _map_intensity_level(raw) -> int:
     return {'low': 1, 'medium': 2, 'high': 3}.get(s, 1)
 
 
+def _safe_str(val, default='') -> str:
+    """Return val as string, or default if val is None/NaN."""
+    if val is None:
+        return default
+    if isinstance(val, float) and pd.isna(val):
+        return default
+    return str(val).strip() if str(val).strip() else default
+
 def _safe_child_age(raw):
     """Safely parse child age from Excel - returns None if not a valid int."""
     if raw is None or (isinstance(raw, float) and pd.isna(raw)):
@@ -118,38 +126,57 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             continue
         
         # Build POI dict (same format as load_zakopane.py)
+        _tmin = int(row.get('time_min', 30)) if pd.notna(row.get('time_min')) else 30
+        _tmax = int(row.get('time_max', 60)) if pd.notna(row.get('time_max')) else 60
+        _priority_str = _map_priority_level(row.get('priority_level', 'medium'))
+        _category = row.get('Type of attraction', row.get('Category', 'attraction'))
+        _pop_score = float(row.get('popularity_score', 0.5)) if pd.notna(row.get('popularity_score')) else 0.5
+        _name = row.get('Name', '')
+        # FIX #75: opening_hours = '{}' is a truthy string → engine treats POI as closed.
+        # Clear it so is_open() sees both oh=None and oh_seasonal=None → returns True (always open).
+        _oh_raw = row.get('Opening hours', None)
+        _oh = str(_oh_raw).strip() if _oh_raw is not None and pd.notna(_oh_raw) else None
+        _oh = None if not _oh or _oh in ('{}', '[]', 'None', 'nan', '') else _oh
+
         poi_dict = {
             # Identity
             "id": str(row.get('ID', f"poi_{idx}")),
             "type": "poi",  # Discriminator for engine
-            "name": row.get('Name', ''),
+            "name": _name,
+            "Name": _name,  # FIX #75: engine uses p.get("Name", "UNKNOWN") in several places
             "city": row.get('City', ''),
             
             # Location
             "lat": float(row.get('Lat', 0.0)),
             "lng": float(row.get('Lng', 0.0)),
-            "address": row.get('Address', ''),
+            "address": _safe_str(row.get('Address')),
             
             # Description
-            "description_short": row.get('Description_short', ''),
-            "description_long": row.get('Description_long', ''),
+            "description_short": _safe_str(row.get('Description_short')),
+            "description_long": _safe_str(row.get('Description_long')),
             
-            # Timing  # FIX #38: Excel uses time_min/time_max (not Duration_Min/Max)
-            "duration_min": int(row.get('time_min', 30)) if pd.notna(row.get('time_min')) else 30,
-            "duration_max": int(row.get('time_max', 60)) if pd.notna(row.get('time_max')) else 60,
-            "best_time": row.get('recommended_time_of_day', 'any'),
+            # Timing  # FIX #75: add time_min/time_max (engine uses these; duration_min/max kept for compat)
+            "duration_min": _tmin,
+            "duration_max": _tmax,
+            "time_min": _tmin,
+            "time_max": _tmax,
+            "best_time": _safe_str(row.get('recommended_time_of_day'), 'any'),
             
-            # Opening hours  # FIX #38: Excel uses 'Opening hours' (with space)
-            "opening_hours": row.get('Opening hours', ''),
-            "opening_days": row.get('opening_days', 'Mon-Sun'),
+            # Opening hours  # FIX #75: '{}' → None so all multi_city POIs pass is_open() check
+            "opening_hours": _oh,
+            "opening_days": _safe_str(row.get('opening_days'), 'Mon-Sun'),
             
-            # Popularity & scoring  # FIX #38: Excel uses lowercase column names
-            "popularity_score": float(row.get('popularity_score', 0.5)) if pd.notna(row.get('popularity_score')) else 0.5,
-            "priority_level": _map_priority_level(row.get('priority_level', 'medium')),
+            # Popularity & scoring  # FIX #75: add "popularity" alias used by classify_poi()
+            "popularity_score": _pop_score,
+            "popularity": _pop_score,
+            "priority_level": _priority_str,
+            "priority": _priority_str,  # FIX #75: classify_poi() reads p.get("priority", "optional")
             
-            # Categorization  # FIX #38: Excel uses 'Type of attraction', no 'Category' column
-            "category": row.get('Type of attraction', row.get('Category', 'attraction')),
-            "subcategory": row.get('Activity_style', row.get('Subcategory', '')),
+            # Categorization  # FIX #75: add type_of_attraction aliases used by engine scoring
+            "category": _category,
+            "type_of_attraction": _category,
+            "Type of attraction": _category,
+            "subcategory": _safe_str(row.get('Activity_style', row.get('Subcategory'))),
             "tags": str(row.get('Tags', '')).split(',') if pd.notna(row.get('Tags')) else [],
             
             # Target groups  # FIX #38: Excel uses 'Target group' (with space)
@@ -170,7 +197,7 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             # Weather & season  # FIX #38: Excel uses 'weather_dependency', 'Seasonality of attractions'
             "indoor": str(row.get('Space', '')).strip().lower() == 'indoor',
             "outdoor": str(row.get('Space', '')).strip().lower() in ('outdoor', 'mixed', ''),
-            "season": row.get('Seasonality of attractions', row.get('Season', 'all')),
+            "season": _safe_str(row.get('Seasonality of attractions', row.get('Season')), 'all'),
             "weather_dependent": str(row.get('weather_dependency', 'all_weather')).strip().lower() not in ('all_weather', 'all weather', ''),
             
             # Intensity & crowd  # FIX #38: Excel uses string values for crowd_level and Intensity
@@ -185,12 +212,12 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             "public_transport": _parse_bool(row.get('Public_Transport', True)),
             
             # Photos & media
-            "photo_url": row.get('Photo_URL', ''),
-            "website": row.get('Website', ''),
+            "photo_url": _safe_str(row.get('Photo_URL')),
+            "website": _safe_str(row.get('Website')),
             
             # Tips & warnings  # FIX #38: Excel uses 'Pro_tip' (not Pro_Tip)
-            "pro_tip": row.get('Pro_tip', ''),
-            "warning": row.get('Warning', ''),
+            "pro_tip": _safe_str(row.get('Pro_tip')),
+            "warning": _safe_str(row.get('Warning')),
             
             # Nearby services
             "restaurant_nearby": _parse_bool(row.get('Restaurant_Nearby', False)),

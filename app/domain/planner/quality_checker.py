@@ -43,7 +43,11 @@ def validate_day_quality(day_plan: Dict[str, Any], pois_data: List[Dict[str, Any
     for attr in attractions:
         poi_id = attr.get("poi_id")
         poi = poi_lookup.get(poi_id, {})
-        priority = int(poi.get("priority_level", 0)) if poi.get("priority_level") else 0
+        _pl = poi.get("priority_level", 0)
+        if isinstance(_pl, str):
+            priority = {"core": 12, "secondary": 6, "optional": 0}.get(_pl.strip().lower(), 0)
+        else:
+            priority = int(_pl) if _pl else 0
         if priority >= 11:
             has_must_see = True
             break
@@ -144,7 +148,11 @@ def check_poi_quality(poi: Dict[str, Any], context: Dict[str, Any], user: Dict[s
     """
     badges = []
     
-    priority = int(poi.get("priority_level", 0)) if poi.get("priority_level") else 0
+    _pl = poi.get("priority_level", 0)
+    if isinstance(_pl, str):  # FIX #75: string from multi_city loader
+        priority = {"core": 12, "secondary": 6, "optional": 0}.get(_pl.strip().lower(), 0)
+    else:
+        priority = int(_pl) if _pl else 0
     
     # Badge: must_see (priority >= 11)
     if priority >= 11:

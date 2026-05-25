@@ -87,11 +87,15 @@ def calculate_poi_cost_for_group(poi: dict, user: dict) -> float:
 def is_core_poi(poi):
     """
     Check if POI is a core attraction.
-    Core POI have priority_level = 12 (highest priority).
+    Core POI have priority_level = 12 (highest priority) or "core" (string).
     CLIENT REQUIREMENT (08.02.2026): Used for core POI rotation logic.
+    FIX #75: Support string "core" from multi_city_attractions.xlsx loader.
     """
+    pl = poi.get("priority_level", 0)
+    if isinstance(pl, str):
+        return pl.strip().lower() == "core"
     try:
-        return int(poi.get("priority_level", 0)) == 12
+        return int(pl) == 12
     except (ValueError, TypeError):
         return False
 
