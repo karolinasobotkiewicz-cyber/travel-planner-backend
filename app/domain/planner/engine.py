@@ -2604,11 +2604,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     
     # FIX #Problem12 (15.05.2026 - CLIENT FEEDBACK Round 2): Travel style modifier
     # Problem: Relax style should reduce POI count further
-    # Solution: relax=-1 POI from base limit
+    # Solution: relax=-1 soft, -2 hard (FIX #74: more aggressive than original -1/-1)
     travel_style = user.get("travel_style", "")
     if travel_style == "relax":
-        limits["soft"] = max(1, limits["soft"] - 1)  # Prevent going below 1
-        limits["hard"] = max(1, limits["hard"] - 1)  # Prevent going below 1
+        limits["soft"] = max(2, limits["soft"] - 1)  # Prevent going below 2
+        limits["hard"] = max(3, limits["hard"] - 2)  # FIX #74: -2 hard (was -1); min 3 to avoid empty days
         print(f"[LIMITS] Travel style 'relax' modifier applied: soft={limits['soft']}, hard={limits['hard']}")
 
     # HUMAN STATE
@@ -3446,6 +3446,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if p.get("type") == "trail" and trail_day_mode:
                         continue  # SKIP - already have 1 trail today (per-day trail limit)
                     
+                    # FIX #73 (25.05.2026): Apply full post-trail limit in core rotation
+                    # Previously only blocked extra trails; now also blocks non-trail POI when limit reached
+                    if trail_day_mode and max_poi_after_trail == 0:
+                        continue  # Heavy trail day - no POI allowed after trail (not even core)
+                    if trail_day_mode and post_trail_poi_count >= max_poi_after_trail:
+                        continue  # Post-trail POI count limit reached
+                    
                     # FIX #47/#54 (20.05.2026): Trail intensity filter in core rotation
                     if p.get("type") == "trail":
                         _cr_trail_dur = p.get("duration_min", 0)
@@ -3593,6 +3600,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     # Solution: Apply trail_day_mode check here too.
                     if p.get("type") == "trail" and trail_day_mode:
                         continue  # SKIP - already have 1 trail today (per-day trail limit)
+                    
+                    # FIX #73 (25.05.2026): Apply full post-trail limit in variety rescan
+                    if trail_day_mode and max_poi_after_trail == 0:
+                        continue  # Heavy trail day - no POI allowed after trail
+                    if trail_day_mode and post_trail_poi_count >= max_poi_after_trail:
+                        continue  # Post-trail POI count limit reached
                     
                     # FIX #47/#54 (20.05.2026): Trail intensity filter in variety loop
                     if p.get("type") == "trail":
@@ -4040,7 +4053,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         # Solution: Set trail_day_mode + max_poi_after_trail HERE, before lunch post-POI check
         if best.get("type") == "trail" and not trail_day_mode:
             trail_day_mode = True
-            _trail_raw_dur_early = best.get("duration_min", 0)
+            # FIX #72 (25.05.2026): Excel trails use time_min, not duration_min (same bug as FIX #69)
+            # DB trails map time_min→duration_min in to_dict(). Excel trails keep time_min.
+            _trail_raw_dur_early = best.get("duration_min") or best.get("time_min") or 0
             _trail_diff_early = best.get("difficulty_level", "moderate").lower()
             if _trail_diff_early in ["hard", "extreme"] or _trail_raw_dur_early >= 240:
                 max_poi_after_trail = 0
@@ -4205,7 +4220,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # Use RAW trail duration for rule logic (not shortened choose_duration result)
             # choose_duration may shorten long trail to fit schedule, but we need
             # to know the REAL trail duration to apply correct restrictions
-            trail_raw_duration = best.get("duration_min", 0)
+            # FIX #72 (25.05.2026): Excel trails use time_min, DB trails map to duration_min
+            trail_raw_duration = best.get("duration_min") or best.get("time_min") or 0
             trail_duration = trail_raw_duration  # Use RAW for rules, not best_duration
             
             # PHASE 8 FEATURE #2: Get trail difficulty for elastic rules
@@ -4540,6 +4556,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             if trail_day_mode and max_poi_after_trail == 0:
                 print(f"[FIX #52] Gap fill blocked: heavy trail day (trail_day_mode + max_poi_after_trail=0)")
                 break
+            # FIX #73 (25.05.2026): Block gap fill when post-trail POI limit reached (moderate trails)
+            if trail_day_mode and post_trail_poi_count >= max_poi_after_trail:
+                print(f"[FIX #73] Gap fill blocked: post-trail POI limit ({post_trail_poi_count}/{max_poi_after_trail})")
+                break
 
             # Find soft POI (light activity: 30-60 min, low must_see)
             soft_best = None
@@ -4685,6 +4705,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 last_poi = soft_best
                 remaining_to_end = end - now
                 gap_fill_attempts += 1
+                # FIX #73 (25.05.2026): Count gap fill POIs toward post-trail limit
+                if trail_day_mode:
+                    post_trail_poi_count += 1
+                    print(f"[TRAIL DAY] Gap fill POI counted as post-trail: {post_trail_poi_count}/{max_poi_after_trail}")
                 
                 print(f"[GAP FILL END] Added light activity: {poi_name(soft_best)} ({soft_duration}min), remaining={remaining_to_end}min")
             else:
