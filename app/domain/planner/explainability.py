@@ -103,15 +103,28 @@ def _explain_crowd_fit(
         crowd_level = int(crowd_level_str) if crowd_level_str else 0
     except (ValueError, TypeError):
         crowd_level = 0
-    
+
+    # FIX #79 (27.05.2026): Very popular POIs should NEVER receive "Peaceful" / "Low-crowd" labels
+    # even if crowd_level=1 was set incorrectly in the Excel source data.
+    # popularity_score (1-5 scale) >= 4 means the place is well-known and busy.
+    try:
+        _popularity = float(str(poi.get("popularity_score", 0) or 0))
+    except (ValueError, TypeError):
+        _popularity = 0.0
+    _is_very_popular = _popularity >= 4.0
+
     # Only explain when it's a GOOD fit
     # Low tolerance (0-1) + ACTUALLY low crowd (crowd_level=1) = good match!
     if crowd_tolerance <= 1 and crowd_level == 1:
+        if _is_very_popular:
+            return None  # FIX #79: Very popular spots can't honestly claim "Low-crowd"
         return "Low-crowd option (fits your comfort level)"
     
     # Medium tolerance (2): be more subtle about crowd fit
     # Only mention if it's actually relevant to their profile AND truly low-crowd
     if crowd_tolerance == 2 and crowd_level == 1:
+        if _is_very_popular:
+            return None  # FIX #79: Popularity overrides crowd_level data errors
         # Don't say "quiet" for friends/adventure profiles
         if target_group == "friends" or travel_style == "adventure":
             return None  # Skip crowd reason for social/active profiles

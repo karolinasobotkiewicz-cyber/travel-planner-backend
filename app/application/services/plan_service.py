@@ -1024,7 +1024,36 @@ class PlanService:
                 # Engine doesn't provide start_time/end_time for transfers
                 # Calculate from duration_min
                 duration = item.get("duration_min", 10)
-                
+
+                # FIX #77 (27.05.2026): Close POIs (< 500m) get a short walk — skip full car transit + 15-min buffer
+                _transit_dist_km = item.get("distance_km", 999.0)
+                WALKABLE_THRESHOLD_KM = 0.5
+                if 0 < _transit_dist_km < WALKABLE_THRESHOLD_KM:
+                    # Very close POIs: compute realistic walk time (walking ~4 km/h = 15 min/km), min 5 min
+                    walk_min = max(5, int(_transit_dist_km * 15))
+                    print(f"[FIX #77] Close POIs {_transit_dist_km:.3f}km → short walk {walk_min}min (was {duration}min car transit + 15min buffer)")
+                    duration = walk_min
+                    # Use previous item's end_time as start, or default to 09:00
+                    if items:
+                        start_time = items[-1].end_time if hasattr(items[-1], 'end_time') else "09:00"
+                    else:
+                        start_time = "09:00"
+                    from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+                    start_minutes = time_to_minutes(start_time)
+                    end_time = minutes_to_time(start_minutes + duration)
+                    transit_item = TransitItem(
+                        type=ItemType.TRANSIT,
+                        start_time=start_time,
+                        end_time=end_time,
+                        duration_min=duration,
+                        mode=TransitMode.WALK,
+                        from_location=item.get("from", ""),
+                        to_location=item.get("to", ""),
+                    )
+                    items.append(transit_item)
+                    last_transit_was_car = False
+                    continue
+
                 # PHASE 8 FEATURE #4: Add between-POI buffer (15 min for unexpected delays)
                 # This buffer accounts for: finding parking, walking, checking maps, restroom stops
                 duration += 15
@@ -1090,12 +1119,36 @@ class PlanService:
             elif item_type == "free_time":
                 # 7. FREE_TIME - from engine fallback for gaps >20 min
                 duration_min = item.get("duration_min", 30)
+                # FIX #78 (27.05.2026): Add rotating suggestions and time-aware label for engine free_time items
+                _ft78e_start_min = time_to_minutes(item.get("start_time", "12:00"))
+                _FT78_SETS_E = [
+                    ["Spacer po centrum", "Kawa/herbata w kawiarni", "Czas na zdjęcia i relaks"],
+                    ["Odpoczynek na ławce", "Zwiedzanie na własną rękę", "Zakupy pamiątek"],
+                    ["Lody lub deser w kawiarni", "Zdjęcia panoramiczne", "Krótki spacer na świeżym powietrzu"],
+                    ["Wizyta w lokalnym sklepiku", "Relaks przy kawie lub herbacie", "Spacer po okolicy"],
+                    ["Fotografia podróżnicza", "Widokówki i pamiątki dla bliskich", "Chwila wytchnienia"],
+                ]
+                _ft78e_sugg = _FT78_SETS_E[(_ft78e_start_min // 30) % len(_FT78_SETS_E)]
+                _ft78e_desc = item.get("description", "")
+                if _ft78e_desc and _ft78e_desc not in ("Czas wolny", "free_time"):
+                    _ft78e_label = _ft78e_desc
+                elif _ft78e_start_min < time_to_minutes("11:00"):
+                    _ft78e_label = "Poranny spacer i kawa" if duration_min >= 20 else "Chwila przed następną atrakcją"
+                elif _ft78e_start_min < time_to_minutes("14:00"):
+                    _ft78e_label = "Przerwa południowa" if duration_min >= 30 else "Krótka przerwa"
+                elif _ft78e_start_min < time_to_minutes("17:00"):
+                    _ft78e_label = "Popołudniowy relaks" if duration_min >= 30 else "Chwila odpoczynku"
+                elif _ft78e_start_min < time_to_minutes("20:00"):
+                    _ft78e_label = "Wieczorny spacer i zakupy pamiątek" if duration_min >= 30 else "Czas przed kolacją"
+                else:
+                    _ft78e_label = "Wieczór: relaks i podsumowanie dnia" if duration_min >= 30 else "Chwila na dobranoc"
                 free_time_item = FreeTimeItem(
                     type=ItemType.FREE_TIME,
                     start_time=item.get("start_time", "12:00"),
                     end_time=item.get("end_time", "12:30"),
                     duration_min=duration_min,
-                    label=item.get("description", "Czas wolny"),
+                    label=_ft78e_label,
+                    suggestions=_ft78e_sugg[:3],
                     is_technical_buffer=(duration_min < 5)  # FIX #39: Only filter truly tiny (<5min) artifacts
                 )
                 items.append(free_time_item)
@@ -1754,13 +1807,32 @@ class PlanService:
                             if overlaps_detected:
                                 continue  # Skip adding this free_time
                             
+                            # FIX #78 (27.05.2026): Add rotating suggestions and time-aware label for hard-limit free_time
+                            _FT78_SETS_HL = [
+                                ["Spacer po centrum", "Kawa/herbata w kawiarni", "Czas na zdjęcia i relaks"],
+                                ["Odpoczynek na ławce", "Zwiedzanie na własną rękę", "Zakupy pamiątek"],
+                                ["Lody lub deser w kawiarni", "Zdjęcia panoramiczne", "Krótki spacer na świeżym powietrzu"],
+                                ["Wizyta w lokalnym sklepiku", "Relaks przy kawie lub herbacie", "Spacer po okolicy"],
+                                ["Fotografia podróżnicza", "Widokówki i pamiątki dla bliskich", "Chwila wytchnienia"],
+                            ]
+                            _ft78hl_sugg = _FT78_SETS_HL[(current_end // 30) % len(_FT78_SETS_HL)]
+                            if current_end < time_to_minutes("11:00"):
+                                _ft78hl_label = "Poranny spacer i kawa" if free_duration >= 20 else "Chwila przed następną atrakcją"
+                            elif current_end < time_to_minutes("14:00"):
+                                _ft78hl_label = "Przerwa południowa" if free_duration >= 30 else "Krótka przerwa"
+                            elif current_end < time_to_minutes("17:00"):
+                                _ft78hl_label = "Popołudniowy relaks" if free_duration >= 30 else "Chwila odpoczynku"
+                            elif current_end < time_to_minutes("20:00"):
+                                _ft78hl_label = "Wieczorny spacer i zakupy pamiątek" if free_duration >= 30 else "Czas przed kolacją"
+                            else:
+                                _ft78hl_label = "Wieczór: relaks i podsumowanie dnia" if free_duration >= 30 else "Chwila na dobranoc"
                             result.append(FreeTimeItem(
                                 type=ItemType.FREE_TIME,
                                 start_time=free_time_start,
                                 end_time=minutes_to_time(current_end + free_duration),
                                 duration_min=free_duration,
-                                label="Czas wolny",
-                                description="Spacer, kawa, odpoczynek",
+                                label=_ft78hl_label,
+                                suggestions=_ft78hl_sugg[:3],
                                 is_technical_buffer=(free_duration < 5)  # FIX #39: Only filter truly tiny (<5min) artifacts
                             ))
                             continue
@@ -2000,20 +2072,24 @@ class PlanService:
                         
                         # CLIENT FEEDBACK (30.01.2026): Descriptive suggestions for free_time
                         # "spacer po centrum, kawa/herbata, czas wolny na zdjęcia, odpoczynek na ławce, lody/deser"
-                        free_time_suggestions = [
-                            "Spacer po centrum",
-                            "Kawa/herbata w kawiarni",
-                            "Czas na zdjęcia i relaks",
-                            "Odpoczynek na ławce",
-                            "Lody lub deser"
+                        # FIX #78 (27.05.2026): Rotate suggestion sets so consecutive free_time blocks
+                        # don't always show the same 3 options. Rotation based on block start time.
+                        _FT78_SETS = [
+                            ["Spacer po centrum", "Kawa/herbata w kawiarni", "Czas na zdjęcia i relaks"],
+                            ["Odpoczynek na ławce", "Zwiedzanie na własną rękę", "Zakupy pamiątek"],
+                            ["Lody lub deser w kawiarni", "Zdjęcia panoramiczne", "Krótki spacer na świeżym powietrzu"],
+                            ["Wizyta w lokalnym sklepiku", "Relaks przy kawie lub herbacie", "Spacer po okolicy"],
+                            ["Fotografia podróżnicza", "Widokówki i pamiątki dla bliskich", "Chwila wytchnienia"],
                         ]
+                        _ft78_idx = (current_end // 30) % len(_FT78_SETS)
+                        free_time_suggestions = _FT78_SETS[_ft78_idx]
                         
                         # FIX #18.1 (03.05.2026 - CLIENT FEEDBACK Problem #3):
                         # Special label for gap right after day_start to avoid "day starts with rest" UX issue
                         # Client quote: "plan zaczyna się od odpoczynku" looks weird
                         is_day_start_gap = (item_type == 'day_start')
                         
-                        # Choose suggestion based on duration
+                        # FIX #78 (27.05.2026): Context-aware labels based on time of day and duration
                         if is_day_start_gap:
                             # Gap right after day_start → suggest preparation/travel
                             label = "Przygotowanie / dojazd do pierwszej atrakcji"
@@ -2023,12 +2099,16 @@ class PlanService:
                                 "Dojazd na parking",
                                 "Organizacja plecaka i sprzętu"
                             ]
-                        elif gap_duration < 20:
-                            label = "Krótki odpoczynek"
-                        elif gap_duration < 40:
-                            label = "Czas wolny"
+                        elif current_end < time_to_minutes("11:00"):
+                            label = "Poranny spacer i kawa" if gap_duration >= 20 else "Chwila przed następną atrakcją"
+                        elif current_end < time_to_minutes("14:00"):
+                            label = "Przerwa południowa" if gap_duration >= 30 else "Krótka przerwa"
+                        elif current_end < time_to_minutes("17:00"):
+                            label = "Popołudniowy relaks" if gap_duration >= 30 else "Chwila odpoczynku"
+                        elif current_end < time_to_minutes("20:00"):
+                            label = "Wieczorny spacer i zakupy pamiątek" if gap_duration >= 30 else "Czas przed kolacją"
                         else:
-                            label = "Dłuższy odpoczynek"
+                            label = "Wieczór: relaks i podsumowanie dnia" if gap_duration >= 30 else "Chwila na dobranoc"
                         
                         free_time_item = FreeTimeItem(
                             type=ItemType.FREE_TIME,
@@ -2087,13 +2167,16 @@ class PlanService:
                             
                             print(f"[GAP FILLING] FIX #17: Filling remaining {remaining_gap} min gap with additional free_time ({next_free_time_start}-{next_free_time_end})")
                             
-                            # Choose label based on duration (same as initial free_time)
-                            if next_duration < 20:
-                                next_label = "Krótki odpoczynek"
-                            elif next_duration < 40:
-                                next_label = "Czas wolny"
-                            else:
-                                next_label = "Dłuższy odpoczynek"
+                            # FIX #78 (27.05.2026): Rotate labels for recursive fill blocks (avoid repetition)
+                            _FT78_NEXT_LABELS = [
+                                "Swobodne zwiedzanie okolicy",
+                                "Przerwa kawowa i odpoczynek",
+                                "Czas na własne odkrycia",
+                                "Relaks i chwila wytchnienia",
+                                "Spacer i fotografia podróżnicza",
+                            ]
+                            _ft78_next_idx = (current_fill_end // 30) % len(_FT78_NEXT_LABELS)
+                            next_label = _FT78_NEXT_LABELS[_ft78_next_idx]
                             
                             next_free_time = FreeTimeItem(
                                 type=ItemType.FREE_TIME,
@@ -2147,6 +2230,7 @@ class PlanService:
                     
                     if should_add_dinner:
                         # Add dinner_break instead of free_time
+                        # FIX #80 (27.05.2026): Min dinner is guaranteed by should_add_dinner condition (gap_to_end >= 60)
                         dinner_duration = min(60, gap_to_end)  # Max 60 min for dinner
                         dinner_start = last_end_str
                         dinner_end = minutes_to_time(last_end_min + dinner_duration)
@@ -2188,12 +2272,22 @@ class PlanService:
                             ft_block_end_str = minutes_to_time(ft_block_end_min)
                             
                             ft_label = "Wieczór: spacer, zakupy, relaks w hotelu" if ft_block_num == 1 else "Czas wolny wieczorny"
+                            # FIX #78 (27.05.2026): Add suggestions for post-dinner free_time blocks
+                            _FT78_SETS_PD = [
+                                ["Spacer po centrum", "Kawa/herbata w kawiarni", "Czas na zdjęcia i relaks"],
+                                ["Odpoczynek na ławce", "Zwiedzanie na własną rękę", "Zakupy pamiątek"],
+                                ["Lody lub deser w kawiarni", "Zdjęcia panoramiczne", "Krótki spacer na świeżym powietrzu"],
+                                ["Wizyta w lokalnym sklepiku", "Relaks przy kawie lub herbacie", "Spacer po okolicy"],
+                                ["Fotografia podróżnicza", "Widokówki i pamiątki dla bliskich", "Chwila wytchnienia"],
+                            ]
+                            _ft78pd_sugg = _FT78_SETS_PD[(current_ft_start // 30) % len(_FT78_SETS_PD)]
                             free_time_item = FreeTimeItem(
                                 type=ItemType.FREE_TIME,
                                 start_time=ft_block_start_str,
                                 end_time=ft_block_end_str,
                                 duration_min=ft_block_duration,
                                 label=ft_label,
+                                suggestions=_ft78pd_sugg[:3],
                                 is_technical_buffer=(ft_block_duration < 5)  # FIX #39
                             )
                             
@@ -2223,12 +2317,22 @@ class PlanService:
                             eod_block_end_str = minutes_to_time(eod_block_end_min)
                             
                             eod_label = "Czas wolny na koniec dnia" if eod_block_num == 1 else "Czas wolny wieczorny"
+                            # FIX #78 (27.05.2026): Add suggestions for end-of-day free_time blocks
+                            _FT78_SETS_EOD = [
+                                ["Spacer po centrum", "Kawa/herbata w kawiarni", "Czas na zdjęcia i relaks"],
+                                ["Odpoczynek na ławce", "Zwiedzanie na własną rękę", "Zakupy pamiątek"],
+                                ["Lody lub deser w kawiarni", "Zdjęcia panoramiczne", "Krótki spacer na świeżym powietrzu"],
+                                ["Wizyta w lokalnym sklepiku", "Relaks przy kawie lub herbacie", "Spacer po okolicy"],
+                                ["Fotografia podróżnicza", "Widokówki i pamiątki dla bliskich", "Chwila wytchnienia"],
+                            ]
+                            _ft78eod_sugg = _FT78_SETS_EOD[(current_ft_start_min // 30) % len(_FT78_SETS_EOD)]
                             end_of_day_item = FreeTimeItem(
                                 type=ItemType.FREE_TIME,
                                 start_time=eod_block_start_str,
                                 end_time=eod_block_end_str,
                                 duration_min=eod_block_duration,
                                 label=eod_label,
+                                suggestions=_ft78eod_sugg[:3],
                                 is_technical_buffer=(eod_block_duration < 5)  # FIX #39
                             )
                             

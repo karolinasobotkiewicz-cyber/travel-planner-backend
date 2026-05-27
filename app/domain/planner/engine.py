@@ -2933,6 +2933,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 dinner_start_min = time_to_minutes(dinner_start_time)
                 dinner_end_min = time_to_minutes(dinner_end_time)
                 actual_dinner_duration = dinner_end_min - dinner_start_min
+
+                # FIX #80 (27.05.2026): Don't insert dinner shorter than 40 min
+                # Happens when a conflict shifts dinner start very close to day_end.
+                # The initial guard (now + 40 <= end) may have been valid BEFORE the shift.
+                MIN_DINNER_DURATION = 40
+                if actual_dinner_duration < MIN_DINNER_DURATION:
+                    print(f"[DINNER] FIX #80: Skipping dinner — only {actual_dinner_duration}min available after conflict shift (min {MIN_DINNER_DURATION}min required). Dinner cancelled.")
+                    dinner_done = True  # Prevent infinite retry; day is ending
+                    continue
                 
                 # ETAP 3 PHASE 3 (27.04.2026): Intelligent dinner suggestions from RestaurantRepository
                 # Use context["restaurants_available"] to find nearby dinner spots
@@ -3971,12 +3980,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         if last_poi:
             transfer_time = max(best_travel, MIN_TRANSFER_MIN)
 
+            # FIX #77 (27.05.2026): Compute GPS distance so plan_service can skip transit for close POIs
+            _t77_lat1, _t77_lng1 = last_poi.get("lat"), last_poi.get("lng")
+            _t77_lat2, _t77_lng2 = best.get("lat"), best.get("lng")
+            _t77_dist_km = haversine_distance(_t77_lat1, _t77_lng1, _t77_lat2, _t77_lng2) if all([_t77_lat1, _t77_lng1, _t77_lat2, _t77_lng2]) else 999.0
+
             plan.append(
                 {
                     "type": "transfer",
                     "from": poi_name(last_poi),
                     "to": poi_name(best),
                     "duration_min": transfer_time,
+                    "distance_km": round(_t77_dist_km, 3),  # FIX #77
                 }
             )
 
@@ -4475,11 +4490,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         continue  # Skip this soft POI
                     
                     if soft_travel > 0:
+                        # FIX #77 (27.05.2026): Compute GPS distance for close-POI detection
+                        _t77_lat1, _t77_lng1 = last_poi.get("lat"), last_poi.get("lng")
+                        _t77_lat2, _t77_lng2 = p.get("lat"), p.get("lng")
+                        _t77_dist_km = haversine_distance(_t77_lat1, _t77_lng1, _t77_lat2, _t77_lng2) if all([_t77_lat1, _t77_lng1, _t77_lat2, _t77_lng2]) else 999.0
                         plan.append({
                             "type": "transfer",
                             "from": poi_name(last_poi),
                             "to": poi_name(p),
                             "duration_min": soft_travel,
+                            "distance_km": round(_t77_dist_km, 3),  # FIX #77
                         })
                         now += soft_travel
                     
@@ -4693,11 +4713,17 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             if soft_best:
                 # Add soft POI to fill gap
                 if soft_travel > 0:
+                    # FIX #77 (27.05.2026): Compute GPS distance for close-POI detection
+                    _t77_lp = last_poi if last_poi else {}
+                    _t77_lat1, _t77_lng1 = _t77_lp.get("lat"), _t77_lp.get("lng")
+                    _t77_lat2, _t77_lng2 = soft_best.get("lat"), soft_best.get("lng")
+                    _t77_dist_km = haversine_distance(_t77_lat1, _t77_lng1, _t77_lat2, _t77_lng2) if all([_t77_lat1, _t77_lng1, _t77_lat2, _t77_lng2]) else 999.0
                     plan.append({
                         "type": "transfer",
                         "from": poi_name(last_poi) if last_poi else "start",
                         "to": poi_name(soft_best),
                         "duration_min": soft_travel,
+                        "distance_km": round(_t77_dist_km, 3),  # FIX #77
                     })
                     now += soft_travel
                 
