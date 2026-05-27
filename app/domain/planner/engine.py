@@ -55,14 +55,35 @@ def calculate_poi_cost_for_group(poi: dict, user: dict) -> float:
     if free_entry:
         return 0.0
     
-    ticket_normal = float(poi.get("ticket_normal", 0) or 0)
-    ticket_reduced = float(poi.get("ticket_reduced", 0) or 0)
+    # FIX #71 (03.06.2026): Distinguish genuinely-free POI (ticket=0 explicitly set)
+    # from POI with no price data (ticket=None/NaN/missing).
+    # Old bug: ticket_normal=0, ticket_reduced=0, free_entry=False → 50 PLN/person fallback (WRONG)
+    # These are genuinely free POIs (parks, squares, viewpoints) where Excel has 0, not empty.
+    import math as _math_engine
+    def _parse_ticket_e(val):
+        if val is None:
+            return None
+        try:
+            f = float(val)
+            return None if _math_engine.isnan(f) else f
+        except (TypeError, ValueError):
+            return None
+    
+    t_normal = _parse_ticket_e(poi.get("ticket_normal"))
+    t_reduced = _parse_ticket_e(poi.get("ticket_reduced"))
+    
+    # Explicitly 0 for both → genuinely free
+    if t_normal == 0 and t_reduced == 0:
+        return 0.0
+    
+    ticket_normal = t_normal if t_normal is not None else 0.0
+    ticket_reduced = t_reduced if t_reduced is not None else 0.0
     
     group_type = user.get("target_group", "solo")
     group_size = user.get("group_size", 1)
     
-    # Fallback for POI without price data
-    if ticket_normal == 0 and ticket_reduced == 0 and not free_entry:
+    # Fallback ONLY for POI where both tickets are truly missing (None/NaN)
+    if t_normal is None and t_reduced is None and not free_entry:
         return group_size * 50.0  # 50 PLN per person default
     
     # Group-specific calculation
@@ -1416,6 +1437,35 @@ def score_poi(
 
     # dopasowanie - existing modules
     score += calculate_family_score(p, user)
+    
+    # FIX #73 (03.06.2026): Profile-aware scoring for family_kids.
+    # Bug: museum/history/heritage POIs over-weighted for family_kids+outdoor preferences.
+    # Fix: Penalty for inappropriate family content; boost for family-friendly content.
+    _target_group_73 = user.get("target_group", "")
+    if _target_group_73 == "family_kids":
+        _poi_tags_73 = set(str(t).lower() for t in p.get("tags", []))
+        _FAMILY_PENALIZED_TAGS = {
+            "religious_museum", "heavy_history", "adult_heritage", "political_museum",
+            "long_static_exhibition", "war_history", "historical_artifacts"
+        }
+        _FAMILY_BOOSTED_TAGS = {
+            "family", "family_friendly", "interactive", "outdoor", "nature", "animals",
+            "playground", "science", "activity", "water_activity", "kids_attractions",
+            "amusement_park", "zoo", "aquarium"
+        }
+        _fam_penalty_tags = _FAMILY_PENALIZED_TAGS & _poi_tags_73
+        _fam_boost_tags = _FAMILY_BOOSTED_TAGS & _poi_tags_73
+        if _fam_penalty_tags:
+            _fam_penalty = -25.0
+            score += _fam_penalty
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [FAMILY_KIDS PENALTY] {poi_name_safe}: {_fam_penalty:.1f} (inappropriate tags: {_fam_penalty_tags})")
+        if _fam_boost_tags:
+            _fam_boost = 15.0
+            score += _fam_boost
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [FAMILY_KIDS BOOST] {poi_name_safe}: +{_fam_boost:.1f} (family-friendly tags: {_fam_boost_tags})")
+
     score += calculate_budget_score(p, user)
     score += calculate_premium_penalty(p, user)  # CLIENT REQUIREMENT (08.02.2026): Premium experience penalty at budget/standard levels
 

@@ -189,10 +189,17 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             "dog_friendly": _parse_bool(row.get('Dog_Friendly', False)),
             
             # Costs  # FIX #38: Excel uses ticket_normal/ticket_reduced, not Ticket_Price
+            # FIX #68/#71 (03.06.2026): Add ticket_normal/ticket_reduced/free_entry keys
+            # so engine.py calculate_group_cost() and plan_service._estimate_cost() can
+            # distinguish genuinely-free POIs (ticket=0) from no-data POIs (ticket=None).
+            # Previously only 'ticket_price' key was set → both functions saw None → 50 PLN fallback.
             "cost_level": int(row.get('Cost_Level', 1)) if pd.notna(row.get('Cost_Level')) else 1,
             "ticket_price": float(row.get('ticket_normal', 0.0)) if pd.notna(row.get('ticket_normal')) else None,
+            "ticket_normal": float(row.get('ticket_normal')) if pd.notna(row.get('ticket_normal')) else None,
+            "ticket_reduced": float(row.get('ticket_reduced')) if pd.notna(row.get('ticket_reduced')) else None,
             "ticket_required": _parse_bool(row.get('Ticket_Required', False)),
             "free_admission": _parse_bool(row.get('Free_Admission', False)),
+            "free_entry": _parse_bool(row.get('Free_Admission', False)),  # FIX #68/#71: alias for engine.py
             
             # Weather & season  # FIX #38: Excel uses 'weather_dependency', 'Seasonality of attractions'
             "indoor": str(row.get('Space', '')).strip().lower() == 'indoor',

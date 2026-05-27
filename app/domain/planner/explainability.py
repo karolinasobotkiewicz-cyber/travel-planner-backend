@@ -370,7 +370,9 @@ def explain_poi_selection(
     else:
         priority = int(priority_val) if priority_val else 0
     if priority == 12:
-        reasons.append("Must-see attraction in Zakopane")
+        # FIX #70 (03.06.2026): Use dynamic city name — was hardcoded "Zakopane" for ALL cities
+        _poi_city = poi.get("city") or poi.get("City") or context.get("city") or "your destination"
+        reasons.append(f"Must-see attraction in {_poi_city}")
     elif priority >= 11:
         reasons.append("Highly recommended by locals")
     

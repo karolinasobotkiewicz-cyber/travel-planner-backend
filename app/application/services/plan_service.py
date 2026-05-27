@@ -187,6 +187,14 @@ class PlanService:
                         # Supports: Kraków, Warszawa, Gdańsk, Wrocław, Poznań, etc.
                         multi_city_excel_path = os.path.join("data", "multi_city_attractions.xlsx")
                         pois_excel = load_multi_city_poi(multi_city_excel_path, [requested_city])
+                        # FIX #68 (03.06.2026): Defensive guard against cross-city POI contamination.
+                        # load_multi_city_poi filters by City column, but if Excel data has wrong City
+                        # assignments (e.g., Wrocław POI tagged as Warszawa), this catches it.
+                        _city_lower = requested_city.lower()
+                        pois_excel = [
+                            p for p in pois_excel
+                            if p.get("city", "").lower() == _city_lower
+                        ]
                         print(f"[ROUTER] Loaded {len(pois_excel)} POIs from multi_city Excel (city: {requested_city})")
                     else:
                         print(f"[ROUTER] Loaded {len(pois_excel)} POIs from Excel (city: {requested_city})")
@@ -741,8 +749,12 @@ class PlanService:
         # FIX #37 (19.05.2026): Gate this Zakopane-specific logic only for Zakopane city.
         # Bug: For Kraków, the first POI is ~90km from Zakopane centrum, so is_outside_zakopane=True
         # and a spurious transit "Zakopane (Hotel) → Wawel" was generated.
-        _is_zakopane_trip = (trip_input.location.city or "").lower() in ("zakopane",) or \
-                            (trip_input.location.region_type or "").lower() == "mountain"
+        # FIX #69 (03.06.2026): Gate strictly to Zakopane only — NOT all mountain cities.
+        # Bug: region_type=="mountain" triggered this for Karpacz, Szklarska Poręba etc.
+        # and hotel_location was hardcoded to Zakopane centrum (49.2992, 19.9496).
+        # Result: Karpacz plans showed "Zakopane (Hotel) → [Karpacz attraction]" as transit.
+        # Fix: Only apply for Zakopane city (hotel_location coords match Zakopane centrum).
+        _is_zakopane_trip = (trip_input.location.city or "").lower() in ("zakopane",)
         if has_car and first_attraction and _is_zakopane_trip:
             from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
             from app.domain.planner.engine import travel_time_minutes
@@ -921,16 +933,23 @@ class PlanService:
                     walk_time_raw = poi.get("parking_walk_time_min")
                     walk_time = int(walk_time_raw) if walk_time_raw and walk_time_raw > 0 else 5
                     
+                    # FIX #74 (26.05.2026): Always anchor parking to transit_end, ignore engine's timing offset
+                    # Root cause: Engine uses preferred_duration (tmin + 70%*(tmax-tmin)) but plan_service
+                    # uses time_min directly → durations diverge significantly (e.g. 102 vs 35 min for a park)
+                    # → engine's now advances much further → engine places next attraction much later
+                    # → plan_service inherits that late start → creates large gap after transit end
+                    # Fix: When last item is transit, always start parking immediately at transit_end.
                     attr_start_min = time_to_minutes(attr_start_time_orig)
                     parking_start_min = attr_start_min - parking_duration - walk_time
                     
-                    # BUGFIX: Ensure parking starts AFTER transit ends
                     if items:
                         last_item = items[-1]
                         if last_item.type == ItemType.TRANSIT:
+                            # FIX #74: Always anchor to transit_end (not engine's possibly-late start_time)
                             transit_end_min = time_to_minutes(last_item.end_time)
-                            if parking_start_min < transit_end_min:
-                                parking_start_min = transit_end_min
+                            parking_start_min = transit_end_min
+                        elif parking_start_min < 0:
+                            parking_start_min = 0
                     
                     # CASCADE UPDATE: Recalculate attraction start from actual parking times
                     parking_end_min = parking_start_min + parking_duration
@@ -1027,11 +1046,21 @@ class PlanService:
                 
                 # BUGFIX (31.01.2026 - Problem #5): Determine transit mode based on duration
                 # Walk only for <10 min, car for ≥10 min (when user has car)
+                # FIX #75 (26.05.2026): For city region_type prefer walk/public_transport over car
                 has_car = "car" in (trip_input.transport_modes or [])
+                region_type = context.get("region_type", "")
                 
                 if has_car and duration >= 10:
-                    mode = TransitMode.CAR
-                    last_transit_was_car = True  # UAT Problem #9: Track car transit
+                    if region_type == "city":
+                        # FIX #75: In cities, short transfers are walkable; medium → public transport
+                        if duration <= 25:
+                            mode = TransitMode.WALK
+                        else:
+                            mode = TransitMode.PUBLIC_TRANSPORT
+                        last_transit_was_car = False
+                    else:
+                        mode = TransitMode.CAR
+                        last_transit_was_car = True  # UAT Problem #9: Track car transit
                 elif has_car and duration < 10:
                     mode = TransitMode.WALK
                     last_transit_was_car = False
@@ -1365,6 +1394,18 @@ class PlanService:
         
         # FIX #26 (17.05.2026): parking cost 0 → null (unknown cost, not "free")
         _raw_parking_cost = poi_dict.get("parking_cost")
+        # FIX #72 (03.06.2026): Parking name "Brak parkingu" + parking_type=free inconsistency.
+        # Root cause: parking_name="" → "Brak parkingu", parking_type="" → defaults to FREE.
+        # Frontend shows contradictory: "No parking" AND "parking_type: free".
+        # Fix: Distinguish "no parking data" from "parking exists but is free/paid".
+        _pname = poi_dict.get("parking_name") or ""
+        _ptype_raw = str(poi_dict.get("parking_type", "") or "").lower().strip()
+        if _ptype_raw == "paid":
+            _parking_type_enum = ParkingType.PAID
+        else:
+            _parking_type_enum = ParkingType.FREE
+        # When no parking data at all → show neutral "Brak danych o parkingu"
+        _parking_display_name = _pname if _pname else "Brak danych o parkingu"
         return AttractionItem(
             type=ItemType.ATTRACTION,
             start_time=start_time,
@@ -1391,9 +1432,9 @@ class PlanService:
             ),
             # PHASE 8 Feature #1: Rozszerzona ParkingInfo (address, type, cost, lat/lng)
             parking=ParkingInfo(
-                name=poi_dict.get("parking_name") or "Brak parkingu",
+                name=_parking_display_name,
                 address=poi_dict.get("parking_address", "") or poi_dict.get("address", ""),
-                parking_type=ParkingType.PAID if poi_dict.get("parking_type", "").lower() == "paid" else ParkingType.FREE,
+                parking_type=_parking_type_enum,
                 cost=int(_raw_parking_cost) if _raw_parking_cost else None,
                 walk_time_min=poi_dict.get("parking_walk_time_min", 5) or 5,
                 lat=poi_dict.get("parking_lat"),
@@ -1669,11 +1710,12 @@ class PlanService:
                         if attraction_count >= hard_limit:
                             print(f"[GAP FILLING] ✗ SKIP - attraction limit reached ({attraction_count}/{hard_limit})")
                             # Add free_time instead of POI
-                            # FIX #4.3 (20.02.2026): Removed 40 min limit - fill entire gap
-                            # Client requirement (test-02): Gaps of 54 min were only partially filled (40 min), leaving 14 min unfilled
-                            # FIX #3 (22.02.2026): Respect day_end - don't exceed it with free_time
+                            # FIX #76 (26.05.2026): Cap free_time at 60 min to match engine's internal cap.
+                            # Bug: When seniors/family_kids hit attraction hard_limit, the entire
+                            # remaining gap (120-200+ min) was inserted as ONE free_time block.
+                            # Engine itself never creates free_time >60 min; this aligns gap_filler.
                             day_end_str = context.get("day_end")
-                            free_duration = gap  # Fill entire gap (was: min(gap, 40))
+                            free_duration = min(60, gap)  # FIX #76: was: gap (uncapped)
                             
                             if day_end_str:
                                 day_end_min = time_to_minutes(day_end_str)
@@ -2437,9 +2479,20 @@ class PlanService:
             free_time_group = [item]
             j = i + 1
             
+            # FIX #76 (26.05.2026): Cap merged free_time at 90 min.
+            # Bug: 5 consecutive 60-min blocks for seniors mountain got merged into 291 min.
+            # Engine/gap_filler never creates blocks >60 min; consolidation must respect same limit.
+            MAX_MERGED_FREE_TIME = 90
+            
             while j < len(items):
                 next_item = items[j]
                 if hasattr(next_item, 'type') and next_item.type == ItemType.FREE_TIME:
+                    # FIX #76: Stop merging if accumulated total would exceed 90 min
+                    current_total = sum(getattr(b, 'duration_min', 0) for b in free_time_group)
+                    next_dur = getattr(next_item, 'duration_min', 0)
+                    if current_total + next_dur > MAX_MERGED_FREE_TIME:
+                        print(f"[CONSOLIDATE] FIX#76: Stop merge at {current_total}+{next_dur}min > {MAX_MERGED_FREE_TIME}min cap")
+                        break
                     # Check if should merge with previous block
                     should_merge = self._should_merge_free_time(free_time_group[-1], next_item)
                     print(f"[CONSOLIDATE DEBUG] Checking merge: block {i} ({getattr(free_time_group[-1], 'duration_min', '?')}min, tech_buffer={getattr(free_time_group[-1], 'is_technical_buffer', None)}) + block {j} ({getattr(next_item, 'duration_min', '?')}min, tech_buffer={getattr(next_item, 'is_technical_buffer', None)}) → {should_merge}", flush=True)
