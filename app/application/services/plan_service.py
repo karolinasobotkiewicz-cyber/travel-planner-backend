@@ -1026,12 +1026,14 @@ class PlanService:
                 duration = item.get("duration_min", 10)
 
                 # FIX #77 (27.05.2026): Close POIs (< 500m) get a short walk — skip full car transit + 15-min buffer
+                # FIX #83 (27.05.2026): Increased walkable threshold from 0.5km to 1.0km.
+                # Zakopane central POIs are typically 0.5–1.0 km apart, so 0.5 was too conservative.
                 _transit_dist_km = item.get("distance_km", 999.0)
-                WALKABLE_THRESHOLD_KM = 0.5
+                WALKABLE_THRESHOLD_KM = 1.0  # FIX #83: was 0.5km
                 if 0 < _transit_dist_km < WALKABLE_THRESHOLD_KM:
                     # Very close POIs: compute realistic walk time (walking ~4 km/h = 15 min/km), min 5 min
                     walk_min = max(5, int(_transit_dist_km * 15))
-                    print(f"[FIX #77] Close POIs {_transit_dist_km:.3f}km → short walk {walk_min}min (was {duration}min car transit + 15min buffer)")
+                    print(f"[FIX #77/#83] Close POIs {_transit_dist_km:.3f}km → short walk {walk_min}min (was {duration}min car transit + 15min buffer)")
                     duration = walk_min
                     # Use previous item's end_time as start, or default to 09:00
                     if items:
@@ -1046,6 +1048,32 @@ class PlanService:
                         start_time=start_time,
                         end_time=end_time,
                         duration_min=duration,
+                        mode=TransitMode.WALK,
+                        from_location=item.get("from", ""),
+                        to_location=item.get("to", ""),
+                    )
+                    items.append(transit_item)
+                    last_transit_was_car = False
+                    continue
+
+                # FIX #83 (27.05.2026): Duration-based fallback for POIs without GPS data.
+                # POIs without coordinates have distance_km=999.0 (default). If the engine
+                # estimated ≤10 min drive, the POIs are almost certainly walkable in Zakopane.
+                elif _transit_dist_km >= 999.0 and duration <= 10:
+                    walk_min = max(5, duration)
+                    print(f"[FIX #83] Unknown dist + {duration}min drive → treating as short walk {walk_min}min")
+                    if items:
+                        start_time = items[-1].end_time if hasattr(items[-1], 'end_time') else "09:00"
+                    else:
+                        start_time = "09:00"
+                    from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+                    start_minutes = time_to_minutes(start_time)
+                    end_time = minutes_to_time(start_minutes + walk_min)
+                    transit_item = TransitItem(
+                        type=ItemType.TRANSIT,
+                        start_time=start_time,
+                        end_time=end_time,
+                        duration_min=walk_min,
                         mode=TransitMode.WALK,
                         from_location=item.get("from", ""),
                         to_location=item.get("to", ""),
@@ -2303,21 +2331,33 @@ class PlanService:
                         # Add free_time as usual
                         print(f"[GAP FILLING] Adding end-of-day free_time: {gap_to_end} min gap before day_end ({last_end_str} -> {day_end_str})")
                         
-                        # FIX #30 (18.05.2026): Fill the FULL gap to day_end using multiple ≤60 min blocks.
-                        # Previously capped at 60 min, leaving up to 59 min unfilled before day_end.
-                        current_ft_start_min = last_end_min
-                        remaining_eod_gap = gap_to_end
-                        eod_block_num = 0
-                        while remaining_eod_gap > 15:
-                            eod_block_num += 1
-                            # FIX #9 cap kept per block to respect ≤60 min client requirement
-                            eod_block_duration = min(remaining_eod_gap, 60)
-                            eod_block_end_min = current_ft_start_min + eod_block_duration
-                            eod_block_start_str = minutes_to_time(current_ft_start_min)
-                            eod_block_end_str = minutes_to_time(eod_block_end_min)
-                            
-                            eod_label = "Czas wolny na koniec dnia" if eod_block_num == 1 else "Czas wolny wieczorny"
-                            # FIX #78 (27.05.2026): Add suggestions for end-of-day free_time blocks
+                        # FIX #82+#84 (27.05.2026): Prevent consecutive free_time spam at end of day.
+                        # FIX #30 created a while-loop of 60+60+40 min blocks (client: "za dużo bloków").
+                        # Now: single block (max 90 min) with context-aware evening anchor label.
+                        # FIX #82 = no multiple blocks; FIX #84 = meaningful evening suggestion.
+                        eod_block_start_str = minutes_to_time(last_end_min)
+                        eod_block_duration = min(gap_to_end, 90)  # FIX #82: single block, cap 90 min
+                        eod_block_end_min = last_end_min + eod_block_duration
+                        eod_block_end_str = minutes_to_time(eod_block_end_min)
+
+                        # FIX #84 (27.05.2026): Context-aware evening anchor label based on gap size.
+                        if gap_to_end >= 90:
+                            eod_label = "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja"
+                            _ft84_sugg = [
+                                "Termy/SPA w okolicy",
+                                "Spacer po Krupówkach",
+                                "Kolacja w restauracji góralskiej"
+                            ]
+                        elif gap_to_end >= 60:
+                            eod_label = "Wieczór: spacer i kolacja w centrum"
+                            _ft84_sugg = [
+                                "Spacer po centrum Zakopanego",
+                                "Kolacja w restauracji",
+                                "Odpoczynek w hotelu"
+                            ]
+                        else:
+                            eod_label = "Czas wolny na koniec dnia"
+                            # FIX #78 rotating suggestions still apply for short gaps
                             _FT78_SETS_EOD = [
                                 ["Spacer po centrum", "Kawa/herbata w kawiarni", "Czas na zdjęcia i relaks"],
                                 ["Odpoczynek na ławce", "Zwiedzanie na własną rękę", "Zakupy pamiątek"],
@@ -2325,25 +2365,24 @@ class PlanService:
                                 ["Wizyta w lokalnym sklepiku", "Relaks przy kawie lub herbacie", "Spacer po okolicy"],
                                 ["Fotografia podróżnicza", "Widokówki i pamiątki dla bliskich", "Chwila wytchnienia"],
                             ]
-                            _ft78eod_sugg = _FT78_SETS_EOD[(current_ft_start_min // 30) % len(_FT78_SETS_EOD)]
-                            end_of_day_item = FreeTimeItem(
-                                type=ItemType.FREE_TIME,
-                                start_time=eod_block_start_str,
-                                end_time=eod_block_end_str,
-                                duration_min=eod_block_duration,
-                                label=eod_label,
-                                suggestions=_ft78eod_sugg[:3],
-                                is_technical_buffer=(eod_block_duration < 5)  # FIX #39
-                            )
-                            
-                            if result[-1].dict()['type'] == 'day_end':
-                                result.insert(-1, end_of_day_item)
-                            else:
-                                result.append(end_of_day_item)
-                            
-                            print(f"[GAP FILLING] ✓ Added end-of-day free_time block #{eod_block_num}: {eod_block_start_str}-{eod_block_end_str} ({eod_block_duration} min)")
-                            current_ft_start_min = eod_block_end_min
-                            remaining_eod_gap -= eod_block_duration
+                            _ft84_sugg = _FT78_SETS_EOD[(last_end_min // 30) % len(_FT78_SETS_EOD)]
+
+                        end_of_day_item = FreeTimeItem(
+                            type=ItemType.FREE_TIME,
+                            start_time=eod_block_start_str,
+                            end_time=eod_block_end_str,
+                            duration_min=eod_block_duration,
+                            label=eod_label,
+                            suggestions=_ft84_sugg[:3],
+                            is_technical_buffer=(eod_block_duration < 5)  # FIX #39
+                        )
+
+                        if result[-1].dict()['type'] == 'day_end':
+                            result.insert(-1, end_of_day_item)
+                        else:
+                            result.append(end_of_day_item)
+
+                        print(f"[GAP FILLING] FIX#82/#84 Single EOD block: {eod_block_start_str}-{eod_block_end_str} ({eod_block_duration} min): {eod_label[:50]}")
         
         print(f"[GAP FILLING] Final: {len(items)} -> {len(result)} items")
         return result
@@ -2621,7 +2660,27 @@ class PlanService:
             
             # Move to next unprocessed item
             i = j if j > i + 1 else i + 1
-        
+
+        # FIX #82 (27.05.2026): Collapse trailing EOD consecutive free_time blocks into 1.
+        # Engine often creates 3×60-min blocks when no more activities fit. FIX #76 cap (90 min)
+        # prevents merging them pairwise, leaving 3 generic blocks. Post-process: if the last
+        # N items (before day_end) are all free_time, merge them into a single meaningful block.
+        _tail_ft = []
+        _tail_start_idx = len(consolidated)
+        for _k in range(len(consolidated) - 1, -1, -1):
+            _citem = consolidated[_k]
+            if hasattr(_citem, 'type') and _citem.type == ItemType.FREE_TIME:
+                _tail_ft.insert(0, _citem)
+                _tail_start_idx = _k
+            elif hasattr(_citem, 'type') and _citem.type in (ItemType.DAY_END,):
+                continue  # skip day_end sentinel
+            else:
+                break  # hit a real activity — stop scanning
+        if len(_tail_ft) >= 2:
+            _merged_eod = self._merge_free_time_blocks(_tail_ft)
+            consolidated = consolidated[:_tail_start_idx] + [_merged_eod]
+            print(f"[CONSOLIDATE] FIX#82: Collapsed {len(_tail_ft)} trailing EOD free_time blocks → 1 ({_merged_eod.duration_min} min, {_merged_eod.start_time}-{_merged_eod.end_time}, label={_merged_eod.label})")
+
         return consolidated
 
     def _should_merge_free_time(self, block1: FreeTimeItem, block2: FreeTimeItem) -> bool:
@@ -2723,8 +2782,19 @@ class PlanService:
         end_time = blocks[-1].end_time
         total_duration = sum(b.duration_min for b in blocks)
         
+        # FIX #84 (27.05.2026): If merging blocks that END in the evening (end ≥ 18:00)
+        # and total time ≥ 60 min, use evening anchor label instead of generic one.
+        _merge_start_min = time_to_minutes(start_time) if start_time else 0
+        _merge_end_min = time_to_minutes(blocks[-1].end_time) if (blocks and blocks[-1].end_time) else 0
+        _is_evening_merge = _merge_end_min >= time_to_minutes("18:00") and total_duration >= 60
+
         # Generate smart label based on total duration
-        if total_duration >= 180:  # 3+ hours
+        if _is_evening_merge:
+            if total_duration >= 90:
+                label = "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja"
+            else:
+                label = "Wieczór: spacer i kolacja w centrum"
+        elif total_duration >= 180:  # 3+ hours
             label = "Dłuższy odpoczynek / czas na własne aktywności"
         elif total_duration >= 120:  # 2+ hours
             label = "Dłuższy odpoczynek / spacer / relaks"
@@ -2746,7 +2816,18 @@ class PlanService:
                         seen.add(suggestion)
         
         # Use combined suggestions or default set
-        if not all_suggestions:
+        # FIX #84 (27.05.2026): For evening merges, inject evening activity suggestions.
+        if _is_evening_merge:
+            _evening_suggestions = [
+                "Termy/SPA w okolicy",
+                "Spacer po Krupówkach",
+                "Kolacja w restauracji góralskiej",
+                "Relaks w hotelu",
+                "Wieczorna kawa z widokiem na Tatry"
+            ]
+            # Prepend evening suggestions, keeping any unique original ones
+            all_suggestions = _evening_suggestions + [s for s in all_suggestions if s not in _evening_suggestions]
+        elif not all_suggestions:
             all_suggestions = [
                 "Spacer po centrum",
                 "Kawa/herbata w kawiarni",

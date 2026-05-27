@@ -3254,6 +3254,22 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                               f"({p_raw_duration}min > 60min) for trail day")
                         continue
                     
+                    # FIX #81 (27.05.2026): After long/hard trail, block high-energy POIs.
+                    # All non-trail POIs have type='poi', so we use TAG-based blocklist.
+                    # Blocks adventure parks, rope parks, snow tubing — allows termy/spa/museum/viewpoint.
+                    if trail_duration >= 180 or trail_difficulty in ["hard", "extreme"]:
+                        _ACTIVE_TAGS_F81 = {
+                            "rope_park", "adventure_park", "medium_intensity_activity",
+                            "family_theme_park", "kids_zone", "snow_tubing",
+                            "water_rides", "adrenaline_attractions", "zip_line", "luge"
+                        }
+                        _p81_tags = set(p.get("tags") or [])
+                        if _ACTIVE_TAGS_F81 & _p81_tags:
+                            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                            print(f"[FIX #81] EXCLUDED active POI after {trail_duration}min {trail_difficulty} trail: "
+                                  f"{poi_name_safe} (blocked_tags={_ACTIVE_TAGS_F81 & _p81_tags})")
+                            continue
+                    
                     # PHASE 8 FEATURE #2: Limit to max_poi_after_trail (1 for moderate, 2 for light)
                     if post_trail_poi_count >= max_poi_after_trail:
                         poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
@@ -3814,8 +3830,17 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 soft_best = None
                 soft_score = -9999
                 soft_duration = 0
-                
-                for p in pois:
+
+                # FIX #81 (27.05.2026): Soft POI loop must respect trail_day_mode limits.
+                # ROOT CAUSE: Without this guard the soft loop bypassed post-trail limit →
+                # post_trail_poi_count reached 2-3 with max=1 (e.g. after moderate trail).
+                _soft_poi_candidates = (
+                    [] if (trail_day_mode and (max_poi_after_trail == 0 or
+                           post_trail_poi_count >= max_poi_after_trail))
+                    else pois
+                )
+
+                for p in _soft_poi_candidates:
                     if poi_id(p) in used:
                         continue
                     
@@ -3847,6 +3872,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if global_termy_tracking is not None and is_termy_spa(p):
                         if global_termy_tracking["count"] >= global_termy_tracking["max"]:
                             continue  # Skip - global termy limit reached
+                    
+                    # FIX #81 (27.05.2026): After long/hard trail, block high-energy POIs in soft fallback.
+                    # Tag-based blocklist (same as main loop — type='poi' for all non-trail POIs).
+                    if trail_day_mode and (trail_duration >= 180 or trail_difficulty in ["hard", "extreme"]):
+                        _ACTIVE_TAGS_F81_SOFT = {
+                            "rope_park", "adventure_park", "medium_intensity_activity",
+                            "family_theme_park", "kids_zone", "snow_tubing",
+                            "water_rides", "adrenaline_attractions", "zip_line", "luge"
+                        }
+                        _p81s_tags = set(p.get("tags") or [])
+                        if _ACTIVE_TAGS_F81_SOFT & _p81s_tags:
+                            continue  # Skip high-energy POIs after heavy trail
                     
                     # Soft POI criteria (client requirements)
                     # Since all Zakopane POI have intensity='medium', accept medium intensity
@@ -4126,8 +4163,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # DB trails map time_min→duration_min in to_dict(). Excel trails keep time_min.
             _trail_raw_dur_early = best.get("duration_min") or best.get("time_min") or 0
             _trail_diff_early = best.get("difficulty_level", "moderate").lower()
+            # FIX #81 (27.05.2026): Set trail_duration/trail_difficulty early so the type-restriction
+            # filter works correctly even when the lunch post-POI `continue` fires and prevents the
+            # main trail-set block (~line 4287) from running.
+            trail_duration = _trail_raw_dur_early
+            trail_difficulty = _trail_diff_early
             if _trail_diff_early in ["hard", "extreme"] or _trail_raw_dur_early >= 240:
-                max_poi_after_trail = 0
+                max_poi_after_trail = 1  # FIX #81 (27.05.2026): was 0 — allow 1 calm POI after hard trail
             elif _trail_diff_early == "moderate" or _trail_raw_dur_early >= 180:
                 max_poi_after_trail = 1
             else:
@@ -4301,7 +4343,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # Moderate trail (moderate, 3-4h): trail + max 1 light POI
             # Light trail (easy, <3h): trail + max 2 light POI
             if trail_difficulty in ["hard", "extreme"] or trail_raw_duration >= 240:
-                max_poi_after_trail = 0  # No POI after heavy/long trails
+                max_poi_after_trail = 1  # FIX #81 (27.05.2026): was 0 — allow 1 calm POI after hard trail
                 trail_category = "heavy"
             elif trail_difficulty == "moderate" or trail_raw_duration >= 180:
                 max_poi_after_trail = 1  # Max 1 POI after moderate trails
