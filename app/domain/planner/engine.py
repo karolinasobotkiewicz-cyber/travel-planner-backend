@@ -612,6 +612,10 @@ MIN_TRANSFER_MIN = 5
 # Distances below this are treated as walkable (no need to drive 300m)
 WALK_THRESHOLD_KM = 1.2
 
+# FIX #102 (29.05.2026): Zakopane city center coordinates (used for return transit after trail)
+ZAKOPANE_CENTER_LAT = 49.2992
+ZAKOPANE_CENTER_LNG = 19.9496
+
 GROUP_LIMITS = {
     "solo": 5,
     "couples": 5,
@@ -3028,6 +3032,38 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 group_type_debug = user.get("target_group")
                 print(f"[DEBUG #Problem9] INSERTING LUNCH: time={lunch_start_time}-{lunch_end_time}, group_type={group_type_debug}, lunch_target={lunch_target}, lunch_latest={lunch_latest}")
                 
+                # FIX #102 (29.05.2026): If trail is the last POI, add return transit to city before lunch.
+                # Without this, lunch appears right after the trail with no transport = "teleport" to restaurant.
+                _lunch_location_context = "centrum"
+                if trail_day_mode and last_poi and last_poi.get("type") == "trail":
+                    _trail_lat = last_poi.get("lat")
+                    _trail_lng = last_poi.get("lng")
+                    if _trail_lat and _trail_lng:
+                        _dist_to_city = haversine_distance(_trail_lat, _trail_lng, ZAKOPANE_CENTER_LAT, ZAKOPANE_CENTER_LNG)
+                        _return_min = max(10, int((_dist_to_city / 45) * 60 + 5))
+                    else:
+                        _dist_to_city = 0.0
+                        _return_min = 20  # fallback: 20 min if no GPS
+                    if now + _return_min + 30 <= end:
+                        plan.append({
+                            "type": "transfer",
+                            "from": poi_name(last_poi),
+                            "to": "Zakopane centrum",
+                            "duration_min": _return_min,
+                            "distance_km": round(_dist_to_city, 3),
+                            "transport_mode": "car",
+                        })
+                        now += _return_min
+                        lunch_start_time = minutes_to_time(now)
+                        lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
+                        lunch_start_min = time_to_minutes(lunch_start_time)
+                        lunch_end_min = time_to_minutes(lunch_end_time)
+                        actual_lunch_duration = lunch_end_min - lunch_start_min
+                        print(f"[FIX #102] Added return transit from trail to Zakopane centrum: {_return_min}min ({_dist_to_city:.1f}km)")
+                    else:
+                        print(f"[FIX #102] Skipped return transit (not enough time): {_return_min}min + 30min lunch > day_end")
+                        _lunch_location_context = "przy_szlaku"
+                
                 plan.append(
                     {
                         "type": "lunch_break",
@@ -3035,6 +3071,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         "end_time": lunch_end_time,
                         "duration_min": actual_lunch_duration,  # Use actual duration, not constant
                         "suggestions": lunch_suggestions,  # ETAP 3: Intelligent suggestions
+                        "location_context": _lunch_location_context,  # FIX #102/#103
                     }
                 )
                 # FIX #3: Update 'now' with actual lunch duration (not constant)
@@ -4445,6 +4482,34 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             if now >= lunch_target:
                 print(f"[LUNCH POST-POI CHECK] POI pushed now to {minutes_to_time(now)} (>= target {lunch_target}) - FORCING lunch NOW")
                 
+                # FIX #102 (29.05.2026): If trail just finished, add return transit to city first.
+                # Without this, lunch appears at trail location with no transport = "teleport" to restaurant.
+                _lunch_location_context = "centrum"
+                if trail_day_mode and best.get("type") == "trail":
+                    _trail_lat = best.get("lat")
+                    _trail_lng = best.get("lng")
+                    if _trail_lat and _trail_lng:
+                        _dist_to_city = haversine_distance(_trail_lat, _trail_lng, ZAKOPANE_CENTER_LAT, ZAKOPANE_CENTER_LNG)
+                        _return_min = max(10, int((_dist_to_city / 45) * 60 + 5))
+                    else:
+                        _dist_to_city = 0.0
+                        _return_min = 20  # fallback: 20 min if no GPS
+                    # Only add return transit if it fits within day_end
+                    if now + _return_min + 30 <= end:  # 30 min minimum for lunch
+                        plan.append({
+                            "type": "transfer",
+                            "from": poi_name(best),
+                            "to": "Zakopane centrum",
+                            "duration_min": _return_min,
+                            "distance_km": round(_dist_to_city, 3),
+                            "transport_mode": "car",
+                        })
+                        now += _return_min
+                        print(f"[FIX #102] Added return transit from trail to Zakopane centrum: {_return_min}min ({_dist_to_city:.1f}km)")
+                    else:
+                        print(f"[FIX #102] Skipped return transit (not enough time): {_return_min}min + 30min lunch > day_end")
+                        _lunch_location_context = "przy_szlaku"
+                
                 # Insert lunch immediately
                 lunch_start_time = minutes_to_time(now)
                 lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
@@ -4499,6 +4564,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     "end_time": lunch_end_time,
                     "duration_min": actual_lunch_duration,
                     "suggestions": lunch_suggestions,
+                    "location_context": _lunch_location_context,  # FIX #102/#103
                 })
                 
                 now = lunch_end_min

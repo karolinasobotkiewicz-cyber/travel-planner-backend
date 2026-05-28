@@ -462,10 +462,9 @@ class PlanService:
                     after_gap_filling_poi_ids.append(item.poi_id)
             print(f"[AFTER GAP FILLING] Day {day_num + 1} - POI IDs in result: {after_gap_filling_poi_ids}")
             
-            # FIX #3 (02.02.2026): Update transit destinations after gap filling
-            # Gap filling inserts new POI between transit and its original destination
-            # This causes "to" field to point to wrong POI
-            day_items = self._update_transit_destinations(day_items)
+            # FIX #101 (29.05.2026): _update_transit_destinations moved to AFTER healing + removal.
+            # Previously ran here (before healing), causing stale destinations after cascade shifts
+            # and after POI removals in _remove_timeline_overlaps. Moved below.
             
             # ETAP 2 Day 5: Calculate day quality badges
             # Convert day_items to simple dict structure for validate_day_quality
@@ -495,19 +494,13 @@ class PlanService:
             day_items = healed_items
             
             # Log validation warnings if any
-            # FIX #92 (28.05.2026): Also FORWARD timeline validation warnings to plan_warnings.
-            # Previously: warnings were only printed to console, never returned in API response.
-            # Now: they are forwarded so the client UI can display them to the user.
+            # FIX #100 (29.05.2026): timeline_overlap_fixed warnings are internal only.
+            # FIX #92 forwarded them to frontend — client says they should NOT appear.
+            # Now: only print to console, never added to plan_warnings.
             if validation_warnings:
                 print(f"[TIMELINE VALIDATOR] Day {day_num + 1}:")
                 for warning in validation_warnings:
                     print(f"  {warning}")
-                    plan_warnings.append({
-                        "type": "timeline_overlap_fixed",
-                        "day": day_num + 1,
-                        "message": str(warning),
-                        "severity": "info",
-                    })
             
             # FIX #3 FAIL-SAFE (22.02.2026): Remove/truncate items that exceed day_end
             # Even if engine or gap filling creates items past day_end, this ensures compliance
@@ -605,6 +598,12 @@ class PlanService:
                     print(f"[FIX #71] Removed orphaned trailing {item_type_check} at end of day {day_num + 1}")
                 else:
                     break
+            
+            # FIX #101 (29.05.2026): Update transit destinations AFTER all healing + removal steps.
+            # Previously ran BEFORE healing, so transit "to"/"from" could reference POIs that were
+            # subsequently removed by day-end enforcement or _remove_timeline_overlaps.
+            # Also removes orphaned transits (no following attraction) — see _update_transit_destinations.
+            day_items = self._update_transit_destinations(day_items)
             
             # FIX #18 (03.05.2026 - CLIENT FEEDBACK MAY 3): Consolidate consecutive free_time blocks
             # Apply BEFORE adding day_end to ensure day_end stays last
@@ -1115,10 +1114,13 @@ class PlanService:
                     last_transit_was_car = False
                     continue
 
-                # PHASE 8 FEATURE #4: Add between-POI buffer (15 min for unexpected delays)
-                # This buffer accounts for: finding parking, walking, checking maps, restroom stops
-                duration += 15
-                print(f"[TIMING BUFFERS] Transit: +15min between-POI buffer (total: {duration}min)")
+                # FIX #103 (29.05.2026): Context-aware transit buffer instead of flat +15min.
+                # Previously: always +15min regardless of distance (made 10→25, 20→35 look like placeholders).
+                # Now: +5min for short trips (<5km), +10min for medium/long trips.
+                # Rationale: Short urban walks need less buffer (parking/maps overhead is minimal).
+                _buffer_min = 5 if _transit_dist_km < 5.0 else 10
+                duration += _buffer_min
+                print(f"[TIMING BUFFERS] Transit {_transit_dist_km:.1f}km: +{_buffer_min}min buffer (total: {duration}min)")
                 
                 # Use previous item's end_time as start, or default to 09:00
                 if items:
@@ -2919,28 +2921,32 @@ class PlanService:
         Returns:
             Updated list with correct transit destinations
         """
+        # FIX #101b (29.05.2026): Build result while skipping orphaned transits.
+        result = []
         for i, item in enumerate(items):
             # Skip non-transit items
             if item.type != ItemType.TRANSIT:
+                result.append(item)
                 continue
             
-            # Find NEXT attraction after this transit
+            # Find NEXT attraction after this transit (in original list)
             next_attraction = None
             for j in range(i + 1, len(items)):
                 if items[j].type == ItemType.ATTRACTION:
                     next_attraction = items[j]
                     break
             
+            # If no following attraction, transit is orphaned — remove it
+            if not next_attraction:
+                print(f"[TRANSIT FIX #101b] Removing orphaned transit: '{item.from_location}' -> '{item.to_location}' (no following attraction)")
+                continue
+            
             # Update "to" to match next attraction
-            if next_attraction:
-                item.to_location = next_attraction.name
-                print(f"[TRANSIT FIX] Updated transit destination: '{item.from_location}' -> '{item.to_location}'")
-            else:
-                # No attraction after transit - shouldn't happen, but log it
-                print(f"[TRANSIT FIX] WARNING: Transit has no next attraction: '{item.from_location}' -> '{item.to_location}' (kept as is)")
+            item.to_location = next_attraction.name
+            print(f"[TRANSIT FIX] Updated transit destination: '{item.from_location}' -> '{item.to_location}'")
             
             # FIX #4: Update "from" to match PREVIOUS attraction
-            # Find last attraction BEFORE this transit
+            # Find last attraction BEFORE this transit (in original list)
             prev_attraction = None
             for j in range(i - 1, -1, -1):
                 if items[j].type == ItemType.ATTRACTION:
@@ -2949,6 +2955,8 @@ class PlanService:
             
             if prev_attraction:
                 item.from_location = prev_attraction.name
-                print(f"[TRANSIT FIX] Updated transit origin: '{item.from_location}' ← '{prev_attraction.name}'")
+                print(f"[TRANSIT FIX] Updated transit origin: -> '{prev_attraction.name}'")
+            
+            result.append(item)
         
-        return items
+        return result

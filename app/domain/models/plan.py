@@ -237,6 +237,10 @@ class LunchBreakItem(BaseModel):
         default_factory=list,
         description="Backend generuje (ETAP 1: statyczne teksty)",
     )
+    location_context: Optional[str] = Field(
+        default="centrum",
+        description="FIX #103: 'centrum' = lunch w mieście, 'przy_szlaku' = lunch przy szlaku",
+    )
 
 
 class DinnerBreakItem(BaseModel):
