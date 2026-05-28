@@ -115,4 +115,18 @@ def calculate_time_of_day_score(poi, user, context, current_time_minutes):
          (recommended == "morning" and current_period in ["afternoon"]):
         score -= 30
     
+    # FIX #91 (28.05.2026): Winter outdoor dark penalty.
+    # In winter (season="winter"), it gets dark by ~15:00-15:30 in the Tatra mountains.
+    # Outdoor trails and outdoor POI scheduled after 14:30 in winter are risky/unpleasant.
+    # Also handles Issue #8: "Polana Jaworzynka" (outdoor/viewpoint) in late afternoon in winter.
+    season = (context or {}).get("season", "summer") if isinstance(context, dict) else "summer"
+    if season == "winter":
+        poi_space = str(poi.get("space", "") or "").lower()
+        poi_type = poi.get("type", "")
+        if poi_type == "trail" or poi_space == "outdoor":
+            if current_time_minutes >= 900:  # 15:00 → it's dark/almost dark
+                score -= 50  # Severe: after dark for outdoor/trail
+            elif current_time_minutes >= 870:  # 14:30 → getting dark soon
+                score -= 25  # Moderate: last light warning
+
     return score

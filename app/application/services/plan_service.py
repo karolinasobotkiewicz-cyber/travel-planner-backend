@@ -495,10 +495,19 @@ class PlanService:
             day_items = healed_items
             
             # Log validation warnings if any
+            # FIX #92 (28.05.2026): Also FORWARD timeline validation warnings to plan_warnings.
+            # Previously: warnings were only printed to console, never returned in API response.
+            # Now: they are forwarded so the client UI can display them to the user.
             if validation_warnings:
                 print(f"[TIMELINE VALIDATOR] Day {day_num + 1}:")
                 for warning in validation_warnings:
                     print(f"  {warning}")
+                    plan_warnings.append({
+                        "type": "timeline_overlap_fixed",
+                        "day": day_num + 1,
+                        "message": str(warning),
+                        "severity": "info",
+                    })
             
             # FIX #3 FAIL-SAFE (22.02.2026): Remove/truncate items that exceed day_end
             # Even if engine or gap filling creates items past day_end, this ensures compliance
@@ -694,6 +703,30 @@ class PlanService:
                         plan_warnings.append(warning)
                         print(f"[BUDGET WARNING] ⚠️ Day {day_num}: Expensive item '{item_info['name']}' = {item_info['percentage']}% of budget")
         
+        # FIX #92 (28.05.2026): Add informational warnings for common trip scenarios.
+        # These give users/clients useful context about plan characteristics.
+        num_days_built = len(days)
+        if num_days_built > 5:
+            plan_warnings.append({
+                "type": "long_trip_variety",
+                "days": num_days_built,
+                "message": (
+                    f"Plan {num_days_built}-dniowy w Zakopanem: po dniu 4-5 różnorodność może być "
+                    f"mniejsza ze względu na ograniczoną liczbę unikalnych atrakcji w bazie. "
+                    f"Zalecamy łączenie z wycieczkami poza Zakopane (Nowy Targ, Czorsztyn, Bukowina)."
+                ),
+                "severity": "info",
+            })
+
+        # Travel style informational warning
+        travel_style = user.get("travel_style", "")
+        if travel_style == "adventure":
+            plan_warnings.append({
+                "type": "adventure_profile_info",
+                "message": "Profil adventure: plan skupia się na aktywnych atrakcjach (górskie szlaki, sporty). Muzea i atrakcje pasywne są ograniczone do minimum.",
+                "severity": "info",
+            })
+
         return PlanResponse(
             plan_id=plan_id,
             version=1,
@@ -1148,6 +1181,7 @@ class PlanService:
                 # 7. FREE_TIME - from engine fallback for gaps >20 min
                 duration_min = item.get("duration_min", 30)
                 # FIX #78 (27.05.2026): Add rotating suggestions and time-aware label for engine free_time items
+                from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
                 _ft78e_start_min = time_to_minutes(item.get("start_time", "12:00"))
                 _FT78_SETS_E = [
                     ["Spacer po centrum", "Kawa/herbata w kawiarni", "Czas na zdjęcia i relaks"],
@@ -2625,7 +2659,9 @@ class PlanService:
             # FIX #76 (26.05.2026): Cap merged free_time at 90 min.
             # Bug: 5 consecutive 60-min blocks for seniors mountain got merged into 291 min.
             # Engine/gap_filler never creates blocks >60 min; consolidation must respect same limit.
-            MAX_MERGED_FREE_TIME = 90
+            # FIX #86 (28.05.2026): Raised cap to 180 min — engine now creates large afternoon/evening
+            # blocks directly (FIX #86), so consolidation should merge them up to 3h.
+            MAX_MERGED_FREE_TIME = 180
             
             while j < len(items):
                 next_item = items[j]
@@ -2733,6 +2769,7 @@ class PlanService:
             "Dłuższy odpoczynek",
             "Krótki odpoczynek",
             "Wieczór:",  # Matches "Wieczór: spacer, zakupy, relaks w hotelu"
+            "Wieczorny relaks",  # FIX #86: "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja"
             "Czas wolny / relaks",
             "Odpoczynek / spacer",
         ]

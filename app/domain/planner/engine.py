@@ -290,8 +290,11 @@ def _get_free_time_label(plan, now_min, duration_min, day_end_min):
     
     # If free_time ends near day_end (within 60 min) OR fills large end-of-day gap
     if end_of_free_time >= day_end_min - 60 or (remaining_to_day_end > 90 and now_min >= 840):  # After 14:00
-        # Check time of day (evening hours: 18:00-21:00 = 1080-1260 min)
-        if now_min >= 1080:  # After 18:00
+        # FIX #86 (28.05.2026): Use "Wieczorny relaks" label for afternoon/evening free_time
+        # Client specifically requested: "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja"
+        if now_min >= 900:  # After 15:00 → wieczorny relaks territory
+            return "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja"
+        elif now_min >= 1080:  # After 18:00 (kept for safety, covered above)
             return "Kolacja i wieczorny wypoczynek: restauracja, spacer, zakupy"
         else:
             return "Czas wolny do końca dnia: kolacja, spacer, zakupy, relaks"
@@ -1506,7 +1509,18 @@ def score_poi(
     # Problem: Used popularity_score (must-see value), not crowd_level (actual crowding)
     # Examples: Morskie Oko, Krokiew, Krupówki marked as "Low-crowd" despite high crowds
     # Solution: Use crowd_level (1=low, 2=medium, 3=high) for penalty, stronger weights
-    crowd_level_str = str(p.get("crowd_level", "")).strip()
+    # FIX #90 (28.05.2026): Force crowd_level=3 for known high-crowd landmarks regardless of Excel data.
+    # These places are always extremely crowded — wrong Excel value causes misleading "peaceful" tags.
+    _KNOWN_HIGH_CROWD = {
+        "morskie oko", "krupówki", "krupowki", "gubałówka", "gubalowka",
+        "kasprowy wierch", "czarny staw", "dolina kościeliska", "dolina koscieliska",
+        "dolina chochołowska", "dolina chocholowska", "siklawa",
+    }
+    _poi_name_lower_crowd = str(p.get("name", "")).lower()
+    if any(_known in _poi_name_lower_crowd for _known in _KNOWN_HIGH_CROWD):
+        crowd_level_str = "3"  # Override to high-crowd
+    else:
+        crowd_level_str = str(p.get("crowd_level", "")).strip()
     crowd_tolerance = safe_int(user.get("crowd_tolerance", 1), 1)
     
     # Parse crowd_level to int (may be "1", "2", "3" or empty)
@@ -1924,6 +1938,30 @@ def score_poi(
         if role == "FILLER":
             score -= 10.0
 
+    # FIX #87 (28.05.2026): Evening energy arc — penalize demanding activities after 16:00.
+    # After a full day of sightseeing/hiking, evenings should wind down: termy → café → dinner.
+    # Prevents: museums at 17:00, outdoor viewpoints at 16:30, trails at 16:00.
+    if now >= 960:  # After 16:00
+        _evening_museum_tags = {
+            "themed_museum", "regional_heritage", "museum_heritage", "museums",
+            "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+            "interactive_exhibit", "local_history", "architecture_heritage",
+            "historic_building", "composer_artist_house", "intimate_small_museum",
+            "ethnographic_museum", "art_gallery", "temporary_exhibitions",
+        }
+        _poi_tags_eve = set(p.get("tags", []))
+        if _evening_museum_tags & _poi_tags_eve:
+            score -= 25.0  # Museums feel heavy in the evening
+        if p.get("type") == "trail":
+            score -= 40.0  # Trails after 16:00 = darkness risk / exhaustion
+        _evening_relax_tags = {"relaxation", "spa", "termy", "wellness", "hot_springs", "swimming_pool"}
+        if _evening_relax_tags & _poi_tags_eve:
+            score += 15.0  # Boost termy/spa in the evening — perfect wind-down
+    if now >= 1020:  # After 17:00: even stronger wind-down signal
+        _evening_viewpoint_tags = {"scenic_viewpoint"}
+        if _evening_viewpoint_tags & set(p.get("tags", [])):
+            score -= 20.0  # Viewpoints lose appeal after dark
+
     # zmeczenie
     score -= float(fatigue)
 
@@ -2262,6 +2300,28 @@ def score_poi(
             original_score = score
             score *= multiplier
 
+    # FIX #89 (28.05.2026): Cross-day type diversity penalty for long trips.
+    # After day 3+, penalise POI types (via tags) that have already appeared on >= 2 previous days.
+    # Prevents: museum every day, viewpoint every day in 7-day trips.
+    _global_type_tracking = (context or {}).get("global_type_tracking")
+    _current_day = (context or {}).get("current_day_num", 1)
+    if _global_type_tracking and _current_day >= 4:
+        _poi_tags_variety = set(p.get("tags", []))
+        # Only penalize category-level tags (not every tag)
+        _diversity_tag_types = {
+            "themed_museum", "regional_heritage", "museum_heritage", "museums",
+            "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+            "scenic_viewpoint", "viewpoint", "panorama",
+            "rope_park", "adventure_park", "snow_tubing",
+            "relaxation", "spa", "termy", "wellness",
+        }
+        for _tag in _poi_tags_variety & _diversity_tag_types:
+            _tag_days_used = _global_type_tracking.get(_tag, 0)
+            if _tag_days_used >= 3:
+                score -= 20.0  # Heavy penalty: 3+ days with this type
+            elif _tag_days_used >= 2:
+                score -= 10.0  # Mild penalty: already seen on 2 days
+
     return score
 
 
@@ -2382,13 +2442,29 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
     # Solution: When mountain_trails is a top-3 preference, add extra trail slots so TrailDB
     # trails fill the mountain days rather than exhausting the small culture POI pool.
     # Mountain_trails trip → couples wanting trails, not just city museums!
+    # FIX #93 (29.05.2026): Also boost for "hiking" preference and "adventure" travel_style.
+    # Problem: 3-day friends+adventure+hiking gets limit=1 → Days 2+ are all free_time.
+    # "hiking" is a valid trail preference that should behave like mountain_trails.
     user_prefs_top3 = user.get("preferences", [])[:3]
+    travel_style = user.get("travel_style", "balanced")
+    _trail_boost_reason = []
     if "mountain_trails" in user_prefs_top3:
+        _trail_boost_reason.append("mountain_trails pref")
+    if "hiking" in user_prefs_top3:
+        _trail_boost_reason.append("hiking pref")
+    if travel_style == "adventure":
+        _trail_boost_reason.append("adventure style")
+    if _trail_boost_reason:
         boost = max(1, num_days // 3)  # 3-day: +1, 5-day: +1, 7-day: +2
         old_limit = max_trails_total
-        # Cap: leave at least 2 non-trail days for variety (termy, culture)
-        max_trails_total = min(num_days - 2, max_trails_total + boost)
-        print(f"[MULTI-DAY] Trail limit BOOSTED for mountain_trails preference: {old_limit} → {max_trails_total} (+{boost})")
+        # For adventure/hiking: one trail per day is expected — set hard floor of num_days
+        # For others: leave 2 non-trail days for variety
+        if travel_style == "adventure" or "hiking" in user_prefs_top3 or "mountain_trails" in user_prefs_top3:
+            max_trails_total = num_days  # Allow a trail on every day
+        else:
+            max_trails_total = min(num_days - 2, max_trails_total + boost)
+        max_trails_total = max(max_trails_total, 1)  # Always allow at least 1
+        print(f"[MULTI-DAY] Trail limit BOOSTED ({', '.join(_trail_boost_reason)}): {old_limit} → {max_trails_total}")
 
     global_trail_tracking = {"count": 0, "max": max_trails_total}
 
@@ -2431,6 +2507,12 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
     _prev_day_had_termy = False
     _prev_day_had_heavy_trail = False
 
+    # FIX #89 (28.05.2026): Cross-day type diversity tracking for long trips (7+ days).
+    # Problem: Same POI types (museum, viewpoint, cable car) repeat every day.
+    # Solution: Track type usage across days and penalize repetition in score_poi.
+    # Format: {"museum_heritage": 2, "scenic_viewpoint": 3, ...}
+    global_type_tracking = {}  # tag -> number of days this tag type was represented
+
     for day_num in range(num_days):
         context = contexts[day_num]
         
@@ -2445,16 +2527,26 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
             print(f"[FIX #50] Day {day_num + 1}: Blocking termy (consecutive-day restriction)")
 
         # FIX #51: Temporarily block trails on this day if previous day had heavy trail
+        # FIX #93 (29.05.2026): Skip recovery day restriction for adventure/hiking profiles.
+        # Reason: adventure+hiking users hike every day; recovery makes Day 2 empty (no non-trail POIs).
         _trail_count_save = None
-        if _prev_day_had_heavy_trail and num_days > 1:
+        _user_travel_style = user.get("travel_style", "balanced")
+        _user_prefs_top3_51 = user.get("preferences", [])[:3]
+        _skip_recovery = (_user_travel_style == "adventure" or "hiking" in _user_prefs_top3_51 or "mountain_trails" in _user_prefs_top3_51)
+        if _prev_day_had_heavy_trail and num_days > 1 and not _skip_recovery:
             _trail_count_save = global_trail_tracking["count"]
             global_trail_tracking["count"] = global_trail_tracking["max"]
             print(f"[FIX #51] Day {day_num + 1}: Recovery day - blocking all trails")
+        elif _prev_day_had_heavy_trail and _skip_recovery:
+            print(f"[FIX #51] Day {day_num + 1}: Heavy trail yesterday but skipping recovery (adventure/hiking profile)")
 
         # Build day with global tracking
         # The global_used set will be updated inside build_day()
         # UAT FIX (18.02.2026 - Problem #6): Pass termy tracking dict
         # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #5): Pass trail tracking dict
+        # FIX #89 (28.05.2026): Inject global_type_tracking into context so score_poi can penalise repetition.
+        context["global_type_tracking"] = global_type_tracking
+        context["current_day_num"] = day_num + 1  # 1-based day number (used for variety penalty threshold)
         day_plan = build_day(
             pois=pois,
             user=user,
@@ -2488,6 +2580,17 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
             print(f"[FIX #50] Day {day_num + 1} had termy - next day will skip termy")
         if _prev_day_had_heavy_trail:
             print(f"[FIX #51] Day {day_num + 1} had heavy trail (>=240min) - next day is recovery")
+
+        # FIX #89 (28.05.2026): Update global_type_tracking with tags from today's POI.
+        # Each unique category tag used today increments its counter once.
+        _day_tags_seen = set()
+        for item in day_plan:
+            if item.get("type") == "attraction" and item.get("poi"):
+                for _tag in item["poi"].get("tags", []):
+                    _day_tags_seen.add(_tag)
+        for _tag in _day_tags_seen:
+            global_type_tracking[_tag] = global_type_tracking.get(_tag, 0) + 1
+        print(f"[FIX #89] Day {day_num + 1} type tracking updated: {len(global_type_tracking)} tracked tags")
         
         # Count POIs used in this day
         day_poi_count = 0
@@ -3256,17 +3359,30 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     
                     # FIX #81 (27.05.2026): After long/hard trail, block high-energy POIs.
                     # All non-trail POIs have type='poi', so we use TAG-based blocklist.
-                    # Blocks adventure parks, rope parks, snow tubing — allows termy/spa/museum/viewpoint.
+                    # FIX #85 (28.05.2026): Extended blocklist for VERY heavy trails (>=240min or hard/extreme).
+                    # After Morskie Oko (5-6h), museums and viewpoints are also inappropriate.
+                    # Only termy/spa/café are allowed after the hardest trails.
                     if trail_duration >= 180 or trail_difficulty in ["hard", "extreme"]:
                         _ACTIVE_TAGS_F81 = {
                             "rope_park", "adventure_park", "medium_intensity_activity",
                             "family_theme_park", "kids_zone", "snow_tubing",
                             "water_rides", "adrenaline_attractions", "zip_line", "luge"
                         }
+                        # FIX #85: For very heavy trails, also block cultural/passive POI
+                        # After Morskie Oko (6h walk), a museum or viewpoint is NOT recovery
+                        if trail_duration >= 240 or trail_difficulty in ["hard", "extreme"]:
+                            _ACTIVE_TAGS_F81 |= {
+                                "themed_museum", "regional_heritage", "museum_heritage", "museums",
+                                "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                                "interactive_exhibit", "local_history", "architecture_heritage",
+                                "historic_building", "composer_artist_house", "intimate_small_museum",
+                                "ethnographic_museum", "art_gallery", "temporary_exhibitions",
+                                "scenic_viewpoint",  # requires standing/walking — not recovery
+                            }
                         _p81_tags = set(p.get("tags") or [])
                         if _ACTIVE_TAGS_F81 & _p81_tags:
                             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-                            print(f"[FIX #81] EXCLUDED active POI after {trail_duration}min {trail_difficulty} trail: "
+                            print(f"[FIX #81/#85] EXCLUDED POI after {trail_duration}min {trail_difficulty} trail: "
                                   f"{poi_name_safe} (blocked_tags={_ACTIVE_TAGS_F81 & _p81_tags})")
                             continue
                     
@@ -3875,15 +3991,37 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     
                     # FIX #81 (27.05.2026): After long/hard trail, block high-energy POIs in soft fallback.
                     # Tag-based blocklist (same as main loop — type='poi' for all non-trail POIs).
+                    # FIX #85 (28.05.2026): Extended blocklist for very heavy trails.
                     if trail_day_mode and (trail_duration >= 180 or trail_difficulty in ["hard", "extreme"]):
                         _ACTIVE_TAGS_F81_SOFT = {
                             "rope_park", "adventure_park", "medium_intensity_activity",
                             "family_theme_park", "kids_zone", "snow_tubing",
                             "water_rides", "adrenaline_attractions", "zip_line", "luge"
                         }
+                        if trail_duration >= 240 or trail_difficulty in ["hard", "extreme"]:
+                            _ACTIVE_TAGS_F81_SOFT |= {
+                                "themed_museum", "regional_heritage", "museum_heritage", "museums",
+                                "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                                "interactive_exhibit", "local_history", "architecture_heritage",
+                                "historic_building", "composer_artist_house", "intimate_small_museum",
+                                "ethnographic_museum", "art_gallery", "temporary_exhibitions",
+                                "scenic_viewpoint",
+                            }
                         _p81s_tags = set(p.get("tags") or [])
                         if _ACTIVE_TAGS_F81_SOFT & _p81s_tags:
-                            continue  # Skip high-energy POIs after heavy trail
+                            continue  # Skip high-energy/cultural POIs after heavy trail
+
+                    # FIX #88 (28.05.2026): Adventure profile museum cap in soft fallback loop too.
+                    if travel_style == "adventure" and daily_museum_count >= 1:
+                        _adv_museum_soft_tags = {
+                            "themed_museum", "regional_heritage", "museum_heritage", "museums",
+                            "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                            "interactive_exhibit", "local_history", "architecture_heritage",
+                            "historic_building", "composer_artist_house", "intimate_small_museum",
+                            "ethnographic_museum", "art_gallery", "temporary_exhibitions",
+                        }
+                        if _adv_museum_soft_tags & set(p.get("tags", [])):
+                            continue  # Adventure already has a museum today
                     
                     # Soft POI criteria (client requirements)
                     # Since all Zakopane POI have intensity='medium', accept medium intensity
@@ -3939,8 +4077,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     # Client feedback: 2-3h gaps need longer free_time, context-aware descriptions
                     # FIX #3 (22.02.2026): Also cap at day_end to prevent violations
                     # CRITICAL FIX (01.05.2026): Changed cap from 120 to 60 min (CLIENT FEEDBACK - Problem #7)
-                    # Client requirement: All free_time blocks must be ≤60 min
-                    free_duration = min(60, remaining_time, end - now)  # Max 60 min, AND respect day_end
+                    # FIX #86 (28.05.2026): After 15:00 create ONE big evening block (no 60-min cap).
+                    # Prevents multiple 60-min blocks — client wants "Wieczorny relaks" single block.
+                    if now >= 900:  # After 15:00 → one big "Wieczorny relaks" block
+                        free_duration = min(remaining_time, end - now)
+                    else:
+                        free_duration = min(60, remaining_time, end - now)  # Max 60 min before afternoon
                     free_start_time = minutes_to_time(now)
                     free_end_time = minutes_to_time(now + free_duration)
                     
@@ -4616,8 +4758,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if not soft_filled and gap_duration > 60:
                     # FIX #3 (22.02.2026): Also cap at day_end to prevent violations
                     # CRITICAL FIX (01.05.2026): Changed cap from 120 to 60 min (CLIENT FEEDBACK - Problem #7)
-                    # Client requirement: All free_time blocks must be ≤60 min
-                    free_duration = min(60, gap_duration, end - now)  # Max 60 min, AND respect day_end
+                    # FIX #86 (28.05.2026): After 15:00 create ONE big block — avoids 60-min×3 pattern.
+                    if now >= 900:  # After 15:00 → wieczorny relaks territory
+                        free_duration = min(gap_duration, end - now)
+                    else:
+                        free_duration = min(60, gap_duration, end - now)  # Max 60 min before afternoon
                     free_start_time = minutes_to_time(now)
                     free_end_time = minutes_to_time(now + free_duration)
                     
@@ -4708,6 +4853,19 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # FIX #70 (23.05.2026): Apply termy/spa daily limit to ALL groups (not just seniors)
                 if is_termy_spa(p) and termy_count >= 1:
                     continue
+                # FIX #88 (28.05.2026): Adventure profile — museum cap in gap-fill loop.
+                # Main loop checks daily_museum_count for adventure, gap-fill loop was missing this.
+                # Prevents: museum at 16:00 for adventure/friends profile (museum_count already 1).
+                if travel_style == "adventure" and daily_museum_count >= 1:
+                    _adv_museum_gf_tags = {
+                        "themed_museum", "regional_heritage", "museum_heritage", "museums",
+                        "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                        "interactive_exhibit", "local_history", "architecture_heritage",
+                        "historic_building", "composer_artist_house", "intimate_small_museum",
+                        "ethnographic_museum", "art_gallery", "temporary_exhibitions",
+                    }
+                    if _adv_museum_gf_tags & set(p.get("tags", [])):
+                        continue  # Adventure already has a museum today — skip in gap-fill
                 if attraction_count >= limits["hard"]:
                     break
                 
@@ -4838,8 +4996,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Remove 90 min limit, use smart labels
                 # FIX #3 (22.02.2026): Also cap at day_end to prevent violations
                 # CRITICAL FIX (01.05.2026): Changed cap from 180 to 60 min (CLIENT FEEDBACK - Problem #7)
-                # Client requirement: All free_time blocks must be ≤60 min
-                free_duration = min(60, remaining_to_end, end - now)  # Max 60 min, AND respect day_end
+                # FIX #86 (28.05.2026): After 15:00 (900 min), create ONE large block instead of 60-min loop.
+                # Client wants "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja" — not 3×60 min blocks.
+                if now >= 900:  # After 15:00 → create ONE big "Wieczorny relaks" block
+                    free_duration = min(remaining_to_end, end - now)
+                else:
+                    free_duration = min(60, remaining_to_end, end - now)  # Max 60 min before afternoon
                 free_start_time = minutes_to_time(now)
                 free_end_time = minutes_to_time(now + free_duration)
                 
