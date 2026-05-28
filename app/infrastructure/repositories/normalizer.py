@@ -8,6 +8,20 @@ import math
 # Safe helpers
 # =========================
 
+# FIX #97 (24.05.2026): Polish recommended_time_of_day values -> English
+_TOD_PL_TO_EN = {
+    "rano": "morning",
+    "poranek": "morning",
+    "poludnie": "midday",
+    "ł udnie": "midday",
+    "południe": "midday",
+    "popoludnie": "afternoon",
+    "popołudnie": "afternoon",
+    "wieczor": "evening",
+    "wieczór": "evening",
+    "noc": "night",
+}
+
 
 def _safe_str(x):
     if x is None:
@@ -477,6 +491,12 @@ def normalize_poi(p, index):
     if not isinstance(tags_list, list):
         # Fallback: parse from Tags string
         tags_list = normalize_list(p.get("Tags"))
+
+    # FIX #96 (24.05.2026): Auto-add 'must_see' tag when must_see_score >= 8
+    # tag_preferences.py uses "must_see" tag to identify must-see POI,
+    # but Excel has a numeric 'Must see score' column instead of a tag.
+    if must_see is not None and must_see >= 8 and "must_see" not in tags_list:
+        tags_list = list(tags_list) + ["must_see"]
     
     # CLIENT DATA UPDATE (05.02.2026): Get ticket_price for budget scoring
     ticket_price = _safe_float(p.get("ticket_price") or p.get("ticket_normal"), 0)
@@ -519,9 +539,10 @@ def normalize_poi(p, index):
         ),
         "poi_category": poi_category,
         "wow_score": wow,
-        "recommended_time_of_day": _safe_lower(
-            p.get("recommended_time_of_day")
-        ),
+        "recommended_time_of_day": _TOD_PL_TO_EN.get(
+            _safe_lower(p.get("recommended_time_of_day")),
+            _safe_lower(p.get("recommended_time_of_day")),
+        ),  # FIX #97: normalize Polish tod values -> English
         "kids_only": _safe_lower(p.get("kids_only")) == "true",
         "premium_experience": bool(p.get("premium_experience", False)),  # CLIENT REQUIREMENT (08.02.2026): Premium experiences flag
         # NEW FORMAT (30.01.2026): Opening hours as JSON dict

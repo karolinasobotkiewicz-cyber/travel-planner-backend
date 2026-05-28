@@ -120,6 +120,15 @@ USER_PREFERENCES_TO_TAGS = {
             "nature_reserve",
             "gorge",
             "forest_trail",
+            # FIX #94 (24.05.2026): Add actual Excel POI tags (previous tags had 0 matches)
+            "nature_immersion",
+            "forest_trails",
+            "meadows_fields",
+            "mountain_views",
+            "panoramic_mountain_views",
+            "valley_landscape",
+            "viewpoint_trail",
+            "tatra_viewpoint",
         ],
         "tag_bonus": 25,
     },
@@ -308,11 +317,23 @@ USER_PREFERENCES_TO_TAGS = {
             "nature_reserve",
             "gorge",
             "forest_trail",
+            # FIX #94 (24.05.2026): Add actual Excel POI tags (previous tags had 0 matches)
+            "nature_immersion",
+            "forest_trails",
+            "meadows_fields",
+            "mountain_views",
+            "panoramic_mountain_views",
+            "valley_landscape",
+            "viewpoint_trail",
+            "tatra_viewpoint",
         ],
         "tag_bonus": 25,
     },
     "mountain_trails": {
         # Alias for mountain/hiking focused preference
+        # FIX #95 (24.05.2026): Add actual Excel trail tags (previous tags had 0 matches)
+        # Excel trails use: easy_walk, family_friendly_trail, viewpoint_trail, forest_trails,
+        # nature_immersion, out_and_back, panoramic_mountain_views, mountain_views, tatra_viewpoint
         "type_match": ["nature_outdoor", "scenic_viewpoint", "hiking_trail"],
         "type_bonus": 30,
         "tags": [
@@ -325,6 +346,18 @@ USER_PREFERENCES_TO_TAGS = {
             "summit",
             "ridge_trail",
             "forest_trail",
+            # FIX #95: Actual Excel tags
+            "nature_immersion",
+            "easy_walk",
+            "family_friendly_trail",
+            "viewpoint_trail",
+            "forest_trails",
+            "out_and_back",
+            "panoramic_mountain_views",
+            "mountain_views",
+            "tatra_viewpoint",
+            "moderate_hike",
+            "stroller_friendly",
         ],
         "tag_bonus": 25,
     },
