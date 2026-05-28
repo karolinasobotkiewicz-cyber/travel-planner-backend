@@ -40,7 +40,12 @@ TYPE_MATCHING_MATRIX = {
         "wine_tasting": 8
     },
     "friends": {
-        "adventure": 8,
+        "active_sport": 12,       # FIX #99C: real Excel type (was phantom "sports")
+        "adventure_sport": 12,    # FIX #99C: real Excel type (was phantom "adventure")
+        "nature_outdoor": 8,      # FIX #99C: real Excel type
+        "water_attractions": 10,  # FIX #99C: real Excel type
+        "nature_landscape": 8,    # FIX #99C: real Excel type
+        "adventure": 8,           # legacy (keep)
         "nightlife": 8,
         "sports": 8,
         "bar": 5,

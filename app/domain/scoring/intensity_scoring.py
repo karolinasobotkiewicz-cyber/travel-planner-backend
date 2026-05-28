@@ -117,12 +117,12 @@ def calculate_intensity_score(poi: dict, user: dict) -> float:
     
     # Znajomi
     elif target_group == "friends":
-        if intensity == "medium":
+        if intensity == "high":
+            return 20.0   # FIX #99B: high > medium (adrenaline-first for friends)
+        elif intensity == "medium":
             return 15.0
-        elif intensity == "high":
-            return 10.0
         elif intensity == "low":
-            return 0.0
+            return -5.0   # FIX #99B: mild discourage low-intensity for friends
     
     # Para
     elif target_group == "couples":

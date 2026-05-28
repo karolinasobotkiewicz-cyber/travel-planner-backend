@@ -1408,6 +1408,7 @@ def score_poi(
     finale_done,
     daily_cost=0,  # FIX #14: Added for budget utilization boost
     daily_limit=None,  # FIX #14: Added for budget utilization boost
+    active_streak=0,  # FIX #99E: track consecutive active/outdoor POIs for friends
 ):
     score = 0.0
     
@@ -2002,9 +2003,28 @@ def score_poi(
     if ctx["precip"] and p.get("space") == "outdoor":
         score -= 5.0
 
-    # kara za kulture z rzedu
-    if is_culture(p) and culture_streak >= 2:
-        score -= 20.0
+    # FIX #99A: culture streak penalty - group-aware (friends hate consecutive culture more)
+    if is_culture(p):
+        _target_group_A = str(user.get("target_group", "")).lower()
+        if _target_group_A == "friends" and culture_streak >= 1:
+            score -= 30.0  # friends: strong penalty after 1st consecutive culture POI
+        elif culture_streak >= 2:
+            score -= 20.0  # universal: penalty after 2 consecutive culture POIs
+
+    # FIX #99E: active_streak boost for friends (reward consecutive active/outdoor POIs)
+    if active_streak >= 1 and str(user.get("target_group", "")).lower() == "friends":
+        _ACTIVE_TAGS_99E = {
+            "active_sport", "hiking", "climbing", "mountain_trails", "outdoor",
+            "sports", "water_activity", "winter_sports", "active_entertainment",
+            "kulig", "zipline", "quad_atv", "horse_riding", "cave_tour",
+        }
+        _poi_type_99E = str(p.get("type", "")).lower()
+        _poi_tags_99E = set(p.get("tags", []))
+        _is_active_99E = bool(_ACTIVE_TAGS_99E & _poi_tags_99E) or _poi_type_99E in {
+            "trail", "active_sport", "adventure_sport", "nature_outdoor",
+        }
+        if _is_active_99E:
+            score += 10.0  # reward continuing active/outdoor streak for friends
 
     # body state transitions
     score += calculate_body_transition_score(p, body_state)
@@ -2768,6 +2788,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
     # FIX #58 (21.05.2026): Track museums per day for adventure profile (hard cap = 1)
     daily_museum_count = 0
+    # FIX #99D: Track museums per day for friends profile (hard cap = 1)
+    friends_museum_today = 0
 
     # FIX #64 (22.05.2026): Track experience-type dedup to prevent same-type POI on the same day
     # Problem: Iluzja Park + Dom do góry nogami both have illusion_kids tag → boring same-experience day
@@ -2801,6 +2823,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
     # HUMAN STATE
     culture_streak = 0
+    active_streak = 0  # FIX #99E: consecutive active/outdoor POIs counter
     body_state = "neutral"
     finale_done = False
     lunch_done = False
@@ -3214,6 +3237,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     print(f"[MUSEUM CAP] EXCLUDED: {poi_name_safe} - max 1 museum/day for adventure (daily_museum_count={daily_museum_count})")
                     continue
 
+            # FIX #99D: Hard cap: max 1 museum per day for friends profile
+            if user.get("target_group") == "friends" and friends_museum_today >= 1:
+                _mus_tags_99d = {"themed_museum", "regional_heritage", "museum_heritage", "museums",
+                                 "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                                 "interactive_exhibit", "local_history", "architecture_heritage",
+                                 "art_gallery", "temporary_exhibitions", "composer_artist_house",
+                                 "intimate_small_museum", "ethnographic_museum"}
+                if _mus_tags_99d & set(p.get("tags", [])):
+                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                    print(f"[MUSEUM CAP] EXCLUDED: {poi_name_safe} - max 1 museum/day for friends (friends_museum_today={friends_museum_today})")
+                    continue
+
             # FIX #64 (22.05.2026): Experience-type dedup (max 1 per day per unique experience tag)
             # Problem: Iluzja Park + Dom do góry nogami both have illusion_kids → same experience twice
             _poi_exp_tags = UNIQUE_EXPERIENCE_TAGS & set(p.get("tags", []))
@@ -3540,6 +3575,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 finale_done=finale_done,
                 daily_cost=daily_cost,  # FIX #14
                 daily_limit=daily_limit,  # FIX #14
+                active_streak=active_streak,  # FIX #99E
             )
             
             poi_name_debug = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
@@ -3739,6 +3775,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         energy_left=energy, context=ctx, culture_streak=culture_streak,
                         body_state=body_state, finale_done=finale_done,
                         daily_cost=daily_cost, daily_limit=daily_limit,  # FIX #14
+                        active_streak=active_streak,  # FIX #99E
                     )
                     
                     # BUGFIX (28.04.2026 - PHASE 8 TRAIL ROUTING): Trail priority boost in core rotation
@@ -3883,6 +3920,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         energy_left=energy, context=ctx, culture_streak=culture_streak,
                         body_state=body_state, finale_done=finale_done,
                         daily_cost=daily_cost, daily_limit=daily_limit,  # FIX #14
+                        active_streak=active_streak,  # FIX #99E
                     )
                     
                     if core_attraction_count < limits.get("core_min", 1) and is_core:
@@ -4053,7 +4091,19 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         }
                         if _adv_museum_soft_tags & set(p.get("tags", [])):
                             continue  # Adventure already has a museum today
-                    
+
+                    # FIX #99D: Friends profile museum cap in soft fallback loop too.
+                    if user.get("target_group") == "friends" and friends_museum_today >= 1:
+                        _friends_museum_soft_tags = {
+                            "themed_museum", "regional_heritage", "museum_heritage", "museums",
+                            "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                            "interactive_exhibit", "local_history", "architecture_heritage",
+                            "historic_building", "composer_artist_house", "intimate_small_museum",
+                            "ethnographic_museum", "art_gallery", "temporary_exhibitions",
+                        }
+                        if _friends_museum_soft_tags & set(p.get("tags", [])):
+                            continue  # Friends already has a museum today
+
                     # Soft POI criteria (client requirements)
                     # Since all Zakopane POI have intensity='medium', accept medium intensity
                     # Focus on: short duration (10-30 min) + low must_see_score (0-2)
@@ -4567,6 +4617,17 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 daily_museum_count += 1
                 print(f"[MUSEUM CAP] Museum added today: {daily_museum_count}/1 (adventure)")
 
+        # FIX #99D: Increment daily museum counter for friends profile
+        if user.get("target_group") == "friends":
+            _mus_friends_tags = {"themed_museum", "regional_heritage", "museum_heritage", "museums",
+                                 "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                                 "interactive_exhibit", "local_history", "architecture_heritage",
+                                 "art_gallery", "temporary_exhibitions", "composer_artist_house",
+                                 "intimate_small_museum", "ethnographic_museum"}
+            if _mus_friends_tags & set(best.get("tags", [])):
+                friends_museum_today += 1
+                print(f"[MUSEUM CAP] Museum added today: {friends_museum_today}/1 (friends)")
+
         # FIX #64: Track used experience tags for dedup
         _added_exp_tags = UNIQUE_EXPERIENCE_TAGS & set(best.get("tags", []))
         if _added_exp_tags:
@@ -4825,6 +4886,22 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         else:
             culture_streak = 0
 
+        # FIX #99E: Update active_streak (consecutive active/outdoor POIs)
+        _ACTIVE_TAGS_99E_INC = {
+            "active_sport", "hiking", "climbing", "mountain_trails", "outdoor",
+            "sports", "water_activity", "winter_sports", "active_entertainment",
+            "kulig", "zipline", "quad_atv", "horse_riding", "cave_tour",
+        }
+        _best_type_99E = str(best.get("type", "")).lower()
+        _best_tags_99E = set(best.get("tags", []))
+        _is_active_best_99E = bool(_ACTIVE_TAGS_99E_INC & _best_tags_99E) or _best_type_99E in {
+            "trail", "active_sport", "adventure_sport", "nature_outdoor",
+        }
+        if _is_active_best_99E:
+            active_streak += 1
+        else:
+            active_streak = 0
+
         # update body
         body_state = get_next_body_state(best, body_state)
 
@@ -4905,6 +4982,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     }
                     if _adv_museum_gf_tags & set(p.get("tags", [])):
                         continue  # Adventure already has a museum today — skip in gap-fill
+
+                # FIX #99D: Friends profile — museum cap in gap-fill loop.
+                if user.get("target_group") == "friends" and friends_museum_today >= 1:
+                    _friends_museum_gf_tags = {
+                        "themed_museum", "regional_heritage", "museum_heritage", "museums",
+                        "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                        "interactive_exhibit", "local_history", "architecture_heritage",
+                        "historic_building", "composer_artist_house", "intimate_small_museum",
+                        "ethnographic_museum", "art_gallery", "temporary_exhibitions",
+                    }
+                    if _friends_museum_gf_tags & set(p.get("tags", [])):
+                        continue  # Friends already has a museum today — skip in gap-fill
                 if attraction_count >= limits["hard"]:
                     break
                 
