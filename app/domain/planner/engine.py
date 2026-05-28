@@ -608,6 +608,10 @@ DINNER_DURATION_MIN = 90
 
 MIN_TRANSFER_MIN = 5
 
+# FIX #98 (28.05.2026): Walking vs car threshold for haversine auto-detection
+# Distances below this are treated as walkable (no need to drive 300m)
+WALK_THRESHOLD_KM = 1.2
+
 GROUP_LIMITS = {
     "solo": 5,
     "couples": 5,
@@ -946,26 +950,53 @@ def distance_km(a, b):
 
 
 def travel_time_minutes(a, b, context):
-    """Calculate travel time between two POIs using haversine distance and realistic driving speeds."""
+    """Calculate travel time between two POIs.
+
+    FIX #98 (28.05.2026): Auto-selects walking or car mode based on GPS distance.
+    - distance < WALK_THRESHOLD_KM  → walking  (~5 km/h, no parking, min 5 min)
+    - distance >= WALK_THRESHOLD_KM → car      (mountain ~45 km/h + 5 min parking, min 10 min)
+    Return type stays int (minutes) – fully backward compatible.
+    """
     if not a or not b:
         return 0
-    
-    # Use haversine distance calculation for accurate GPS-based distance
+
     has_car = context.get("has_car", True)
     if not has_car:
         return 0
-    
+
     lat1, lng1 = a.get("lat"), a.get("lng")
     lat2, lng2 = b.get("lat"), b.get("lng")
-    
+
     if not all([lat1, lng1, lat2, lng2]):
-        return 10  # fallback minimum
-    
+        return 10  # fallback – no GPS coords
+
     distance_km = haversine_distance(lat1, lng1, lat2, lng2)
-    
-    # Mountain roads: 45 km/h average + 5 min parking/finding spot
-    drive_time = (distance_km / 45) * 60 + 5
-    return max(int(drive_time), 10)  # minimum 10 minutes
+
+    if distance_km < WALK_THRESHOLD_KM:
+        # Walking: 5 km/h, no parking overhead, minimum 5 min
+        walk_time = (distance_km / 5.0) * 60
+        return max(int(walk_time), 5)
+    else:
+        # Car: mountain roads ~45 km/h + 5 min parking
+        drive_time = (distance_km / 45.0) * 60 + 5
+        return max(int(drive_time), 10)
+
+
+def get_transport_mode(a, b):
+    """Return transport mode between two POIs: 'walking' or 'car'.
+
+    FIX #98 (28.05.2026): Pure helper – no side effects. Uses same
+    WALK_THRESHOLD_KM as travel_time_minutes so mode is always consistent.
+    Returns 'car' as safe fallback when GPS coords are missing.
+    """
+    if not a or not b:
+        return "car"
+    lat1, lng1 = a.get("lat"), a.get("lng")
+    lat2, lng2 = b.get("lat"), b.get("lng")
+    if not all([lat1, lng1, lat2, lng2]):
+        return "car"
+    distance_km = haversine_distance(lat1, lng1, lat2, lng2)
+    return "walking" if distance_km < WALK_THRESHOLD_KM else "car"
 
 
 # =========================
@@ -4164,6 +4195,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             _t77_lat2, _t77_lng2 = best.get("lat"), best.get("lng")
             _t77_dist_km = haversine_distance(_t77_lat1, _t77_lng1, _t77_lat2, _t77_lng2) if all([_t77_lat1, _t77_lng1, _t77_lat2, _t77_lng2]) else 999.0
 
+            # FIX #98 (28.05.2026): Determine transport mode for this transfer
+            _is_walking = _t77_dist_km < WALK_THRESHOLD_KM
+
             plan.append(
                 {
                     "type": "transfer",
@@ -4171,19 +4205,22 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     "to": poi_name(best),
                     "duration_min": transfer_time,
                     "distance_km": round(_t77_dist_km, 3),  # FIX #77
+                    "transport_mode": "walking" if _is_walking else "car",  # FIX #98
                 }
             )
 
             now += transfer_time
             
             # PHASE 8 FEATURE #5 (27.04.2026): Track total drive time for daily limit
-            if transfer_time >= 10:  # Only count car drives
+            # FIX #98 (28.05.2026): Only count car transfers, not walking
+            if transfer_time >= 10 and not _is_walking:
                 total_drive_time += transfer_time
                 print(f"[DRIVE TRACKING] Added {transfer_time}min drive, total today: {total_drive_time}min / {max_daily_drive}min")
             
             # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #4): Add parking_walk buffer after car transfer
             # Client requirement: "Oś czasu ma dziury" - dodaj buffer parking_walk po transfer
-            if ctx.get("has_car", True):
+            # FIX #98 (28.05.2026): Skip parking_walk for walking transfers – no car, no parking
+            if ctx.get("has_car", True) and not _is_walking:
                 parking_walk_duration = best.get("parking_walk_time_min", 5)
                 # Ensure reasonable range: 5-15 min
                 parking_walk_duration = max(5, min(15, int(parking_walk_duration)))
@@ -4226,7 +4263,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 removed = plan.pop()
                 now -= removed.get("duration_min", 0)
                 # Also rollback drive tracking if it was a car transfer
-                if removed.get("type") == "transfer" and removed.get("duration_min", 0) >= 10:
+                # FIX #98 (28.05.2026): Use transport_mode field instead of duration proxy
+                if removed.get("type") == "transfer" and removed.get("transport_mode", "car") == "car" and removed.get("duration_min", 0) >= 10:
                     total_drive_time = max(0, total_drive_time - removed.get("duration_min", 0))
                 print(f"[FIX#62] Rolled back phantom {removed.get('type')} ({removed.get('duration_min',0)}min)")
             # Skip this POI, mark as used to avoid retry, continue loop
@@ -4684,6 +4722,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             "to": poi_name(p),
                             "duration_min": soft_travel,
                             "distance_km": round(_t77_dist_km, 3),  # FIX #77
+                            "transport_mode": "walking" if _t77_dist_km < WALK_THRESHOLD_KM else "car",  # FIX #98
                         })
                         now += soft_travel
                     
@@ -4924,6 +4963,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         "to": poi_name(soft_best),
                         "duration_min": soft_travel,
                         "distance_km": round(_t77_dist_km, 3),  # FIX #77
+                        "transport_mode": "walking" if _t77_dist_km < WALK_THRESHOLD_KM else "car",  # FIX #98
                     })
                     now += soft_travel
                 
