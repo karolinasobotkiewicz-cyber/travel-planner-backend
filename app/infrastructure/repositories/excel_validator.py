@@ -30,6 +30,7 @@ Usage (from loader - call validate_excel() before processing):
 
 from __future__ import annotations
 
+import ast
 import math
 import sys
 from dataclasses import dataclass, field
@@ -130,9 +131,28 @@ _TOD_POLISH = {
 _KNOWN_PRIORITY = {"core", "secondary", "optional", "high", "medium", "low"}
 
 _KNOWN_TARGET_GROUPS = {
-    "all", "family", "families", "couples", "solo", "seniors", "friends",
-    "kids", "adults", "groups",
+    "all", "family", "families", "family_kids", "couples", "solo", "seniors",
+    "friends", "kids", "adults", "groups",
 }
+
+
+def _parse_tag_list(raw) -> List[str]:
+    """Parse tags/groups from both 'tag1, tag2' and "['tag1', 'tag2']" formats."""
+    if raw is None or (isinstance(raw, float) and math.isnan(raw)):
+        return []
+    s = str(raw).strip()
+    if not s:
+        return []
+    # Handle Python list literal: "['tag1', 'tag2']" or "[tag1, tag2]"
+    if s.startswith("["):
+        try:
+            parsed = ast.literal_eval(s)
+            if isinstance(parsed, list):
+                return [str(t).strip().lower() for t in parsed if str(t).strip()]
+        except (ValueError, SyntaxError):
+            pass
+    # Fallback: plain comma-separated
+    return [t.strip().lower() for t in s.split(",") if t.strip()]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Data classes
@@ -393,7 +413,7 @@ def _check_tags(row: pd.Series, excel_row: int, report: ValidationReport) -> Non
         ))
         return
 
-    tags = [t.strip().lower() for t in str(raw).split(",") if t.strip()]
+    tags = _parse_tag_list(raw)
     unknown = [t for t in tags if t not in _KNOWN_TAGS]
 
     if unknown:
@@ -430,7 +450,7 @@ def _check_target_group(row: pd.Series, excel_row: int, report: ValidationReport
     if raw is None or (isinstance(raw, float) and math.isnan(raw)) or str(raw).strip() == "":
         return  # Missing is OK — defaults to 'all'
 
-    groups = [g.strip().lower() for g in str(raw).split(",") if g.strip()]
+    groups = _parse_tag_list(raw)
     unknown = [g for g in groups if g not in _KNOWN_TARGET_GROUPS]
     if unknown:
         report.issues.append(ValidationIssue(
@@ -452,8 +472,8 @@ def _check_must_see_score(row: pd.Series, excel_row: int, report: ValidationRepo
         return
 
     if score >= 8:
-        raw_tags = str(row.get("Tags", "") or "").lower()
-        tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+        raw_tags = row.get("Tags", "")
+        tags = _parse_tag_list(raw_tags)
         if "must_see" not in tags:
             report.issues.append(ValidationIssue(
                 "INFO", excel_row, "Must see score",
