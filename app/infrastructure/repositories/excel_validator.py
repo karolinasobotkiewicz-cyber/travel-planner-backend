@@ -120,6 +120,37 @@ _KNOWN_TAGS: set = {
     "fortification_kłodzko",
     # Generic accessibility/time
     "wheelchair_accessible", "dog_friendly", "night_visit", "light_show",
+    # FIX #113: Tags from Render production logs (zakopane.xlsx)
+    # attractions_for_kids / kids_attractions
+    "indoor_playroom", "kids_obstacle_course", "sensory_experience_kids",
+    "animal_interaction", "rabbit_feeding", "family_friendly_animals",
+    "birds_only", "close_contact", "aquatic_animals", "science_center_kids",
+    "kids_zone", "creative_workshops_kids", "educational_farm",
+    # theme_parks
+    "dinosaur_theme", "walkthrough_experience", "family_theme_park",
+    # active_sport
+    "low_intensity_activity", "medium_intensity_activity", "quad_atv",
+    "cable_car_option", "mountain_ski_resort", "requires_transport",
+    "crowd_prone", "time_flexible",
+    # museums_heritage / museum_heritage / history_mystery
+    "composer_artist_house", "historic_building", "intimate_small_museum",
+    "historical_exhibits", "local_legends", "interactive_photo_exhibits",
+    "colorful_installations", "instagram_photo_spot", "multimedia_exhibition",
+    "interactive_exhibit", "temporary_exhibitions", "architecture_heritage",
+    "crafts_handicraft", "folk_traditions", "storytelling_spot",
+    # nature_landscapes / nature_landscape
+    "waterfall_trail", "rock_formations", "quiet_relax_spot",
+    "waterfalls", "scenic_walk", "panoramic_route", "peak_summit",
+    "scenic_ridge_walk", "iconic_tatra_landmark", "scenic_photo_spot", "photo_spot",
+    # relax_wellness / relaxation
+    "spa_center", "quiet_relax", "long_relax_session", "romantic_atmosphere",
+    "spa_pools", "thermal_pool_relax", "thermal_outdoor_pool",
+    "summer_mountain_relax", "family_swimming_area",
+    # local_food_experience
+    "workshop", "tasting", "cultural_experience", "local_products",
+    "souvenirs", "market", "podhale", "authentic_place",
+    # generic / neutral
+    "lively_atmosphere", "central_location",
 }
 
 _KNOWN_TOD_EN = {"morning", "midday", "afternoon", "evening", "night", "any", ""}
@@ -390,17 +421,20 @@ def _check_tod(row: pd.Series, excel_row: int, report: ValidationReport) -> None
     if not val or val in ("nan", "none", ""):
         return  # Missing is OK — engine defaults to 'any'
 
-    if val in _TOD_POLISH:
-        report.issues.append(ValidationIssue(
-            "ERROR", excel_row, "recommended_time_of_day",
-            f"Polish value '{val}' detected. normalizer.py will auto-translate, "
-            f"but fix in Excel for clarity. Expected: morning/midday/afternoon/evening/any."
-        ))
-    elif val not in _KNOWN_TOD_EN:
-        report.issues.append(ValidationIssue(
-            "WARNING", excel_row, "recommended_time_of_day",
-            f"Unknown value '{val}'. Expected: morning/midday/afternoon/evening/any."
-        ))
+    # FIX #113: Handle comma-separated multi-values like "morning, midday"
+    parts = [p.strip() for p in val.split(",") if p.strip()]
+    for part in parts:
+        if part in _TOD_POLISH:
+            report.issues.append(ValidationIssue(
+                "ERROR", excel_row, "recommended_time_of_day",
+                f"Polish value '{part}' detected. normalizer.py will auto-translate, "
+                f"but fix in Excel for clarity. Expected: morning/midday/afternoon/evening/any."
+            ))
+        elif part not in _KNOWN_TOD_EN:
+            report.issues.append(ValidationIssue(
+                "WARNING", excel_row, "recommended_time_of_day",
+                f"Unknown value '{part}'. Expected: morning/midday/afternoon/evening/any."
+            ))
 
 
 def _check_tags(row: pd.Series, excel_row: int, report: ValidationReport) -> None:
