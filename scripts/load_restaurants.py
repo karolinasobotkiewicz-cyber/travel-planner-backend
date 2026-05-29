@@ -141,7 +141,7 @@ def load_restaurants():
     """
     # Excel path (relative to workspace root)
     workspace_root = project_root.parent
-    excel_path = workspace_root / 'Planer' / 'Planer - restauracje.xlsx'
+    excel_path = workspace_root / 'planer_update' / 'Planer - restauracje.xlsx'
     
     if not excel_path.exists():
         logger.error(f"Excel file not found: {excel_path}")

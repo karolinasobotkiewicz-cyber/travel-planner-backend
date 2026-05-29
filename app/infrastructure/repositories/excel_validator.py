@@ -151,6 +151,39 @@ _KNOWN_TAGS: set = {
     "souvenirs", "market", "podhale", "authentic_place",
     # generic / neutral
     "lively_atmosphere", "central_location",
+    # FIX #115: New client tagging vocabulary (attractions for kids)
+    "family_fun", "children_activity_zone", "indoor_playground", "soft_play_area",
+    "family_game_zone", "animal_encounters", "educational_zoo", "exotic_animals",
+    "optical_illusion", "arcade_family", "interactive_fun",
+    # FIX #115: theme_parks / active_sport
+    "adrenaline_activity", "adrenaline_fun", "outdoor_adventure", "forest_rope_courses",
+    "kayaking",
+    # FIX #115: museums_heritage new tags
+    "heritage_site", "architecture_landmark", "city_landmark", "cultural_heritage",
+    "specialized_museum", "educational_museum", "regional_history",
+    "historic_market_square", "religious_site", "historic_parish_church",
+    "baroque_architecture", "industrial_heritage", "exhibition_space",
+    "museum_heritage", "education", "indoor", "rainy_day", "science",
+    "educational_route", "guided_tour",
+    # FIX #115: nature_landscapes new tags
+    "panoramic_views", "panoramic_viewpoint", "panoramic_view",
+    "scenic_landscape", "scenic_view", "nature_photo_spot",
+    "green_space", "royal_gardens", "city_views", "city_view", "panoramic_city_views",
+    "calm_nature_spot", "relax_walk", "waterfall_spot", "forest_walk",
+    "table_mountains_trail", "photography", "sunset", "peaceful_green_space",
+    "nature_landscape", "scenic_city_views", "nature_escape",
+    # FIX #115: water_attractions
+    "family_water_fun", "popular_swimming_spot", "urban_beach", "seaside_promenade",
+    # FIX #115: castles / history / caves
+    "old_fortifications", "hidden_history", "underground_history", "cultural_heritage",
+    "historic_viewpoint_mound", "history_mystery", "culture",
+    "salt_mine_tunnels", "historic_mining_site", "geology",
+    # FIX #115: relax
+    "calm_experience", "spa_park", "relaxation",
+    # FIX #115: mountain_trails
+    "scenic_viewpoint",
+    # FIX #115: misc high-frequency tags from multi_city data
+    "archaeological_site",
 }
 
 _KNOWN_TOD_EN = {"morning", "midday", "afternoon", "evening", "night", "any", ""}
