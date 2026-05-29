@@ -1339,6 +1339,9 @@ class PlanService:
         if parking_lng is None or parking_lng == 0.0:
             parking_lng = poi_dict.get("Lng", 0.0)
         
+        # FIX #107 (28.05.2026): Read parking_type from POI data (was hardcoded PAID).
+        # Excel has "paid"/"free" values — map to ParkingType enum. Default to PAID if missing.
+        _pt107_raw = str(poi_dict.get("parking_type", "paid") or "paid").lower().strip()
         return ParkingItem(
             type=ItemType.PARKING,
             start_time=parking_start,
@@ -1347,7 +1350,7 @@ class PlanService:
             address=parking_address,
             lat=parking_lat,
             lng=parking_lng,
-            parking_type=ParkingType.PAID,  # FIXME: z POI parking_type?
+            parking_type=ParkingType.PAID if _pt107_raw == "paid" else ParkingType.FREE,
             walk_time_min=walk_time
         )
 
@@ -1494,20 +1497,18 @@ class PlanService:
         else:
             cost_note = None  # Shouldn't happen, but handle gracefully
         
-        # FIX #18 (29.04.2026 - CLIENT FEEDBACK): Cost breakdown note for trails
         # FIX #18.2 (03.05.2026 - CLIENT FEEDBACK Problem #5): Set cost_estimate=0 for free trails
-        # Problem: Trails show ticket=0 but cost_estimate=200 (confusing for users)
-        # Requirement: Show cost_estimate=0 for free trails, explain optional costs in note
-        # Solution: Override estimated_cost to 0 for free trails, update cost_breakdown_note
-        poi_type = poi_dict.get("type", "poi")
+        # FIX #109 (28.05.2026): Extend to ALL POI types with ticket=0, not just trails
+        # Problem: cost_estimate includes parking/equipment even when base activity is free.
+        # Solution: Override estimated_cost=0 when ticket_normal=0 AND ticket_reduced=0.
+        # Optional extra costs (parking, equipment) explained in cost_breakdown_note.
         cost_breakdown_note = None
-        
-        # Check if trail is free (ticket_normal=0 AND ticket_reduced=0)
-        if poi_type == "trail" and ticket_normal_value == 0 and ticket_reduced_value == 0:
-            # Override cost_estimate to 0 for free trails
+        if ticket_normal_value == 0 and ticket_reduced_value == 0:
             estimated_cost = 0
-            # Explain optional costs in note
-            cost_breakdown_note = "Wstęp na szlak darmowy. Opcjonalne koszty: parking (~20 PLN/dzień), prowiant."
+            if poi_type == "trail":
+                cost_breakdown_note = "Wstęp na szlak darmowy. Opcjonalne koszty: parking (~20 PLN/dzień), prowiant."
+            else:
+                cost_breakdown_note = "Wstęp wolny. Opcjonalne koszty: parking (~10-20 PLN/dzień)."
         
         # FIX #26 (17.05.2026): parking cost 0 → null (unknown cost, not "free")
         _raw_parking_cost = poi_dict.get("parking_cost")
@@ -2152,6 +2153,13 @@ class PlanService:
                         # Special label for gap right after day_start to avoid "day starts with rest" UX issue
                         # Client quote: "plan zaczyna się od odpoczynku" looks weird
                         is_day_start_gap = (item_type == 'day_start')
+                        
+                        # FIX #106 (28.05.2026): Skip short free_time at day start (<60min)
+                        # A <60min gap right after day_start = "plan starts with rest" — confusing UX.
+                        # Engine picks first POI shortly after start; this tiny free_time is noise.
+                        if is_day_start_gap and gap_duration < 60:
+                            print(f"[FIX #106] Skip day-start free_time ({gap_duration}min < 60min) — too short, skipping")
+                            continue
                         
                         # FIX #78 (27.05.2026): Context-aware labels based on time of day and duration
                         if is_day_start_gap:

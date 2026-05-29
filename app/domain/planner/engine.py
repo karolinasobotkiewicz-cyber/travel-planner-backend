@@ -241,7 +241,7 @@ def _add_buffer_item(plan, now, buffer_type, duration_min, reason_context=None, 
     return now + duration_min
 
 
-def _get_free_time_label(plan, now_min, duration_min, day_end_min):
+def _get_free_time_label(plan, now_min, duration_min, day_end_min, profile=None):
     """
     Generate smart, context-aware label for free_time items.
     
@@ -249,11 +249,15 @@ def _get_free_time_label(plan, now_min, duration_min, day_end_min):
     Client requirement: Free time should have meaningful, context-aware descriptions.
     Tests show 2-3h gaps with generic "Czas wolny" - need smart labels!
     
+    FIX #104 (28.05.2026): Added profile parameter + activity-context labels.
+    Client approved 24.05.2026: context-aware descriptions for post-activity recovery.
+    
     Args:
         plan: List of plan items (to check previous item)
         now_min: Current time in minutes from midnight
         duration_min: Duration of free_time in minutes
         day_end_min: Day end time in minutes
+        profile: User target_group (e.g. "family_kids", "seniors", "couples", "solo")
     
     Returns:
         str: Smart description for free_time
@@ -261,6 +265,9 @@ def _get_free_time_label(plan, now_min, duration_min, day_end_min):
     Context Detection:
     - After lunch_break → "Czas wolny po lunchu: kawa, lekki spacer, zakupy"
     - After dinner_break → "Wieczór: spacer, zakupy, relaks w hotelu"
+    - After trail/mountain → "Regeneracja po trasie: masaż, termy, odpoczynek w hotelu"
+    - After termy/water → "Spokojny czas po termach: kawa, zakupy, relaks"
+    - Profile family_kids → "Przerwa rodzinna: lody, plac zabaw, chwila oddechu"
     - End of day (>60 min to day_end) → "Kolacja i wieczorny wypoczynek: restauracja, spacer, zakupy"
     - Long gap (>90 min) → "Czas wolny: spacer po okolicy, kawa, zakupy, zwiedzanie na własną rękę"
     - Short gap (60-90 min) → "Przerwa kawowa: kawa, przekąska, odpoczynek"
@@ -282,6 +289,25 @@ def _get_free_time_label(plan, now_min, duration_min, day_end_min):
     if last_item and last_item.get("type") == "dinner_break":
         return "Wieczór: spacer, zakupy, relaks w hotelu"
     
+    # FIX #104 (28.05.2026): Context labels based on previous POI type and user profile
+    if last_item:
+        _prev_poi = last_item.get("poi", {}) or {}
+        _prev_poi_type = _prev_poi.get("type") or last_item.get("type", "")
+        if _prev_poi_type in ("mountain_trails", "trail"):
+            return "Regeneracja po trasie: masaż, termy, odpoczynek w hotelu"
+        if _prev_poi_type == "water_attractions":
+            return "Spokojny czas po termach: kawa, zakupy, relaks"
+        if _prev_poi_type == "local_food_experience":
+            return "Regionalny przystanek: oscypki, herbata góralska"
+    if profile == "family_kids":
+        return "Przerwa rodzinna: lody, plac zabaw, chwila oddechu"
+    if profile == "seniors":
+        return "Spokojna przerwa regeneracyjna"
+    if profile == "couples":
+        return "Romantyczna przerwa: kawa, spacer, zakupy"
+    if profile == "solo":
+        return "Spokojny reset: kawa, notes, własny czas"
+
     # Context 3: End of day (check if free_time brings us close to day_end)
     # Check 1: Does this free_time END within 60 min of day_end?
     # Check 2: OR is the gap to day_end large (>90 min) suggesting end-of-day period?
@@ -3448,15 +3474,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if max_poi_after_trail > 0:
                     # Get RAW POI duration (not choose_duration which may shorten it)
                     # Trail day requires NATURALLY SHORT POI (<=60min base duration)
+                    # FIX #105 (28.05.2026): Use time_min as duration check — czas_zwiedzania_min
+                    # doesn't exist in POI data (always 0 → filter was broken/no-op).
+                    # Termy/spa exempt: valid recovery activity after trail (client spec Phase 8).
                     if p.get("type") == "trail":
                         p_raw_duration = p.get("duration_min", 0)
                     else:
-                        p_raw_duration = p.get("czas_zwiedzania_min", 0)
+                        p_raw_duration = safe_int(p.get("time_min"), 0)
                     
-                    # Skip long POI (>60min natural duration)
-                    if p_raw_duration > 60:
+                    # Skip long POI (>60min minimum visit) — termy/spa always exempt
+                    if p_raw_duration > 60 and not is_termy_spa(p):
                         poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-                        print(f"[TRAIL DAY] EXCLUDED POI: {poi_name_safe} - naturally too long "
+                        print(f"[TRAIL DAY] EXCLUDED POI: {poi_name_safe} - minimum visit too long "
                               f"({p_raw_duration}min > 60min) for trail day")
                         continue
                     
@@ -4213,7 +4242,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         continue
                     
                     # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Smart label based on context
-                    smart_label = _get_free_time_label(plan, now, free_duration, end)
+                    smart_label = _get_free_time_label(plan, now, free_duration, end, profile=user.get("target_group"))
                     
                     plan.append({
                         "type": "free_time",
@@ -4936,7 +4965,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     overlaps, conflict = _check_time_overlap(plan, free_start_time, free_end_time)
                     if not overlaps:
                         # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Smart label based on context
-                        smart_label = _get_free_time_label(plan, now, free_duration, end)
+                        smart_label = _get_free_time_label(plan, now, free_duration, end, profile=user.get("target_group"))
                         
                         plan.append({
                             "type": "free_time",
@@ -5207,7 +5236,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 overlaps, conflict = _check_time_overlap(plan, free_start_time, free_end_time)
                 if not overlaps:
                     # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Smart label for end-of-day gaps
-                    smart_label = _get_free_time_label(plan, now, free_duration, end)
+                    smart_label = _get_free_time_label(plan, now, free_duration, end, profile=user.get("target_group"))
                     
                     plan.append({
                         "type": "free_time",

@@ -329,6 +329,56 @@ def _explain_profile_match(
     return None
 
 
+def _explain_seasonal_experience(
+    poi: Dict[str, Any], context: Dict[str, Any]
+) -> Optional[str]:
+    """
+    FIX #108 (28.05.2026): Generate reason from seasonal or local experience.
+    Runs at highest priority (after must-see) before preference/profile checks.
+    Ensures seasonal POIs (Kulig, etc.) always get correct why_selected label
+    regardless of profile.
+
+    Args:
+        poi: POI data dict with tags, seasonality
+        context: Context dict with season
+
+    Returns:
+        Reason string if seasonal/local match detected, else None
+
+    Examples:
+        "Winter experience" (kulig/seasonal_activity + winter season)
+        "Local experience" (local_experience/regional_heritage tag)
+    """
+    # Parse tags to a set for fast lookup
+    poi_tags_raw = poi.get("tags", []) or []
+    if isinstance(poi_tags_raw, str):
+        poi_tags = {t.strip().lower() for t in poi_tags_raw.split(",") if t.strip()}
+    else:
+        poi_tags = {str(t).strip().lower() for t in poi_tags_raw if t}
+
+    season = str(context.get("season", "")).lower()
+    seasonality = str(poi.get("seasonality") or poi.get("Seasonality of attractions") or "").lower()
+    poi_name_lower = str(poi.get("name", "")).lower()
+
+    # Priority A: Winter seasonal experience
+    winter_activity_tags = {"seasonal_activity", "winter_activity"}
+    winter_name_indicators = {"kulig", "sleigh"}
+    is_winter_context = season == "winter" or "winter" in seasonality
+    has_winter_indicator = (
+        bool(winter_activity_tags & poi_tags)
+        or any(ind in poi_name_lower for ind in winter_name_indicators)
+    )
+    if is_winter_context and has_winter_indicator:
+        return "Winter experience"
+
+    # Priority B: Local/authentic experience
+    local_tags = {"local_experience", "local_food", "regional_heritage", "mountain_culture", "traditional"}
+    if local_tags & poi_tags:
+        return "Local experience"
+
+    return None
+
+
 def explain_poi_selection(
     poi: Dict[str, Any],
     context: Dict[str, Any],
@@ -388,29 +438,35 @@ def explain_poi_selection(
         reasons.append(f"Must-see attraction in {_poi_city}")
     elif priority >= 11:
         reasons.append("Highly recommended by locals")
-    
-    # Priority 2: Preference match (scoring signal: tag overlap)
-    pref_reason = _explain_preference_match(poi, user)
-    if pref_reason:
-        reasons.append(pref_reason)
-    
-    # Priority 3: Profile match (NEW - target_group + travel_style)
+
+    # Priority 2 (FIX #108): Seasonal/local experience — before preference/profile
+    # Ensures Kulig gets "Winter experience", not "Peaceful atmosphere"
+    seasonal_reason = _explain_seasonal_experience(poi, context)
+    if seasonal_reason:
+        reasons.append(seasonal_reason)
+
+    # Priority 3: Profile match (target_group + travel_style)
     # BUGFIX (19.02.2026): Add profile-based reasons
     profile_reason = _explain_profile_match(poi, user)
     if profile_reason:
         reasons.append(profile_reason)
-    
-    # Priority 4: Crowd tolerance fit (scoring signal: popularity vs tolerance)
+
+    # Priority 4: Preference match (scoring signal: tag overlap)
+    pref_reason = _explain_preference_match(poi, user)
+    if pref_reason:
+        reasons.append(pref_reason)
+
+    # Priority 5: Crowd tolerance fit (scoring signal: popularity vs tolerance)
     crowd_reason = _explain_crowd_fit(poi, user)
     if crowd_reason:
         reasons.append(crowd_reason)
-    
-    # Priority 5: Budget fit (scoring signal: price vs budget_level)
+
+    # Priority 6: Budget fit (scoring signal: price vs budget_level)
     budget_reason = _explain_budget_fit(poi, user)
     if budget_reason:
         reasons.append(budget_reason)
     
-    # Priority 6: Travel style match (scoring signal: type/tags vs style)
+    # Priority 7: Travel style match (scoring signal: type/tags vs style)
     style_reason = _explain_travel_style_match(poi, user)
     if style_reason:
         reasons.append(style_reason)
