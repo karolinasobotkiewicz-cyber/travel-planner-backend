@@ -638,6 +638,19 @@ MIN_TRANSFER_MIN = 5
 # Distances below this are treated as walkable (no need to drive 300m)
 WALK_THRESHOLD_KM = 1.2
 
+# FIX #111 (06.06.2026): Inter-city transfer threshold
+# Distances above this are treated as inter-city (different city within a cluster)
+INTER_CITY_THRESHOLD_KM = 8.0
+
+# FIX #111 (06.06.2026): Cluster-aware road speeds for travel time calculation
+# Each cluster type has realistic road conditions that differ from mountain defaults
+CLUSTER_ROAD_SPEEDS_KMH = {
+    "urban_organism":   60.0,  # Trójmiasto: urban expressways / SKM corridor (S6/S7)
+    "regional_cluster": 50.0,  # Kotlina Kłodzka: regional roads, moderate terrain
+    "radius_based":     40.0,  # Karkonosze: narrow mountain roads, hairpin bends
+    "standalone_city":  45.0,  # Default: mountain city roads (unchanged from FIX #98)
+}
+
 # FIX #102 (29.05.2026): Zakopane city center coordinates (used for return transit after trail)
 ZAKOPANE_CENTER_LAT = 49.2992
 ZAKOPANE_CENTER_LNG = 19.9496
@@ -984,7 +997,14 @@ def travel_time_minutes(a, b, context):
 
     FIX #98 (28.05.2026): Auto-selects walking or car mode based on GPS distance.
     - distance < WALK_THRESHOLD_KM  → walking  (~5 km/h, no parking, min 5 min)
-    - distance >= WALK_THRESHOLD_KM → car      (mountain ~45 km/h + 5 min parking, min 10 min)
+    - distance >= WALK_THRESHOLD_KM → car      (cluster-aware speed + 5 min parking, min 10 min)
+
+    FIX #111 (06.06.2026): Cluster-aware road speed for car travel.
+    Speed is selected based on cluster_type from context["signals"]:
+    - urban_organism (Trójmiasto): 60 km/h — urban expressways / SKM corridor
+    - regional_cluster (Kotlina):  50 km/h — regional roads, moderate terrain
+    - radius_based (Karkonosze):   40 km/h — narrow mountain roads
+    - standalone_city (Zakopane):  45 km/h — mountain city roads (unchanged)
     Return type stays int (minutes) – fully backward compatible.
     """
     if not a or not b:
@@ -1007,8 +1027,10 @@ def travel_time_minutes(a, b, context):
         walk_time = (distance_km / 5.0) * 60
         return max(int(walk_time), 5)
     else:
-        # Car: mountain roads ~45 km/h + 5 min parking
-        drive_time = (distance_km / 45.0) * 60 + 5
+        # FIX #111: Car speed depends on cluster type (road conditions vary per region)
+        cluster_type = context.get("signals", {}).get("cluster_type", "standalone_city")
+        speed_kmh = CLUSTER_ROAD_SPEEDS_KMH.get(cluster_type, 45.0)
+        drive_time = (distance_km / speed_kmh) * 60 + 5
         return max(int(drive_time), 10)
 
 
@@ -2782,11 +2804,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     cluster_type = signals.get("cluster_type", "standalone_city")
     
     # Define limits based on cluster type
+    # FIX #111 (06.06.2026): Recalibrated for realistic inter-city cluster drives
+    # - urban_organism (Trójmiasto): max ~25km at 60 km/h ≈ 30 min → single=35 with margin
+    # - regional_cluster (Kotlina):  max ~25km at 50 km/h ≈ 35 min → single=45 with margin
+    # - radius_based (Karkonosze):   max ~35km at 40 km/h ≈ 57 min → single=60 with margin
+    # - standalone_city (Zakopane):  short drives only → single=25 UNCHANGED
     DRIVE_LIMITS = {
-        "urban_organism": {"daily": 90, "single": 30},     # Trójmiasto: public transport
-        "regional_cluster": {"daily": 120, "single": 40},  # Kotlina: longer drives OK
-        "radius_based": {"daily": 90, "single": 35},       # Karkonosze: narrow mountain roads
-        "standalone_city": {"daily": 60, "single": 25}     # Kraków: minimal driving
+        "urban_organism":   {"daily": 90,  "single": 35},  # Trójmiasto: fast urban roads/SKM
+        "regional_cluster": {"daily": 120, "single": 45},  # Kotlina: regional roads <25km
+        "radius_based":     {"daily": 130, "single": 60},  # Karkonosze: up to 35km mountain roads
+        "standalone_city":  {"daily": 60,  "single": 25}   # Zakopane: UNCHANGED
     }
     
     # Get limits for current cluster (default to standalone_city if unknown)
@@ -4313,6 +4340,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
             # FIX #98 (28.05.2026): Determine transport mode for this transfer
             _is_walking = _t77_dist_km < WALK_THRESHOLD_KM
+            # FIX #111 (06.06.2026): Mark inter-city transfers (distance > INTER_CITY_THRESHOLD_KM)
+            _is_inter_city = _t77_dist_km >= INTER_CITY_THRESHOLD_KM
 
             plan.append(
                 {
@@ -4322,6 +4351,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     "duration_min": transfer_time,
                     "distance_km": round(_t77_dist_km, 3),  # FIX #77
                     "transport_mode": "walking" if _is_walking else "car",  # FIX #98
+                    "inter_city": _is_inter_city,  # FIX #111: True for cross-city cluster transfers
                 }
             )
 
@@ -4879,6 +4909,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             "duration_min": soft_travel,
                             "distance_km": round(_t77_dist_km, 3),  # FIX #77
                             "transport_mode": "walking" if _t77_dist_km < WALK_THRESHOLD_KM else "car",  # FIX #98
+                            "inter_city": _t77_dist_km >= INTER_CITY_THRESHOLD_KM,  # FIX #111
                         })
                         now += soft_travel
                     
@@ -5148,6 +5179,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         "duration_min": soft_travel,
                         "distance_km": round(_t77_dist_km, 3),  # FIX #77
                         "transport_mode": "walking" if _t77_dist_km < WALK_THRESHOLD_KM else "car",  # FIX #98
+                        "inter_city": _t77_dist_km >= INTER_CITY_THRESHOLD_KM,  # FIX #111
                     })
                     now += soft_travel
                 

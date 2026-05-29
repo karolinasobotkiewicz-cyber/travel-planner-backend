@@ -245,6 +245,8 @@ class PlanService:
         # Store router config in context for engine customization
         context["trip_type"] = router_config["trip_type"]
         context["scoring_weights"] = router_config["scoring_weights"]
+        # FIX #111 (06.06.2026): Pass cluster signals so engine uses correct road speeds + drive limits
+        context["signals"] = router_config.get("signals", {})
         
         # Fallback: If no data loaded, return empty plan
         if not all_pois_dict:
