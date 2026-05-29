@@ -5,6 +5,8 @@ import re
 import ast
 from typing import Optional, Dict, List
 from app.infrastructure.repositories.normalizer import normalize_pois
+# FIX #110 (29.05.2026): Auto-validate Excel on load — detects tag mismatch, Polish values, etc.
+from app.infrastructure.repositories.excel_validator import validate_excel
 
 
 def _convert_opening_hours_to_json(opening_hours_str: str) -> Optional[Dict[str, str]]:
@@ -159,6 +161,11 @@ def load_zakopane_poi(path: str, city_filter: Optional[str] = None):
     Problem: System showed Zakopane POIs regardless of location.city in request
     Solution: Added city_filter parameter to filter POIs by City column
     """
+    # FIX #110 (29.05.2026): Validate Excel before loading — report issues without blocking.
+    _val_report = validate_excel(path, city_name=city_filter or "")
+    if _val_report.has_errors or _val_report.warnings:
+        _val_report.print_summary()
+
     df = pd.read_excel(path)
 
     # CLIENT DATA UPDATE (22.05.2026): Strip trailing spaces from column names

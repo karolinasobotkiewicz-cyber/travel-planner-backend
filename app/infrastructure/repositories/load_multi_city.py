@@ -15,6 +15,8 @@ Usage:
 """
 import pandas as pd
 from typing import List, Dict, Any
+# FIX #110 (29.05.2026): Auto-validate Excel on load — detects tag mismatch, Polish values, etc.
+from app.infrastructure.repositories.excel_validator import validate_excel
 
 # FIX #38 (20.05.2026): Priority level mapping for multi_city Excel
 # multi_city_attractions.xlsx uses 'high'/'medium'/'low' naming scheme
@@ -102,7 +104,18 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
         raise FileNotFoundError(f"Excel file not found: {excel_path}")
     except Exception as e:
         raise ValueError(f"Failed to read Excel file {excel_path}: {e}")
-    
+
+    # FIX #110 (29.05.2026): Validate Excel data quality before processing.
+    # Runs once per load — prints warnings/errors to console without blocking.
+    _city_label = ", ".join(cities) if cities else ""
+    _val_report = validate_excel(
+        excel_path=excel_path,
+        city_name=_city_label,
+        sheet_name='All Cities',
+    )
+    if _val_report.has_errors or _val_report.warnings:
+        _val_report.print_summary()
+
     # Filter by cities
     if 'City' not in df.columns:
         raise ValueError(f"Excel file missing 'City' column: {excel_path}")
