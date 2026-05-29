@@ -367,7 +367,51 @@ class PlanService:
             # ================================================================
             # END FIX #24.5
             # ================================================================
-            
+
+            # ================================================================
+            # FIX #112 (07.06.2026): POI SHORTAGE CHECK — small cluster cities
+            # ================================================================
+            # Problem: Small cities (Polanica-Zdrój=11, Kłodzko=12, Szklarska=17 POI) may
+            # produce 1-2 meaningful days instead of 3-4 requested, because the engine
+            # exhausts attractions by Day 3 → Days 3-4 contain only free_time blocks.
+            #
+            # FIX #24.5 (DISABLED) used quality-only POI count (4.5/day) — too aggressive:
+            #   Zakopane had only 11 quality POI → max=2 days even for 7-day trips.
+            # FIX #112: uses ALL attractions (POI + trails) with MIN 3/day threshold.
+            #   Zakopane (59 total): 59//3 = 19 → no reduction ✓
+            #   Polanica-Zdrój (11): 11//3 = 3 → reduces 4-day → 3-day ✓
+            #   Kotlina cluster (42): 42//3 = 14 → no reduction ✓
+            # ================================================================
+            MIN_ATTRACTIONS_PER_DAY = 3  # Minimum attractions per day for a meaningful plan
+            max_feasible_days = max(1, len(all_pois_dict) // MIN_ATTRACTIONS_PER_DAY)
+
+            print(f"[FIX #112] POI shortage check: {len(all_pois_dict)} total attractions, {num_days} requested days", flush=True)
+            print(f"[FIX #112] Max feasible days (@ {MIN_ATTRACTIONS_PER_DAY} attractions/day): {max_feasible_days}", flush=True)
+
+            if max_feasible_days < num_days:
+                location_label = router_config.get("region", trip_input.location.city)
+                shortage_warning = {
+                    "type": "poi_shortage",
+                    "requested_days": num_days,
+                    "feasible_days": max_feasible_days,
+                    "attractions_available": len(all_pois_dict),
+                    "message": (
+                        f"Ograniczona baza atrakcji w {location_label} "
+                        f"({len(all_pois_dict)} atrakcji). "
+                        f"Plan zredukowany do {max_feasible_days} dni zamiast {num_days}, "
+                        f"aby zapewnić pełne i sensowne dni wycieczki."
+                    ),
+                    "action_taken": f"Liczba dni zmniejszona z {num_days} do {max_feasible_days} (minimum {MIN_ATTRACTIONS_PER_DAY} atrakcje/dzień)"
+                }
+                plan_warnings.append(shortage_warning)
+                print(f"[FIX #112] ⚠️ SHORTAGE: reducing {num_days} days → {max_feasible_days} days for {location_label}", flush=True)
+                num_days = max_feasible_days
+            else:
+                print(f"[FIX #112] ✓ Sufficient attractions ({len(all_pois_dict)}) for {num_days} days", flush=True)
+            # ================================================================
+            # END FIX #112
+            # ================================================================
+
             # Create contexts list (one per day)
             contexts = []
             for day_num in range(num_days):
