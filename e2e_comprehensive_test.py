@@ -38,7 +38,7 @@ def analyze_plan(data: dict, test_name: str) -> dict:
         all_items.extend(day.get("items", []))
 
     attractions = [i for i in all_items if i.get("type") == "attraction"]
-    restaurants = [i for i in all_items if i.get("type") in ("restaurant", "lunch", "dinner")]
+    restaurants = [i for i in all_items if i.get("type") in ("restaurant", "lunch_break", "dinner_break")]
     hotels = [i for i in all_items if i.get("type") == "hotel"]
 
     # Unikalne POI

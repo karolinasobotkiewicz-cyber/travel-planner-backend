@@ -320,6 +320,10 @@ class DayPlan(BaseModel):
     """Plan dla pojedynczego dnia."""
 
     day: int = Field(..., ge=1, description="Numer dnia (1-indexed)")
+    title: Optional[str] = Field(
+        default=None,
+        description="Krótki tytuł dnia generowany na podstawie głównych atrakcji (np. 'Morskie Oko i Rysy')",
+    )
     items: List[PlanItem] = Field(
         default_factory=list, description="Lista items (7 typów)"
     )

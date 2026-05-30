@@ -34,6 +34,29 @@ from app.domain.router import detect_trip_type, TripType  # ETAP 3 Phase 2
 from app.domain.planner.quality_checker import validate_day_quality, check_poi_quality
 from app.domain.planner.explainability import explain_poi_selection
 
+
+def _generate_day_title(day_items: list, day_num: int) -> str:
+    """Generate a short descriptive title for a day based on its attractions.
+
+    Rules:
+    - 0 attractions  → "Dzień {day_num}"
+    - 1 attraction   → name of that attraction
+    - 2 attractions  → "Name1 i Name2"
+    - 3+ attractions → "Name1, Name2 i więcej"
+    """
+    names = [
+        item.name
+        for item in day_items
+        if hasattr(item, "type") and item.type == ItemType.ATTRACTION
+    ]
+    if not names:
+        return f"Dzień {day_num}"
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} i {names[1]}"
+    return f"{names[0]}, {names[1]} i więcej"
+
 # UAT Round 3 - FIX #1 (20.02.2026): Timeline Integrity Validator
 # Validates all items form non-overlapping sequential timeline
 # Detects overlaps: parking↔attraction, lunch↔attraction, free_time↔attraction
@@ -724,6 +747,7 @@ class PlanService:
             
             day_plan = DayPlan(
                 day=day_num + 1,
+                title=_generate_day_title(day_items, day_num + 1),
                 items=day_items,  # Use healed items with no overlaps + day_end at end
                 quality_badges=day_quality_badges  # ETAP 2 Day 5
             )
