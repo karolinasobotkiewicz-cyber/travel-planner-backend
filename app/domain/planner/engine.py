@@ -638,6 +638,18 @@ MIN_TRANSFER_MIN = 5
 # Distances below this are treated as walkable (no need to drive 300m)
 WALK_THRESHOLD_KM = 1.2
 
+# FIX #131 (XX.06.2026): Lower walk threshold for mountain/trail POIs.
+# Mountain terrain is steep — 0.8 km GPS distance can mean a significant uphill climb.
+WALK_THRESHOLD_MOUNTAIN_KM = 0.6
+
+# FIX #131: POI types and tags that qualify as "mountain" for the lower walk threshold.
+_MOUNTAIN_POI_TYPES = {"trail"}
+_MOUNTAIN_POI_TAGS = {
+    "nature_immersion", "easy_walk", "family_friendly_trail", "viewpoint_trail",
+    "forest_trails", "alpine_valley", "mountain_viewpoint", "panoramic_view",
+    "scenic_viewpoint",
+}
+
 # FIX #111 (06.06.2026): Inter-city transfer threshold
 # Distances above this are treated as inter-city (different city within a cluster)
 INTER_CITY_THRESHOLD_KM = 8.0
@@ -977,6 +989,22 @@ def safe_str(x):
 # =========================
 
 
+def _is_mountain_poi(poi):
+    """FIX #131: Return True if POI is mountain/trail type (uses lower walk threshold)."""
+    if not poi:
+        return False
+    if poi.get("type") in _MOUNTAIN_POI_TYPES:
+        return True
+    return bool(_MOUNTAIN_POI_TAGS & set(poi.get("tags", []) or []))
+
+
+def _walk_threshold(a=None, b=None):
+    """FIX #131: Return effective walk threshold km, lowered when either POI is mountain."""
+    if _is_mountain_poi(a) or _is_mountain_poi(b):
+        return WALK_THRESHOLD_MOUNTAIN_KM
+    return WALK_THRESHOLD_KM
+
+
 def distance_km(a, b):
     R = 6371
     lat1, lon1 = math.radians(a["lat"]), math.radians(a["lng"])
@@ -1021,8 +1049,9 @@ def travel_time_minutes(a, b, context):
         return 10  # fallback – no GPS coords
 
     distance_km = haversine_distance(lat1, lng1, lat2, lng2)
+    _walk_thresh = _walk_threshold(a, b)  # FIX #131: mountain-aware threshold
 
-    if distance_km < WALK_THRESHOLD_KM:
+    if distance_km < _walk_thresh:
         # Walking: 5 km/h, no parking overhead, minimum 5 min
         walk_time = (distance_km / 5.0) * 60
         return max(int(walk_time), 5)
@@ -1048,7 +1077,7 @@ def get_transport_mode(a, b):
     if not all([lat1, lng1, lat2, lng2]):
         return "car"
     distance_km = haversine_distance(lat1, lng1, lat2, lng2)
-    return "walking" if distance_km < WALK_THRESHOLD_KM else "car"
+    return "walking" if distance_km < _walk_threshold(a, b) else "car"  # FIX #131
 
 
 # =========================
@@ -2455,7 +2484,7 @@ def score_poi(
 # =========================
 
 
-def plan_multiple_days(pois, user, contexts, day_start, day_end):
+def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=None):
     """
     Build multi-day plan with cross-day POI tracking and core POI distribution.
     
@@ -2672,6 +2701,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
         # FIX #89 (28.05.2026): Inject global_type_tracking into context so score_poi can penalise repetition.
         context["global_type_tracking"] = global_type_tracking
         context["current_day_num"] = day_num + 1  # 1-based day number (used for variety penalty threshold)
+        _day_warnings: list = []  # FIX #130: collect per-day engine warnings
         day_plan = build_day(
             pois=pois,
             user=user,
@@ -2680,8 +2710,13 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
             day_end=day_end,
             global_used=global_used_pois,  # Pass reference to global set
             global_termy_tracking=global_termy_tracking,  # Pass termy limit tracker
-            global_trail_tracking=global_trail_tracking  # Pass trail limit tracker
+            global_trail_tracking=global_trail_tracking,  # Pass trail limit tracker
+            warnings_out=_day_warnings  # FIX #130: collect warnings
         )
+        # FIX #130: propagate per-day warnings tagged with day number
+        if warnings_out is not None:
+            for _w in _day_warnings:
+                warnings_out.append({**_w, "day": day_num + 1})
 
         # FIX #50+#51: Restore counts (restriction was temporary; day didn't consume those slots)
         if _termy_count_save is not None:
@@ -2741,7 +2776,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end):
 # =========================
 
 
-def build_day(pois, user, context, day_start=None, day_end=None, global_used=None, global_termy_tracking=None, global_trail_tracking=None):
+def build_day(pois, user, context, day_start=None, day_end=None, global_used=None, global_termy_tracking=None, global_trail_tracking=None, warnings_out=None):
     """
     Build daily plan from POIs.
     
@@ -3046,6 +3081,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if now > lunch_latest:
                     is_late_lunch = True
                     print(f"[LUNCH] WARNING: Late lunch scheduled at {minutes_to_time(now)} (should be by {LUNCH_LATEST})")
+                    if warnings_out is not None:  # FIX #130
+                        warnings_out.append({"type": "late_lunch", "severity": "warning",
+                            "message": f"Late lunch scheduled at {minutes_to_time(now)} (should be by {LUNCH_LATEST})"})
             
             # Case 2: We're past earliest (12:00) and approaching target (13:00)
             # If adding another POI would push lunch past 14:00, insert lunch NOW
@@ -3151,47 +3189,47 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 group_type_debug = user.get("target_group")
                 print(f"[DEBUG #Problem9] INSERTING LUNCH: time={lunch_start_time}-{lunch_end_time}, group_type={group_type_debug}, lunch_target={lunch_target}, lunch_latest={lunch_latest}")
                 
-                # FIX #102 (29.05.2026): If trail is the last POI, add return transit to city before lunch.
-                # Without this, lunch appears right after the trail with no transport = "teleport" to restaurant.
+                # FIX #129 (XX.06.2026): Generalize FIX #102 — add return transit to city before lunch
+                # for ANY POI type that is far from centrum (not just trails).
+                # Prevents "lunch teleport" regardless of attraction type (cable-car, zoo, etc.).
                 _lunch_location_context = "centrum"
-                if trail_day_mode and last_poi and last_poi.get("type") == "trail":
-                    _trail_lat = last_poi.get("lat")
-                    _trail_lng = last_poi.get("lng")
-                    if _trail_lat and _trail_lng:
-                        _dist_to_city = haversine_distance(_trail_lat, _trail_lng, ZAKOPANE_CENTER_LAT, ZAKOPANE_CENTER_LNG)
-                        _return_min = max(10, int((_dist_to_city / 45) * 60 + 5))
+                if last_poi and last_poi.get("type") != "city_center":
+                    _lp_lat = last_poi.get("lat")
+                    _lp_lng = last_poi.get("lng")
+                    if _lp_lat and _lp_lng:
+                        _dist_to_city = haversine_distance(_lp_lat, _lp_lng, ZAKOPANE_CENTER_LAT, ZAKOPANE_CENTER_LNG)
                     else:
                         _dist_to_city = 0.0
-                        _return_min = 20  # fallback: 20 min if no GPS
-                    if now + _return_min + 30 <= end:
-                        plan.append({
-                            "type": "transfer",
-                            "from": poi_name(last_poi),
-                            "to": "Zakopane centrum",
-                            "duration_min": _return_min,
-                            "distance_km": round(_dist_to_city, 3),
-                            "transport_mode": "car",
-                        })
-                        now += _return_min
-                        # FIX #118 (29.05.2026): Update last_poi to city center so the main POI loop
-                        # does NOT generate a duplicate transit from the trail location.
-                        last_poi = {
-                            "lat": ZAKOPANE_CENTER_LAT,
-                            "lng": ZAKOPANE_CENTER_LNG,
-                            "name": "Zakopane centrum",
-                            "poi_id": "__city_center__",
-                            "type": "city_center",
-                        }
-                        lunch_start_time = minutes_to_time(now)
-                        lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
-                        lunch_start_min = time_to_minutes(lunch_start_time)
-                        lunch_end_min = time_to_minutes(lunch_end_time)
-                        actual_lunch_duration = lunch_end_min - lunch_start_min
-                        print(f"[FIX #102] Added return transit from trail to Zakopane centrum: {_return_min}min ({_dist_to_city:.1f}km)")
-                        print(f"[FIX #118] last_poi updated to city center to prevent duplicate transit")
-                    else:
-                        print(f"[FIX #102] Skipped return transit (not enough time): {_return_min}min + 30min lunch > day_end")
-                        _lunch_location_context = "przy_szlaku"
+                    if _dist_to_city > WALK_THRESHOLD_KM:
+                        _return_min = max(5, int((_dist_to_city / 45) * 60 + 5))
+                        if now + _return_min + 30 <= end:
+                            _from_name_lunch = poi_name(last_poi)  # save before updating last_poi
+                            plan.append({
+                                "type": "transfer",
+                                "from": _from_name_lunch,
+                                "to": "Zakopane centrum",
+                                "duration_min": _return_min,
+                                "distance_km": round(_dist_to_city, 3),
+                                "transport_mode": "car",
+                            })
+                            now += _return_min
+                            # FIX #118 pattern: Update last_poi to city center to prevent duplicate transit
+                            last_poi = {
+                                "lat": ZAKOPANE_CENTER_LAT,
+                                "lng": ZAKOPANE_CENTER_LNG,
+                                "name": "Zakopane centrum",
+                                "poi_id": "__city_center__",
+                                "type": "city_center",
+                            }
+                            lunch_start_time = minutes_to_time(now)
+                            lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
+                            lunch_start_min = time_to_minutes(lunch_start_time)
+                            lunch_end_min = time_to_minutes(lunch_end_time)
+                            actual_lunch_duration = lunch_end_min - lunch_start_min
+                            print(f"[FIX #129] Added return transit from {_from_name_lunch} to Zakopane centrum: {_return_min}min ({_dist_to_city:.1f}km)")
+                        else:
+                            print(f"[FIX #129] Skipped return transit (not enough time): {_return_min}min + 30min lunch > day_end")
+                            _lunch_location_context = "przy_atrakcji"
                 
                 plan.append(
                     {
@@ -3234,6 +3272,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if now > dinner_latest:
                     is_late_dinner = True
                     print(f"[DINNER] WARNING: Late dinner scheduled at {minutes_to_time(now)} (should be by {minutes_to_time(dinner_latest)})")
+                    if warnings_out is not None:  # FIX #130
+                        warnings_out.append({"type": "late_dinner", "severity": "warning",
+                            "message": f"Late dinner scheduled at {minutes_to_time(now)} (should be by {minutes_to_time(dinner_latest)})"})
             
             if should_insert_dinner:
                 dinner_start_time = minutes_to_time(now)
@@ -4448,46 +4489,53 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             _t77_lat2, _t77_lng2 = best.get("lat"), best.get("lng")
             _t77_dist_km = haversine_distance(_t77_lat1, _t77_lng1, _t77_lat2, _t77_lng2) if all([_t77_lat1, _t77_lng1, _t77_lat2, _t77_lng2]) else 999.0
 
-            # FIX #98 (28.05.2026): Determine transport mode for this transfer
-            _is_walking = _t77_dist_km < WALK_THRESHOLD_KM
+            # FIX #131: mountain-aware walk threshold
+            _is_walking = _t77_dist_km < _walk_threshold(last_poi, best)
             # FIX #111 (06.06.2026): Mark inter-city transfers (distance > INTER_CITY_THRESHOLD_KM)
             _is_inter_city = _t77_dist_km >= INTER_CITY_THRESHOLD_KM
 
-            plan.append(
-                {
-                    "type": "transfer",
-                    "from": poi_name(last_poi),
-                    "to": poi_name(best),
-                    "duration_min": transfer_time,
-                    "distance_km": round(_t77_dist_km, 3),  # FIX #77
-                    "transport_mode": "walking" if _is_walking else "car",  # FIX #98
-                    "inter_city": _is_inter_city,  # FIX #111: True for cross-city cluster transfers
-                }
+            # FIX #128: Skip zero-distance or duplicate transfer (same location → no transit needed)
+            _skip_transfer = (
+                _t77_dist_km < 0.05
+                or (plan and plan[-1].get("type") == "transfer"
+                    and plan[-1].get("to") == poi_name(best))
             )
-
-            now += transfer_time
-            
-            # PHASE 8 FEATURE #5 (27.04.2026): Track total drive time for daily limit
-            # FIX #98 (28.05.2026): Only count car transfers, not walking
-            if transfer_time >= 10 and not _is_walking:
-                total_drive_time += transfer_time
-                print(f"[DRIVE TRACKING] Added {transfer_time}min drive, total today: {total_drive_time}min / {max_daily_drive}min")
-            
-            # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #4): Add parking_walk buffer after car transfer
-            # Client requirement: "Oś czasu ma dziury" - dodaj buffer parking_walk po transfer
-            # FIX #98 (28.05.2026): Skip parking_walk for walking transfers – no car, no parking
-            if ctx.get("has_car", True) and not _is_walking:
-                parking_walk_duration = best.get("parking_walk_time_min", 5)
-                # Ensure reasonable range: 5-15 min
-                parking_walk_duration = max(5, min(15, int(parking_walk_duration)))
-                now = _add_buffer_item(
-                    plan, 
-                    now, 
-                    "parking_walk", 
-                    parking_walk_duration,
-                    reason_context={"poi_name": poi_name(best)},
-                    day_end=end
+            if not _skip_transfer:
+                plan.append(
+                    {
+                        "type": "transfer",
+                        "from": poi_name(last_poi),
+                        "to": poi_name(best),
+                        "duration_min": transfer_time,
+                        "distance_km": round(_t77_dist_km, 3),  # FIX #77
+                        "transport_mode": "walking" if _is_walking else "car",  # FIX #98/#131
+                        "inter_city": _is_inter_city,  # FIX #111
+                    }
                 )
+
+                now += transfer_time
+
+                # PHASE 8 FEATURE #5 (27.04.2026): Track total drive time for daily limit
+                # FIX #98 (28.05.2026): Only count car transfers, not walking
+                if transfer_time >= 10 and not _is_walking:
+                    total_drive_time += transfer_time
+                    print(f"[DRIVE TRACKING] Added {transfer_time}min drive, total today: {total_drive_time}min / {max_daily_drive}min")
+
+                # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #4): Add parking_walk buffer after car transfer
+                # Client requirement: "Oś czasu ma dziury" - dodaj buffer parking_walk po transfer
+                # FIX #98 (28.05.2026): Skip parking_walk for walking transfers – no car, no parking
+                if ctx.get("has_car", True) and not _is_walking:
+                    parking_walk_duration = best.get("parking_walk_time_min", 5)
+                    # Ensure reasonable range: 5-15 min
+                    parking_walk_duration = max(5, min(15, int(parking_walk_duration)))
+                    now = _add_buffer_item(
+                        plan,
+                        now,
+                        "parking_walk",
+                        parking_walk_duration,
+                        reason_context={"poi_name": poi_name(best)},
+                        day_end=end
+                    )
         
         # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #4): Add tickets_queue buffer for popular attractions
         # Client requirement: Add buffer for waiting in line at popular places
@@ -4651,33 +4699,34 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             if now >= lunch_target:
                 print(f"[LUNCH POST-POI CHECK] POI pushed now to {minutes_to_time(now)} (>= target {lunch_target}) - FORCING lunch NOW")
                 
-                # FIX #102 (29.05.2026): If trail just finished, add return transit to city first.
-                # Without this, lunch appears at trail location with no transport = "teleport" to restaurant.
+                # FIX #129 (XX.06.2026): Generalize FIX #102 — add return transit to city before lunch
+                # for ANY POI type that is far from centrum (not just trails).
+                # Prevents "lunch teleport" regardless of attraction type (cable-car, zoo, etc.).
                 _lunch_location_context = "centrum"
-                if trail_day_mode and best.get("type") == "trail":
-                    _trail_lat = best.get("lat")
-                    _trail_lng = best.get("lng")
-                    if _trail_lat and _trail_lng:
-                        _dist_to_city = haversine_distance(_trail_lat, _trail_lng, ZAKOPANE_CENTER_LAT, ZAKOPANE_CENTER_LNG)
-                        _return_min = max(10, int((_dist_to_city / 45) * 60 + 5))
+                if best and best.get("type") != "city_center":
+                    _bp_lat = best.get("lat")
+                    _bp_lng = best.get("lng")
+                    if _bp_lat and _bp_lng:
+                        _dist_to_city = haversine_distance(_bp_lat, _bp_lng, ZAKOPANE_CENTER_LAT, ZAKOPANE_CENTER_LNG)
                     else:
                         _dist_to_city = 0.0
-                        _return_min = 20  # fallback: 20 min if no GPS
-                    # Only add return transit if it fits within day_end
-                    if now + _return_min + 30 <= end:  # 30 min minimum for lunch
-                        plan.append({
-                            "type": "transfer",
-                            "from": poi_name(best),
-                            "to": "Zakopane centrum",
-                            "duration_min": _return_min,
-                            "distance_km": round(_dist_to_city, 3),
-                            "transport_mode": "car",
-                        })
-                        now += _return_min
-                        print(f"[FIX #102] Added return transit from trail to Zakopane centrum: {_return_min}min ({_dist_to_city:.1f}km)")
-                    else:
-                        print(f"[FIX #102] Skipped return transit (not enough time): {_return_min}min + 30min lunch > day_end")
-                        _lunch_location_context = "przy_szlaku"
+                    if _dist_to_city > WALK_THRESHOLD_KM:
+                        _return_min = max(5, int((_dist_to_city / 45) * 60 + 5))
+                        # Only add return transit if it fits within day_end
+                        if now + _return_min + 30 <= end:  # 30 min minimum for lunch
+                            plan.append({
+                                "type": "transfer",
+                                "from": poi_name(best),
+                                "to": "Zakopane centrum",
+                                "duration_min": _return_min,
+                                "distance_km": round(_dist_to_city, 3),
+                                "transport_mode": "car",
+                            })
+                            now += _return_min
+                            print(f"[FIX #129] Added return transit from {poi_name(best)} to Zakopane centrum: {_return_min}min ({_dist_to_city:.1f}km)")
+                        else:
+                            print(f"[FIX #129] Skipped return transit (not enough time): {_return_min}min + 30min lunch > day_end")
+                            _lunch_location_context = "przy_atrakcji"
                 
                 # Insert lunch immediately
                 lunch_start_time = minutes_to_time(now)
@@ -4742,6 +4791,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 
                 if now > lunch_latest:
                     print(f"[LUNCH POST-POI] WARNING: Late lunch at {lunch_start_time} (should be by {LUNCH_LATEST})")
+                    if warnings_out is not None:  # FIX #130
+                        warnings_out.append({"type": "late_lunch", "severity": "warning",
+                            "message": f"Late lunch at {lunch_start_time} (should be by {LUNCH_LATEST})"})
                 else:
                     print(f"[LUNCH POST-POI] Lunch inserted at {lunch_start_time}-{lunch_end_time} (duration: {actual_lunch_duration} min)")
                 
@@ -5023,16 +5075,23 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         _t77_lat1, _t77_lng1 = last_poi.get("lat"), last_poi.get("lng")
                         _t77_lat2, _t77_lng2 = p.get("lat"), p.get("lng")
                         _t77_dist_km = haversine_distance(_t77_lat1, _t77_lng1, _t77_lat2, _t77_lng2) if all([_t77_lat1, _t77_lng1, _t77_lat2, _t77_lng2]) else 999.0
-                        plan.append({
-                            "type": "transfer",
-                            "from": poi_name(last_poi),
-                            "to": poi_name(p),
-                            "duration_min": soft_travel,
-                            "distance_km": round(_t77_dist_km, 3),  # FIX #77
-                            "transport_mode": "walking" if _t77_dist_km < WALK_THRESHOLD_KM else "car",  # FIX #98
-                            "inter_city": _t77_dist_km >= INTER_CITY_THRESHOLD_KM,  # FIX #111
-                        })
-                        now += soft_travel
+                        # FIX #128: Skip zero-distance or duplicate transfer
+                        _skip_soft_tr = (
+                            _t77_dist_km < 0.05
+                            or (plan and plan[-1].get("type") == "transfer"
+                                and plan[-1].get("to") == poi_name(p))
+                        )
+                        if not _skip_soft_tr:
+                            plan.append({
+                                "type": "transfer",
+                                "from": poi_name(last_poi),
+                                "to": poi_name(p),
+                                "duration_min": soft_travel,
+                                "distance_km": round(_t77_dist_km, 3),  # FIX #77
+                                "transport_mode": "walking" if _t77_dist_km < _walk_threshold(last_poi, p) else "car",  # FIX #98/#131
+                                "inter_city": _t77_dist_km >= INTER_CITY_THRESHOLD_KM,  # FIX #111
+                            })
+                            now += soft_travel
                     
                     plan.append({
                         "type": "attraction",
@@ -5314,16 +5373,23 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     _t77_lat1, _t77_lng1 = _t77_lp.get("lat"), _t77_lp.get("lng")
                     _t77_lat2, _t77_lng2 = soft_best.get("lat"), soft_best.get("lng")
                     _t77_dist_km = haversine_distance(_t77_lat1, _t77_lng1, _t77_lat2, _t77_lng2) if all([_t77_lat1, _t77_lng1, _t77_lat2, _t77_lng2]) else 999.0
-                    plan.append({
-                        "type": "transfer",
-                        "from": poi_name(last_poi) if last_poi else "start",
-                        "to": poi_name(soft_best),
-                        "duration_min": soft_travel,
-                        "distance_km": round(_t77_dist_km, 3),  # FIX #77
-                        "transport_mode": "walking" if _t77_dist_km < WALK_THRESHOLD_KM else "car",  # FIX #98
-                        "inter_city": _t77_dist_km >= INTER_CITY_THRESHOLD_KM,  # FIX #111
-                    })
-                    now += soft_travel
+                    # FIX #128: Skip zero-distance or duplicate transfer
+                    _skip_gap_tr = (
+                        _t77_dist_km < 0.05
+                        or (plan and plan[-1].get("type") == "transfer"
+                            and plan[-1].get("to") == poi_name(soft_best))
+                    )
+                    if not _skip_gap_tr:
+                        plan.append({
+                            "type": "transfer",
+                            "from": poi_name(last_poi) if last_poi else "start",
+                            "to": poi_name(soft_best),
+                            "duration_min": soft_travel,
+                            "distance_km": round(_t77_dist_km, 3),  # FIX #77
+                            "transport_mode": "walking" if _t77_dist_km < _walk_threshold(last_poi, soft_best) else "car",  # FIX #98/#131
+                            "inter_city": _t77_dist_km >= INTER_CITY_THRESHOLD_KM,  # FIX #111
+                        })
+                        now += soft_travel
                 
                 plan.append({
                     "type": "attraction",
@@ -5473,6 +5539,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             print(f"  - Free time: {free_time_minutes}/{total_minutes} min ({free_time_pct:.1f}%)")
             print(f"  - Attractions: {attraction_count_final}")
             print(f"  - Suggestion: Relax filters (target_group, intensity, budget, distance)")
+            if warnings_out is not None:  # FIX #130
+                warnings_out.append({"type": "sparse_day", "severity": "warning",
+                    "message": f"Day is sparse: {attraction_count_final} attractions, {free_time_pct:.0f}% free time. Consider relaxing filters."})
     
     # BUGFIX (19.02.2026 - UAT Round 2, Issue #5): Validate preference coverage
     # Check if day includes attractions matching top 3 user preferences

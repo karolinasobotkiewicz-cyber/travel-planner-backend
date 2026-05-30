@@ -476,26 +476,32 @@ class PlanService:
                 contexts.append(day_context)
             
             # Call multi-day planner
+            _engine_warnings: list = []  # FIX #130
             engine_results = plan_multiple_days(
                 pois=all_pois_dict,
                 user=user,
                 contexts=contexts,
                 day_start=day_start,
-                day_end=day_end
+                day_end=day_end,
+                warnings_out=_engine_warnings  # FIX #130
             )
+            plan_warnings.extend(_engine_warnings)  # FIX #130
             
         else:
             # Single-day plan: Use original build_day (Etap 1 behavior)
             print(f"[PLAN SERVICE] Single-day plan requested")
             context["date"] = dates[0]
-            
+
+            _engine_warnings: list = []  # FIX #130
             engine_result = build_day(
                 all_pois_dict,
                 user,
                 context,
                 day_start,
-                day_end
+                day_end,
+                warnings_out=_engine_warnings  # FIX #130
             )
+            plan_warnings.extend(_engine_warnings)  # FIX #130
             
             # Wrap in list for uniform processing
             engine_results = [engine_result]
