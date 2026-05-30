@@ -48,8 +48,11 @@ def analyze_plan(data: dict, test_name: str) -> dict:
     # Cities covered
     cities = set()
     for item in attractions:
-        poi = item.get("poi", {})
-        city = poi.get("city") or poi.get("City", "")
+        # city is at item level (not nested under poi)
+        city = item.get("city") or item.get("City", "")
+        if not city:
+            poi = item.get("poi", {})
+            city = poi.get("city") or poi.get("City", "")
         if city:
             cities.add(city)
 

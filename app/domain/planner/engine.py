@@ -1810,8 +1810,14 @@ def score_poi(
         
         if user_has_outdoor_prefs:
             # Boost active POI for adventure travelers with outdoor preferences
-            active_tags = {"active_sport", "hiking", "climbing", "mountain_trails", "outdoor", "sports"}
-            if active_tags & poi_tags:
+            # Includes both generic tags AND Zakopane-specific trail tags
+            active_tags = {
+                "active_sport", "hiking", "climbing", "mountain_trails", "outdoor", "sports",
+                # Zakopane actual trail tags
+                "easy_walk", "moderate_hike", "forest_trails", "nature_immersion",
+            }
+            poi_type_str = str(p.get("type", "")).lower()
+            if (active_tags & poi_tags) or poi_type_str == "trail":
                 boost = score * 0.5  # 50% boost
                 score += boost
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
@@ -1822,8 +1828,14 @@ def score_poi(
             # Problem: TEST-03 (adventure + mountain_trails) gets museums > hiking trails
             # Only 1/11 POIs was hiking (9%), 6/11 were museums (54%)
             # Solution: Strong boost (100%) for mountain/hiking POIs to prioritize over indoor attractions
-            mountain_tags = {"hiking", "mountain_trail", "scenic_viewpoint", "cable_car", 
-                            "funicular", "mountain_lake", "alpine", "trekking", "peak"}
+            mountain_tags = {
+                "hiking", "mountain_trail", "scenic_viewpoint", "cable_car",
+                "funicular", "mountain_lake", "alpine", "trekking", "peak",
+                # Zakopane actual mountain/trail tags
+                "viewpoint_trail", "panoramic_route", "peak_summit", "cable_car_option",
+                "scenic_ridge_walk", "mountain_views", "tatra_viewpoint", "panoramic_mountain_views",
+                "waterfall_trail", "out_and_back",
+            }
             if mountain_tags & poi_tags:
                 boost = score * 1.0  # 100% boost (DOUBLE score for mountain POIs)
                 score += boost
