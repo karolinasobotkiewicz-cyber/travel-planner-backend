@@ -2751,6 +2751,22 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     if current_date:
         pois = filter_by_season(pois, current_date)
 
+    # FIX #122 (30.05.2026): Evening scarcity detection
+    # Count how many POI in the (post-seasonal-filter) pool include "evening" in their
+    # recommended_time_of_day.  When fewer than 3 are available the time-of-day scorer
+    # uses a relaxed tiered penalty so that afternoon/midday POI can fill evening slots
+    # without tanking the plan quality (affects cities like Warszawa, Jelenia Góra, etc.).
+    _ev_pool_count = sum(
+        1 for _p in pois
+        if "evening" in str(_p.get("recommended_time_of_day", "") or "").lower()
+    )
+    ctx["evening_scarcity"] = _ev_pool_count < 3
+    if ctx["evening_scarcity"]:
+        print(
+            f"[FIX #122] Evening scarcity: only {_ev_pool_count} evening POI in pool — "
+            f"evening fallback ACTIVE (afternoon/midday penalties relaxed for evening slots)"
+        )
+
     # Use user-provided times or fallback to global defaults
     start_time_str = day_start or DAY_START
     end_time_str = day_end or DAY_END
