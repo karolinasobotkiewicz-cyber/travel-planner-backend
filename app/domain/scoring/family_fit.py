@@ -132,8 +132,12 @@ def calculate_family_score(poi, user):
             cmin = poi.get("children_min", None)
             cmax = poi.get("children_max", None)
             if isinstance(cmin, int) and isinstance(cmax, int):
-                if cmin <= int(age) <= cmax:
-                    base += 2.0  # FIXME: moze za malo?
+                if int(age) < cmin:
+                    # FIX #126 (30.05.2026): Hard penalty — child too young for this POI
+                    # Not a hard exclude to prevent empty days, but -50 effectively removes it
+                    base -= 50.0
+                elif cmin <= int(age) <= cmax:
+                    base += 2.0  # In-range bonus
 
         return base
     
