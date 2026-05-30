@@ -26,6 +26,10 @@ _PRIORITY_LEVEL_MAP = {
     'high': 'core',       # +25 bonus in calculate_priority_bonus()
     'medium': 'secondary', # +10 bonus
     'low': 'optional',    # 0 bonus (filler)
+    # Passthrough: Excel may already store engine-compatible values
+    'core': 'core',
+    'secondary': 'secondary',
+    'optional': 'optional',
 }
 
 _CROWD_LEVEL_MAP = {
@@ -75,6 +79,19 @@ def _safe_child_age(raw):
         return int(float(s))
     except (ValueError, TypeError):
         return None
+
+
+def _safe_float(raw, default=None):
+    """Safely parse float from Excel - returns default if value is not a valid number (e.g. '-', '', NaN)."""
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return default
+    s = str(raw).strip()
+    if not s or s == '-':
+        return default
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return default
 
 
 def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, Any]]:
@@ -151,9 +168,12 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
         _oh = str(_oh_raw).strip() if _oh_raw is not None and pd.notna(_oh_raw) else None
         _oh = None if not _oh or _oh in ('{}', '[]', 'None', 'nan', '') else _oh
 
+        _raw_id = row.get('ID')
+        _id = str(_raw_id) if _raw_id is not None and pd.notna(_raw_id) and str(_raw_id).strip() not in ('', 'nan') else f"poi_{idx}"
+
         poi_dict = {
             # Identity
-            "id": str(row.get('ID', f"poi_{idx}")),
+            "id": _id,
             "type": "poi",  # Discriminator for engine
             "name": _name,
             "Name": _name,  # FIX #75: engine uses p.get("Name", "UNKNOWN") in several places
@@ -207,9 +227,9 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             # distinguish genuinely-free POIs (ticket=0) from no-data POIs (ticket=None).
             # Previously only 'ticket_price' key was set → both functions saw None → 50 PLN fallback.
             "cost_level": int(row.get('Cost_Level', 1)) if pd.notna(row.get('Cost_Level')) else 1,
-            "ticket_price": float(row.get('ticket_normal', 0.0)) if pd.notna(row.get('ticket_normal')) else None,
-            "ticket_normal": float(row.get('ticket_normal')) if pd.notna(row.get('ticket_normal')) else None,
-            "ticket_reduced": float(row.get('ticket_reduced')) if pd.notna(row.get('ticket_reduced')) else None,
+            "ticket_price": _safe_float(row.get('ticket_normal')),
+            "ticket_normal": _safe_float(row.get('ticket_normal')),
+            "ticket_reduced": _safe_float(row.get('ticket_reduced')),
             "ticket_required": _parse_bool(row.get('Ticket_Required', False)),
             "free_admission": _parse_bool(row.get('Free_Admission', False)),
             "free_entry": _parse_bool(row.get('Free_Admission', False)),  # FIX #68/#71: alias for engine.py
