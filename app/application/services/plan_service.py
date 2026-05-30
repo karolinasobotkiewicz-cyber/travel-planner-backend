@@ -261,49 +261,77 @@ class PlanService:
         # ============================================================
         
         # ============================================================
-        # FIX #Problem7 (Round 2 - 13.05.2026): Underground preference validation
+        # FIX #116 (29.05.2026): Generic preference availability validation
         # ============================================================
-        # Problem: User requests "underground" preference, but no underground POI exist in database
-        # Solution: Detect missing preference support, add warning, fallback to history_mystery
-        # Requirement from CLIENT_FEEDBACK_03_05_2026_ROUND2_MASTER_LIST.md
+        # Problem (original FIX #Problem7): Underground preference check was hardcoded —
+        #   only checked "underground" preference, city name was hardcoded as "Zakopane".
+        # Fix: Check ALL location-specific (rare) preferences against loaded POI tags.
+        #   Use actual city/region name. Apply fallback substitutions where defined.
+        # ============================================================
         
         plan_warnings = []  # Collect warnings to add to PlanResponse
         user_preferences = user.get("preferences", [])
+        # Build city label now (used in preference warnings AND later in poi_shortage warning)
+        _pref_location_label = router_config.get("region", trip_input.location.city)
         
-        if "underground" in user_preferences:
-            print("[PREFERENCE VALIDATION] Checking 'underground' preference...")
+        # Rare/location-specific preferences: mapping to relevant POI tags and optional fallback
+        # Add entries here when a preference is known to be location-dependent (not universally available)
+        _RARE_PREFERENCE_CONFIG = {
+            "underground": {
+                "tags": ["underground", "cave", "mine", "podziemi", "jaskini"],
+                "fallback": "history_mystery",
+                "fallback_action": "Preferencja 'underground' zastąpiona przez 'history_mystery'",
+            },
+            "winter_sports": {
+                "tags": ["skiing", "sledging", "snowboard", "narciarstwo", "ski", "winter_sport", "stok"],
+                "fallback": None,
+            },
+            "water_park": {
+                "tags": ["water_park", "aquapark", "waterslide", "aqua"],
+                "fallback": "water_attractions",
+                "fallback_action": "Preferencja 'water_park' zastąpiona przez 'water_attractions'",
+            },
+        }
+        
+        print(f"[PREFERENCE VALIDATION] Checking {len(user_preferences)} user preferences in {_pref_location_label}...")
+        for _pref in list(user_preferences):  # iterate copy — loop may modify user["preferences"]
+            _pref_cfg = _RARE_PREFERENCE_CONFIG.get(_pref)
+            if not _pref_cfg:
+                continue  # Common preference (cultural, relax, etc.) — always available
             
-            # Check if any POI has underground-related tags
-            underground_tags = ["underground", "cave", "mine", "podziemi", "jaskini"]
-            has_underground_poi = any(
-                any(tag.lower() in str(poi.get("tags", "")).lower() for tag in underground_tags)
+            _tags = _pref_cfg["tags"]
+            _has_poi = any(
+                any(tag in str(poi.get("tags", "")).lower() for tag in _tags)
                 for poi in all_pois_dict
             )
             
-            if not has_underground_poi:
-                # No underground POI available - add warning and fallback
-                warning = {
-                    "type": "preference_not_available",
-                    "preference": "underground",
-                    "message": "Brak atrakcji podziemnych w wybranej lokalizacji (Zakopane)",
-                    "fallback": "history_mystery",
-                    "action_taken": "Preferencja 'underground' zastąpiona przez 'history_mystery'"
-                }
-                plan_warnings.append(warning)
-                
-                # Replace 'underground' with 'history_mystery' in user preferences
+            if _has_poi:
+                print(f"[PREFERENCE VALIDATION] ✓ '{_pref}' available in {_pref_location_label}")
+                continue
+            
+            # No matching POI — build warning
+            _fallback = _pref_cfg.get("fallback")
+            _action = _pref_cfg.get("fallback_action", f"Preferencja '{_pref}' niedostępna w {_pref_location_label}")
+            _warning = {
+                "type": "preference_not_available",
+                "preference": _pref,
+                "message": f"Brak atrakcji pasujących do preferencji '{_pref}' w {_pref_location_label}",
+                "fallback": _fallback,
+                "action_taken": _action,
+            }
+            plan_warnings.append(_warning)
+            print(f"[PREFERENCE VALIDATION] ⚠️ '{_pref}' unavailable in {_pref_location_label} — {_action}")
+            
+            # Apply fallback substitution in user preferences
+            if _fallback:
                 user["preferences"] = [
-                    "history_mystery" if pref == "underground" else pref
-                    for pref in user_preferences
+                    _fallback if p == _pref else p
+                    for p in user["preferences"]
                 ]
-                
-                print(f"[PREFERENCE VALIDATION] ⚠️ WARNING: {warning['message']}")
-                print(f"[PREFERENCE VALIDATION] ✓ Fallback applied: underground → history_mystery")
+                user_preferences = user["preferences"]
                 print(f"[PREFERENCE VALIDATION] Updated preferences: {user['preferences']}")
-            else:
-                print("[PREFERENCE VALIDATION] ✓ Underground POI available")
         # ============================================================
-        # END FIX #Problem7
+        # END FIX #116
         # ============================================================
         
         # ETAP 2 - DAY 3 (15.02.2026): Multi-day routing
@@ -389,7 +417,7 @@ class PlanService:
             print(f"[FIX #112] Max feasible days (@ {MIN_ATTRACTIONS_PER_DAY} attractions/day): {max_feasible_days}", flush=True)
 
             if max_feasible_days < num_days:
-                location_label = router_config.get("region", trip_input.location.city)
+                location_label = _pref_location_label  # FIX #116: reuse label already computed above
                 shortage_warning = {
                     "type": "poi_shortage",
                     "requested_days": num_days,
@@ -664,7 +692,25 @@ class PlanService:
             removed = before_filter - len(day_items)
             if removed:
                 print(f"[FIX #35] Day {day_num + 1}: removed {removed} technical buffer item(s) from output")
-            
+
+            # FIX #119 (29.05.2026): Suppress micro free_time blocks (<30 min) from output.
+            # After consolidation, very small free_time blocks (e.g. 8-28 min) can still remain —
+            # they look like planning noise to users ("Czas wolny: 12 min") and add no value.
+            # Threshold: anything under MIN_FREE_TIME_DISPLAY minutes is silently dropped.
+            MIN_FREE_TIME_DISPLAY = 30
+            before_ft_filter = len(day_items)
+            day_items = [
+                item for item in day_items
+                if not (
+                    hasattr(item, "type")
+                    and item.type == ItemType.FREE_TIME
+                    and getattr(item, "duration_min", 999) < MIN_FREE_TIME_DISPLAY
+                )
+            ]
+            removed_ft = before_ft_filter - len(day_items)
+            if removed_ft:
+                print(f"[FIX #119] Day {day_num + 1}: removed {removed_ft} micro free_time block(s) (<{MIN_FREE_TIME_DISPLAY} min)")
+
             # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
             # This ensures day_end is always the last item in timeline
             # Previous bug: day_end was added in _convert_engine_result_to_items,
@@ -807,6 +853,9 @@ class PlanService:
         - day_end
         """
         items = []
+        
+        # FIX #120 (29.05.2026): Track reasons used so far this day to avoid repetition
+        day_used_reasons: set = set()
         
         # 1. DAY_START
         items.append(DayStartItem(time=day_start))
@@ -1086,7 +1135,8 @@ class PlanService:
                     attr_start_time,
                     user,
                     trip_input.group.type,
-                    context  # ETAP 2 Day 5: Pass context for explainability
+                    context,  # ETAP 2 Day 5: Pass context for explainability
+                    day_used_reasons  # FIX #120: pass set for reason deduplication
                 )
                 items.append(attraction_item)
                 
@@ -1406,7 +1456,8 @@ class PlanService:
         start_time: str,
         user: Dict[str, Any],
         group_type: str,
-        context: Dict[str, Any] = None  # ETAP 2 Day 5: Add context for explainability
+        context: Dict[str, Any] = None,  # ETAP 2 Day 5: Add context for explainability
+        day_used_reasons: set = None  # FIX #120: set of reasons already used this day (dedup)
     ) -> AttractionItem:
         """
         Generuje AttractionItem z cost estimation (4.11).
@@ -1524,6 +1575,17 @@ class PlanService:
             context=enriched_context,
             user=user
         )
+        
+        # FIX #120 (29.05.2026): Deduplicate reasons within the same day.
+        # Problem: All 5 POIs in a cultural-preference day all said "Matches your cultural preference".
+        # Solution: Filter out reasons already used earlier in the day; keep best remaining reasons.
+        # day_used_reasons is None → skip (e.g. gap-fill context where set is not tracked).
+        if day_used_reasons is not None:
+            fresh_reasons = [r for r in why_selected if r not in day_used_reasons]
+            if fresh_reasons:
+                why_selected = fresh_reasons[:3]
+            # If all reasons already used, keep original (better than empty list)
+            day_used_reasons.update(why_selected)
         
         # Generate quality badges for this POI
         quality_badges = check_poi_quality(
@@ -2127,7 +2189,8 @@ class PlanService:
                                 attr_start,
                                 user,
                                 user.get('target_group', 'family_kids'),
-                                context  # ETAP 2 Day 5: Pass context for explainability
+                                context,  # ETAP 2 Day 5: Pass context for explainability
+                                None  # FIX #120: no day_used_reasons tracking in gap-fill context
                             )
                             result.append(attraction_item)
                             

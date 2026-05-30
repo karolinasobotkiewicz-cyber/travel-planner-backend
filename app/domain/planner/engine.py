@@ -2406,6 +2406,8 @@ def score_poi(
     # FIX #89 (28.05.2026): Cross-day type diversity penalty for long trips.
     # After day 3+, penalise POI types (via tags) that have already appeared on >= 2 previous days.
     # Prevents: museum every day, viewpoint every day in 7-day trips.
+    # FIX #121 (29.05.2026): Stronger day-scaling penalty for days 5+.
+    # Problem: On 7-day trips, penalty -10/-20 wasn't strong enough to prevent tag repetition.
     _global_type_tracking = (context or {}).get("global_type_tracking")
     _current_day = (context or {}).get("current_day_num", 1)
     if _global_type_tracking and _current_day >= 4:
@@ -2417,13 +2419,21 @@ def score_poi(
             "scenic_viewpoint", "viewpoint", "panorama",
             "rope_park", "adventure_park", "snow_tubing",
             "relaxation", "spa", "termy", "wellness",
+            # FIX #121: Additional common over-represented types
+            "nature_landscape", "nature_immersion", "valley_landscape",
+            "local_food", "food_market", "local_food_experience",
+            "cultural_heritage", "history_mystery", "historical_site",
         }
+        # FIX #121: Scale penalty with day number — later days need stronger push toward variety
+        _day_scale = 1.0 if _current_day < 5 else (1.5 if _current_day < 7 else 2.0)
         for _tag in _poi_tags_variety & _diversity_tag_types:
             _tag_days_used = _global_type_tracking.get(_tag, 0)
-            if _tag_days_used >= 3:
-                score -= 20.0  # Heavy penalty: 3+ days with this type
+            if _tag_days_used >= 4:
+                score -= 35.0 * _day_scale  # FIX #121: Very heavy for 4+ repeats
+            elif _tag_days_used >= 3:
+                score -= 20.0 * _day_scale  # Scaled heavy penalty: 3+ days with this type
             elif _tag_days_used >= 2:
-                score -= 10.0  # Mild penalty: already seen on 2 days
+                score -= 10.0 * _day_scale  # Scaled mild penalty: already seen on 2 days
 
     return score
 
@@ -2872,11 +2882,17 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     # FIX #Problem12 (15.05.2026 - CLIENT FEEDBACK Round 2): Travel style modifier
     # Problem: Relax style should reduce POI count further
     # Solution: relax=-1 soft, -2 hard (FIX #74: more aggressive than original -1/-1)
+    # FIX #117 (29.05.2026): Adventure style modifier — adventure users want max activity;
+    # +1 soft/hard but capped at 8/9 to avoid scheduling impossibility.
     travel_style = user.get("travel_style", "")
     if travel_style == "relax":
         limits["soft"] = max(2, limits["soft"] - 1)  # Prevent going below 2
         limits["hard"] = max(3, limits["hard"] - 2)  # FIX #74: -2 hard (was -1); min 3 to avoid empty days
         print(f"[LIMITS] Travel style 'relax' modifier applied: soft={limits['soft']}, hard={limits['hard']}")
+    elif travel_style == "adventure":
+        limits["soft"] = min(8, limits["soft"] + 1)  # Cap at 8 (9 POI/day too dense)
+        limits["hard"] = min(9, limits["hard"] + 1)  # Cap at 9 absolute max
+        print(f"[LIMITS] Travel style 'adventure' modifier applied: soft={limits['soft']}, hard={limits['hard']}")
 
     # HUMAN STATE
     culture_streak = 0
@@ -3107,12 +3123,22 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             "transport_mode": "car",
                         })
                         now += _return_min
+                        # FIX #118 (29.05.2026): Update last_poi to city center so the main POI loop
+                        # does NOT generate a duplicate transit from the trail location.
+                        last_poi = {
+                            "lat": ZAKOPANE_CENTER_LAT,
+                            "lng": ZAKOPANE_CENTER_LNG,
+                            "name": "Zakopane centrum",
+                            "poi_id": "__city_center__",
+                            "type": "city_center",
+                        }
                         lunch_start_time = minutes_to_time(now)
                         lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
                         lunch_start_min = time_to_minutes(lunch_start_time)
                         lunch_end_min = time_to_minutes(lunch_end_time)
                         actual_lunch_duration = lunch_end_min - lunch_start_min
                         print(f"[FIX #102] Added return transit from trail to Zakopane centrum: {_return_min}min ({_dist_to_city:.1f}km)")
+                        print(f"[FIX #118] last_poi updated to city center to prevent duplicate transit")
                     else:
                         print(f"[FIX #102] Skipped return transit (not enough time): {_return_min}min + 30min lunch > day_end")
                         _lunch_location_context = "przy_szlaku"
