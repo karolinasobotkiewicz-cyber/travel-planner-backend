@@ -190,10 +190,15 @@ class PlanService:
                         # FIX #68 (03.06.2026): Defensive guard against cross-city POI contamination.
                         # load_multi_city_poi filters by City column, but if Excel data has wrong City
                         # assignments (e.g., Wrocław POI tagged as Warszawa), this catches it.
-                        _city_lower = requested_city.lower()
+                        # FIX #126: Use diacritic-insensitive comparison so 'Krakow'=='Kraków', etc.
+                        import unicodedata as _ud
+                        def _norm(s: str) -> str:
+                            nfkd = _ud.normalize('NFKD', s.lower())
+                            return ''.join(c for c in nfkd if not _ud.combining(c))
+                        _city_norm = _norm(requested_city)
                         pois_excel = [
                             p for p in pois_excel
-                            if p.get("city", "").lower() == _city_lower
+                            if _norm(p.get("city", "")) == _city_norm
                         ]
                         print(f"[ROUTER] Loaded {len(pois_excel)} POIs from multi_city Excel (city: {requested_city})")
                     else:

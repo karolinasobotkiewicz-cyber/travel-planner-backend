@@ -13,6 +13,7 @@ Usage:
     )
     # Returns list of POI dicts for all 3 cities combined
 """
+import unicodedata
 import pandas as pd
 from typing import List, Dict, Any
 # FIX #110 (29.05.2026): Auto-validate Excel on load — detects tag mismatch, Polish values, etc.
@@ -37,6 +38,14 @@ _CROWD_LEVEL_MAP = {
     'medium': 2,
     'high': 3,
 }
+
+def _normalize_city(name: str) -> str:
+    """Normalize city name: lowercase + strip diacritics for fuzzy matching.
+    E.g. 'Kraków' → 'krakow', 'Gdańsk' → 'gdansk'.
+    """
+    nfkd = unicodedata.normalize('NFKD', name.lower())
+    return ''.join(c for c in nfkd if not unicodedata.combining(c))
+
 
 def _map_priority_level(raw) -> str:
     """Map multi_city priority strings to engine-compatible strings."""
@@ -137,9 +146,11 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
     if 'City' not in df.columns:
         raise ValueError(f"Excel file missing 'City' column: {excel_path}")
     
-    # Case-insensitive city matching
-    cities_lower = [city.lower() for city in cities]
-    df_filtered = df[df['City'].str.lower().isin(cities_lower)]
+    # Case-insensitive + diacritic-insensitive city matching
+    # Handles both 'Kraków' == 'Krakow' and 'Gdańsk' == 'Gdansk'
+    cities_normalized = {_normalize_city(city): city for city in cities}
+    df_normalized_city = df['City'].apply(lambda c: _normalize_city(str(c)) if pd.notna(c) else '')
+    df_filtered = df[df_normalized_city.isin(cities_normalized.keys())]
     
     if len(df_filtered) == 0:
         print(f"[WARNING] No POI found for cities: {cities}")
