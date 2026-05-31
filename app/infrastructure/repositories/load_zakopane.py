@@ -7,6 +7,8 @@ from typing import Optional, Dict, List
 from app.infrastructure.repositories.normalizer import normalize_pois
 # FIX #110 (29.05.2026): Auto-validate Excel on load — detects tag mismatch, Polish values, etc.
 from app.infrastructure.repositories.excel_validator import validate_excel
+# FIX #111 (31.05.2026): Tag mapper — translates Excel tags to engine scoring vocabulary
+from app.domain.scoring.tag_mapper import apply_tag_mapping
 
 
 def _convert_opening_hours_to_json(opening_hours_str: str) -> Optional[Dict[str, str]]:
@@ -246,7 +248,7 @@ def load_zakopane_poi(path: str, city_filter: Optional[str] = None):
             "type": poi_type,  # PHASE 8 FIX (27.04.2026): Add "type" field ("poi" or "trail")
             "name": poi_name,  # Lowercase for consistency
             "Name": poi_name,  # Keep uppercase for backward compat
-            "tags": tags_list,  # CLIENT DATA UPDATE: New field - list of tags
+            "tags": apply_tag_mapping(tags_list),  # CLIENT DATA UPDATE + FIX #111: tag mapping
             "Description_short": str(row.get("Description_short", "")).strip(),
             "Description_long": str(row.get("Description_long", "")).strip(),
             "Why visit": str(row.get("Why visit", "")).strip(),

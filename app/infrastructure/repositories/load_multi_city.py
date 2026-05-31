@@ -18,6 +18,8 @@ import pandas as pd
 from typing import List, Dict, Any
 # FIX #110 (29.05.2026): Auto-validate Excel on load — detects tag mismatch, Polish values, etc.
 from app.infrastructure.repositories.excel_validator import validate_excel
+# FIX #111 (31.05.2026): Tag mapper — translates Excel tags to engine scoring vocabulary
+from app.domain.scoring.tag_mapper import apply_tag_mapping
 
 # FIX #38 (20.05.2026): Priority level mapping for multi_city Excel
 # multi_city_attractions.xlsx uses 'high'/'medium'/'low' naming scheme
@@ -221,7 +223,7 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             "type_of_attraction": _category,
             "Type of attraction": _category,
             "subcategory": _safe_str(row.get('Activity_style', row.get('Subcategory'))),
-            "tags": str(row.get('Tags', '')).split(',') if pd.notna(row.get('Tags')) else [],
+            "tags": apply_tag_mapping([t.strip() for t in str(row.get('Tags', '')).split(',') if t.strip()]) if pd.notna(row.get('Tags')) else [],  # FIX #111: tag mapping
             
             # Target groups  # FIX #38: Excel uses 'Target group' (with space)
             "target_group": str(row.get('Target group', 'all')).split(',') if pd.notna(row.get('Target group')) else ['all'],
