@@ -2090,6 +2090,36 @@ def score_poi(
     # zmeczenie
     score -= float(fatigue)
 
+    # FIX #133 (31.05.2026): Consecutive short POI penalty — discourage 3rd+ short POI in a row
+    # When 2+ short POIs (≤35 min) have been added already and THIS candidate is also short,
+    # apply an additional -10 penalty to push longer/richer alternatives.
+    _f133_time_min = int(p.get("time_min") or 0)
+    if _f133_time_min > 0 and _f133_time_min <= 35:
+        _f133_consec = (context or {}).get("consecutive_short_count", 0)
+        if _f133_consec >= 2:
+            score -= 10.0  # 3rd+ consecutive short POI is undesirable
+
+    # FIX #134 (31.05.2026): End-of-day experience lock
+    # When < 90 min remain before day end, intensive activities get a penalty.
+    # Prevents: museum at 18:30, trail at 18:00 (already covered by FIX #87 but this strengthens
+    # the signal for any intensive POI near the end, regardless of exact time-of-day).
+    # Complements FIX #87 (which uses absolute clock time); FIX #134 uses remaining day budget.
+    _f134_day_end = (context or {}).get("day_end_mins")
+    if _f134_day_end is not None:
+        _f134_remaining = _f134_day_end - now
+        if _f134_remaining < 90:
+            _f134_poi_tags = set(p.get("tags", []))
+            _f134_intensive = {
+                "themed_museum", "regional_heritage", "museum_heritage", "museums",
+                "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                "interactive_exhibit", "local_history", "architecture_heritage",
+                "art_gallery", "temporary_exhibitions", "composer_artist_house",
+                "intimate_small_museum", "ethnographic_museum",
+                "scenic_viewpoint", "viewpoint", "panorama",
+            }
+            if _f134_intensive & _f134_poi_tags:
+                score -= 15.0  # Intensive culture/viewpoints feel wrong in last 90 min
+
     ctx = _get_context(context)
 
     # pogoda: deszcz + outdoor
@@ -2449,9 +2479,13 @@ def score_poi(
     # Prevents: museum every day, viewpoint every day in 7-day trips.
     # FIX #121 (29.05.2026): Stronger day-scaling penalty for days 5+.
     # Problem: On 7-day trips, penalty -10/-20 wasn't strong enough to prevent tag repetition.
+    # FIX #135 (31.05.2026): For solo profile, diversity kicks in from day 2 (not day 4).
+    # Solo travellers explore intensively and repeat types feel stale much sooner.
     _global_type_tracking = (context or {}).get("global_type_tracking")
     _current_day = (context or {}).get("current_day_num", 1)
-    if _global_type_tracking and _current_day >= 4:
+    _is_solo_135 = str(user.get("target_group", "")).lower() == "solo"
+    _diversity_threshold = 2 if _is_solo_135 else 4
+    if _global_type_tracking and _current_day >= _diversity_threshold:
         _poi_tags_variety = set(p.get("tags", []))
         # Only penalize category-level tags (not every tag)
         _diversity_tag_types = {
@@ -2466,7 +2500,11 @@ def score_poi(
             "cultural_heritage", "history_mystery", "historical_site",
         }
         # FIX #121: Scale penalty with day number — later days need stronger push toward variety
-        _day_scale = 1.0 if _current_day < 5 else (1.5 if _current_day < 7 else 2.0)
+        # FIX #135: For solo, scale starts earlier — day2=0.5×, day3+=1.0×, day5+=1.5×
+        if _is_solo_135:
+            _day_scale = 0.5 if _current_day < 3 else (1.0 if _current_day < 5 else 1.5)
+        else:
+            _day_scale = 1.0 if _current_day < 5 else (1.5 if _current_day < 7 else 2.0)
         for _tag in _poi_tags_variety & _diversity_tag_types:
             _tag_days_used = _global_type_tracking.get(_tag, 0)
             if _tag_days_used >= 4:
@@ -2827,6 +2865,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     if ctx["daylight_end"]:
         end = min(end, time_to_minutes(ctx["daylight_end"]))
 
+    # FIX #134 (31.05.2026): Inject day_end_mins so score_poi can compute remaining time
+    ctx["day_end_mins"] = end
+
     # FIX #Problem9 DEBUG: Simple print to verify execution
     print(f"🔥🔥🔥 build_day() CALLED: target_group={user.get('target_group')} 🔥🔥🔥", flush=True)
     
@@ -2931,6 +2972,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     friends_museum_today = 0
     # FIX #127 (30.05.2026): Track museums per day for solo profile (hard cap = 2)
     solo_museum_today = 0
+    # FIX #132 (31.05.2026): Track museums per day for couples profile (hard cap = 2)
+    couples_museum_today = 0
+
+    # FIX #133 (31.05.2026): Track consecutive short POIs (time_min <= 35) per day
+    # Short POIs back-to-back create a "checklist tourist" feel — penalise the 3rd+
+    consecutive_short_count = 0
 
     # FIX #64 (22.05.2026): Track experience-type dedup to prevent same-type POI on the same day
     # Problem: Iluzja Park + Dom do góry nogami both have illusion_kids tag → boring same-experience day
@@ -3471,6 +3518,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     print(f"[MUSEUM CAP] EXCLUDED: {poi_name_safe} - max 2 museums/day for solo (solo_museum_today={solo_museum_today})")
                     continue
 
+            # FIX #132 (31.05.2026): Hard cap: max 2 museums per day for couples profile
+            if user.get("target_group") == "couples" and couples_museum_today >= 2:
+                _mus_tags_132 = {"themed_museum", "regional_heritage", "museum_heritage", "museums",
+                                 "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                                 "interactive_exhibit", "local_history", "architecture_heritage",
+                                 "art_gallery", "temporary_exhibitions", "composer_artist_house",
+                                 "intimate_small_museum", "ethnographic_museum"}
+                if _mus_tags_132 & set(p.get("tags", [])):
+                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                    print(f"[MUSEUM CAP] EXCLUDED: {poi_name_safe} - max 2 museums/day for couples (couples_museum_today={couples_museum_today})")
+                    continue
+
             # FIX #125 (30.05.2026): Block long activities for toddlers (children_age <= 5)
             _ca_f125 = user.get("children_age")
             if (user.get("target_group") == "family_kids"
@@ -3797,6 +3856,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
             poi_id_debug = p.get("id", "unknown")
             print(f"[BEFORE SCORE_POI] About to score poi_id={poi_id_debug}")
+            # FIX #133: inject current consecutive-short count for scoring
+            ctx["consecutive_short_count"] = consecutive_short_count
             score = score_poi(
                 p=p,
                 user=user,
@@ -4351,6 +4412,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         if _solo_museum_soft_tags & set(p.get("tags", [])):
                             continue  # Solo already has 2 museums today
 
+                    # FIX #132 (31.05.2026): Couples museum cap in soft fallback loop too (max 2/day).
+                    if user.get("target_group") == "couples" and couples_museum_today >= 2:
+                        _couples_museum_soft_tags = {
+                            "themed_museum", "regional_heritage", "museum_heritage", "museums",
+                            "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                            "interactive_exhibit", "local_history", "architecture_heritage",
+                            "historic_building", "composer_artist_house", "intimate_small_museum",
+                            "ethnographic_museum", "art_gallery", "temporary_exhibitions",
+                        }
+                        if _couples_museum_soft_tags & set(p.get("tags", [])):
+                            continue  # Couples already has 2 museums today
+
                     # Soft POI criteria (client requirements)
                     # Since all Zakopane POI have intensity='medium', accept medium intensity
                     # Focus on: short duration (10-30 min) + low must_see_score (0-2)
@@ -4625,6 +4698,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             print(f"[PROBLEM9 DEBUG] EVENING POI: {poi_name(best)}, start={minutes_to_time(old_now)}, duration={best_duration}, new_now={minutes_to_time(now)}, end={minutes_to_time(old_now + best_duration)}")
         energy -= energy_cost(best, best_duration, ctx)
         fatigue += 1
+        # FIX #133 (31.05.2026): Track consecutive short POIs — short POI = time_min <= 35 min
+        # Extra fatigue accumulated when short POIs pile up (handled via score_poi penalty)
+        _best_time_min = int(best.get("time_min") or 0)
+        if _best_time_min > 0 and _best_time_min <= 35:
+            consecutive_short_count += 1
+        else:
+            consecutive_short_count = 0  # reset on any non-short POI
         used.add(poi_id(best))
         
         # ETAP 2 - DAY 3 (15.02.2026): Update global_used for cross-day tracking
@@ -4928,6 +5008,17 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             if _mus_solo_tags & set(best.get("tags", [])):
                 solo_museum_today += 1
                 print(f"[MUSEUM CAP] Museum added today: {solo_museum_today}/2 (solo)")
+
+        # FIX #132 (31.05.2026): Increment daily museum counter for couples profile
+        if user.get("target_group") == "couples":
+            _mus_couples_tags = {"themed_museum", "regional_heritage", "museum_heritage", "museums",
+                                 "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                                 "interactive_exhibit", "local_history", "architecture_heritage",
+                                 "art_gallery", "temporary_exhibitions", "composer_artist_house",
+                                 "intimate_small_museum", "ethnographic_museum"}
+            if _mus_couples_tags & set(best.get("tags", [])):
+                couples_museum_today += 1
+                print(f"[MUSEUM CAP] Museum added today: {couples_museum_today}/2 (couples)")
 
         # FIX #64: Track used experience tags for dedup
         _added_exp_tags = UNIQUE_EXPERIENCE_TAGS & set(best.get("tags", []))
@@ -5315,6 +5406,30 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     }
                     if _solo_museum_gf_tags & set(p.get("tags", [])):
                         continue  # Solo already has 2 museums today — skip in gap-fill
+
+                # FIX #132 (31.05.2026): Couples profile — museum cap in gap-fill loop (max 2/day).
+                if user.get("target_group") == "couples" and couples_museum_today >= 2:
+                    _couples_museum_gf_tags = {
+                        "themed_museum", "regional_heritage", "museum_heritage", "museums",
+                        "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+                        "interactive_exhibit", "local_history", "architecture_heritage",
+                        "historic_building", "composer_artist_house", "intimate_small_museum",
+                        "ethnographic_museum", "art_gallery", "temporary_exhibitions",
+                    }
+                    if _couples_museum_gf_tags & set(p.get("tags", [])):
+                        continue  # Couples already has 2 museums today — skip in gap-fill
+
+                # FIX #136 (31.05.2026): Solo filler quality gate
+                # Skip low-quality fillers (must_see < 4) when day is already well-filled (>=3 POIs)
+                # and there is still significant time left (>60 min) — prevents padding with noise.
+                if user.get("target_group") == "solo":
+                    _gf136_must_see = p.get("must_see", p.get("must_see_score", 5))
+                    try:
+                        _gf136_must_see = float(_gf136_must_see)
+                    except (TypeError, ValueError):
+                        _gf136_must_see = 5.0
+                    if _gf136_must_see < 4.0 and attraction_count >= 3 and remaining_to_end > 60:
+                        continue  # Solo: skip low-quality fillers when day is already good
 
                 # FIX #125 (30.05.2026): Block long activities for toddlers in gap-fill (children_age <= 5)
                 _ca_gf_125 = user.get("children_age")
