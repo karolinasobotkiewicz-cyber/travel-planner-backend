@@ -525,6 +525,37 @@ class PlanService:
                     day_pool = pois_no_zone + zone_buckets[zone]
                     print(f"[FIX #113]   Day {d+1} → Zone {zone} ({len(day_pool)} POIs total)")
                     pools.append(day_pool)
+
+                # FIX #140 (31.05.2026): Zone overflow — absorb adjacent zone when pool is too small.
+                # Prevents empty/sparse days when a zone has very few POIs after filtering.
+                _MIN_ZONE_POOL = 4
+                _ZONE_OVERFLOW_MAP = {"C": "B", "B": "A"}  # C→B→A fallback chain
+                for d in range(num_days):
+                    pool = pools[d]
+                    if len(pool) < _MIN_ZONE_POOL:
+                        zone_this_day = zones_present[d % len(zones_present)]
+                        overflow_zone = _ZONE_OVERFLOW_MAP.get(zone_this_day)
+                        if overflow_zone and overflow_zone in zone_buckets:
+                            extra = [p for p in zone_buckets[overflow_zone] if p not in pool]
+                            pool = pool + extra
+                            print(f"[FIX #140]   Day {d+1} Zone {zone_this_day} had only {len(pools[d])} POIs → merged Zone {overflow_zone} ({len(extra)} extra POIs)")
+                        # Also merge in a second adjacent zone if still too small
+                        if len(pool) < _MIN_ZONE_POOL and overflow_zone:
+                            overflow_zone2 = _ZONE_OVERFLOW_MAP.get(overflow_zone)
+                            if overflow_zone2 and overflow_zone2 in zone_buckets:
+                                extra2 = [p for p in zone_buckets[overflow_zone2] if p not in pool]
+                                pool = pool + extra2
+                                print(f"[FIX #140]   Day {d+1} still sparse → also merged Zone {overflow_zone2} ({len(extra2)} extra POIs)")
+                        # Deduplicate by id
+                        _seen140 = set()
+                        _deduped140 = []
+                        for _p140 in pool:
+                            _pid140 = _p140.get("id") or id(_p140)
+                            if _pid140 not in _seen140:
+                                _seen140.add(_pid140)
+                                _deduped140.append(_p140)
+                        pools[d] = _deduped140
+
                 return pools
 
             _zone_pools = _build_zone_pools(all_pois_dict, num_days)

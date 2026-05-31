@@ -501,7 +501,7 @@ def normalize_poi(p, index):
     # CLIENT DATA UPDATE (05.02.2026): Get ticket_price for budget scoring
     ticket_price = _safe_float(p.get("ticket_price") or p.get("ticket_normal"), 0)
 
-    return {
+    _norm_result = {
         "id": poi_id,  # CLIENT DATA UPDATE: Use loader ID
         "name": _safe_str(p.get("name") or p.get("Name")),
         "description_short": _safe_str(p.get("Description_short")),
@@ -565,6 +565,22 @@ def normalize_poi(p, index):
         # Values: 'A' (centre), 'B' (mid), 'C' (far), '' (no zone = always available)
         "zone": _safe_str(p.get("zone", "")),
     }
+
+    # FIX #137 (31.05.2026): Iconic high-must_see POIs are never truly low-crowd.
+    # Excel data often has wrong crowd_level=1 for Gubałówka, Morskie Oko, Krokiew etc.
+    # Override to 3 (high-crowd) when must_see >= 8 OR POI name matches known landmarks.
+    _KNOWN_HIGH_CROWD_NAMES = {
+        "morskie oko", "krupówki", "krupowki", "gubałówka", "gubalowka",
+        "kasprowy wierch", "czarny staw", "dolina kościeliska", "dolina koscieliska",
+        "dolina chochołowska", "dolina chocholowska", "siklawa",
+        "krokiew", "wielka krokiew",
+    }
+    _ms137 = must_see if must_see is not None else 0.0
+    _name137 = _safe_str(p.get("name") or p.get("Name") or "").lower().strip()
+    if _ms137 >= 8 or any(known in _name137 for known in _KNOWN_HIGH_CROWD_NAMES):
+        _norm_result["crowd_level"] = 3  # Always high-crowd for iconic POIs
+
+    return _norm_result
 
 
 def normalize_pois(pois):

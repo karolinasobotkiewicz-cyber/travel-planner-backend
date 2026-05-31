@@ -3223,6 +3223,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             # Sort by proximity
                             lunch_restaurants.sort(key=lambda r: r.get("_distance", 999.0))
                             print(f"[LUNCH] Sorted {len(lunch_restaurants)} lunch spots by proximity to {last_attraction.get('name', 'current location')}")
+
+                            # FIX #141 (31.05.2026): Hard 2km geo filter — only show nearby restaurants.
+                            # Prevents "lunch teleport" where suggestions are far from actual position.
+                            _LUNCH_MAX_DIST_KM = 2.0
+                            _nearby_lunch141 = [r for r in lunch_restaurants if r.get("_distance", 999.0) <= _LUNCH_MAX_DIST_KM]
+                            if _nearby_lunch141:
+                                lunch_restaurants = _nearby_lunch141
+                                print(f"[LUNCH FIX#141] Filtered to {len(lunch_restaurants)} restaurants within {_LUNCH_MAX_DIST_KM}km")
+                            else:
+                                print(f"[LUNCH FIX#141] No restaurant within {_LUNCH_MAX_DIST_KM}km — keeping sorted fallback list")
                     
                     # Take top 3 nearest restaurants
                     if lunch_restaurants:
@@ -4575,6 +4585,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 _t77_dist_km < 0.05
                 or (plan and plan[-1].get("type") == "transfer"
                     and plan[-1].get("to") == poi_name(best))
+                # FIX #142 (31.05.2026): Skip transfer when recent plan items show we're already
+                # at the same destination — prevents transit→lunch→transit→same_place patterns.
+                or (len(plan) >= 2
+                    and any(it.get("type") == "transfer" and it.get("to") == poi_name(best)
+                            for it in plan[-3:]))
             )
             if not _skip_transfer:
                 plan.append(
@@ -4855,6 +4870,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                                 else:
                                     r["_distance"] = 999.0
                             lunch_restaurants.sort(key=lambda r: r.get("_distance", 999.0))
+                            # FIX #141 (31.05.2026): Hard 2km geo filter (post-POI lunch path)
+                            _nearby_lunch141b = [r for r in lunch_restaurants if r.get("_distance", 999.0) <= 2.0]
+                            if _nearby_lunch141b:
+                                lunch_restaurants = _nearby_lunch141b
                         
                         if lunch_restaurants:
                             lunch_suggestions = [r["name"] for r in lunch_restaurants[:3]]
@@ -5315,7 +5334,34 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     # Tests 03, 06, 07, 08, 09: Days end early, leaving 1.5-4.5h gaps
     # Solution: If (day_end - current_time) > 60min, add light activities or free_time
     remaining_to_end = end - now
-    
+
+    # FIX #143 (31.05.2026): Sparse day early close.
+    # When a day ends up with very few attractions and no trail, skip aggressive gap-fill
+    # and close with a single free_time block. Prevents adding noise-level fillers to a
+    # structurally sparse day (e.g. when zone pool is limited or budget is very tight).
+    _f143_real_attractions = [
+        it for it in plan
+        if it.get("type") == "attraction"
+        and it.get("poi", {}).get("type") != "trail"  # Trails count as full-day activities
+    ]
+    _f143_has_trail = any(it.get("type") == "attraction" and it.get("poi", {}).get("type") == "trail"
+                          for it in plan)
+    if (not _f143_has_trail
+            and len(_f143_real_attractions) < 2
+            and remaining_to_end > 120):
+        # Day is structurally sparse (< 2 non-trail POIs, > 2h remain) — close gracefully
+        _f143_label = _get_free_time_label(plan, now, remaining_to_end, end, profile=user.get("target_group"))
+        plan.append({
+            "type": "free_time",
+            "start_time": minutes_to_time(now),
+            "end_time": minutes_to_time(end),
+            "duration_min": remaining_to_end,
+            "description": _f143_label,
+        })
+        print(f"[FIX #143] Sparse day early close: {len(_f143_real_attractions)} real attractions, {remaining_to_end}min remaining → free_time added")
+        # Fall through to validation — no aggressive gap-fill for sparse days
+        remaining_to_end = 0  # Signal: skip gap-fill below
+
     if remaining_to_end > 60:  # 1+ hour remaining (UAT Round 2 fix)
         print(f"[GAP FILL END] Gap remaining: {remaining_to_end}min ({minutes_to_time(now)} → {minutes_to_time(end)})")
         
@@ -5431,6 +5477,17 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if _gf136_must_see < 4.0 and attraction_count >= 3 and remaining_to_end > 60:
                         continue  # Solo: skip low-quality fillers when day is already good
 
+                # FIX #138 (31.05.2026): Global filler quality gate — ALL profiles
+                # Skip noise-level fillers (must_see < 3) when day already has >=3 attractions
+                # and >45 min remain. Lower thresholds than FIX #136 (solo-only) — global floor.
+                _gf138_must_see = p.get("must_see", p.get("must_see_score", 5))
+                try:
+                    _gf138_must_see = float(_gf138_must_see)
+                except (TypeError, ValueError):
+                    _gf138_must_see = 5.0
+                if _gf138_must_see < 3.0 and attraction_count >= 3 and remaining_to_end > 45:
+                    continue  # Global: skip noise-level fillers on already-good days
+
                 # FIX #125 (30.05.2026): Block long activities for toddlers in gap-fill (children_age <= 5)
                 _ca_gf_125 = user.get("children_age")
                 if (user.get("target_group") == "family_kids"
@@ -5496,6 +5553,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         _t77_dist_km < 0.05
                         or (plan and plan[-1].get("type") == "transfer"
                             and plan[-1].get("to") == poi_name(soft_best))
+                        # FIX #142 (31.05.2026): Skip if already moved to this destination recently
+                        or (len(plan) >= 2
+                            and any(it.get("type") == "transfer" and it.get("to") == poi_name(soft_best)
+                                    for it in plan[-3:]))
                     )
                     if not _skip_gap_tr:
                         plan.append({
@@ -5667,7 +5728,27 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     
     # NOTE: Gap filling moved to PlanService (after parking/transit timing adjustments)
     # This ensures gaps are detected AFTER all time shifts from parking
-    
+
+    # FIX #139 (31.05.2026): Post-build warning validation
+    # Check actual plan items for timing anomalies after all insertions/transits are done.
+    # Supplements pre-build time-estimate warnings with real-plan-based warnings.
+    if warnings_out is not None:
+        for _w139_item in plan:
+            _w139_type = _w139_item.get("type", "")
+            _w139_start = _w139_item.get("start_time", "")
+            if _w139_type == "lunch_break" and _w139_start >= "15:00":
+                warnings_out.append({
+                    "type": "very_late_lunch",
+                    "severity": "warning",
+                    "message": f"Lunch scheduled very late: {_w139_start} (recommend finishing by 14:30)",
+                })
+            elif _w139_type == "dinner_break" and _w139_start and _w139_start < "17:00":
+                warnings_out.append({
+                    "type": "early_dinner",
+                    "severity": "info",
+                    "message": f"Dinner scheduled early: {_w139_start}",
+                })
+
     return plan
 
 
