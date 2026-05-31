@@ -2484,7 +2484,7 @@ def score_poi(
 # =========================
 
 
-def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=None):
+def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=None, pois_per_day=None):
     """
     Build multi-day plan with cross-day POI tracking and core POI distribution.
     
@@ -2496,11 +2496,12 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
     - Day-to-day energy continuity: Reset energy each day but track usage patterns
     
     Args:
-        pois: List of POI dicts
+        pois: List of POI dicts (fallback if pois_per_day not provided)
         user: User dict (preferences, target_group, etc.)
         contexts: List of context dicts (one per day - season, date, weather, etc.)
         day_start: Start time string "HH:MM"
         day_end: End time string "HH:MM"
+        pois_per_day: Optional list[list] — per-day POI pool override (FIX #113: zone system)
     
     Returns:
         List of day plans (list of dicts, one per day)
@@ -2702,8 +2703,10 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         context["global_type_tracking"] = global_type_tracking
         context["current_day_num"] = day_num + 1  # 1-based day number (used for variety penalty threshold)
         _day_warnings: list = []  # FIX #130: collect per-day engine warnings
+        # FIX #113 (07.06.2026): Use per-day POI pool if provided (zone system)
+        _pois_for_day = pois_per_day[day_num] if pois_per_day is not None else pois
         day_plan = build_day(
-            pois=pois,
+            pois=_pois_for_day,
             user=user,
             context=context,
             day_start=day_start,

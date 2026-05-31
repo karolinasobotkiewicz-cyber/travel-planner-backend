@@ -305,6 +305,9 @@ def load_zakopane_poi(path: str, city_filter: Optional[str] = None):
             "kids_only": str(row.get("kids_only", "")).strip(),
             "premium_experience": bool(row.get("premium_experience", False)),  # CLIENT REQUIREMENT (08.02.2026): Premium experiences flag
             "Tags": tags_str,  # Original string for backward compat
+            # FIX #113 (07.06.2026): Zone system — geographic zone for day-routing
+            # Values: 'A' (centre), 'B' (mid), 'C' (far), '' (no zone = always available)
+            "zone": str(row.get("Zone", "")).strip(),
         }
 
         # FIX #29 (18.05.2026): Wax/Figury Woskowe attractions should only appear for family_kids

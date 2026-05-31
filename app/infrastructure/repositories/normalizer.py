@@ -561,6 +561,9 @@ def normalize_poi(p, index):
         "parking_lng": _safe_float(p.get("parking_lng")),
         "parking_type": _safe_str(p.get("parking_type")),
         "parking_walk_time_min": int(_safe_float(p.get("parking_walk_time_min"), 5)),
+        # FIX #113 (07.06.2026): Zone system — preserve zone field through normalization
+        # Values: 'A' (centre), 'B' (mid), 'C' (far), '' (no zone = always available)
+        "zone": _safe_str(p.get("zone", "")),
     }
 
 

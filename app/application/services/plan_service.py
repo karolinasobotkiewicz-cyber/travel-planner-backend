@@ -439,9 +439,22 @@ class PlanService:
             #   Kotlina cluster (42): 42//3 = 14 → no reduction ✓
             # ================================================================
             MIN_ATTRACTIONS_PER_DAY = 3  # Minimum attractions per day for a meaningful plan
-            max_feasible_days = max(1, len(all_pois_dict) // MIN_ATTRACTIONS_PER_DAY)
+            # FIX #113 (07.06.2026): With zones, count the smallest zone pool (worst case per day)
+            _check_zones = sorted(set(
+                p.get('zone', '').strip() for p in all_pois_dict if p.get('zone', '').strip()
+            ))
+            if _check_zones:
+                _pois_no_zone_count = sum(1 for p in all_pois_dict if not p.get('zone', '').strip())
+                _min_zone_count = min(
+                    sum(1 for p in all_pois_dict if p.get('zone', '').strip() == z)
+                    for z in _check_zones
+                )
+                _effective_pool = _pois_no_zone_count + _min_zone_count
+            else:
+                _effective_pool = len(all_pois_dict)
+            max_feasible_days = max(1, _effective_pool // MIN_ATTRACTIONS_PER_DAY)
 
-            print(f"[FIX #112] POI shortage check: {len(all_pois_dict)} total attractions, {num_days} requested days", flush=True)
+            print(f"[FIX #112] POI shortage check: {_effective_pool} effective attractions/day, {num_days} requested days", flush=True)
             print(f"[FIX #112] Max feasible days (@ {MIN_ATTRACTIONS_PER_DAY} attractions/day): {max_feasible_days}", flush=True)
 
             if max_feasible_days < num_days:
@@ -474,7 +487,51 @@ class PlanService:
                 day_context = context.copy()
                 day_context["date"] = dates[day_num]
                 contexts.append(day_context)
-            
+
+            # ================================================================
+            # FIX #113 (07.06.2026): ZONE SELECTOR — per-day POI pool based on zone
+            # ================================================================
+            # POIs have an optional 'zone' field (A/B/C) set by client in Excel.
+            # Zone A = centre/most accessible, B = mid-range, C = far/outlier.
+            # Multi-day trips rotate through available zones so each day visits
+            # a coherent geographic area: Day 1→A, Day 2→B, Day 3→C, Day 4→A, …
+            # POIs without a zone (zone='') are always included every day (backward compat).
+            # Cities without any zoned POIs (Poznań, Gdańsk, etc.) are unaffected.
+            # ================================================================
+            def _build_zone_pools(all_pois, num_days):
+                """Return list[list] of per-day POI pools respecting zone rotation."""
+                # POIs without zone → always included
+                pois_no_zone = [p for p in all_pois if not p.get('zone', '').strip()]
+                # Collect sorted unique zones
+                zones_present = sorted(set(
+                    p['zone'].strip() for p in all_pois
+                    if p.get('zone', '').strip()
+                ))
+                if not zones_present:
+                    # No zone data at all → return same pool every day (no regression)
+                    return None  # signals plan_multiple_days to use pois as-is
+                # Group POIs by zone
+                zone_buckets = {}
+                for z in zones_present:
+                    zone_buckets[z] = [p for p in all_pois if p.get('zone', '').strip() == z]
+                print(f"[FIX #113] Zone selector: {len(zones_present)} zones {zones_present}, "
+                      f"{len(pois_no_zone)} unzoned POIs always available")
+                for z in zones_present:
+                    print(f"[FIX #113]   Zone {z}: {len(zone_buckets[z])} POIs")
+                # Build per-day pools
+                pools = []
+                for d in range(num_days):
+                    zone = zones_present[d % len(zones_present)]
+                    day_pool = pois_no_zone + zone_buckets[zone]
+                    print(f"[FIX #113]   Day {d+1} → Zone {zone} ({len(day_pool)} POIs total)")
+                    pools.append(day_pool)
+                return pools
+
+            _zone_pools = _build_zone_pools(all_pois_dict, num_days)
+            # ================================================================
+            # END FIX #113
+            # ================================================================
+
             # Call multi-day planner
             _engine_warnings: list = []  # FIX #130
             engine_results = plan_multiple_days(
@@ -483,7 +540,8 @@ class PlanService:
                 contexts=contexts,
                 day_start=day_start,
                 day_end=day_end,
-                warnings_out=_engine_warnings  # FIX #130
+                warnings_out=_engine_warnings,  # FIX #130
+                pois_per_day=_zone_pools,  # FIX #113: per-day pools (None = use all pois)
             )
             plan_warnings.extend(_engine_warnings)  # FIX #130
             
@@ -492,9 +550,24 @@ class PlanService:
             print(f"[PLAN SERVICE] Single-day plan requested")
             context["date"] = dates[0]
 
+            # FIX #113 (07.06.2026): Single-day zone selection — use Zone A (or only available zone)
+            _zones_single = sorted(set(
+                p.get('zone', '').strip() for p in all_pois_dict
+                if p.get('zone', '').strip()
+            ))
+            if _zones_single:
+                _zone_for_day = _zones_single[0]  # First zone (A) for single-day trips
+                _pois_for_single_day = [
+                    p for p in all_pois_dict
+                    if not p.get('zone', '').strip() or p.get('zone', '').strip() == _zone_for_day
+                ]
+                print(f"[FIX #113] Single-day: using Zone {_zone_for_day} ({len(_pois_for_single_day)} POIs)")
+            else:
+                _pois_for_single_day = all_pois_dict
+
             _engine_warnings: list = []  # FIX #130
             engine_result = build_day(
-                all_pois_dict,
+                _pois_for_single_day,
                 user,
                 context,
                 day_start,

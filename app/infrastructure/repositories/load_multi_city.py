@@ -283,6 +283,10 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             # Booking
             "booking_required": _parse_bool(row.get('Booking_Required', False)),
             "booking_url": row.get('Booking_URL', ''),
+
+            # FIX #113 (07.06.2026): Zone system — geographic zone for day-routing
+            # Values: 'A' (centre), 'B' (mid), 'C' (far), '' (no zone = always available)
+            "zone": _safe_str(row.get('Zone', '')),
         }
         
         poi_list.append(poi_dict)
