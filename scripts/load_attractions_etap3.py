@@ -168,8 +168,9 @@ def load_attractions_etap3():
         Number of attractions loaded
     """
     # Excel path (relative to workspace root)
+    # CLIENT DATA UPDATE (01.06.2026): Use latest file from planer_update/
     workspace_root = project_root.parent
-    excel_path = workspace_root / 'Planer' / 'Planer - miasta atrakcje.xlsx'
+    excel_path = workspace_root / 'planer_update' / 'Planer - miasta atrakcje3.xlsx'
     
     if not excel_path.exists():
         logger.error(f"Excel file not found: {excel_path}")
