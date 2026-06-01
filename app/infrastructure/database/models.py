@@ -310,6 +310,9 @@ class RestaurantDB(Base):
     target_group = Column(JSON, nullable=True)  # ['family_kids', 'couple']
     children_friendly = Column(sa.Boolean, nullable=False, server_default='true')
     
+    # Tags (FIX #145 01.06.2026): Restaurant tags from Excel 'Tags' column
+    tags = Column(JSON, nullable=True)  # ['regional', 'outdoor', 'family']
+    
     # Quality signals
     popularity_score = Column(Numeric(4, 2), nullable=False, server_default='0.0')  # 0.00-10.00
     rating = Column(Numeric(3, 2), nullable=True)  # 0.00-5.00

@@ -254,6 +254,9 @@ class RestaurantRepository:
             "target_groups": restaurant.target_group or [],
             "children_friendly": restaurant.children_friendly,
             
+            # Tags (FIX #145 01.06.2026)
+            "tags": restaurant.tags or [],
+            
             # Quality signals (engine uses popularity_score for ranking)
             "popularity_score": float(restaurant.popularity_score) if restaurant.popularity_score else 0.0,
             "rating": float(restaurant.rating) if restaurant.rating else None,

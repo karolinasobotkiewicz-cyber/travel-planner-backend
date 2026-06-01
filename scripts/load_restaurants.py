@@ -275,9 +275,9 @@ def load_restaurants():
                     parking_lng=parking_lng,
                     parking_walk_time_min=parking_walk_time,
                     
-                    # Metadata (NOTE: tags not in RestaurantDB model)
+                    # Metadata
                     image_key=clean_string(row.get('image_key', '')) or None,
-                    # tags NOT IN MODEL
+                    tags=tags if tags else None,  # FIX #145 (01.06.2026): Save tags from Excel 'Tags' column
                 )
                 
                 # Merge (insert or update)

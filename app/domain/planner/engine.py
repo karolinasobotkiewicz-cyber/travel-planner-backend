@@ -3267,6 +3267,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     # Problem: Giga Buła (burgers/american) suggested to users who prefer local cuisine
                     # Solution: If user has local_food_experience preference, exclude fast-food/foreign
                     #           cuisines and prefer polish/regional restaurants
+                    # FIX #145 (01.06.2026): Also boost restaurants with regional tags from Excel
                     user_prefs_for_lunch = user.get("preferences", [])
                     if "local_food_experience" in user_prefs_for_lunch:
                         NON_LOCAL_CUISINES = {"american", "burgers", "street_food", "fast_food", "italian", "asian"}
@@ -3281,6 +3282,17 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             print(f"[LUNCH FIX#59] local_food_experience: filtered to {len(lunch_restaurants)} regional/polish restaurants")
                         else:
                             print(f"[LUNCH FIX#59] local_food_experience: no regional-only restaurants found, using all")
+                        
+                        # FIX #145: Sort remaining candidates so tagged regional restaurants appear first
+                        # Tags that signal authentic local experience
+                        _REGIONAL_TAGS = {"regional", "traditional_food", "local", "highlander", "mountain_food", "bacowka"}
+                        def _regional_sort_key(r):
+                            r_tags = set(t.lower() for t in (r.get("tags") or []))
+                            has_regional = bool(r_tags & _REGIONAL_TAGS)
+                            return (0 if has_regional else 1, r.get("_distance", 999.0))
+                        lunch_restaurants.sort(key=_regional_sort_key)
+                        _tagged = sum(1 for r in lunch_restaurants if set(t.lower() for t in (r.get("tags") or [])) & _REGIONAL_TAGS)
+                        print(f"[LUNCH FIX#145] local_food_experience: {_tagged} restaurants have regional tags (sorted first)")
 
                     # If we have current location (last attraction), sort by proximity
                     if plan:
