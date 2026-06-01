@@ -449,6 +449,9 @@ def _validate_and_fix_time_continuity(plan, day_end_str):
     
     # Check 1: Gaps and overlaps between consecutive items
     items_to_remove_keys = set()  # Track (start_time, end_time, type) to remove
+    # FIX B (02.06.2026): Reschedule meals instead of deleting them on overlap.
+    # Key: (start_time, end_time, type); Value: (new_start_min, duration_min)
+    items_to_reschedule = {}
     
     for i in range(len(timed_items) - 1):
         current = timed_items[i]
@@ -495,15 +498,29 @@ def _validate_and_fix_time_continuity(plan, day_end_str):
             next_priority = priority_map.get(next_item.get('type'), 1)
             
             if current_priority > next_priority:
-                # Remove next_item (lower priority)
-                item_key = (next_item.get('start_time'), next_item.get('end_time'), next_item.get('type'))
-                items_to_remove_keys.add(item_key)
-                print(f"[OVERLAP FIX] Marking {next_item.get('type')} for removal (lower priority, {next_priority} < {current_priority})")
+                # FIX B (02.06.2026): Reschedule meals instead of removing them.
+                # Removing lunch/dinner leaves the day without any meal — worse than an overlap.
+                # Shift the meal to start immediately after the conflicting higher-priority item ends.
+                if next_item.get('type') in ('lunch_break', 'dinner_break'):
+                    item_key = (next_item.get('start_time'), next_item.get('end_time'), next_item.get('type'))
+                    items_to_reschedule[item_key] = (current["end_min"], next_item.get("duration_min", 40))
+                    print(f"[FIX B] Rescheduling {next_item.get('type')} to {minutes_to_time(current['end_min'])} (after {current.get('type')} ends at {current['end_time']})")
+                else:
+                    # Remove next_item (lower priority)
+                    item_key = (next_item.get('start_time'), next_item.get('end_time'), next_item.get('type'))
+                    items_to_remove_keys.add(item_key)
+                    print(f"[OVERLAP FIX] Marking {next_item.get('type')} for removal (lower priority, {next_priority} < {current_priority})")
             elif next_priority > current_priority:
-                # Remove current (lower priority)
-                item_key = (current.get('start_time'), current.get('end_time'), current.get('type'))
-                items_to_remove_keys.add(item_key)
-                print(f"[OVERLAP FIX] Marking {current.get('type')} for removal (lower priority, {current_priority} < {next_priority})")
+                # FIX B: Also reschedule meal when it's the earlier (current) item with lower priority.
+                if current.get('type') in ('lunch_break', 'dinner_break'):
+                    item_key = (current.get('start_time'), current.get('end_time'), current.get('type'))
+                    items_to_reschedule[item_key] = (next_item["end_min"], current.get("duration_min", 40))
+                    print(f"[FIX B] Rescheduling {current.get('type')} to {minutes_to_time(next_item['end_min'])} (after {next_item.get('type')} ends at {next_item['end_time']})")
+                else:
+                    # Remove current (lower priority)
+                    item_key = (current.get('start_time'), current.get('end_time'), current.get('type'))
+                    items_to_remove_keys.add(item_key)
+                    print(f"[OVERLAP FIX] Marking {current.get('type')} for removal (lower priority, {current_priority} < {next_priority})")
             else:
                 # Same priority - remove later one (next_item)
                 item_key = (next_item.get('start_time'), next_item.get('end_time'), next_item.get('type'))
@@ -532,7 +549,38 @@ def _validate_and_fix_time_continuity(plan, day_end_str):
                 item_copy["end_min"] = time_to_minutes(item["end_time"])
                 timed_items.append(item_copy)
         timed_items.sort(key=lambda x: x["start_min"])
-    
+
+    # FIX B (02.06.2026): Apply meal reschedulings — shift meals to their new start times.
+    # These meals overlapped a higher-priority item; instead of removal, we move them forward.
+    if items_to_reschedule:
+        new_fixed_plan = []
+        for item in fixed_plan:
+            item_key = (item.get('start_time'), item.get('end_time'), item.get('type'))
+            if item_key in items_to_reschedule:
+                new_start_min, duration_min = items_to_reschedule[item_key]
+                if new_start_min + duration_min <= day_end_min:  # Meal fits within day
+                    new_item = dict(item)
+                    new_item['start_time'] = minutes_to_time(new_start_min)
+                    new_item['end_time'] = minutes_to_time(new_start_min + duration_min)
+                    new_item['duration_min'] = duration_min
+                    new_fixed_plan.append(new_item)
+                    print(f"[FIX B] Rescheduled {new_item['type']}: {item['start_time']}-{item['end_time']} → {new_item['start_time']}-{new_item['end_time']}")
+                else:
+                    # Day is too full to fit the meal — skip it (last resort)
+                    print(f"[FIX B] {item.get('type')} at {item.get('start_time')} skipped — no room after {minutes_to_time(new_start_min)}")
+            else:
+                new_fixed_plan.append(item)
+        fixed_plan = new_fixed_plan
+        # Rebuild timed_items after rescheduling
+        timed_items = []
+        for item in fixed_plan:
+            if "start_time" in item and "end_time" in item:
+                item_copy = dict(item)
+                item_copy["start_min"] = time_to_minutes(item["start_time"])
+                item_copy["end_min"] = time_to_minutes(item["end_time"])
+                timed_items.append(item_copy)
+        timed_items.sort(key=lambda x: x["start_min"])
+
     # Check 2: Last item vs day_end
     # FIX #22: Use timed_items[-1] from REBUILT list after overlap removal
     if not timed_items:
@@ -2706,6 +2754,14 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
     # Format: {"museum_heritage": 2, "scenic_viewpoint": 3, ...}
     global_type_tracking = {}  # tag -> number of days this tag type was represented
 
+    # FIX D (02.06.2026): Sliding-window dedup for long trips (>=5 days, day 6+).
+    # Problem: global_used_pois grows to exhaust entire POI pool by day 6-7,
+    # leaving late days with no activities ("dead days").
+    # Solution: Track per-day POI usage and for day 6+, only block POIs from
+    # the last 3 days instead of all previous days.
+    _FIX_D_WINDOW = 3   # days to keep blocked (recency window)
+    daily_used_sets: list = []  # per-day lists of POI IDs added that day
+
     for day_num in range(num_days):
         context = contexts[day_num]
         
@@ -2740,20 +2796,44 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         # FIX #89 (28.05.2026): Inject global_type_tracking into context so score_poi can penalise repetition.
         context["global_type_tracking"] = global_type_tracking
         context["current_day_num"] = day_num + 1  # 1-based day number (used for variety penalty threshold)
+        context["num_days"] = num_days  # FIX D: total trip length (for late-trip pool-exhaustion softening)
         _day_warnings: list = []  # FIX #130: collect per-day engine warnings
         # FIX #113 (07.06.2026): Use per-day POI pool if provided (zone system)
         _pois_for_day = pois_per_day[day_num] if pois_per_day is not None else pois
+
+        # FIX D (02.06.2026): For day 6+ in a 5+ day trip, pass only a RECENT WINDOW of used POIs.
+        # This lets the engine re-consider POIs from early days (days 1-2) so late days aren't empty.
+        _fixd_use_window = (num_days >= 5 and day_num >= 5)
+        if _fixd_use_window:
+            _window_used: set = set()
+            for _prev_set in daily_used_sets[-_FIX_D_WINDOW:]:
+                _window_used |= _prev_set
+            _global_used_before_day = frozenset(_window_used)
+            _global_used_for_day = _window_used
+            print(f"[FIX D] Day {day_num + 1}: Using windowed used set ({len(_window_used)} vs {len(global_used_pois)} full)")
+        else:
+            _global_used_before_day = frozenset(global_used_pois)
+            _global_used_for_day = global_used_pois
+
         day_plan = build_day(
             pois=_pois_for_day,
             user=user,
             context=context,
             day_start=day_start,
             day_end=day_end,
-            global_used=global_used_pois,  # Pass reference to global set
+            global_used=_global_used_for_day,  # FIX D: windowed or full
             global_termy_tracking=global_termy_tracking,  # Pass termy limit tracker
             global_trail_tracking=global_trail_tracking,  # Pass trail limit tracker
             warnings_out=_day_warnings  # FIX #130: collect warnings
         )
+
+        # FIX D: Capture POIs added by build_day this day and sync back to global_used_pois
+        _day_pois_used = _global_used_for_day - _global_used_before_day
+        daily_used_sets.append(_day_pois_used)
+        if _fixd_use_window:
+            # Sync newly selected POIs back into the full history set
+            global_used_pois |= _day_pois_used
+        # (Non-FIX-D days: global_used_pois was modified in-place by build_day already)
         # FIX #130: propagate per-day warnings tagged with day number
         if warnings_out is not None:
             for _w in _day_warnings:
@@ -5370,6 +5450,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         _is_large_gap = remaining_to_end > 180
         _is_family = user.get("target_group") == "family_kids"
         max_gap_fill = 4 if (_is_large_gap or _is_family) else 2
+
+        # FIX D (02.06.2026): Soften quality gates on late days of long trips (>=5 days, day 6+).
+        # When the sliding-window dedup (FIX D part 1) re-opens the early-day POI pool,
+        # the quality gates (FIX #136, #138) can still block them. Relax the thresholds
+        # so the re-opened pool can actually contribute.
+        _fixd_num_days = context.get("num_days", 1)
+        _fixd_current_day = context.get("current_day_num", 1)
+        _fixd_is_late_trip = (_fixd_num_days >= 5 and _fixd_current_day >= 5)
+        if _fixd_is_late_trip:
+            print(f"[FIX D] Day {_fixd_current_day}/{_fixd_num_days}: Late-trip quality gates softened")
         
         while remaining_to_end > 90 and gap_fill_attempts < max_gap_fill:
             # FIX #52 (20.05.2026): Block gap fill culture/activity POIs on heavy trail days
@@ -5467,25 +5557,30 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # FIX #136 (31.05.2026): Solo filler quality gate
                 # Skip low-quality fillers (must_see < 4) when day is already well-filled (>=3 POIs)
                 # and there is still significant time left (>60 min) — prevents padding with noise.
+                # FIX D: Softened to must_see < 2.5 and attraction_count >= 2 on late long-trip days.
                 if user.get("target_group") == "solo":
                     _gf136_must_see = p.get("must_see", p.get("must_see_score", 5))
                     try:
                         _gf136_must_see = float(_gf136_must_see)
                     except (TypeError, ValueError):
                         _gf136_must_see = 5.0
-                    if _gf136_must_see < 4.0 and attraction_count >= 4 and remaining_to_end > 60:
-                        continue  # Solo: skip low-quality fillers when day is already well-filled (>=4 POIs)
+                    _gf136_threshold = 2.5 if _fixd_is_late_trip else 4.0
+                    _gf136_count = 2 if _fixd_is_late_trip else 4
+                    if _gf136_must_see < _gf136_threshold and attraction_count >= _gf136_count and remaining_to_end > 60:
+                        continue  # Solo: skip low-quality fillers when day is already well-filled
 
                 # FIX #138 (31.05.2026): Global filler quality gate — ALL profiles
                 # Skip noise-level fillers (must_see < 3) when day already has >=3 attractions
                 # and >45 min remain. Lower thresholds than FIX #136 (solo-only) — global floor.
+                # FIX D: Softened to attraction_count >= 2 on late long-trip days.
                 _gf138_must_see = p.get("must_see", p.get("must_see_score", 5))
                 try:
                     _gf138_must_see = float(_gf138_must_see)
                 except (TypeError, ValueError):
                     _gf138_must_see = 5.0
-                if _gf138_must_see < 2.0 and attraction_count >= 4 and remaining_to_end > 45:
-                    continue  # Global: skip noise-level fillers on already well-filled days (>=4 POIs)
+                _gf138_count = 2 if _fixd_is_late_trip else 4
+                if _gf138_must_see < 2.0 and attraction_count >= _gf138_count and remaining_to_end > 45:
+                    continue  # Global: skip noise-level fillers on already well-filled days
 
                 # FIX #125 (30.05.2026): Block long activities for toddlers in gap-fill (children_age <= 5)
                 _ca_gf_125 = user.get("children_age")
