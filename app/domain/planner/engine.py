@@ -3131,9 +3131,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if now > lunch_latest:
                     is_late_lunch = True
                     print(f"[LUNCH] WARNING: Late lunch scheduled at {minutes_to_time(now)} (should be by {LUNCH_LATEST})")
-                    if warnings_out is not None:  # FIX #130
-                        warnings_out.append({"type": "late_lunch", "severity": "warning",
-                            "message": f"Late lunch scheduled at {minutes_to_time(now)} (should be by {LUNCH_LATEST})"})
+                    # FIX #144 (01.06.2026): Pre-build late_lunch warning removed.
+                    # FIX #139 (post-build) generates accurate timing-based warnings from real plan.
             
             # Case 2: We're past earliest (12:00) and approaching target (13:00)
             # If adding another POI would push lunch past 14:00, insert lunch NOW
@@ -4587,9 +4586,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     and plan[-1].get("to") == poi_name(best))
                 # FIX #142 (31.05.2026): Skip transfer when recent plan items show we're already
                 # at the same destination — prevents transit→lunch→transit→same_place patterns.
+                # FIX #144 (01.06.2026): Extended lookback from 3 to 8 to catch more duplicate patterns.
                 or (len(plan) >= 2
                     and any(it.get("type") == "transfer" and it.get("to") == poi_name(best)
-                            for it in plan[-3:]))
+                            for it in plan[-8:]))
             )
             if not _skip_transfer:
                 plan.append(
@@ -4893,9 +4893,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 
                 if now > lunch_latest:
                     print(f"[LUNCH POST-POI] WARNING: Late lunch at {lunch_start_time} (should be by {LUNCH_LATEST})")
-                    if warnings_out is not None:  # FIX #130
-                        warnings_out.append({"type": "late_lunch", "severity": "warning",
-                            "message": f"Late lunch at {lunch_start_time} (should be by {LUNCH_LATEST})"})
+                    # FIX #144 (01.06.2026): Pre-build late_lunch warning removed.
+                    # FIX #139 (post-build) generates accurate timing-based warnings from real plan.
                 else:
                     print(f"[LUNCH POST-POI] Lunch inserted at {lunch_start_time}-{lunch_end_time} (duration: {actual_lunch_duration} min)")
                 
@@ -5347,7 +5346,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     _f143_has_trail = any(it.get("type") == "attraction" and it.get("poi", {}).get("type") == "trail"
                           for it in plan)
     if (not _f143_has_trail
-            and len(_f143_real_attractions) < 2
+            and len(_f143_real_attractions) < 1
             and remaining_to_end > 120):
         # Day is structurally sparse (< 2 non-trail POIs, > 2h remain) — close gracefully
         _f143_label = _get_free_time_label(plan, now, remaining_to_end, end, profile=user.get("target_group"))
@@ -5474,8 +5473,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         _gf136_must_see = float(_gf136_must_see)
                     except (TypeError, ValueError):
                         _gf136_must_see = 5.0
-                    if _gf136_must_see < 4.0 and attraction_count >= 3 and remaining_to_end > 60:
-                        continue  # Solo: skip low-quality fillers when day is already good
+                    if _gf136_must_see < 4.0 and attraction_count >= 4 and remaining_to_end > 60:
+                        continue  # Solo: skip low-quality fillers when day is already well-filled (>=4 POIs)
 
                 # FIX #138 (31.05.2026): Global filler quality gate — ALL profiles
                 # Skip noise-level fillers (must_see < 3) when day already has >=3 attractions
@@ -5485,8 +5484,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     _gf138_must_see = float(_gf138_must_see)
                 except (TypeError, ValueError):
                     _gf138_must_see = 5.0
-                if _gf138_must_see < 3.0 and attraction_count >= 3 and remaining_to_end > 45:
-                    continue  # Global: skip noise-level fillers on already-good days
+                if _gf138_must_see < 2.0 and attraction_count >= 4 and remaining_to_end > 45:
+                    continue  # Global: skip noise-level fillers on already well-filled days (>=4 POIs)
 
                 # FIX #125 (30.05.2026): Block long activities for toddlers in gap-fill (children_age <= 5)
                 _ca_gf_125 = user.get("children_age")
@@ -5554,9 +5553,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         or (plan and plan[-1].get("type") == "transfer"
                             and plan[-1].get("to") == poi_name(soft_best))
                         # FIX #142 (31.05.2026): Skip if already moved to this destination recently
+                        # FIX #144 (01.06.2026): Extended lookback from 3 to 8.
                         or (len(plan) >= 2
                             and any(it.get("type") == "transfer" and it.get("to") == poi_name(soft_best)
-                                    for it in plan[-3:]))
+                                    for it in plan[-8:]))
                     )
                     if not _skip_gap_tr:
                         plan.append({
@@ -5732,22 +5732,44 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     # FIX #139 (31.05.2026): Post-build warning validation
     # Check actual plan items for timing anomalies after all insertions/transits are done.
     # Supplements pre-build time-estimate warnings with real-plan-based warnings.
+    # FIX #144 (01.06.2026): Extended to cover late_lunch (>=14:30) and added deduplication.
     if warnings_out is not None:
         for _w139_item in plan:
             _w139_type = _w139_item.get("type", "")
             _w139_start = _w139_item.get("start_time", "")
-            if _w139_type == "lunch_break" and _w139_start >= "15:00":
-                warnings_out.append({
-                    "type": "very_late_lunch",
-                    "severity": "warning",
-                    "message": f"Lunch scheduled very late: {_w139_start} (recommend finishing by 14:30)",
-                })
+            if _w139_type == "lunch_break" and _w139_start:
+                if _w139_start >= "15:00":
+                    warnings_out.append({
+                        "type": "very_late_lunch",
+                        "severity": "warning",
+                        "message": f"Lunch scheduled very late: {_w139_start} (recommend finishing by 14:30)",
+                    })
+                elif _w139_start >= "14:30":
+                    warnings_out.append({
+                        "type": "late_lunch",
+                        "severity": "warning",
+                        "message": f"Late lunch: {_w139_start} (should finish by 14:30)",
+                    })
             elif _w139_type == "dinner_break" and _w139_start and _w139_start < "17:00":
                 warnings_out.append({
                     "type": "early_dinner",
                     "severity": "info",
                     "message": f"Dinner scheduled early: {_w139_start}",
                 })
+        # NEW FIX B (01.06.2026): Deduplicate warnings
+        # If very_late_lunch exists, drop weaker late_lunch (stronger message covers it)
+        _has_very_late_lunch = any(w.get("type") == "very_late_lunch" for w in warnings_out)
+        if _has_very_late_lunch:
+            warnings_out[:] = [w for w in warnings_out if w.get("type") != "late_lunch"]
+        # Remove exact duplicates (same type + same message)
+        _seen_warn: set = set()
+        _deduped_warn = []
+        for _w in warnings_out:
+            _wkey = (_w.get("type", ""), _w.get("message", "")[:80])
+            if _wkey not in _seen_warn:
+                _seen_warn.add(_wkey)
+                _deduped_warn.append(_w)
+        warnings_out[:] = _deduped_warn
 
     return plan
 
