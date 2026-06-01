@@ -1438,7 +1438,8 @@ class PlanService:
                 elif _ft78e_start_min < time_to_minutes("17:00"):
                     _ft78e_label = "Popołudniowy relaks" if duration_min >= 30 else "Chwila odpoczynku"
                 elif _ft78e_start_min < time_to_minutes("20:00"):
-                    _ft78e_label = "Wieczorny spacer i zakupy pamiątek" if duration_min >= 30 else "Czas przed kolacją"
+                    # FIX EXTRA4 (01.06.2026): Client approved 24.05.2026 — evening = Kolacja i Krupówki
+                    _ft78e_label = "Kolacja i Krupówki: restauracja, spacer po Krupówkach" if duration_min >= 30 else "Czas przed kolacją"
                 else:
                     _ft78e_label = "Wieczór: relaks i podsumowanie dnia" if duration_min >= 30 else "Chwila na dobranoc"
                 free_time_item = FreeTimeItem(
@@ -2135,7 +2136,8 @@ class PlanService:
                             elif current_end < time_to_minutes("17:00"):
                                 _ft78hl_label = "Popołudniowy relaks" if free_duration >= 30 else "Chwila odpoczynku"
                             elif current_end < time_to_minutes("20:00"):
-                                _ft78hl_label = "Wieczorny spacer i zakupy pamiątek" if free_duration >= 30 else "Czas przed kolacją"
+                                # FIX EXTRA4 (01.06.2026): Client approved 24.05.2026 — evening = Kolacja i Krupówki
+                                _ft78hl_label = "Kolacja i Krupówki: restauracja, spacer po Krupówkach" if free_duration >= 30 else "Czas przed kolacją"
                             else:
                                 _ft78hl_label = "Wieczór: relaks i podsumowanie dnia" if free_duration >= 30 else "Chwila na dobranoc"
                             result.append(FreeTimeItem(
@@ -2426,7 +2428,8 @@ class PlanService:
                         elif current_end < time_to_minutes("17:00"):
                             label = "Popołudniowy relaks" if gap_duration >= 30 else "Chwila odpoczynku"
                         elif current_end < time_to_minutes("20:00"):
-                            label = "Wieczorny spacer i zakupy pamiątek" if gap_duration >= 30 else "Czas przed kolacją"
+                            # FIX EXTRA4 (01.06.2026): Client approved 24.05.2026 — evening = Kolacja i Krupówki
+                            label = "Kolacja i Krupówki: restauracja, spacer po Krupówkach" if gap_duration >= 30 else "Czas przed kolacją"
                         else:
                             label = "Wieczór: relaks i podsumowanie dnia" if gap_duration >= 30 else "Chwila na dobranoc"
                         

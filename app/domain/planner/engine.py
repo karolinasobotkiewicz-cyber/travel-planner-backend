@@ -299,6 +299,11 @@ def _get_free_time_label(plan, now_min, duration_min, day_end_min, profile=None)
             return "Spokojny czas po termach: kawa, zakupy, relaks"
         if _prev_poi_type == "local_food_experience":
             return "Regionalny przystanek: oscypki, herbata góralska"
+        # FIX EXTRA4 (01.06.2026): Context label after museum/gallery/cultural POI
+        # Client approved 24.05.2026: post-museum free time = coffee + relaxed exploration
+        if _prev_poi_type in ("museum", "muzeum", "gallery", "galeria", "galeria_sztuki",
+                              "historic_building", "monument", "castle"):
+            return "Kawa i spacer: kawiarnia, pamiątki, chwila odpoczynku po zwiedzaniu"
     if profile == "family_kids":
         return "Przerwa rodzinna: lody, plac zabaw, chwila oddechu"
     if profile == "seniors":
@@ -318,10 +323,11 @@ def _get_free_time_label(plan, now_min, duration_min, day_end_min, profile=None)
     if end_of_free_time >= day_end_min - 60 or (remaining_to_day_end > 90 and now_min >= 840):  # After 14:00
         # FIX #86 (28.05.2026): Use "Wieczorny relaks" label for afternoon/evening free_time
         # Client specifically requested: "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja"
-        if now_min >= 900:  # After 15:00 → wieczorny relaks territory
+        # FIX EXTRA4 (01.06.2026): Split 18:00+ into "Kolacja i Krupówki" — client approved 24.05.2026
+        if now_min >= 1080:  # After 18:00 → Kolacja i Krupówki
+            return "Kolacja i Krupówki: restauracja, spacer po Krupówkach, zakupy pamiątek"
+        elif now_min >= 900:  # After 15:00 → wieczorny relaks territory
             return "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja"
-        elif now_min >= 1080:  # After 18:00 (kept for safety, covered above)
-            return "Kolacja i wieczorny wypoczynek: restauracja, spacer, zakupy"
         else:
             return "Czas wolny do końca dnia: kolacja, spacer, zakupy, relaks"
     
