@@ -265,7 +265,7 @@ class RestaurantDB(Base):
     """
     Restaurants table - dining places across 15 cities (ETAP 3).
     
-    Static reference data loaded from Planer - restauracje.xlsx.
+    Static reference data loaded from Planer - restauracje3.xlsx.
     310 restaurants (filtered to ~250 after meal_type validation).
     
     Used by meal optimizer for lunch/dinner selection.

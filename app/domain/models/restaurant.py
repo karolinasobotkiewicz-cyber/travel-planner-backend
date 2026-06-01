@@ -2,7 +2,7 @@
 ETAP 3 - Restaurant Model
 
 Represents a restaurant/dining place for meal optimizer.
-310 restaurants across 15 cities (Planer - restauracje.xlsx).
+326 restaurants across 15 cities (Planer - restauracje3.xlsx).
 
 CRITICAL: meal_type MUST be 'lunch' OR 'dinner' (single value).
 Excel has comma-separated values ('lunch,dinner') - mapping required.

@@ -1,9 +1,9 @@
 """
 ETAP 3 - Restaurant Loader
 
-Load restaurants from Excel (Planer - restauracje.xlsx) into restaurants table.
+Load restaurants from Excel (Planer - restauracje3.xlsx) into restaurants table.
 
-Expected: ~310 rows → ~250 imported (after filtering coffee-only places)
+Expected: ~326 rows → ~260 imported (after filtering coffee-only places)
 
 FILTERING LOGIC:
 - meal_type='coffee' → SKIP (not a meal place)
@@ -141,7 +141,7 @@ def load_restaurants():
     """
     # Excel path (relative to workspace root)
     workspace_root = project_root.parent
-    excel_path = workspace_root / 'planer_update' / 'Planer - restauracje.xlsx'
+    excel_path = workspace_root / 'planer_update' / 'Planer - restauracje3.xlsx'
     
     if not excel_path.exists():
         logger.error(f"Excel file not found: {excel_path}")
@@ -318,7 +318,7 @@ if __name__ == '__main__':
     try:
         loaded, skipped = load_restaurants()
         logger.info(f"\n🎯 TOTAL: {loaded} restaurants loaded, {skipped} skipped (coffee-only)")
-        logger.info(f"   Expected: ~250 loaded, ~60 skipped from 310 total rows")
+        logger.info(f"   Expected: ~260 loaded, ~66 skipped from 326 total rows")
     except Exception as e:
         logger.error(f"\n💥 FATAL ERROR: {e}")
         import traceback
