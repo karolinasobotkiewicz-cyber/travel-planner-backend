@@ -894,10 +894,13 @@ def is_termy_spa(poi):
     tags_str = ",".join([safe_str(x) for x in tags]).lower() if tags else ""
     
     # Check name, type, or tags for termy/spa/thermal keywords (case-insensitive)
+    # FIX #152: Removed "relax" from tag check — it matched quiet_relax_spot, relaxation,
+    # relax_zone, etc., causing waterfalls/meadows/viewpoints to be wrongly counted as termy/spa
+    # and blocked by the 1-per-day limit.  Only actual thermal/spa tags remain.
     return (
         any(keyword in name for keyword in ["term", "spa", "thermal", "basen termalny", "sauna"]) or
         any(keyword in poi_type for keyword in ["term", "spa", "thermal", "wellness"]) or
-        any(keyword in tags_str for keyword in ["relax", "spa", "thermal", "wellness"])
+        any(keyword in tags_str for keyword in ["spa", "thermal", "wellness"])
     )
 
 
@@ -1858,8 +1861,10 @@ def score_poi(
             print(f"    [RELAX BOOST] {poi_name_safe}: +{boost:.1f} (relax style + relaxation tags)")
         
         # Penalty for active POI for relax travelers
+        # FIX #154: Skip penalty if POI actually matches a user preference
+        # (e.g., travel_style=relax but user explicitly picked hiking preference)
         active_tags = {"active_sport", "hiking", "climbing", "mountain_trails"}
-        if active_tags & poi_tags:
+        if active_tags & poi_tags and not poi_matches_preferences:
             penalty = score * 0.3  # 30% penalty
             score -= penalty
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
@@ -1877,7 +1882,11 @@ def score_poi(
             "art_gallery", "temporary_exhibitions"
         }
         _user_prefs_48 = user.get("preferences", [])
-        if _museum_tags_48 & poi_tags and "museum_heritage" not in _user_prefs_48:
+        # FIX #153: Also skip penalty if POI actually matches any user preference.
+        # Example: family_kids+relaxation user has Iluzja Park (interactive_exhibits tag) —
+        # interactive_exhibits is a museum tag BUT the POI serves kids_attractions preference.
+        # poi_matches_preferences is already computed earlier in score_poi, reuse it here.
+        if _museum_tags_48 & poi_tags and "museum_heritage" not in _user_prefs_48 and not poi_matches_preferences:
             _museum_relax_penalty = score * 0.35  # 35% penalty for relax users with no museum preference
             score -= _museum_relax_penalty
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
@@ -1948,7 +1957,8 @@ def score_poi(
         # Solution: Strong penalty for relaxing/wellness POI (like relax→active penalty)
         # Client feedback: "active_sport" preference completely unmet, got thermal pools instead
         relax_tags = {"relaxation", "spa", "termy", "wellness", "hot_springs", "thermal_baths", "water_wellness"}
-        if relax_tags & poi_tags:
+        # FIX #154: Skip penalty if POI matches a user preference (e.g., adventure + relaxation pref)
+        if relax_tags & poi_tags and not poi_matches_preferences:
             penalty = score * 0.5  # 50% penalty (strong, matching relax→active penalty)
             score -= penalty
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
@@ -1977,7 +1987,9 @@ def score_poi(
             "composer_artist_house", "intimate_small_museum", "ethnographic_museum",
             "art_gallery", "temporary_exhibitions"
         }
-        if museum_tags & poi_tags:
+        # FIX #154: Skip museum penalty if user explicitly wants museum_heritage or the POI
+        # matches any user preference — preferences are the primary signal, travel_style is secondary.
+        if museum_tags & poi_tags and not poi_matches_preferences:
             penalty = score * 0.55  # FIX #31 (18.05.2026): 55% penalty (was 35% - still too many museums in adventure plans)
             score -= penalty
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
@@ -4873,7 +4885,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             global_termy_tracking["count"] += 1
             best_name = safe_str(best.get('name', 'UNKNOWN'))
             print(f"[TERMY LIMIT] Termy added: {best_name} - Global count: {old_count} → {global_termy_tracking['count']}/{global_termy_tracking['max']}")
-        
+
+        # FIX #155 (REGRESSION FIX): Set last_poi BEFORE lunch post-POI check.
+        # ROOT CAUSE: The lunch post-POI check (below) has a `continue` statement that jumps
+        #             back to the while loop, SKIPPING `last_poi = best` at line ~5060+.
+        #             This caused the NEXT iteration to see last_poi=None (or stale), so the
+        #             `if last_poi:` transit block was skipped → MISSING TRANSIT between
+        #             distant consecutive attractions (e.g. Gubałówka → Polana Głodówka, 12.48km).
+        # Same class of bug as FIX #46 (trail_day_mode) and FIX #15 (termy counter).
+        last_poi = best
+
         # FIX #14 (29.04.2026 - CLIENT FEEDBACK): CRITICAL LUNCH CHECK AFTER POI
         # Problem: POI duration can push 'now' past lunch_target (e.g., 12:30 + 2.5h = 15:00)
         #          If we only check at loop start, lunch gets scheduled at 15:00+ (too late!)
