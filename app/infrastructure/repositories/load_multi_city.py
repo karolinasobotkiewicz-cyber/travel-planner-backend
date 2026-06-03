@@ -217,13 +217,14 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             "popularity": _pop_score,
             "priority_level": _priority_str,
             "priority": _priority_str,  # FIX #75: classify_poi() reads p.get("priority", "optional")
+            "Must see score": float(row.get('Must see score', 0)) if pd.notna(row.get('Must see score')) else None,  # FIX #150: normalizer reads this to auto-add must_see tag
             
             # Categorization  # FIX #75: add type_of_attraction aliases used by engine scoring
             "category": _category,
             "type_of_attraction": _category,
             "Type of attraction": _category,
             "subcategory": _safe_str(row.get('Activity_style', row.get('Subcategory'))),
-            "tags": apply_tag_mapping([t.strip() for t in str(row.get('Tags', '')).split(',') if t.strip()]) if pd.notna(row.get('Tags')) else [],  # FIX #111: tag mapping
+            "tags": apply_tag_mapping([t.strip().strip("[]'\"") for t in str(row.get('Tags', '')).split(',') if t.strip().strip("[]\'\"")])  if pd.notna(row.get('Tags')) else [],  # FIX #111 + FIX #150: strip Python list literal brackets/quotes
             
             # Target groups  # FIX #38: Excel uses 'Target group' (with space)
             "target_group": str(row.get('Target group', 'all')).split(',') if pd.notna(row.get('Target group')) else ['all'],
