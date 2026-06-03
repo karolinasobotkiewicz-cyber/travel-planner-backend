@@ -65,17 +65,21 @@ def calculate_priority_bonus(poi: dict, user: dict) -> float:
     Bonus za priority_level POI (FIX #6 + Feedback 03.02.2026).
 
     Args:
-        poi: POI dictionary z polem "priority_level" (core/secondary/optional)
+        poi: POI dictionary z polem "priority_level" (string: core/secondary/optional
+             LUB numeric: 12/6/2 — format zależny od loadera)
         user: User dictionary (nie wykorzystywane, ale zgodne z konwencją)
 
     Returns:
         Score bonus za priority_level
 
     Logic (wzmocnione po feedbacku klientki):
-        - core: +25 punktów (MUST-SEE atrakcje - Wielka Krokiew, Muzeum Tatrzańskie)
-        - secondary: +10 punktów (ważne atrakcje)
-        - optional: 0 punktów (wypełniacze, gap filling)
+        - core / 12: +25 punktów (MUST-SEE atrakcje - Wielka Krokiew, Muzeum Tatrzańskie)
+        - secondary / 6: +10 punktów (ważne atrakcje)
+        - optional / 2: 0 punktów (wypełniacze, gap filling)
         - brak/unknown: 0 punktów
+
+    FIX #148 (01.06.2026): loader zapisuje numeric (12/6/2), nie stringi.
+    Funkcja obsługuje oba formaty.
 
     Limity dzienne (enforced in engine.py):
         - core: 1-2 per day (core_min, core_max)
@@ -83,23 +87,27 @@ def calculate_priority_bonus(poi: dict, user: dict) -> float:
         - optional: fallback only
 
     Examples:
-        >>> poi = {"priority_level": "core"}
+        >>> poi = {"priority_level": 12}  # core (numeric)
         >>> calculate_priority_bonus(poi, {})
         25.0
 
-        >>> poi = {"priority_level": "secondary"}
+        >>> poi = {"priority_level": 6}   # secondary (numeric)
         >>> calculate_priority_bonus(poi, {})
         10.0
 
-        >>> poi = {"priority_level": "optional"}
+        >>> poi = {"priority_level": 2}   # optional (numeric)
         >>> calculate_priority_bonus(poi, {})
         0.0
     """
-    priority = str(poi.get("priority_level", "")).strip().lower()
+    # FIX #148 (01.06.2026): Handle numeric priority_level (loader stores 12/6/2 NOT strings).
+    # Bug: str(12).lower() = "12" ≠ "core" → always returned 0.0, breaking intended +25/+10 bonus.
+    # Fix: recognize numeric values alongside original string values.
+    raw = poi.get("priority_level", "")
+    priority = str(raw).strip().lower()
     
-    if priority == "core":
+    if priority in ("core", "12"):
         return 25.0  # Changed from 30 to 25 (klientka)
-    elif priority == "secondary":
+    elif priority in ("secondary", "6"):
         return 10.0
     else:
-        return 0.0  # optional lub brak
+        return 0.0  # optional (2) lub brak
