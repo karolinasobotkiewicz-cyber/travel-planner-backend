@@ -3361,15 +3361,23 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         _return_min = max(5, int((_dist_to_city / 45) * 60 + 5))
                         if now + _return_min + 30 <= end:
                             _from_name_lunch = poi_name(last_poi)  # save before updating last_poi
-                            plan.append({
-                                "type": "transfer",
-                                "from": _from_name_lunch,
-                                "to": "Zakopane centrum",
-                                "duration_min": _return_min,
-                                "distance_km": round(_dist_to_city, 3),
-                                "transport_mode": "car",
-                            })
-                            now += _return_min
+                            # FIX #147: Skip if already transferred to Zakopane centrum recently (lookback-8)
+                            _skip_lunch_tr = any(
+                                it.get("type") == "transfer" and it.get("to") == "Zakopane centrum"
+                                for it in plan[-8:]
+                            )
+                            if not _skip_lunch_tr:
+                                plan.append({
+                                    "type": "transfer",
+                                    "from": _from_name_lunch,
+                                    "to": "Zakopane centrum",
+                                    "duration_min": _return_min,
+                                    "distance_km": round(_dist_to_city, 3),
+                                    "transport_mode": "car",
+                                })
+                                now += _return_min
+                            else:
+                                print(f"[FIX #147] Skipped duplicate lunch return transit to Zakopane centrum")
                             # FIX #118 pattern: Update last_poi to city center to prevent duplicate transit
                             last_poi = {
                                 "lat": ZAKOPANE_CENTER_LAT,
@@ -4910,16 +4918,24 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         _return_min = max(5, int((_dist_to_city / 45) * 60 + 5))
                         # Only add return transit if it fits within day_end
                         if now + _return_min + 30 <= end:  # 30 min minimum for lunch
-                            plan.append({
-                                "type": "transfer",
-                                "from": poi_name(best),
-                                "to": "Zakopane centrum",
-                                "duration_min": _return_min,
-                                "distance_km": round(_dist_to_city, 3),
-                                "transport_mode": "car",
-                            })
-                            now += _return_min
-                            print(f"[FIX #129] Added return transit from {poi_name(best)} to Zakopane centrum: {_return_min}min ({_dist_to_city:.1f}km)")
+                            # FIX #147: Skip if already transferred to Zakopane centrum recently (lookback-8)
+                            _skip_lunch_tr2 = any(
+                                it.get("type") == "transfer" and it.get("to") == "Zakopane centrum"
+                                for it in plan[-8:]
+                            )
+                            if not _skip_lunch_tr2:
+                                plan.append({
+                                    "type": "transfer",
+                                    "from": poi_name(best),
+                                    "to": "Zakopane centrum",
+                                    "duration_min": _return_min,
+                                    "distance_km": round(_dist_to_city, 3),
+                                    "transport_mode": "car",
+                                })
+                                now += _return_min
+                                print(f"[FIX #129] Added return transit from {poi_name(best)} to Zakopane centrum: {_return_min}min ({_dist_to_city:.1f}km)")
+                            else:
+                                print(f"[FIX #147] Skipped duplicate post-POI lunch return transit to Zakopane centrum")
                         else:
                             print(f"[FIX #129] Skipped return transit (not enough time): {_return_min}min + 30min lunch > day_end")
                             _lunch_location_context = "przy_atrakcji"
@@ -5290,6 +5306,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             _t77_dist_km < 0.05
                             or (plan and plan[-1].get("type") == "transfer"
                                 and plan[-1].get("to") == poi_name(p))
+                            # FIX #147: Also check recent 8 items (mirror of main loop FIX #142/144)
+                            or (len(plan) >= 2
+                                and any(it.get("type") == "transfer" and it.get("to") == poi_name(p)
+                                        for it in plan[-8:]))
                         )
                         if not _skip_soft_tr:
                             plan.append({
@@ -5883,6 +5903,25 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 _seen_warn.add(_wkey)
                 _deduped_warn.append(_w)
         warnings_out[:] = _deduped_warn
+
+    # FIX #147: Post-build transfer deduplication — safety net for consecutive duplicates.
+    # Removes any transfer item immediately followed by another transfer with the same (from, to).
+    # Non-consecutive duplicates are prevented at insertion time (FIX #128/#142/#144/#147 above).
+    _f147_clean: list = []
+    for _f147_idx, _f147_item in enumerate(plan):
+        if _f147_item.get("type") == "transfer":
+            _f147_to = _f147_item.get("to", "")
+            _f147_from = _f147_item.get("from", "")
+            # Drop consecutive duplicate: same (from, to) as the previous transfer already kept
+            if (_f147_clean
+                    and _f147_clean[-1].get("type") == "transfer"
+                    and _f147_clean[-1].get("from") == _f147_from
+                    and _f147_clean[-1].get("to") == _f147_to):
+                print(f"[FIX #147] Removed consecutive duplicate transfer: {_f147_from} → {_f147_to}", flush=True)
+                continue
+        _f147_clean.append(_f147_item)
+    if len(_f147_clean) < len(plan):
+        plan[:] = _f147_clean
 
     return plan
 

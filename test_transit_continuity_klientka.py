@@ -6,6 +6,7 @@ Checks per day plan:
   2. All adjacent attraction pairs with distance > 2.0km have a transfer between them
   3. No backward time progression in the timeline
   4. No overlapping items (start < prev_end)
+  5. No duplicate (from, to) transfer pairs within the same day [FIX #147]
 
 Usage:
     cd travel-planner-backend
@@ -209,6 +210,25 @@ def check_no_duplicate_transfer_destination(plan: list) -> list:
     return issues
 
 
+def check_no_duplicate_transfer_pair(plan: list) -> list:
+    """Return issues where the same (from, to) transfer pair appears more than once in a day.
+    FIX #147: This verifies the deduplication added in FIX #147/#128/#142/#144 works correctly.
+    """
+    from collections import Counter
+    issues = []
+    pairs = [
+        (it.get("from", ""), it.get("to", ""))
+        for it in plan
+        if it.get("type") == "transfer"
+    ]
+    dup = {k: v for k, v in Counter(pairs).items() if v > 1}
+    for (fr, to), count in dup.items():
+        issues.append(
+            f"  DUPLICATE TRANSFER PAIR ({count}x): {fr} → {to}"
+        )
+    return issues
+
+
 def validate_plan(plan: list) -> tuple:
     """Run all transit continuity checks. Returns (all_passed, issues_list)."""
     all_issues = []
@@ -216,6 +236,7 @@ def validate_plan(plan: list) -> tuple:
     all_issues += check_distant_pois_have_transit(plan)
     all_issues += check_time_continuity(plan)
     all_issues += check_no_duplicate_transfer_destination(plan)
+    all_issues += check_no_duplicate_transfer_pair(plan)
     return (len(all_issues) == 0, all_issues)
 
 
