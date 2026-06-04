@@ -820,7 +820,16 @@ class PlanService:
             # subsequently removed by day-end enforcement or _remove_timeline_overlaps.
             # Also removes orphaned transits (no following attraction) — see _update_transit_destinations.
             day_items = self._update_transit_destinations(day_items)
-            
+
+            # FIX #157 (04.06.2026 - CLIENT FEEDBACK): collapse duplicate transit
+            # legs. After _update_transit_destinations rewrites every transit to
+            # (prev attraction -> next attraction), the engine's FIX #129 lunch
+            # return leg + the real approach leg can become identical, surfacing as
+            # client-reported "double transits" and "lunch sandwich" (A->B, lunch,
+            # A->B). This pass keeps one leg per pair within each inter-attraction
+            # segment; no-bug plans are unaffected.
+            day_items = self._collapse_duplicate_transits(day_items)
+
             # FIX #18 (03.05.2026 - CLIENT FEEDBACK MAY 3): Consolidate consecutive free_time blocks
             # Apply BEFORE adding day_end to ensure day_end stays last
             day_items = self._consolidate_consecutive_free_time_blocks(day_items)
@@ -3223,3 +3232,44 @@ class PlanService:
             result.append(item)
         
         return result
+
+    def _collapse_duplicate_transits(self, items: List[Any]) -> List[Any]:
+        """
+        FIX #157 (04.06.2026 - CLIENT FEEDBACK): Remove duplicate transit legs.
+
+        Root cause: after _update_transit_destinations rewrites every transit to
+        (previous attraction -> next attraction), a day can contain two transits
+        with IDENTICAL from/to between the same pair of consecutive attractions —
+        e.g. the engine's FIX #129 return-to-centrum leg plus the real approach
+        leg. This surfaced to the client as:
+          - consecutive transits (A->B, A->B back to back), and
+          - lunch sandwich (A->B, lunch, A->B again).
+
+        Rule: within each segment between two attractions (lunch_break/free_time/
+        buffer/parking do NOT split a segment), keep only the LAST transit for a
+        given (from, to) pair and drop the earlier duplicate(s). The kept leg
+        stays adjacent to its destination attraction (no "teleport"). Plans
+        without the bug are unaffected (at most one transit per pair).
+        """
+        drop_indices = set()
+        seen = {}  # (from, to) -> index of last transit seen in current segment
+        for i, item in enumerate(items):
+            itype = getattr(item, "type", None)
+            if itype == ItemType.ATTRACTION:
+                seen.clear()
+                continue
+            if itype == ItemType.TRANSIT:
+                key = (
+                    getattr(item, "from_location", None),
+                    getattr(item, "to_location", None),
+                )
+                if key[1] and key in seen:
+                    drop_indices.add(seen[key])
+                    print(
+                        f"[FIX #157] Dropped duplicate transit "
+                        f"'{key[0]}' -> '{key[1]}'"
+                    )
+                seen[key] = i
+        if not drop_indices:
+            return items
+        return [it for idx, it in enumerate(items) if idx not in drop_indices]
