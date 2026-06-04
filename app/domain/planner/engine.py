@@ -2845,6 +2845,43 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
             warnings_out=_day_warnings  # FIX #130: collect warnings
         )
 
+        # FIX #158 (04.06.2026 - CLIENT FEEDBACK / PHASE 1): Anti-empty-day + zone fallback.
+        # A day restricted to a small per-day zone pool (FIX #113) can come back with
+        # ZERO attractions once cross-day dedup (global_used) exhausts that zone — even
+        # though unused, still-eligible POIs remain in OTHER zones (client JSON5 Day2,
+        # JSON6 last day, JSON9 Day3). In that case retry the day ONCE with the FULL POI
+        # pool so it gets filled from any zone instead of being left empty.
+        # Safety / zero-regression: only fires when the day is otherwise EMPTY (0
+        # attractions) AND zone pools are active AND the day pool is a strict subset of
+        # the full pool. Days that already have >=1 attraction are byte-identical to
+        # before. The retry reuses the SAME global_used / termy / trail trackers, so
+        # dedup and per-trip caps are still enforced (no duplicate POIs, no extra termy).
+        _f158_attr = sum(1 for _it in day_plan if _it.get("type") == "attraction")
+        if _f158_attr == 0 and pois_per_day is not None and _pois_for_day is not pois:
+            print(f"[FIX #158] Day {day_num + 1}: 0 attractions from zone pool "
+                  f"({len(_pois_for_day)} POIs) → retrying with full pool ({len(pois)} POIs)")
+            _f158_warnings: list = []
+            _f158_retry = build_day(
+                pois=pois,
+                user=user,
+                context=context,
+                day_start=day_start,
+                day_end=day_end,
+                global_used=_global_used_for_day,  # same dedup set → no POI reuse
+                global_termy_tracking=global_termy_tracking,
+                global_trail_tracking=global_trail_tracking,
+                warnings_out=_f158_warnings,
+            )
+            _f158_attr_retry = sum(1 for _it in _f158_retry if _it.get("type") == "attraction")
+            if _f158_attr_retry > 0:
+                print(f"[FIX #158] Day {day_num + 1}: recovery filled the day with "
+                      f"{_f158_attr_retry} attraction(s) from other zones")
+                day_plan = _f158_retry
+                _day_warnings = _f158_warnings
+            else:
+                print(f"[FIX #158] Day {day_num + 1}: full pool also empty → genuine data "
+                      f"limit (no unused eligible POIs left), keeping free_time day")
+
         # FIX D: Capture POIs added by build_day this day and sync back to global_used_pois
         _day_pois_used = _global_used_for_day - _global_used_before_day
         daily_used_sets.append(_day_pois_used)
