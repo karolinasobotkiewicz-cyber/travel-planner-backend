@@ -3362,7 +3362,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # for ANY POI type that is far from centrum (not just trails).
                 # Prevents "lunch teleport" regardless of attraction type (cable-car, zoo, etc.).
                 _lunch_location_context = "centrum"
-                if last_poi and last_poi.get("type") != "city_center":
+                # FIX #156 (04.06.2026): Gate the ZAKOPANE-hardcoded return-to-centrum block to
+                # Zakopane trips only (mirrors FIX #37/#69 in plan_service). For other cities the
+                # hardcoded ZAKOPANE_CENTER would compute a bogus distance to a foreign centre.
+                # Default True preserves existing behavior for build_day callers that omit the flag.
+                if last_poi and last_poi.get("type") != "city_center" and context.get("is_zakopane_trip", True):
                     _lp_lat = last_poi.get("lat")
                     _lp_lng = last_poi.get("lng")
                     if _lp_lat and _lp_lng:
@@ -4928,7 +4932,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # for ANY POI type that is far from centrum (not just trails).
                 # Prevents "lunch teleport" regardless of attraction type (cable-car, zoo, etc.).
                 _lunch_location_context = "centrum"
-                if best and best.get("type") != "city_center":
+                # FIX #156 (04.06.2026): see matching block above — gate the ZAKOPANE-hardcoded
+                # return-to-centrum to Zakopane trips only (default True keeps build_day behavior).
+                if best and best.get("type") != "city_center" and context.get("is_zakopane_trip", True):
                     _bp_lat = best.get("lat")
                     _bp_lng = best.get("lng")
                     if _bp_lat and _bp_lng:

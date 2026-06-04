@@ -100,6 +100,10 @@ class PlanService:
         dates = params["dates"]
         day_start = params["day_start"]
         day_end = params["day_end"]
+
+        # FIX #156 (04.06.2026): Flag Zakopane-only trips so the engine's ZAKOPANE-hardcoded
+        # return-to-centrum block (FIX #129) runs only here, consistent with FIX #37/#69.
+        context["is_zakopane_trip"] = (trip_input.location.city or "").lower() in ("zakopane",)
         
         # ============================================================
         # ETAP 3 PHASE 2 + PHASE 7: INTELLIGENT TRIP TYPE ROUTING
