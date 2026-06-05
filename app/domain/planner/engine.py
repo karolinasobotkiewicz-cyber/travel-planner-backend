@@ -2842,45 +2842,94 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
             global_used=_global_used_for_day,  # FIX D: windowed or full
             global_termy_tracking=global_termy_tracking,  # Pass termy limit tracker
             global_trail_tracking=global_trail_tracking,  # Pass trail limit tracker
-            warnings_out=_day_warnings  # FIX #130: collect warnings
+            warnings_out=_day_warnings,  # FIX #130: collect warnings
+            fallback_pois=pois,  # FIX #159: full pool for sparse-day cross-zone backfill
         )
 
-        # FIX #158 (04.06.2026 - CLIENT FEEDBACK / PHASE 1): Anti-empty-day + zone fallback.
-        # A day restricted to a small per-day zone pool (FIX #113) can come back with
-        # ZERO attractions once cross-day dedup (global_used) exhausts that zone — even
-        # though unused, still-eligible POIs remain in OTHER zones (client JSON5 Day2,
-        # JSON6 last day, JSON9 Day3). In that case retry the day ONCE with the FULL POI
-        # pool so it gets filled from any zone instead of being left empty.
-        # Safety / zero-regression: only fires when the day is otherwise EMPTY (0
-        # attractions) AND zone pools are active AND the day pool is a strict subset of
-        # the full pool. Days that already have >=1 attraction are byte-identical to
-        # before. The retry reuses the SAME global_used / termy / trail trackers, so
-        # dedup and per-trip caps are still enforced (no duplicate POIs, no extra termy).
-        _f158_attr = sum(1 for _it in day_plan if _it.get("type") == "attraction")
-        if _f158_attr == 0 and pois_per_day is not None and _pois_for_day is not pois:
-            print(f"[FIX #158] Day {day_num + 1}: 0 attractions from zone pool "
-                  f"({len(_pois_for_day)} POIs) → retrying with full pool ({len(pois)} POIs)")
-            _f158_warnings: list = []
-            _f158_retry = build_day(
+        # FIX #158 (PHASE 1) + FIX #160 (PHASE 3) — CLIENT FEEDBACK: full-pool recovery for
+        # under-filled days. A day restricted to a small per-day zone pool (FIX #113) can
+        # come back EMPTY or with 1-2 short attractions + multi-hour free_time once cross-day
+        # dedup (global_used) exhausts that zone, even though attractive, still-eligible POIs
+        # remain in OTHER zones (client JSON1/2/8/9). We retry the day ONCE with the FULL
+        # POI pool so the MAIN selection loop (not just gap-fill) can draw from every zone,
+        # and ADOPT the retry only if it is strictly better filled (more attractions, or the
+        # same attractions with less free_time). This guarantees a day is never made worse.
+        #
+        # Zero-regression guards:
+        #   * only runs when zone pools are active AND this day's pool is a strict subset of
+        #     the full pool (single-zone cities / no-zone cities are untouched);
+        #   * only runs for under-filled days (0-1 attractions, or > 3h free_time) — well
+        #     filled days are byte-identical to before;
+        #   * trackers (global_used / termy / trail) are reconciled with explicit deltas so a
+        #     rejected retry leaves NO trace and an accepted retry is counted exactly once
+        #     (no duplicate POIs, no phantom termy/trail consumption across days).
+        def _f160_fill_metric(_items):
+            _a = sum(1 for _it in _items if _it.get("type") == "attraction")
+            _fr = sum((_it.get("duration_min", 0) or 0)
+                      for _it in _items if _it.get("type") == "free_time")
+            return _a, _fr
+
+        _f160_attr, _f160_free = _f160_fill_metric(day_plan)
+        _f160_underfilled = (_f160_attr < 2) or (_f160_free > 180)
+        if _f160_underfilled and pois_per_day is not None and _pois_for_day is not pois:
+            print(f"[FIX #160] Day {day_num + 1}: under-filled ({_f160_attr} attractions, "
+                  f"{_f160_free}min free) from zone pool ({len(_pois_for_day)} POIs) → "
+                  f"retrying with full pool ({len(pois)} POIs)")
+            # --- capture the ORIGINAL build's contribution so we can undo/redo cleanly ---
+            _f160_gu_added = set(_global_used_for_day) - set(_global_used_before_day)
+            _f160_termy_added = sum(1 for _it in day_plan
+                                    if _it.get("type") == "attraction" and is_termy_spa(_it.get("poi") or {}))
+            _f160_trail_added = sum(1 for _it in day_plan
+                                    if _it.get("type") == "attraction"
+                                    and (_it.get("poi") or {}).get("type") == "trail")
+            # undo ORIGINAL from the shared trackers so the retry starts from a clean slate
+            for _pid in _f160_gu_added:
+                _global_used_for_day.discard(_pid)
+            if global_termy_tracking is not None:
+                global_termy_tracking["count"] -= _f160_termy_added
+            if global_trail_tracking is not None:
+                global_trail_tracking["count"] -= _f160_trail_added
+            # snapshot the clean (pre-retry) tracker state for a possible rollback
+            _f160_gu_snap = set(_global_used_for_day)
+            _f160_tc_snap = global_termy_tracking["count"] if global_termy_tracking is not None else None
+            _f160_trc_snap = global_trail_tracking["count"] if global_trail_tracking is not None else None
+
+            _f160_warnings: list = []
+            _f160_retry = build_day(
                 pois=pois,
                 user=user,
                 context=context,
                 day_start=day_start,
                 day_end=day_end,
-                global_used=_global_used_for_day,  # same dedup set → no POI reuse
+                global_used=_global_used_for_day,  # clean dedup set → no POI reuse
                 global_termy_tracking=global_termy_tracking,
                 global_trail_tracking=global_trail_tracking,
-                warnings_out=_f158_warnings,
+                warnings_out=_f160_warnings,
             )
-            _f158_attr_retry = sum(1 for _it in _f158_retry if _it.get("type") == "attraction")
-            if _f158_attr_retry > 0:
-                print(f"[FIX #158] Day {day_num + 1}: recovery filled the day with "
-                      f"{_f158_attr_retry} attraction(s) from other zones")
-                day_plan = _f158_retry
-                _day_warnings = _f158_warnings
+            _f160_rattr, _f160_rfree = _f160_fill_metric(_f160_retry)
+            _f160_better = (_f160_rattr > _f160_attr) or (
+                _f160_rattr == _f160_attr and _f160_rfree < _f160_free)
+            if _f160_better:
+                print(f"[FIX #160] Day {day_num + 1}: adopted full-pool plan "
+                      f"({_f160_rattr} attractions, {_f160_rfree}min free) — better filled")
+                day_plan = _f160_retry
+                _day_warnings = _f160_warnings
+                # trackers already reflect ONLY the retry (original was undone) — correct.
             else:
-                print(f"[FIX #158] Day {day_num + 1}: full pool also empty → genuine data "
-                      f"limit (no unused eligible POIs left), keeping free_time day")
+                print(f"[FIX #160] Day {day_num + 1}: kept original plan "
+                      f"(retry {_f160_rattr} attractions / {_f160_rfree}min free was not better)")
+                # roll back the retry's mutations, then re-apply the ORIGINAL's contribution
+                _global_used_for_day.clear()
+                _global_used_for_day |= _f160_gu_snap
+                if global_termy_tracking is not None:
+                    global_termy_tracking["count"] = _f160_tc_snap
+                if global_trail_tracking is not None:
+                    global_trail_tracking["count"] = _f160_trc_snap
+                _global_used_for_day |= _f160_gu_added
+                if global_termy_tracking is not None:
+                    global_termy_tracking["count"] += _f160_termy_added
+                if global_trail_tracking is not None:
+                    global_trail_tracking["count"] += _f160_trail_added
 
         # FIX D: Capture POIs added by build_day this day and sync back to global_used_pois
         _day_pois_used = _global_used_for_day - _global_used_before_day
@@ -2952,7 +3001,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
 # =========================
 
 
-def build_day(pois, user, context, day_start=None, day_end=None, global_used=None, global_termy_tracking=None, global_trail_tracking=None, warnings_out=None):
+def build_day(pois, user, context, day_start=None, day_end=None, global_used=None, global_termy_tracking=None, global_trail_tracking=None, warnings_out=None, fallback_pois=None):
     """
     Build daily plan from POIs.
     
@@ -5527,21 +5576,23 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     ]
     _f143_has_trail = any(it.get("type") == "attraction" and it.get("poi", {}).get("type") == "trail"
                           for it in plan)
+    # FIX #159 (05.06.2026 - CLIENT FEEDBACK / PHASE 3): Anti-sparse substantial backfill.
+    # OLD FIX #143 closed a structurally-sparse day immediately with one big free_time
+    # block (set remaining_to_end = 0 → skipped gap-fill). The client reported the
+    # OPPOSITE need: days with 0-1 attractions and HOURS of free_time, while attractive,
+    # still-eligible POIs remain unused (JSON1 D2/D3, JSON2 D2/D3, JSON4 D3/D5, JSON7 D1,
+    # JSON8, JSON9). So instead of early-closing we now let the end gap-fill below run in
+    # SPARSE MODE (see _f159_sparse_mode), which is allowed to pull SUBSTANTIAL, higher-
+    # quality POIs (longer duration + higher must_see + uncovered-preference bias) to reach
+    # a sensible minimum of ~2 attractions/day. If nothing eligible fits, the gap-fill
+    # itself closes the day with free_time — exactly the same graceful fallback as before.
     if (not _f143_has_trail
             and len(_f143_real_attractions) < 1
             and remaining_to_end > 120):
-        # Day is structurally sparse (< 2 non-trail POIs, > 2h remain) — close gracefully
-        _f143_label = _get_free_time_label(plan, now, remaining_to_end, end, profile=user.get("target_group"))
-        plan.append({
-            "type": "free_time",
-            "start_time": minutes_to_time(now),
-            "end_time": minutes_to_time(end),
-            "duration_min": remaining_to_end,
-            "description": _f143_label,
-        })
-        print(f"[FIX #143] Sparse day early close: {len(_f143_real_attractions)} real attractions, {remaining_to_end}min remaining → free_time added")
-        # Fall through to validation — no aggressive gap-fill for sparse days
-        remaining_to_end = 0  # Signal: skip gap-fill below
+        print(f"[FIX #159] Sparse day ({len(_f143_real_attractions)} non-trail attractions, "
+              f"{remaining_to_end}min free) → attempting substantial backfill before free_time close")
+        # Deliberately do NOT add free_time or zero remaining_to_end here — the sparse-aware
+        # gap-fill below handles both filling and the graceful free_time close.
 
     if remaining_to_end > 60:  # 1+ hour remaining (UAT Round 2 fix)
         print(f"[GAP FILL END] Gap remaining: {remaining_to_end}min ({minutes_to_time(now)} → {minutes_to_time(end)})")
@@ -5552,6 +5603,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         _is_large_gap = remaining_to_end > 180
         _is_family = user.get("target_group") == "family_kids"
         max_gap_fill = 4 if (_is_large_gap or _is_family) else 2
+
+        # FIX #159 (PHASE 3): if the day is under-filled (< 2 attractions) OR still has a big
+        # free block (> 3h), allow more gap-fill attempts so the sparse-mode backfill can add
+        # substantial POIs instead of leaving multi-hour free_time.
+        if attraction_count < 2 or remaining_to_end > 180:
+            max_gap_fill = max(max_gap_fill, 4)
 
         # FIX D (02.06.2026): Soften quality gates on late days of long trips (>=5 days, day 6+).
         # When the sliding-window dedup (FIX D part 1) re-opens the early-day POI pool,
@@ -5564,6 +5621,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             print(f"[FIX D] Day {_fixd_current_day}/{_fixd_num_days}: Late-trip quality gates softened")
         
         while remaining_to_end > 90 and gap_fill_attempts < max_gap_fill:
+            # FIX #159 (PHASE 3): recompute "sparse" each pass. While the day has < 2
+            # attractions OR still has a big free block (> 3h), we relax the gap-fill
+            # quality/duration ceilings (below) so a SUBSTANTIAL POI can be added; once the
+            # day has >= 2 attractions AND the remaining gap is < 3h we revert to the
+            # original light-filler behaviour (zero regression for already-filled days).
+            _f159_sparse_mode = (attraction_count < 2 or remaining_to_end > 180)
+            _f159_uncovered_prefs = (
+                [pp for pp in user.get("preferences", [])[:3] if pp not in covered_preferences]
+                if _f159_sparse_mode else []
+            )
             # FIX #52 (20.05.2026): Block gap fill culture/activity POIs on heavy trail days
             # Heavy trail (max_poi_after_trail=0) should end with free_time only, not culture visits
             # This prevents e.g. gallery/church after 7h Giewont trek
@@ -5580,8 +5647,21 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             soft_score = -9999
             soft_duration = 0
             soft_travel = 0
-            
-            for p in pois:
+
+            # FIX #159 (PHASE 3): in sparse mode, widen the candidate pool with the FULL
+            # POI set (other zones) so a day whose own zone pool is exhausted by cross-day
+            # dedup can still be filled from attractive, unused POIs elsewhere. Purely
+            # additive — every candidate still passes the same hard filters / dedup / caps
+            # below, so no duplicates and no cap violations. Normal (non-sparse) mode and
+            # callers that pass no fallback_pois are unchanged (zero regression).
+            _gf_candidates = pois
+            if _f159_sparse_mode and fallback_pois is not None:
+                _gf_seen_ids = {poi_id(_pp) for _pp in pois}
+                _gf_extra = [_pp for _pp in fallback_pois if poi_id(_pp) not in _gf_seen_ids]
+                if _gf_extra:
+                    _gf_candidates = list(pois) + _gf_extra
+
+            for p in _gf_candidates:
                 if poi_id(p) in used:
                     continue
                 
@@ -5707,10 +5787,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # FIX #60 (21.05.2026): Allow up to 90min POIs when gap > 180min (reduce free_time)
                 time_min = p.get("time_min", 60)
                 _gap_max_time = 90 if remaining_to_end > 180 else 60
+                # FIX #159: on under-filled days allow SUBSTANTIAL POIs (cap at remaining
+                # time, max ~240 min) instead of only short fillers.
+                if _f159_sparse_mode:
+                    _gap_max_time = min(max(remaining_to_end - 15, 90), 240)
                 if time_min < 15 or time_min > _gap_max_time:
                     continue
                 must_see_score = p.get("must_see", p.get("must_see_score", 10))
                 _gap_must_see_limit = 8 if remaining_to_end > 180 else 7
+                # FIX #159: on under-filled days also accept high-quality POIs (the best
+                # fillers) — normal mode keeps fillers light (<=7/8) to avoid padding.
+                if _f159_sparse_mode:
+                    _gap_must_see_limit = 10
                 if must_see_score > _gap_must_see_limit:
                     continue
                 
@@ -5729,7 +5817,29 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 
                 # Simple scoring: prefer nearby, quick visits
                 score = 10 - travel * 0.5
-                
+
+                # FIX #159 (PHASE 3): on under-filled days pick the BEST available POI first
+                # (quality + preference coverage), not merely the nearest tiny filler. This
+                # is what turns "1 attraction + 6h free_time" into a sensibly filled day and
+                # surfaces secondary preferences (museum_heritage/history_mystery/underground)
+                # that the main loop missed (client JSON7/JSON8).
+                if _f159_sparse_mode:
+                    try:
+                        _f159_ms = float(must_see_score)
+                    except (TypeError, ValueError):
+                        _f159_ms = 5.0
+                    score = _f159_ms * 10 - travel * 0.5
+                    if _f159_uncovered_prefs:
+                        from app.domain.scoring.tag_preferences import USER_PREFERENCES_TO_TAGS
+                        _f159_ptags = set(p.get("tags", []))
+                        _f159_ptype = p.get("type", "")
+                        for _f159_pref in _f159_uncovered_prefs:
+                            _f159_cfg = USER_PREFERENCES_TO_TAGS.get(_f159_pref, {})
+                            if (_f159_ptype in _f159_cfg.get("type_match", [])
+                                    or _f159_ptags & set(_f159_cfg.get("tags", []))):
+                                score += 200.0  # strongly prefer covering a missing preference
+                                break
+
                 if score > soft_score:
                     soft_best = p
                     soft_score = score
