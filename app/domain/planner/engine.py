@@ -1639,6 +1639,26 @@ def score_poi(
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [FAMILY_KIDS BOOST] {poi_name_safe}: +{_fam_boost:.1f} (family-friendly tags: {_fam_boost_tags})")
 
+        # FIX #161 (05.06.2026 - CLIENT FEEDBACK): family_kids under-uses kids_attractions.
+        # When the family explicitly asked for kids_attractions, genuine kids attractions
+        # (Mini Zoo, Papugarnia, Iluzja Park, playgrounds, aquarium, ...) were losing to
+        # mountain trails / walks that ALSO matched a preference (mountain_trails/nature) but
+        # carried higher must_see/priority. Give real kids attractions a strong, targeted
+        # boost so the family actually gets them. Scoped to family_kids + the explicit
+        # kids_attractions preference, so no other profile/plan is affected (zero regression).
+        if "kids_attractions" in user.get("preferences", []):
+            _F161_KIDS_TAGS = {
+                "kids_attractions", "petting_zoo", "fairytale_world", "amusement_park",
+                "family_theme_park", "kids_zone", "playground", "zoo", "aquarium",
+                "water_rides", "interactive_exhibits", "interactive_exhibit", "animals",
+            }
+            if is_kids_focused_poi(p) or (_F161_KIDS_TAGS & _poi_tags_73):
+                _f161_boost = 55.0
+                score += _f161_boost
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [FIX #161 KIDS BOOST] {poi_name_safe}: +{_f161_boost:.1f} "
+                      f"(family_kids explicitly wants kids_attractions)")
+
     score += calculate_budget_score(p, user)
     score += calculate_premium_penalty(p, user)  # CLIENT REQUIREMENT (08.02.2026): Premium experience penalty at budget/standard levels
 
@@ -2870,7 +2890,9 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
             return _a, _fr
 
         _f160_attr, _f160_free = _f160_fill_metric(day_plan)
-        _f160_underfilled = (_f160_attr < 2) or (_f160_free > 180)
+        # FIX #162 (05.06.2026): lowered the free-time trigger 180 → 120 min so days that
+        # still leave ~2h of free_time (client JSON6/JSON9) also get a full-pool retry.
+        _f160_underfilled = (_f160_attr < 2) or (_f160_free > 120)
         if _f160_underfilled and pois_per_day is not None and _pois_for_day is not pois:
             print(f"[FIX #160] Day {day_num + 1}: under-filled ({_f160_attr} attractions, "
                   f"{_f160_free}min free) from zone pool ({len(_pois_for_day)} POIs) → "
@@ -4958,10 +4980,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # main trail-set block (~line 4287) from running.
             trail_duration = _trail_raw_dur_early
             trail_difficulty = _trail_diff_early
+            # FIX #162 (05.06.2026 - CLIENT FEEDBACK): allow a light EVENING recovery POI
+            # (e.g. termy/spa/café) after a long trail. Client: "after the trail the planner
+            # treats the day as done and stops". Raised 1→2; the FIX #81/#85 recovery
+            # blocklist still keeps post-trail POIs calm (no active/museum/viewpoint after a
+            # hard trail), so the extra slot is realistically used by termy/spa/café only.
             if _trail_diff_early in ["hard", "extreme"] or _trail_raw_dur_early >= 240:
-                max_poi_after_trail = 1  # FIX #81 (27.05.2026): was 0 — allow 1 calm POI after hard trail
+                max_poi_after_trail = 2  # FIX #162 (was 1): trail + 1 light POI + evening termy
             elif _trail_diff_early == "moderate" or _trail_raw_dur_early >= 180:
-                max_poi_after_trail = 1
+                max_poi_after_trail = 2  # FIX #162 (was 1)
             else:
                 max_poi_after_trail = 2
             print(f"[FIX #46] trail_day_mode=True set early (before lunch check) - max_poi_after_trail={max_poi_after_trail}")
@@ -5187,11 +5214,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # Heavy trail (hard/extreme, 4-5h): ONLY trail (0 POI after)
             # Moderate trail (moderate, 3-4h): trail + max 1 light POI
             # Light trail (easy, <3h): trail + max 2 light POI
+            # FIX #162 (05.06.2026 - CLIENT FEEDBACK): allow a light EVENING recovery POI
+            # (termy/spa/café) after a long trail so the day isn't cut short with free_time.
+            # FIX #81/#85 recovery blocklist still restricts the extra slot to calm POIs.
             if trail_difficulty in ["hard", "extreme"] or trail_raw_duration >= 240:
-                max_poi_after_trail = 1  # FIX #81 (27.05.2026): was 0 — allow 1 calm POI after hard trail
+                max_poi_after_trail = 2  # FIX #162 (was 1): trail + light POI + evening termy
                 trail_category = "heavy"
             elif trail_difficulty == "moderate" or trail_raw_duration >= 180:
-                max_poi_after_trail = 1  # Max 1 POI after moderate trails
+                max_poi_after_trail = 2  # FIX #162 (was 1): allow evening recovery POI
                 trail_category = "moderate"
             else:  # easy or <3h
                 max_poi_after_trail = 2  # Max 2 POI after light trails
@@ -5605,9 +5635,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         max_gap_fill = 4 if (_is_large_gap or _is_family) else 2
 
         # FIX #159 (PHASE 3): if the day is under-filled (< 2 attractions) OR still has a big
-        # free block (> 3h), allow more gap-fill attempts so the sparse-mode backfill can add
-        # substantial POIs instead of leaving multi-hour free_time.
-        if attraction_count < 2 or remaining_to_end > 180:
+        # free block (> 2h), allow more gap-fill attempts so the sparse-mode backfill can add
+        # substantial POIs instead of leaving multi-hour free_time. (FIX #162: 180 → 120.)
+        if attraction_count < 2 or remaining_to_end > 120:
             max_gap_fill = max(max_gap_fill, 4)
 
         # FIX D (02.06.2026): Soften quality gates on late days of long trips (>=5 days, day 6+).
@@ -5622,11 +5652,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         
         while remaining_to_end > 90 and gap_fill_attempts < max_gap_fill:
             # FIX #159 (PHASE 3): recompute "sparse" each pass. While the day has < 2
-            # attractions OR still has a big free block (> 3h), we relax the gap-fill
+            # attractions OR still has a big free block (> 2h), we relax the gap-fill
             # quality/duration ceilings (below) so a SUBSTANTIAL POI can be added; once the
-            # day has >= 2 attractions AND the remaining gap is < 3h we revert to the
+            # day has >= 2 attractions AND the remaining gap is < 2h we revert to the
             # original light-filler behaviour (zero regression for already-filled days).
-            _f159_sparse_mode = (attraction_count < 2 or remaining_to_end > 180)
+            # (FIX #162: lowered 180 → 120 to also close ~2h residual free blocks.)
+            _f159_sparse_mode = (attraction_count < 2 or remaining_to_end > 120)
             _f159_uncovered_prefs = (
                 [pp for pp in user.get("preferences", [])[:3] if pp not in covered_preferences]
                 if _f159_sparse_mode else []
@@ -5789,7 +5820,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 _gap_max_time = 90 if remaining_to_end > 180 else 60
                 # FIX #159: on under-filled days allow SUBSTANTIAL POIs (cap at remaining
                 # time, max ~240 min) instead of only short fillers.
-                if _f159_sparse_mode:
+                # FIX #162: NOT on trail days — after a long hike the evening must stay light
+                # (termy/café/recovery handled by the main loop), never another big attraction.
+                if _f159_sparse_mode and not trail_day_mode:
                     _gap_max_time = min(max(remaining_to_end - 15, 90), 240)
                 if time_min < 15 or time_min > _gap_max_time:
                     continue
@@ -5797,7 +5830,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 _gap_must_see_limit = 8 if remaining_to_end > 180 else 7
                 # FIX #159: on under-filled days also accept high-quality POIs (the best
                 # fillers) — normal mode keeps fillers light (<=7/8) to avoid padding.
-                if _f159_sparse_mode:
+                if _f159_sparse_mode and not trail_day_mode:
                     _gap_must_see_limit = 10
                 if must_see_score > _gap_must_see_limit:
                     continue
