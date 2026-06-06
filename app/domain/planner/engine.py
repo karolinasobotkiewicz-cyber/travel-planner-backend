@@ -1290,9 +1290,8 @@ def should_block_consecutive_cluster_repeat(p: dict, context: dict | None) -> bo
     prior_uses = context.get("global_cluster_use_count", {}).get(cluster, 0)
     num_days = context.get("num_days", 1)
     if cluster in _HIGH_REPEAT_CLUSTERS and prior_uses >= 1:
-        # One visit per trip for landmark clusters; only the final day of 7+ day trips may revisit.
-        if not (num_days >= 7 and current_day >= num_days):
-            return True
+        # FIX #175 (06.06.2026): one visit per trip — no day-7 revisit exception.
+        return True
     if last_day is None:
         return False
     days_since = current_day - last_day
@@ -2639,15 +2638,34 @@ def score_poi(
                 print(f"    [TRAIL DURATION] {poi_name_safe}: +{duration_boost:.1f} (friends: substantial hike {avg_duration:.0f}min)")
         
         # 6. TRAIL TYPE BOOST (match user preferences)
-        # If user wants hiking/outdoor, boost ALL trails
         user_preferences = user.get("preferences", [])
-        outdoor_prefs = {"hiking", "outdoor", "nature", "mountain_trails", "trekking"}
-        
-        if outdoor_prefs & set(user_preferences):
-            # User explicitly wants outdoor activities - boost trails
+        # FIX #178 (06.06.2026): only explicit MOUNTAIN prefs — nature_landscape alone
+        # must not trigger heavy trail scoring (client: big trails without mountain choice).
+        _mountain_prefs = {"mountain_trails", "hiking", "trekking", "active_sport"}
+        _has_mountain_pref = bool(_mountain_prefs & set(user_preferences))
+
+        if _has_mountain_pref:
             pref_boost = 25.0
             score += pref_boost
-            print(f"    [TRAIL PREFERENCE] {poi_name_safe}: +{pref_boost:.1f} (user wants hiking/outdoor)")
+            print(f"    [TRAIL PREFERENCE] {poi_name_safe}: +{pref_boost:.1f} (user wants mountain trails)")
+        else:
+            # No mountain preference — penalise trails; stronger for long valley hikes.
+            _no_mt_penalty = -80.0
+            if avg_duration >= 240:
+                _no_mt_penalty -= 40.0
+            elif avg_duration >= 180:
+                _no_mt_penalty -= 25.0
+            score += _no_mt_penalty
+            print(f"    [FIX #178 NO-MOUNTAIN PENALTY] {poi_name_safe}: {_no_mt_penalty:.1f} "
+                  f"(no mountain_trails/hiking pref, duration={avg_duration:.0f}min)")
+
+        if _has_mountain_pref and "mountain_trails" not in user_preferences[:3] and "hiking" not in user_preferences[:3]:
+            # Mountain pref present but not top-3 — soften appetite for all-day trails.
+            if avg_duration >= 180:
+                _long_trail_pen = -35.0
+                score += _long_trail_pen
+                print(f"    [FIX #178 LONG-TRAIL PENALTY] {poi_name_safe}: {_long_trail_pen:.1f} "
+                      f"(mountain pref not in top-3, duration={avg_duration:.0f}min)")
         
         # 7. ELEVATION GAIN PENALTY (steep climbs hard for families/seniors)
         elevation_gain = safe_int(p.get("elevation_gain_m", 0), 0)
@@ -2774,10 +2792,8 @@ def score_poi(
     _prior_uses = _cluster_uses.get(_cluster_key, 0)
     _num_days_172 = (context or {}).get("num_days", 1)
     if _cluster_key in _HIGH_REPEAT_CLUSTERS and _prior_uses >= 1:
-        # Second+ visit to Krupówki/Gubałówka/SkyWalk in same trip — strong penalty.
-        # Late long-trip days (FIX D) get a softer penalty so day 7 can revisit if needed.
-        _late_trip = _num_days_172 >= 7 and _current_day >= _num_days_172
-        _repeat_penalty = -45.0 if _late_trip else -75.0
+        # FIX #175: second+ visit to landmark cluster in same trip — always heavy penalty.
+        _repeat_penalty = -90.0
         score += _repeat_penalty * min(_prior_uses, 2)
         poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
         print(f"    [FIX #172 TRIP REPEAT] {poi_name_safe}: {_repeat_penalty * min(_prior_uses, 2):.1f} "
@@ -2998,13 +3014,10 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
     global_cluster_use_count: dict = {}  # cluster_key -> times used earlier in trip
     global_museum_count = 0  # museums scheduled so far (for FIX #173 escalation)
 
-    # FIX D (02.06.2026): Sliding-window dedup for long trips (>=5 days, day 6+).
-    # Problem: global_used_pois grows to exhaust entire POI pool by day 6-7,
-    # leaving late days with no activities ("dead days").
-    # Solution: Track per-day POI usage and for day 6+, only block POIs from
-    # the last 3 days instead of all previous days.
-    _FIX_D_WINDOW = 3   # days to keep blocked (recency window)
-    daily_used_sets: list = []  # per-day lists of POI IDs added that day
+    # FIX #175 (06.06.2026 - CLIENT FEEDBACK): Trip-wide POI dedup — never reuse the same
+    # POI ID in one plan. FIX D sliding window caused day-1/day-7 skeleton duplicates
+    # (Dolina Chochołowska + Krupówki). Late days rely on Zone C pool instead.
+    daily_used_sets: list = []  # per-day lists of POI IDs added that day (diagnostics)
 
     for day_num in range(num_days):
         context = contexts[day_num]
@@ -3052,19 +3065,9 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         _fallback_for_day = (fallback_per_day[day_num]
                              if fallback_per_day is not None else pois)
 
-        # FIX D (02.06.2026): For day 6+ in a 5+ day trip, pass only a RECENT WINDOW of used POIs.
-        # This lets the engine re-consider POIs from early days (days 1-2) so late days aren't empty.
-        _fixd_use_window = (num_days >= 5 and day_num >= 5)
-        if _fixd_use_window:
-            _window_used: set = set()
-            for _prev_set in daily_used_sets[-_FIX_D_WINDOW:]:
-                _window_used |= _prev_set
-            _global_used_before_day = frozenset(_window_used)
-            _global_used_for_day = _window_used
-            print(f"[FIX D] Day {day_num + 1}: Using windowed used set ({len(_window_used)} vs {len(global_used_pois)} full)")
-        else:
-            _global_used_before_day = frozenset(global_used_pois)
-            _global_used_for_day = global_used_pois
+        # FIX #175: always pass the FULL trip-wide used set — no sliding window.
+        _global_used_before_day = frozenset(global_used_pois)
+        _global_used_for_day = global_used_pois
 
         day_plan = build_day(
             pois=_pois_for_day,
@@ -3072,7 +3075,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
             context=context,
             day_start=day_start,
             day_end=day_end,
-            global_used=_global_used_for_day,  # FIX D: windowed or full
+            global_used=_global_used_for_day,
             global_termy_tracking=global_termy_tracking,  # Pass termy limit tracker
             global_trail_tracking=global_trail_tracking,  # Pass trail limit tracker
             warnings_out=_day_warnings,  # FIX #130: collect warnings
@@ -3167,13 +3170,9 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
                 if global_trail_tracking is not None:
                     global_trail_tracking["count"] += _f160_trail_added
 
-        # FIX D: Capture POIs added by build_day this day and sync back to global_used_pois
+        # Capture POIs added by build_day this day (global_used_pois updated in-place).
         _day_pois_used = _global_used_for_day - _global_used_before_day
         daily_used_sets.append(_day_pois_used)
-        if _fixd_use_window:
-            # Sync newly selected POIs back into the full history set
-            global_used_pois |= _day_pois_used
-        # (Non-FIX-D days: global_used_pois was modified in-place by build_day already)
         # FIX #130: propagate per-day warnings tagged with day number
         if warnings_out is not None:
             for _w in _day_warnings:
@@ -4385,12 +4384,20 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             is_trail = p.get("type") == "trail"
             TRAIL_CUTOFF = 600  # 10:00 AM in minutes
             
-            if is_trail and trip_type == "mountain_hiking" and now < TRAIL_CUTOFF:
+            # FIX #178: +300 early-trail boost only when user explicitly chose mountain prefs.
+            _mountain_prefs_178 = {"mountain_trails", "hiking", "trekking", "active_sport"}
+            _wants_mountains_178 = bool(_mountain_prefs_178 & set(user.get("preferences", [])))
+            if is_trail and trip_type == "mountain_hiking" and now < TRAIL_CUTOFF and _wants_mountains_178:
                 trail_early_boost = 300  # PHASE 8 FIX #5: Increased 150->300 to beat variety randomness
                 score += trail_early_boost
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                 print(f"[TRAIL PRIORITY] +{trail_early_boost} boost for trail: {poi_name_safe} "
                       f"(mountain_hiking mode, now={minutes_to_time(now)} < 10:00)")
+            elif is_trail and trip_type == "mountain_hiking" and now < TRAIL_CUTOFF and not _wants_mountains_178:
+                score -= 120.0
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[FIX #178 TRAIL PRIORITY] -120 for trail {poi_name_safe} "
+                      f"(mountain region but user has no mountain prefs)")
             
             # FIX #7 (02.02.2026): Soft limit penalty
             # After soft limit, heavily penalize additional attractions
@@ -4450,7 +4457,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             #          in main loop where they have +150 boost → higher selection chance
             # Rationale: Trails should be PRIMARY attraction for mountain_hiking, not museums
             trip_type = context.get("trip_type", "")
-            skip_core_rotation = (trip_type == "mountain_hiking")
+            _mountain_prefs_cr = {"mountain_trails", "hiking", "trekking", "active_sport"}
+            skip_core_rotation = (
+                trip_type == "mountain_hiking"
+                and bool(_mountain_prefs_cr & set(user.get("preferences", [])))
+            )
             
             # Check if we need to select a core POI
             if core_attraction_count < limits.get("core_min", 1) and not skip_core_rotation:

@@ -702,6 +702,17 @@ class PlanService:
                 for z in _zorder:
                     _day_zone_seq += [z] * _zone_days[z]
                 _day_zone_seq = (_day_zone_seq + [_zorder[0]] * num_days)[:num_days]
+
+                # FIX #177 (06.06.2026 - CLIENT FEEDBACK): 5-7 day plans must reach Zone C
+                # (excursions outside Zakopane). Force the LAST days onto Zone C so Pieniny /
+                # Słowacja / Bukowina POIs are actually used instead of repeating Zone A/B.
+                if num_days >= 5 and 'C' in _zorder:
+                    _late_c_days = min(3, max(2, num_days - 3))
+                    for _d_fix177 in range(num_days - _late_c_days, num_days):
+                        _day_zone_seq[_d_fix177] = 'C'
+                    print(f"[FIX #177] Late-trip Zone C lock: days "
+                          f"{num_days - _late_c_days + 1}-{num_days} → Zone C")
+
                 print(f"[FIX #170] Zone day allocation (A→B→C weighted): "
                       f"{ {z: _zone_days[z] for z in _zorder} } over {num_days} days")
 
@@ -731,7 +742,11 @@ class PlanService:
                         ]
                     else:
                         _near_unzoned = list(pois_no_zone)
-                    day_pool = _dedupe_pois(_near_unzoned + sub)
+                    # FIX #177: Zone C days use the FULL Zone C bucket as main pool.
+                    if zone == 'C' and num_days >= 5:
+                        day_pool = _dedupe_pois(list(zone_buckets.get('C', [])) + _near_unzoned)
+                    else:
+                        day_pool = _dedupe_pois(_near_unzoned + sub)
 
                     # FALLBACK pool: own sub-cluster + every POI within
                     # _FALLBACK_RADIUS_KM of this sub-cluster's centroid (any zone).
@@ -746,6 +761,9 @@ class PlanService:
                     else:
                         # No coords for this sub-cluster → safe full pool
                         fb = list(all_pois)
+                    # FIX #177: days 5+ always get full Zone C in fallback (5-7 day trips).
+                    if d >= 4 and 'C' in zone_buckets and num_days >= 5:
+                        fb.extend(zone_buckets['C'])
                     fallbacks.append(_dedupe_pois(fb))
 
                     print(f"[FIX #167/#170]   Day {d+1} → Zone {zone} sub[{occ % max(len(subs),1)}] "
