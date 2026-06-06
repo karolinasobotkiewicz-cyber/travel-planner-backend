@@ -813,6 +813,28 @@ def safe_float(x, default=0.0):
         return default
 
 
+# Dedicated viewpoint tags only. Generic "scenic_view(s)" is intentionally EXCLUDED — it
+# also tags dams, promenades, cable cars etc. and would wrongly collapse diverse POIs.
+_VIEWPOINT_TAGS = {
+    "viewpoint", "scenic_viewpoint", "panoramic_view", "panoramic_views",
+    "panoramic_mountain_views", "tatra_viewpoint",
+}
+
+
+def is_viewpoint_poi(poi):
+    """
+    FIX #164 (06.06.2026 - CLIENT FEEDBACK JSON4): detect viewpoint-style POIs so we can
+    cap how many appear in a single day (avoids "3 viewpoints next to each other").
+    Detection is tag-based (works for both Excel POIs and trail-typed viewpoints like
+    Gubałówka / Bachledzki Wierch) with a name fallback.
+    """
+    tags = set(str(t).lower() for t in (poi.get("tags") or []))
+    if _VIEWPOINT_TAGS & tags:
+        return True
+    name = str(poi.get("name", "")).lower()
+    return "punkt widokowy" in name or "viewpoint" in name or "wierch" in name
+
+
 def is_kids_focused_poi(poi):
     """
     Check if POI is kids-focused (target_groups + tags analysis).
@@ -3180,6 +3202,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     solo_museum_today = 0
     # FIX #132 (31.05.2026): Track museums per day for couples profile (hard cap = 2)
     couples_museum_today = 0
+    # FIX #164 (06.06.2026 - CLIENT FEEDBACK JSON4): Track viewpoints per day (hard cap = 2).
+    # Client: "Day 5 has 3 viewpoints next to each other (Bachledzki Wierch, Punkt widokowy
+    # na Tatry, Punkt widokowy na Antałówce)". Limit clustering of same-experience POIs.
+    daily_viewpoint_count = 0
 
     # FIX #133 (31.05.2026): Track consecutive short POIs (time_min <= 35) per day
     # Short POIs back-to-back create a "checklist tourist" feel — penalise the 3rd+
@@ -3719,6 +3745,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                     print(f"[WALK FILTER] EXCLUDED: {poi_name_safe} - parking walk {_walk_min}min > 20 (seniors limit)")
                     continue
+
+            # FIX #164 (06.06.2026 - CLIENT FEEDBACK JSON4): Hard cap max 2 viewpoints/day.
+            # Prevents "3 viewpoints next to each other" (Bachledzki Wierch + Punkt widokowy
+            # na Tatry + Punkt widokowy na Antałówce) — keeps each day's experiences varied.
+            if daily_viewpoint_count >= 2 and is_viewpoint_poi(p):
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[VIEWPOINT CAP] EXCLUDED: {poi_name_safe} - max 2 viewpoints/day (daily_viewpoint_count={daily_viewpoint_count})")
+                continue
 
             # FIX #58 (21.05.2026): Hard cap: max 1 museum per day for adventure profile
             # Issue: Adventure plans fill with museums after trails/active POIs are exhausted
@@ -4615,6 +4649,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         if _ACTIVE_TAGS_F81_SOFT & _p81s_tags:
                             continue  # Skip high-energy/cultural POIs after heavy trail
 
+                    # FIX #164 (06.06.2026 - CLIENT FEEDBACK JSON4): viewpoint cap in soft loop.
+                    if daily_viewpoint_count >= 2 and is_viewpoint_poi(p):
+                        continue  # Already have 2 viewpoints today — keep the day varied
+
                     # FIX #88 (28.05.2026): Adventure profile museum cap in soft fallback loop too.
                     if travel_style == "adventure" and daily_museum_count >= 1:
                         _adv_museum_soft_tags = {
@@ -5251,6 +5289,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             termy_count += 1
             print(f"[LIMITS] Termy/spa POI added: {termy_count}/1 per day")
 
+        # FIX #164 (06.06.2026 - CLIENT FEEDBACK JSON4): increment daily viewpoint counter.
+        if is_viewpoint_poi(best):
+            daily_viewpoint_count += 1
+            print(f"[VIEWPOINT CAP] Viewpoint added today: {daily_viewpoint_count}/2")
+
         # FIX #58: Increment daily museum counter for adventure profile
         if travel_style == "adventure":
             _mus_cnt_tags = {"themed_museum", "regional_heritage", "museum_heritage", "museums",
@@ -5629,6 +5672,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         
         # Try to add 1-2 light activities to fill the gap
         gap_fill_attempts = 0
+        # FIX #163 (06.06.2026 - CLIENT FEEDBACK JSON1/JSON3): track trails added so far to
+        # enforce "max 1 trail per day". The main loop already caps trails, but the END
+        # gap-fill could append a SECOND trail (Dolina Chochołowska + Dolina Strążyska for a
+        # family with a child). Seed from whether the day already has a trail.
+        _gf_trail_added = _f143_has_trail
         # FIX #60 (21.05.2026): More attempts for large gaps or family_kids (reduces free_time blocks)
         _is_large_gap = remaining_to_end > 180
         _is_family = user.get("target_group") == "family_kids"
@@ -5695,7 +5743,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             for p in _gf_candidates:
                 if poi_id(p) in used:
                     continue
-                
+
+                # FIX #163 (06.06.2026 - CLIENT FEEDBACK JSON1/JSON3): max 1 trail/day.
+                # A trail is a full-day activity, never a light gap-filler. Skip trail-type
+                # candidates if the day already has a trail, and never use a long trail
+                # (>=120 min) as a filler at all → prevents "two valleys in one day".
+                if p.get("type") == "trail":
+                    if trail_day_mode or _gf_trail_added or safe_int(p.get("time_min"), 0) >= 120:
+                        continue
+
                 # Apply hard filters
                 if should_exclude_by_target_group(p, user):
                     continue
@@ -5716,6 +5772,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         continue
                 # FIX #70 (23.05.2026): Apply termy/spa daily limit to ALL groups (not just seniors)
                 if is_termy_spa(p) and termy_count >= 1:
+                    continue
+                # FIX #164 (06.06.2026 - CLIENT FEEDBACK JSON4): viewpoint cap in gap-fill loop.
+                if daily_viewpoint_count >= 2 and is_viewpoint_poi(p):
                     continue
                 # FIX #88 (28.05.2026): Adventure profile — museum cap in gap-fill loop.
                 # Main loop checks daily_museum_count for adventure, gap-fill loop was missing this.
@@ -5927,6 +5986,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 used.add(poi_id(soft_best))
                 if global_used is not None:
                     global_used.add(poi_id(soft_best))
+                # FIX #163: remember if a trail was just added (enforce max 1 trail/day).
+                if soft_best.get("type") == "trail":
+                    _gf_trail_added = True
                 
                 # Update counters
                 attraction_count += 1
@@ -5938,6 +6000,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # FIX #Problem10 (14.05.2026): Apply to ALL groups (not just seniors)
                 if is_termy_spa(soft_best):
                     termy_count += 1
+                # FIX #164: increment viewpoint counter for gap-fill additions too.
+                if is_viewpoint_poi(soft_best):
+                    daily_viewpoint_count += 1
                 
                 # Update budget
                 # FIX #2 (22.02.2026): Use unified cost calculation

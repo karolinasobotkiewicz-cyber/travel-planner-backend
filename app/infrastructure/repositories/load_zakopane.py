@@ -196,8 +196,11 @@ def load_zakopane_poi(path: str, city_filter: Optional[str] = None):
         tags_str = str(row.get("Tags", "")).strip()
         tags_list = []
         if tags_str and tags_str != "nan":
-            # Split by comma, strip whitespace, filter empty strings
-            tags_list = [t.strip() for t in tags_str.split(",") if t.strip()]
+            # FIX #163 (06.06.2026 - CLIENT DATA UPDATE): some newly added POIs use newline
+            # (or semicolon) separators in the Tags cell instead of commas. Without this the
+            # whole cell is parsed as ONE unknown tag → the POI scores 0 for every preference
+            # and never gets selected. Split on comma, newline, and semicolon defensively.
+            tags_list = [t.strip() for t in re.split(r"[,\n;]+", tags_str) if t.strip()]
         
         # CLIENT DATA UPDATE (05.02.2026): Parse Target group to list
         target_group_raw = str(row.get("Target group", "")).strip()
@@ -330,7 +333,14 @@ def load_zakopane_poi(path: str, city_filter: Optional[str] = None):
     # cities so these POIs are not silently excluded, causing sparse days 4-7.
     ZAKOPANE_REGION_CITIES = {
         "zakopane", "szaflary", "chochołów", "białka tatrzańska",
-        "bukowina tatrzańska", "kościelisko", "poronin"
+        "bukowina tatrzańska", "kościelisko", "poronin",
+        # FIX #163 (06.06.2026 - CLIENT DATA UPDATE): Zone C day-trip towns added by the
+        # client to enrich far-zone / 6-7 day plans (Pieniny, Spisz, Dunajec, Tatry).
+        # Without these, the new Zone C POIs (17) would be silently filtered out on
+        # Zakopane requests and the updated base would have no effect.
+        "szczawnica", "niedzica", "niedzica-zamek", "sromowce wyżne", "kluszkowce",
+        "jaworki", "ždiar", "vysoké tatry", "małe ciche", "brzegi", "rusinowa polana",
+        "witów", "łopuszna", "czerwienne",
     }
     if city_filter:
         original_count = len(pois)
