@@ -206,11 +206,17 @@ def find_current_season(
     if not seasonal_list:
         return None
     
-    # Handle tuple with 3 or 4 values
-    if len(current_date) == 4:
-        year, month, day, weekday = current_date
-    else:
-        year, month, day = current_date
+    # Robustly extract (month, day) from a variety of date representations:
+    # a (year, month, day[, weekday]) sequence, or a datetime/date object.
+    # Never raise on an unexpected shape — a malformed date simply means we
+    # cannot determine the season, so we treat the POI as "season unknown".
+    try:
+        if hasattr(current_date, "month") and hasattr(current_date, "day"):
+            month, day = current_date.month, current_date.day
+        else:
+            month, day = int(current_date[1]), int(current_date[2])
+    except (TypeError, IndexError, ValueError):
+        return None
     current = (month, day)
     
     for season in seasonal_list:

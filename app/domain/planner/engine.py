@@ -755,8 +755,15 @@ GROUP_DAILY_ENERGY = {
 # Solution: seniors=3, family_kids=4, relax modifier=-1 applied later
 GROUP_ATTRACTION_LIMITS = {
     "family_kids": {
-        "soft": 3,  # Start penalty after 3
-        "hard": 4,  # Absolute max (was 7)
+        # FIX #171 (06.06.2026 - CLIENT FEEDBACK): raised 3/4 → 4/6. The 3/4 cap
+        # (set 15.05.2026 to avoid "too intensive" days) was now leaving huge
+        # end-of-day free_time blocks (json1: 198 min) even though many SHORT
+        # kids attractions (Mini Zoo, Papugarnia, Iluzja Park, LEGO…) were open.
+        # Short family attractions are light (not exhausting like long trails,
+        # which FIX #169 already penalises), so allowing 4-6 of them fills the
+        # day the way the client asked for. Matches the documented "4-6 (max 7)".
+        "soft": 4,  # Start penalty after 4
+        "hard": 6,  # Absolute max (relax modifier later trims this back)
         "core_min": 1,  # Minimum core POI
         "core_max": 2,  # Maximum core POI
     },
@@ -1370,6 +1377,29 @@ def is_open(p, now, duration, season, context=None):
         True if POI is open and visit fits within hours
         False otherwise (including off-season)
     """
+    # FIX #168 (06.06.2026 - CLIENT FEEDBACK): daylight guard for outdoor viewpoints.
+    # An outdoor viewpoint scheduled after dusk shows nothing ("punkt widokowy o 20:46
+    # w lutym to nic nie zobaczą"). Outdoor viewpoints must START before the seasonal
+    # dusk so the visit happens in daylight. Indoor POIs and non-viewpoints are
+    # unaffected. Trails are handled by their own difficulty/return logic.
+    try:
+        if is_viewpoint_poi(p):
+            # Latest acceptable START for an outdoor viewpoint = ~sunset minus a short
+            # visit. Tuned to real Tatra sunset so we only block genuinely dark slots
+            # (the client's complaint was a viewpoint at 20:46 in February) without
+            # over-restricting daytime selection.
+            _dusk_by_season = {
+                "winter": 16 * 60 + 40,   # ~16:40 (Feb sunset ~16:50)
+                "autumn": 17 * 60 + 30,   # ~17:30
+                "spring": 19 * 60,        # ~19:00
+                "summer": 20 * 60 + 30,   # ~20:30
+            }
+            _dusk = _dusk_by_season.get((season or "").lower(), 17 * 60 + 30)
+            if now > _dusk:
+                return False
+    except Exception:
+        pass
+
     oh = p.get("opening_hours")
     oh_seasonal = p.get("opening_hours_seasonal")
     
@@ -1675,7 +1705,10 @@ def score_poi(
                 "water_rides", "interactive_exhibits", "interactive_exhibit", "animals",
             }
             if is_kids_focused_poi(p) or (_F161_KIDS_TAGS & _poi_tags_73):
-                _f161_boost = 55.0
+                # FIX #169 (06.06.2026): client asked for a STRONGER influence of
+                # kids_attractions on ranking (55 → 80) so the long free_time blocks
+                # caused by skipped kids attractions disappear.
+                _f161_boost = 80.0
                 score += _f161_boost
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                 print(f"    [FIX #161 KIDS BOOST] {poi_name_safe}: +{_f161_boost:.1f} "
@@ -2323,6 +2356,32 @@ def score_poi(
                 difficulty_boost = 20.0
                 score += difficulty_boost
                 print(f"    [TRAIL DIFFICULTY] {poi_name_safe}: +{difficulty_boost:.1f} (family_kids: perfect easy trail)")
+
+            # FIX #169 (06.06.2026 - CLIENT FEEDBACK): even an EASY trail that lasts
+            # 3-5h is too much for a family with small children — the planner kept
+            # picking Dolina Kościeliska (285min) / Dolina Strążyska (194min) for an
+            # 8-year-old. Add a duration-scaled penalty (stronger for younger kids) so
+            # short family attractions out-rank all-day walks. Scoped to family_kids.
+            _trail_dur_169 = (p.get("time_max") or p.get("duration_max")
+                              or p.get("time_min") or p.get("duration_min") or 0)
+            try:
+                _trail_dur_169 = float(_trail_dur_169)
+            except (TypeError, ValueError):
+                _trail_dur_169 = 0.0
+            _ca_169 = user.get("children_age")
+            _young_169 = isinstance(_ca_169, (int, float)) and _ca_169 <= 8
+            if _trail_dur_169 >= 240:
+                _dur_pen_169 = -70.0 if _young_169 else -45.0
+            elif _trail_dur_169 >= 180:
+                _dur_pen_169 = -45.0 if _young_169 else -25.0
+            elif _trail_dur_169 >= 120:
+                _dur_pen_169 = -20.0 if _young_169 else -10.0
+            else:
+                _dur_pen_169 = 0.0
+            if _dur_pen_169:
+                score += _dur_pen_169
+                print(f"    [FIX #169 LONG-TRAIL] {poi_name_safe}: {_dur_pen_169:.1f} "
+                      f"(family_kids, trail {_trail_dur_169:.0f}min, children_age={_ca_169})")
         
         elif target_group == "seniors":
             # PHASE 8 FEATURE #3 (27.04.2026): Elastic trail rules for seniors
@@ -2630,7 +2689,7 @@ def score_poi(
 # =========================
 
 
-def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=None, pois_per_day=None):
+def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=None, pois_per_day=None, fallback_per_day=None):
     """
     Build multi-day plan with cross-day POI tracking and core POI distribution.
     
@@ -2860,6 +2919,10 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         _day_warnings: list = []  # FIX #130: collect per-day engine warnings
         # FIX #113 (07.06.2026): Use per-day POI pool if provided (zone system)
         _pois_for_day = pois_per_day[day_num] if pois_per_day is not None else pois
+        # FIX #166 (06.06.2026): zone-restricted fallback pool (own region + strictly
+        # closer zones). Prevents far Zone-C POIs leaking into early Zone-A/B days.
+        _fallback_for_day = (fallback_per_day[day_num]
+                             if fallback_per_day is not None else pois)
 
         # FIX D (02.06.2026): For day 6+ in a 5+ day trip, pass only a RECENT WINDOW of used POIs.
         # This lets the engine re-consider POIs from early days (days 1-2) so late days aren't empty.
@@ -2885,7 +2948,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
             global_termy_tracking=global_termy_tracking,  # Pass termy limit tracker
             global_trail_tracking=global_trail_tracking,  # Pass trail limit tracker
             warnings_out=_day_warnings,  # FIX #130: collect warnings
-            fallback_pois=pois,  # FIX #159: full pool for sparse-day cross-zone backfill
+            fallback_pois=_fallback_for_day,  # FIX #159/#166: zone-restricted backfill
         )
 
         # FIX #158 (PHASE 1) + FIX #160 (PHASE 3) — CLIENT FEEDBACK: full-pool recovery for
@@ -2915,10 +2978,10 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         # FIX #162 (05.06.2026): lowered the free-time trigger 180 → 120 min so days that
         # still leave ~2h of free_time (client JSON6/JSON9) also get a full-pool retry.
         _f160_underfilled = (_f160_attr < 2) or (_f160_free > 120)
-        if _f160_underfilled and pois_per_day is not None and _pois_for_day is not pois:
+        if _f160_underfilled and pois_per_day is not None and len(_fallback_for_day) > len(_pois_for_day):
             print(f"[FIX #160] Day {day_num + 1}: under-filled ({_f160_attr} attractions, "
                   f"{_f160_free}min free) from zone pool ({len(_pois_for_day)} POIs) → "
-                  f"retrying with full pool ({len(pois)} POIs)")
+                  f"retrying with zone-restricted fallback ({len(_fallback_for_day)} POIs)")
             # --- capture the ORIGINAL build's contribution so we can undo/redo cleanly ---
             _f160_gu_added = set(_global_used_for_day) - set(_global_used_before_day)
             _f160_termy_added = sum(1 for _it in day_plan
@@ -2940,7 +3003,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
 
             _f160_warnings: list = []
             _f160_retry = build_day(
-                pois=pois,
+                pois=_fallback_for_day,  # FIX #166: zone-restricted (no far-zone leak)
                 user=user,
                 context=context,
                 day_start=day_start,
@@ -2949,6 +3012,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
                 global_termy_tracking=global_termy_tracking,
                 global_trail_tracking=global_trail_tracking,
                 warnings_out=_f160_warnings,
+                fallback_pois=_fallback_for_day,  # FIX #166: keep gap-fill restricted too
             )
             _f160_rattr, _f160_rfree = _f160_fill_metric(_f160_retry)
             _f160_better = (_f160_rattr > _f160_attr) or (
@@ -4120,7 +4184,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if current_season is None:
                         # Out of season - SKIP this POI
                         poi_name_debug = p.get("Name", "UNKNOWN")
-                        month = current_date_tuple[1]
+                        try:
+                            month = (current_date_tuple.month
+                                     if hasattr(current_date_tuple, "month")
+                                     else current_date_tuple[1])
+                        except (TypeError, IndexError):
+                            month = "?"
                         print(f"[SEASONAL FILTER] SKIP {poi_name_debug} - out of season (month: {month})")
                         continue
 

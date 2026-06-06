@@ -109,13 +109,47 @@ def _parse_seasonal_list(seasonal_str: str) -> Optional[List[Dict[str, str]]]:
     
     seasonal_str = seasonal_str.strip()
     
-    # Check if it's a list format (starts with '[')
-    if not seasonal_str.startswith('['):
+    # FIX #165 (06.06.2026 - CLIENT DATA): accept BOTH the list format ('[ {..} ]')
+    # AND a single-object format ('{ .. }'). Several new Zone-C POIs (Jaskinia Bielańska,
+    # Bachledka, Willa Koliba) store their seasonal+daily hours as a bare '{...}' dict.
+    # Previously these were rejected here → fell back to date-only parsing → the per-day
+    # opening hours (mon..sun) were SILENTLY DROPPED → the engine treated them as
+    # "open all day" and scheduled e.g. Jaskinia Bielańska at 17:29 although it closes 14:00.
+    if not (seasonal_str.startswith('[') or seasonal_str.startswith('{')):
         return None
+    
+    # FIX #165 (06.06.2026): Many POIs store CLEAN JSON with quoted keys
+    # (e.g. Jaskinia Bielańska: {"mon": "09:30-14:00", ...}). Try strict json.loads
+    # FIRST so the per-day hours are preserved. The previous regex-only path failed on
+    # quoted keys ("mon": ...) because of the quote sitting between key and colon, which
+    # silently dropped the daily hours → POIs scheduled outside their opening hours.
+    import json as _json
+    _cleaned = seasonal_str.strip()
+    # Strip a stray trailing comma after the closing brace/bracket (e.g. '{...},')
+    _cleaned = re.sub(r',\s*$', '', _cleaned)
+    # Remove trailing commas before a closing } or ] (invalid JSON but common in this data)
+    _cleaned_json = re.sub(r',(\s*[}\]])', r'\1', _cleaned)
+    for _candidate in (_cleaned_json, _cleaned):
+        try:
+            _parsed = _json.loads(_candidate)
+        except Exception:
+            continue
+        if isinstance(_parsed, dict):
+            _parsed = [_parsed]
+        if isinstance(_parsed, list):
+            _out = []
+            for _s in _parsed:
+                if isinstance(_s, dict):
+                    _out.append({str(k).strip().lower(): (str(v).strip() if v is not None else "")
+                                 for k, v in _s.items()})
+            if _out:
+                return _out
+        break
     
     seasons = []
     
-    # Extract individual season objects (split by '},{')
+    # Lenient fallback for malformed pseudo-JSON (unquoted keys, missing commas):
+    #   { date_from: 01-01, mon:9:00-17:00, tue:closed, ... }
     # Pattern: Find content between { and }
     season_pattern = r'\{([^{}]+)\}'
     season_matches = re.findall(season_pattern, seasonal_str, re.DOTALL)
@@ -123,19 +157,20 @@ def _parse_seasonal_list(seasonal_str: str) -> Optional[List[Dict[str, str]]]:
     for season_content in season_matches:
         season_dict = {}
         
-        # Extract key:value pairs
-        # Pattern: key: value with newline or comma as separator
-        # Simpler approach: match any key:value where value ends at newline or comma
+        # Extract key:value pairs, tolerating OPTIONAL surrounding quotes on the key
+        # ("mon": ... as well as mon: ...). Value runs until newline or comma.
         # This handles:
         # - mon:08:00-16:00\ntue:08:00-16:00 (no comma, newline separator)
+        # - "mon": "08:00-16:00", (quoted JSON-ish)
         # - date_from: 01-01, (comma separator)
-        # - leading spaces:    mon:08:00-16:00
         # - time colons: 08:00-16:00 (value contains ':')
-        pair_pattern = r'([a-z_]+)\s*:\s*([^\n,]+)'
+        pair_pattern = r'["\']?([a-z_]+)["\']?\s*:\s*([^\n,]+)'
         
         for match in re.finditer(pair_pattern, season_content, re.IGNORECASE):
-            key = match.group(1).strip()
-            value = match.group(2).strip().rstrip(',')
+            key = match.group(1).strip().lower()
+            value = match.group(2).strip().rstrip(',').strip()
+            # Strip surrounding quotes from the value ("09:30-14:00" → 09:30-14:00)
+            value = value.strip('"').strip("'").strip()
             
             # Clean up value
             if value and value != 'nan':

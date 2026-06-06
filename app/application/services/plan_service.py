@@ -3,7 +3,113 @@ Plan Service - generowanie planów podróży.
 Łączy: TripInput → engine → PlanResponse
 """
 import uuid
+import math
 from typing import List, Dict, Any
+
+
+# ============================================================================
+# FIX #167 (06.06.2026 - CLIENT FEEDBACK): Geographic sub-clustering helpers.
+# The client zones (A/B/C) are coarse accessibility tiers. A single far zone
+# (Zakopane Zone C) can span several distinct regions at once — Bukowina/Spisz
+# (~10 km, NE), Słowacja (~27 km) and the Pieniny (Niedzica/Czorsztyn/Szczawnica,
+# 30–45 km). When ONE day draws from the whole zone the planner produces an
+# incoherent "objazd": Zakopane → Szczawnica → Niedzica → Jaskinia in a single
+# day. These helpers split a zone into geographically coherent sub-clusters so
+# each far day becomes a real region day (Pieniny day, Bukowina day, …).
+# Dense/near zones (A, most of B) collapse to a SINGLE cluster, so those days
+# are byte-identical to before → zero regression where the client was happy.
+# ============================================================================
+
+def _geo_ll(p):
+    """Return (lat, lng) float tuple for a POI, or None if coords missing."""
+    try:
+        la = float(p.get("lat"))
+        ln = float(p.get("lng"))
+    except (TypeError, ValueError):
+        return None
+    if not la or not ln:
+        return None
+    return (la, ln)
+
+
+def _geo_km(a, b):
+    """Haversine distance in km between two (lat, lng) tuples."""
+    R = 6371.0
+    la1, ln1 = math.radians(a[0]), math.radians(a[1])
+    la2, ln2 = math.radians(b[0]), math.radians(b[1])
+    dlat = la2 - la1
+    dlng = ln2 - ln1
+    x = math.sin(dlat / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin(dlng / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(x))
+
+
+def _geo_centroid(cluster):
+    """Mean (lat, lng) of a cluster's coorded POIs, or None."""
+    lls = [_geo_ll(p) for p in cluster]
+    lls = [x for x in lls if x]
+    if not lls:
+        return None
+    return (sum(x[0] for x in lls) / len(lls), sum(x[1] for x in lls) / len(lls))
+
+
+def _geo_subcluster(pois, link_km=13.0, min_size=3, merge_max_km=13.0):
+    """Single-link proximity clustering of POIs.
+
+    Two POIs are linked when within `link_km` of each other; clusters smaller
+    than `min_size` are merged into the nearest cluster ONLY when that cluster's
+    centroid is within `merge_max_km` (so a small but geographically distinct
+    region — e.g. a 2-POI Słowacja cluster — is kept as its own coherent
+    region-day instead of being blended into the far Bukowina/Pieniny blob).
+    POIs without coordinates are attached to the largest cluster. Returns a list
+    of clusters (lists of POIs).
+
+    FIX #170 (06.06.2026 - CLIENT FEEDBACK): the previous unconditional merge
+    chained Bukowina + Słowacja into one incoherent "objazd" sub-cluster. The
+    distance-guarded merge produces real region days (Zakopiański / Pieniński /
+    Słowacki) the client asked for.
+    """
+    coorded = [p for p in pois if _geo_ll(p)]
+    nocoord = [p for p in pois if not _geo_ll(p)]
+    remaining = list(coorded)
+    clusters = []
+    while remaining:
+        seed = remaining.pop(0)
+        cluster = [seed]
+        changed = True
+        while changed:
+            changed = False
+            for p in list(remaining):
+                pll = _geo_ll(p)
+                if any(_geo_km(pll, _geo_ll(m)) <= link_km for m in cluster):
+                    cluster.append(p)
+                    remaining.remove(p)
+                    changed = True
+        clusters.append(cluster)
+    # Merge small clusters into their nearest neighbour, but only if close.
+    merged_any = True
+    while merged_any and len(clusters) > 1:
+        merged_any = False
+        clusters.sort(key=len)
+        for small in [c for c in clusters if len(c) < min_size]:
+            sc = _geo_centroid(small)
+            if sc is None:
+                continue
+            others = [o for o in clusters if o is not small and _geo_centroid(o)]
+            if not others:
+                continue
+            nearest = min(others, key=lambda o: _geo_km(sc, _geo_centroid(o)))
+            if _geo_km(sc, _geo_centroid(nearest)) > merge_max_km:
+                continue  # distinct far region → keep as its own coherent day
+            nearest.extend(small)
+            clusters.remove(small)
+            merged_any = True
+            break
+    if not clusters:
+        clusters = [[]]
+    if nocoord:
+        clusters.sort(key=len, reverse=True)
+        clusters[0].extend(nocoord)
+    return clusters
 
 from app.domain.models.trip_input import TripInput
 from app.domain.models.plan import (
@@ -24,7 +130,7 @@ from app.domain.models.plan import (
     ParkingType,  # Dodano dla parking_type
 )
 from app.application.services.trip_mapper import trip_input_to_engine_params
-from app.domain.planner.engine import build_day, plan_multiple_days, travel_time_minutes, is_open, haversine_distance
+from app.domain.planner.engine import build_day, plan_multiple_days, travel_time_minutes, is_open, haversine_distance, get_transport_mode
 from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
 from app.infrastructure.repositories import POIRepository, TrailRepository, RestaurantRepository  # ETAP 3 Phase 2
 from app.infrastructure.storage import build_poi_image_url  # 11.03.2026 - Supabase Storage
@@ -502,69 +608,167 @@ class PlanService:
             # POIs without a zone (zone='') are always included every day (backward compat).
             # Cities without any zoned POIs (Poznań, Gdańsk, etc.) are unaffected.
             # ================================================================
+            def _dedupe_pois(pool):
+                _seen = set()
+                _out = []
+                for _p in pool:
+                    _pid = _p.get("id") or id(_p)
+                    if _pid not in _seen:
+                        _seen.add(_pid)
+                        _out.append(_p)
+                return _out
+
             def _build_zone_pools(all_pois, num_days):
-                """Return list[list] of per-day POI pools respecting zone rotation."""
-                # POIs without zone → always included
+                """Return (per_day_pools, per_day_fallback_pools) respecting zone rotation.
+
+                FIX #113: rotate days through zones (A → B → C …) so a multi-day trip
+                visits the centre first and only reaches far zones on later days.
+
+                FIX #167 (06.06.2026): each zone is split into geographically coherent
+                sub-clusters; the days that map to a far multi-region zone (Zakopane
+                Zone C) are each given ONE sub-cluster, turning an incoherent "objazd"
+                into real region days (Bukowina day, Pieniny day). Dense zones collapse
+                to one cluster → unchanged.
+
+                FIX #166 (06.06.2026): the per-day FALLBACK pool (used by the engine to
+                rescue under-filled days) is restricted GEOGRAPHICALLY to POIs within a
+                radius of the day's region centroid. A central Zakopane day can still
+                backfill from nearby thermal baths / Bukowina (so we don't trade objazd
+                for big free_time blocks), but the far Pieniny/Słowacja POIs never leak
+                into an early central day — the root cause of "the planner escapes
+                Zakopane on day 2-3 while Zakopane POIs stay unused".
+                """
+                _FALLBACK_RADIUS_KM = 16.0
                 pois_no_zone = [p for p in all_pois if not p.get('zone', '').strip()]
-                # Collect sorted unique zones
                 zones_present = sorted(set(
                     p['zone'].strip() for p in all_pois
                     if p.get('zone', '').strip()
                 ))
                 if not zones_present:
-                    # No zone data at all → return same pool every day (no regression)
-                    return None  # signals plan_multiple_days to use pois as-is
-                # Group POIs by zone
+                    return None, None  # no zone data → engine uses pois as-is
                 zone_buckets = {}
                 for z in zones_present:
                     zone_buckets[z] = [p for p in all_pois if p.get('zone', '').strip() == z]
-                print(f"[FIX #113] Zone selector: {len(zones_present)} zones {zones_present}, "
+
+                # Anchor = centroid of the whole city's POIs (sub-clusters ordered near→far).
+                _center = _geo_centroid(all_pois)
+                # Sub-cluster each zone; order sub-clusters near→far from the city centre.
+                zone_subclusters = {}
+                for z in zones_present:
+                    subs = _geo_subcluster(zone_buckets[z], link_km=13.0, min_size=3)
+                    if _center is not None:
+                        subs.sort(key=lambda c: (_geo_km(_geo_centroid(c), _center)
+                                                 if _geo_centroid(c) else 9999))
+                    zone_subclusters[z] = subs
+
+                print(f"[FIX #113/#167] Zone selector: zones {zones_present}, "
                       f"{len(pois_no_zone)} unzoned POIs always available")
                 for z in zones_present:
-                    print(f"[FIX #113]   Zone {z}: {len(zone_buckets[z])} POIs")
-                # Build per-day pools
+                    _sc = zone_subclusters[z]
+                    print(f"[FIX #167]   Zone {z}: {len(zone_buckets[z])} POIs → "
+                          f"{len(_sc)} sub-cluster(s) {[len(c) for c in _sc]}")
+
+                # FIX #170 (06.06.2026 - CLIENT FEEDBACK): zone-weighted A→B→C day
+                # allocation. The old round-robin (day % num_zones) gave Zone A only
+                # ~1 day in 3, so the planner "escaped Zakopane on day 2-3 while
+                # Zakopane POIs stayed unused" and reached far Zone C far too early.
+                # Now the central/larger zones get proportionally MORE days, every
+                # present zone still gets >=1 day on trips long enough to cover them,
+                # and zones are scheduled strictly near→far so the far Zone C is only
+                # reached on the LAST days of the trip.
+                import math as _math
+                _MAIN_POOL_RADIUS_KM = 14.0
+                _zone_pois = {z: len(zone_buckets[z]) for z in zones_present}
+                _zorder = list(zones_present)  # already sorted A,B,C = near→far by design
+                _zone_days = {z: 0 for z in zones_present}
+                if num_days <= len(_zorder):
+                    for z in _zorder[:num_days]:
+                        _zone_days[z] = 1
+                else:
+                    for z in _zorder:
+                        _zone_days[z] = 1
+                    _extra = num_days - len(_zorder)
+                    _wsum = sum(_zone_pois.values()) or 1
+                    _raw = {z: _extra * _zone_pois[z] / _wsum for z in _zorder}
+                    _base = {z: int(_math.floor(_raw[z])) for z in _zorder}
+                    for z in _zorder:
+                        _zone_days[z] += _base[z]
+                    _rem = _extra - sum(_base.values())
+                    _rank = {z: i for i, z in enumerate(_zorder)}
+                    for z in sorted(_zorder, key=lambda z: (-(_raw[z] - _base[z]), _rank[z]))[:_rem]:
+                        _zone_days[z] += 1
+                # Ordered day→zone list: all Zone A days first, then B, then C.
+                _day_zone_seq = []
+                for z in _zorder:
+                    _day_zone_seq += [z] * _zone_days[z]
+                _day_zone_seq = (_day_zone_seq + [_zorder[0]] * num_days)[:num_days]
+                print(f"[FIX #170] Zone day allocation (A→B→C weighted): "
+                      f"{ {z: _zone_days[z] for z in _zorder} } over {num_days} days")
+
                 pools = []
+                fallbacks = []
+                zone_use = {z: 0 for z in zones_present}
                 for d in range(num_days):
-                    zone = zones_present[d % len(zones_present)]
-                    day_pool = pois_no_zone + zone_buckets[zone]
-                    print(f"[FIX #113]   Day {d+1} → Zone {zone} ({len(day_pool)} POIs total)")
+                    zone = _day_zone_seq[d]
+                    subs = zone_subclusters[zone]
+                    occ = zone_use[zone]
+                    zone_use[zone] += 1
+                    sub = subs[occ % len(subs)] if subs else []
+                    _sub_c = _geo_centroid(sub)
+
+                    # FIX #170: MAIN pool = this region's coherent sub-cluster + only
+                    # the unzoned POIs (mountain trails) within _MAIN_POOL_RADIUS_KM of
+                    # the region centroid. On a far region day (Pieniny / Słowacja) the
+                    # central trails are excluded, so the day stays geographically
+                    # coherent (no "objazd" mixing Zakopane core + a 30 km Pieniny POI).
+                    # Central days still get every nearby trail. Coordless trails stay
+                    # available everywhere (cannot be placed geographically).
+                    if _sub_c is not None:
+                        _near_unzoned = [
+                            _p for _p in pois_no_zone
+                            if (_geo_ll(_p) is None)
+                            or (_geo_km(_geo_ll(_p), _sub_c) <= _MAIN_POOL_RADIUS_KM)
+                        ]
+                    else:
+                        _near_unzoned = list(pois_no_zone)
+                    day_pool = _dedupe_pois(_near_unzoned + sub)
+
+                    # FALLBACK pool: own sub-cluster + every POI within
+                    # _FALLBACK_RADIUS_KM of this sub-cluster's centroid (any zone).
+                    # Central days reach nearby termy/Bukowina (low free_time); far
+                    # Pieniny days only reach other far POIs (no leak back to centre).
+                    fb = list(_near_unzoned) + list(sub)
+                    if _sub_c is not None:
+                        for _p in all_pois:
+                            _pll = _geo_ll(_p)
+                            if _pll and _geo_km(_pll, _sub_c) <= _FALLBACK_RADIUS_KM:
+                                fb.append(_p)
+                    else:
+                        # No coords for this sub-cluster → safe full pool
+                        fb = list(all_pois)
+                    fallbacks.append(_dedupe_pois(fb))
+
+                    print(f"[FIX #167/#170]   Day {d+1} → Zone {zone} sub[{occ % max(len(subs),1)}] "
+                          f"({len(day_pool)} POIs, fallback {len(fallbacks[-1])})")
                     pools.append(day_pool)
 
-                # FIX #140 (31.05.2026): Zone overflow — absorb adjacent zone when pool is too small.
-                # Prevents empty/sparse days when a zone has very few POIs after filtering.
+                # FIX #140 (31.05.2026): guard against a structurally tiny MAIN pool —
+                # if a day's coherent sub-cluster is below the minimum, top it up from the
+                # SAME day's (already zone-restricted) fallback pool so the main selection
+                # loop still has enough candidates. Never pulls a farther zone.
                 _MIN_ZONE_POOL = 4
-                _ZONE_OVERFLOW_MAP = {"C": "B", "B": "A"}  # C→B→A fallback chain
                 for d in range(num_days):
-                    pool = pools[d]
-                    if len(pool) < _MIN_ZONE_POOL:
-                        zone_this_day = zones_present[d % len(zones_present)]
-                        overflow_zone = _ZONE_OVERFLOW_MAP.get(zone_this_day)
-                        if overflow_zone and overflow_zone in zone_buckets:
-                            extra = [p for p in zone_buckets[overflow_zone] if p not in pool]
-                            pool = pool + extra
-                            print(f"[FIX #140]   Day {d+1} Zone {zone_this_day} had only {len(pools[d])} POIs → merged Zone {overflow_zone} ({len(extra)} extra POIs)")
-                        # Also merge in a second adjacent zone if still too small
-                        if len(pool) < _MIN_ZONE_POOL and overflow_zone:
-                            overflow_zone2 = _ZONE_OVERFLOW_MAP.get(overflow_zone)
-                            if overflow_zone2 and overflow_zone2 in zone_buckets:
-                                extra2 = [p for p in zone_buckets[overflow_zone2] if p not in pool]
-                                pool = pool + extra2
-                                print(f"[FIX #140]   Day {d+1} still sparse → also merged Zone {overflow_zone2} ({len(extra2)} extra POIs)")
-                        # Deduplicate by id
-                        _seen140 = set()
-                        _deduped140 = []
-                        for _p140 in pool:
-                            _pid140 = _p140.get("id") or id(_p140)
-                            if _pid140 not in _seen140:
-                                _seen140.add(_pid140)
-                                _deduped140.append(_p140)
-                        pools[d] = _deduped140
+                    if len(pools[d]) < _MIN_ZONE_POOL:
+                        merged = _dedupe_pois(pools[d] + fallbacks[d])
+                        print(f"[FIX #140]   Day {d+1} sub-cluster only {len(pools[d])} POIs "
+                              f"→ topped up to {len(merged)} from nearer zones")
+                        pools[d] = merged
 
-                return pools
+                return pools, fallbacks
 
-            _zone_pools = _build_zone_pools(all_pois_dict, num_days)
+            _zone_pools, _zone_fallbacks = _build_zone_pools(all_pois_dict, num_days)
             # ================================================================
-            # END FIX #113
+            # END FIX #113 / #166 / #167
             # ================================================================
 
             # Call multi-day planner
@@ -577,6 +781,7 @@ class PlanService:
                 day_end=day_end,
                 warnings_out=_engine_warnings,  # FIX #130
                 pois_per_day=_zone_pools,  # FIX #113: per-day pools (None = use all pois)
+                fallback_per_day=_zone_fallbacks,  # FIX #166: zone-restricted fallback (no far leak)
             )
             plan_warnings.extend(_engine_warnings)  # FIX #130
             
@@ -819,7 +1024,11 @@ class PlanService:
             # Previously ran BEFORE healing, so transit "to"/"from" could reference POIs that were
             # subsequently removed by day-end enforcement or _remove_timeline_overlaps.
             # Also removes orphaned transits (no following attraction) — see _update_transit_destinations.
-            day_items = self._update_transit_destinations(day_items)
+            _poi_coord_map = {
+                p.get("name"): p for p in all_pois_dict
+                if p.get("name") and p.get("lat") and p.get("lng")
+            }
+            day_items = self._update_transit_destinations(day_items, _poi_coord_map)
 
             # FIX #157 (04.06.2026 - CLIENT FEEDBACK): collapse duplicate transit
             # legs. After _update_transit_destinations rewrites every transit to
@@ -3167,7 +3376,7 @@ class PlanService:
         total_min = time_to_minutes(time_str) + minutes
         return minutes_to_time(total_min)
 
-    def _update_transit_destinations(self, items: List[Any]) -> List[Any]:
+    def _update_transit_destinations(self, items: List[Any], poi_coords: Dict[str, Any] = None) -> List[Any]:
         """
         FIX #3 (02.02.2026): Update transit 'to_location' after gap filling.
         
@@ -3228,10 +3437,81 @@ class PlanService:
             if prev_attraction:
                 item.from_location = prev_attraction.name
                 print(f"[TRANSIT FIX] Updated transit origin: -> '{prev_attraction.name}'")
-            
+
+            # FIX #168 (06.06.2026 - CLIENT FEEDBACK): recompute the transit's MODE and
+            # DURATION from the real coordinates of its (possibly rewritten) endpoints.
+            # Before this, relabeling left the engine's original duration/mode in place,
+            # so an 11 km leg could still read "10 min walk" (Chochołowskie Termy →
+            # Krupówki). We only correct (a) when coords are known for BOTH endpoints and
+            # (b) when the result is an UNDER-estimate or the mode is wrong. To stay
+            # zero-risk for the rest of the timeline we keep the transit's END fixed and
+            # move its START earlier into the preceding slack only (clamped so it never
+            # overlaps the previous item) — no downstream item is shifted.
+            self._recompute_transit_leg(item, items, i, poi_coords)
+
             result.append(item)
         
         return result
+
+    def _recompute_transit_leg(self, item, items, idx, poi_coords):
+        """Correct one transit's transport_mode/duration from endpoint coords.
+
+        See FIX #168. Safe no-op when coords are missing. Never pushes later items."""
+        if not poi_coords:
+            return
+        from_poi = poi_coords.get(getattr(item, "from_location", None))
+        to_poi = poi_coords.get(getattr(item, "to_location", None))
+        if not from_poi or not to_poi:
+            return  # unknown endpoint (e.g. "Zakopane (Hotel)") → leave engine value
+        try:
+            ctx = {"has_car": True, "signals": {"cluster_type": "standalone_city"}}
+            new_mode_str = get_transport_mode(from_poi, to_poi)
+            new_dur = travel_time_minutes(from_poi, to_poi, ctx)
+        except Exception:
+            return
+        new_mode = TransitMode.WALK if new_mode_str == "walking" else TransitMode.CAR
+        cur_dur = getattr(item, "duration_min", 0) or 0
+        cur_mode = getattr(item, "mode", None)
+        # Only act on an under-estimate or a wrong mode (avoid pointless churn / shrinking)
+        if new_dur <= cur_dur and new_mode == cur_mode:
+            return
+        try:
+            cur_end = time_to_minutes(item.end_time)
+        except Exception:
+            return
+        prev_end = None
+        if idx - 1 >= 0:
+            prev_item = items[idx - 1]
+            try:
+                prev_end = time_to_minutes(prev_item.end_time)
+            except Exception:
+                prev_end = None
+        # When the engine labelled a long inter-town leg as WALK (e.g. Chochołowskie
+        # Termy → Krupówki, 11+ km) the client sees "10 min spacerem". For a mode
+        # correction walk→car we MUST use the modelled drive time — not the slack-
+        # limited stub — otherwise CAR 10min is still absurd. Overlap healing
+        # downstream can absorb a slightly earlier start if needed.
+        _mode_was_walk = (cur_mode == TransitMode.WALK
+                          or str(cur_mode).lower() in ("walk", "walking"))
+        _mode_now_car = (new_mode == TransitMode.CAR)
+        if _mode_was_walk and _mode_now_car and new_dur > cur_dur:
+            final_dur = new_dur
+            target_start = cur_end - final_dur
+        else:
+            target_start = cur_end - new_dur
+            if prev_end is not None:
+                target_start = max(target_start, prev_end)
+            final_dur = cur_end - target_start
+        # Apply only if it genuinely improves (longer leg and/or corrected mode)
+        if final_dur > cur_dur or new_mode != cur_mode:
+            item.start_time = minutes_to_time(target_start)
+            item.duration_min = final_dur
+            item.mode = new_mode
+            _safe = str(item.from_location).encode("ascii", "ignore").decode()
+            _safe2 = str(item.to_location).encode("ascii", "ignore").decode()
+            print(f"[FIX #168] Recomputed transit {_safe} -> {_safe2}: "
+                  f"{cur_dur}min {cur_mode} → {final_dur}min {new_mode} "
+                  f"(modelled {new_dur}min)")
 
     def _collapse_duplicate_transits(self, items: List[Any]) -> List[Any]:
         """
