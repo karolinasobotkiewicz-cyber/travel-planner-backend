@@ -1,6 +1,5 @@
 # type: ignore
 import math
-import random
 from math import radians, sin, cos, sqrt, atan2
 
 from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
@@ -1280,6 +1279,15 @@ _HIGH_REPEAT_CLUSTERS = frozenset({
 })
 
 
+def should_skip_poi_candidate(p: dict, context: dict | None) -> bool:
+    """FIX #179: Combined hard filters for POI candidate selection."""
+    if should_block_consecutive_cluster_repeat(p, context):
+        return True
+    if context and context.get("exclude_zone_c_pois") and str(p.get("zone", "")).strip() == "C":
+        return True
+    return False
+
+
 def should_block_consecutive_cluster_repeat(p: dict, context: dict | None) -> bool:
     """Hard block when the same landmark cluster appeared too recently."""
     if not context:
@@ -1301,6 +1309,35 @@ def should_block_consecutive_cluster_repeat(p: dict, context: dict | None) -> bo
     if cluster in _HIGH_REPEAT_CLUSTERS and days_since <= 2:
         return True
     return False
+
+
+def poi_matches_user_preference(p: dict, pref: str) -> bool:
+    """True when POI matches a frontend preference via USER_PREFERENCES_TO_TAGS mapping."""
+    from app.domain.scoring.tag_preferences import USER_PREFERENCES_TO_TAGS
+    cfg = USER_PREFERENCES_TO_TAGS.get(pref)
+    if not cfg:
+        return False
+    poi_tags = set(p.get("tags", []))
+    if poi_tags & set(cfg.get("tags", [])):
+        return True
+    poi_types = [t.strip().lower() for t in str(p.get("type", "")).split(",") if t.strip()]
+    type_raw = str(p.get("type_of_attraction", "")).lower()
+    if type_raw:
+        poi_types.append(type_raw)
+    for tm in cfg.get("type_match", []):
+        if tm in poi_types:
+            return True
+    return False
+
+
+def _deterministic_pick_scored(candidates: list) -> dict:
+    """FIX #179: Stable selection — highest score, ties broken by poi_id."""
+    if not candidates:
+        raise ValueError("empty candidates")
+    return max(
+        candidates,
+        key=lambda c: (c.get("score", 0), str(poi_id(c.get("poi", {})))),
+    )
 
 
 def is_museum_heritage_poi(p: dict) -> bool:
@@ -1796,6 +1833,26 @@ def score_poi(
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [FIX #173 MUSEUM BOOST] {poi_name_safe}: +{_f173_boost:.1f} "
                   f"(museum_heritage pref, trip_museums={_trip_museums})")
+
+    # FIX #179 (06.06.2026): Trip preference quota — on 5+ day plans, strongly boost POI
+    # matching preferences not yet covered anywhere in the trip (museum, local food, …).
+    _trip_uncovered = (context or {}).get("trip_uncovered_preferences") or set()
+    _num_days_179 = (context or {}).get("num_days", 1)
+    _cur_day_179 = (context or {}).get("current_day_num", 1)
+    if _trip_uncovered and _num_days_179 >= 5 and _cur_day_179 >= 3:
+        for _upref in _trip_uncovered:
+            if _upref in {
+                "museum_heritage", "local_food_experience", "water_attractions",
+                "attractions_for_kids", "cultural_experience", "relaxation",
+            } and poi_matches_user_preference(p, _upref):
+                _quota_boost = 90.0
+                if _cur_day_179 >= 5:
+                    _quota_boost += 40.0
+                score += _quota_boost
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [FIX #179 QUOTA BOOST] {poi_name_safe}: +{_quota_boost:.1f} "
+                      f"(uncovered pref={_upref}, day={_cur_day_179}/{_num_days_179})")
+                break
 
     score += calculate_budget_score(p, user)
     score += calculate_premium_penalty(p, user)  # CLIENT REQUIREMENT (08.02.2026): Premium experience penalty at budget/standard levels
@@ -3014,6 +3071,9 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
     global_cluster_use_count: dict = {}  # cluster_key -> times used earlier in trip
     global_museum_count = 0  # museums scheduled so far (for FIX #173 escalation)
 
+    # FIX #179 (06.06.2026): Trip-level preference coverage for quota boosts.
+    global_trip_covered_prefs: set = set()
+
     # FIX #175 (06.06.2026 - CLIENT FEEDBACK): Trip-wide POI dedup — never reuse the same
     # POI ID in one plan. FIX D sliding window caused day-1/day-7 skeleton duplicates
     # (Dolina Chochołowska + Krupówki). Late days rely on Zone C pool instead.
@@ -3057,6 +3117,8 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         context["global_cluster_last_day"] = global_cluster_last_day
         context["global_cluster_use_count"] = global_cluster_use_count
         context["trip_museum_count"] = global_museum_count
+        _all_user_prefs = user.get("preferences", [])
+        context["trip_uncovered_preferences"] = set(_all_user_prefs) - global_trip_covered_prefs
         _day_warnings: list = []  # FIX #130: collect per-day engine warnings
         # FIX #113 (07.06.2026): Use per-day POI pool if provided (zone system)
         _pois_for_day = pois_per_day[day_num] if pois_per_day is not None else pois
@@ -3223,7 +3285,14 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
             if item.get("type") == "attraction" and item.get("poi"):
                 if is_museum_heritage_poi(item["poi"]):
                     global_museum_count += 1
-        
+        # FIX #179: Update trip-level covered preferences from today's attractions.
+        for item in day_plan:
+            if item.get("type") == "attraction" and item.get("poi"):
+                _poi_ref = item["poi"]
+                for _pref in _all_user_prefs:
+                    if poi_matches_user_preference(_poi_ref, _pref):
+                        global_trip_covered_prefs.add(_pref)
+
         # Count POIs used in this day
         day_poi_count = 0
         day_core_count = 0
@@ -3579,6 +3648,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     print(f"[LUNCH] PROACTIVE: Inserting lunch at {minutes_to_time(now)} to avoid late lunch (next POI would push past 14:00)")
             
             if should_insert_lunch:
+                # FIX #180: seniors/family_kids — clamp lunch start to lunch_latest (return
+                # transit before lunch must not push lunch 1 min past 13:30 window).
+                if group_type in ("seniors", "family_kids") and now > lunch_latest:
+                    now = lunch_latest
                 lunch_start_time = minutes_to_time(now)
                 lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
                 
@@ -3589,6 +3662,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     # Adjust lunch time - move to after conflicting item
                     conflict_end_min = time_to_minutes(conflict.get('end_time', lunch_start_time))
                     now = conflict_end_min
+                    if group_type in ("seniors", "family_kids") and now > lunch_latest:
+                        now = lunch_latest
                     lunch_start_time = minutes_to_time(now)
                     lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
                 
@@ -3712,7 +3787,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         _dist_to_city = 0.0
                     if _dist_to_city > WALK_THRESHOLD_KM:
                         _return_min = max(5, int((_dist_to_city / 45) * 60 + 5))
-                        if now + _return_min + 30 <= end:
+                        if group_type in ("seniors", "family_kids") and now + _return_min > lunch_latest:
+                            print(f"[FIX #180] Skipped pre-lunch return transit for {group_type}: "
+                                  f"would start lunch at {minutes_to_time(now + _return_min)} > 13:30")
+                            _lunch_location_context = "przy_atrakcji"
+                            _return_min = 0
+                        if _return_min and now + _return_min + 30 <= end:
                             _from_name_lunch = poi_name(last_poi)  # save before updating last_poi
                             # FIX #147: Skip if already transferred to Zakopane centrum recently (lookback-8)
                             _skip_lunch_tr = any(
@@ -3739,6 +3819,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                                 "poi_id": "__city_center__",
                                 "type": "city_center",
                             }
+                            if group_type in ("seniors", "family_kids") and now > lunch_latest:
+                                now = lunch_latest
                             lunch_start_time = minutes_to_time(now)
                             lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
                             lunch_start_min = time_to_minutes(lunch_start_time)
@@ -3923,11 +4005,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         for p in pois:
             if poi_id(p) in used:
                 continue
-            if should_block_consecutive_cluster_repeat(p, context):
+            if should_skip_poi_candidate(p, context):
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-                print(f"[FILTER] FIX#172 BLOCK consecutive cluster repeat: {poi_name_safe}")
+                if should_block_consecutive_cluster_repeat(p, context):
+                    print(f"[FILTER] FIX#172 BLOCK consecutive cluster repeat: {poi_name_safe}")
                 continue
-            
+
             # FIX #10/10.2/10.3/10.4 (22.02.2026 - UAT Round 3, TEST-03 FINAL FIX):
             # CRITICAL: Hard block kids-only POIs for adult groups (friends/couples/seniors/solo)
             # Problem: TEST-03 (friends, adventure) gets kids POIs (zoo, termy with kids_attractions type)
@@ -4472,7 +4555,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 for p in pois:
                     if poi_id(p) in used:
                         continue
-                    if should_block_consecutive_cluster_repeat(p, context):
+                    if should_skip_poi_candidate(p, context):
                         continue
                     
                     # Only collect core POI for rotation
@@ -4603,8 +4686,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     core_candidates.sort(key=lambda x: x["score"], reverse=True)
                     top_core = core_candidates[:5]  # Top 5 core POI
                     
-                    # Random selection from top core POI for variety
-                    selected = random.choice(top_core)
+                    # FIX #179: Deterministic selection from top core POI (stable plans)
+                    selected = _deterministic_pick_scored(top_core)
                     best = selected["poi"]
                     best_score = selected["score"]
                     best_travel = selected["travel"]
@@ -4621,7 +4704,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 for p in pois:
                     if poi_id(p) in used:
                         continue
-                    if should_block_consecutive_cluster_repeat(p, context):
+                    if should_skip_poi_candidate(p, context):
                         continue
                     
                     # Apply same filters as before
@@ -4778,12 +4861,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             poi_name_safe = str(top_candidate["poi"].get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                             print(f"[TRAIL FORCED] Top is trail → selected at now={minutes_to_time(now)}: {poi_name_safe} (score={top_candidate['score']:.1f})")
                         else:
-                            # Top is not trail → normal randomness
-                            selected = random.choice(candidates)
-                            print(f"[VARIETY] Top NOT trail → random selection")
+                            selected = _deterministic_pick_scored(candidates)
+                            print(f"[VARIETY] Top NOT trail → deterministic selection")
                     else:
-                        # Normal randomness for non-mountain or no trails
-                        selected = random.choice(candidates)
+                        selected = _deterministic_pick_scored(candidates)
                     
                     best = selected["poi"]
                     best_score = selected["score"]
@@ -4825,7 +4906,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 for p in _soft_poi_candidates:
                     if poi_id(p) in used:
                         continue
-                    if should_block_consecutive_cluster_repeat(p, context):
+                    if should_skip_poi_candidate(p, context):
                         continue
                     
                     # HOTFIX #10.8: Apply hard filters (target_group + intensity) to soft POI selection
@@ -5324,8 +5405,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         _dist_to_city = 0.0
                     if _dist_to_city > WALK_THRESHOLD_KM:
                         _return_min = max(5, int((_dist_to_city / 45) * 60 + 5))
+                        # FIX #180: seniors/family_kids — skip return transit if it would
+                        # push lunch past 13:30 (lunch at przy_atrakcji instead).
+                        if group_type in ("seniors", "family_kids") and now + _return_min > lunch_latest:
+                            print(f"[FIX #180] Skipped pre-lunch return transit for {group_type}: "
+                                  f"would start lunch at {minutes_to_time(now + _return_min)} > 13:30")
+                            _lunch_location_context = "przy_atrakcji"
+                            _return_min = 0
                         # Only add return transit if it fits within day_end
-                        if now + _return_min + 30 <= end:  # 30 min minimum for lunch
+                        if _return_min and now + _return_min + 30 <= end:  # 30 min minimum for lunch
                             # FIX #147: Skip if already transferred to Zakopane centrum recently (lookback-8)
                             _skip_lunch_tr2 = any(
                                 it.get("type") == "transfer" and it.get("to") == "Zakopane centrum"
@@ -5349,6 +5437,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             _lunch_location_context = "przy_atrakcji"
                 
                 # Insert lunch immediately
+                if group_type in ("seniors", "family_kids") and now > lunch_latest:
+                    now = lunch_latest
                 lunch_start_time = minutes_to_time(now)
                 lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
                 
@@ -5359,6 +5449,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     # Adjust lunch time - move to after conflicting item
                     conflict_end_min = time_to_minutes(conflict.get('end_time', lunch_start_time))
                     now = conflict_end_min
+                    if group_type in ("seniors", "family_kids") and now > lunch_latest:
+                        now = lunch_latest
                     lunch_start_time = minutes_to_time(now)
                     lunch_end_time = minutes_to_time(min(end, now + LUNCH_DURATION_MIN))
                 
@@ -5618,7 +5710,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             for p in pois:
                 if poi_id(p) in used:
                     continue
-                if should_block_consecutive_cluster_repeat(p, context):
+                if should_skip_poi_candidate(p, context):
                     continue
                 
                 travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
@@ -5649,7 +5741,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 for p in pois:
                     if poi_id(p) in used:
                         continue
-                    if should_block_consecutive_cluster_repeat(p, context):
+                    if should_skip_poi_candidate(p, context):
                         continue
                     
                     # FIX #10.7 (22.02.2026 - TEST-04 CRITICAL FIX): Add kids POI filter to gap filling
@@ -5977,7 +6069,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             for p in _gf_candidates:
                 if poi_id(p) in used:
                     continue
-                if should_block_consecutive_cluster_repeat(p, context):
+                if should_skip_poi_candidate(p, context):
                     continue
 
                 # FIX #163 (06.06.2026 - CLIENT FEEDBACK JSON1/JSON3): max 1 trail/day.

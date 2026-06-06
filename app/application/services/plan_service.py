@@ -181,6 +181,47 @@ class PlanService:
     def __init__(self, poi_repository: POIRepository):
         self.poi_repo = poi_repository
 
+    def _compute_preference_coverage(
+        self,
+        days: List[DayPlan],
+        user_prefs: List[str],
+        poi_pool: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """FIX #179: Trip-level report — which user preferences were actually scheduled."""
+        from app.domain.planner.engine import poi_matches_user_preference
+
+        poi_by_id = {p.get("id"): p for p in poi_pool if p.get("id")}
+        coverage: Dict[str, Any] = {}
+        for pref in user_prefs:
+            hit_days: List[int] = []
+            poi_count = 0
+            sample_pois: List[str] = []
+            for day in days:
+                day_hit = False
+                for item in day.items:
+                    if getattr(item, "type", None) != ItemType.ATTRACTION:
+                        continue
+                    pid = getattr(item, "poi_id", "")
+                    poi = poi_by_id.get(pid) or {
+                        "name": getattr(item, "name", ""),
+                        "tags": [],
+                        "type": "poi",
+                    }
+                    if poi_matches_user_preference(poi, pref):
+                        poi_count += 1
+                        if not day_hit:
+                            hit_days.append(day.day)
+                            day_hit = True
+                        if len(sample_pois) < 3 and getattr(item, "name", ""):
+                            sample_pois.append(item.name)
+            coverage[pref] = {
+                "covered": poi_count > 0,
+                "days": hit_days,
+                "poi_count": poi_count,
+                "sample_pois": sample_pois,
+            }
+        return coverage
+
     def generate_plan(self, trip_input: TripInput) -> PlanResponse:
         """
         Główna metoda generująca pełny plan podróży.
@@ -706,12 +747,23 @@ class PlanService:
                 # FIX #177 (06.06.2026 - CLIENT FEEDBACK): 5-7 day plans must reach Zone C
                 # (excursions outside Zakopane). Force the LAST days onto Zone C so Pieniny /
                 # Słowacja / Bukowina POIs are actually used instead of repeating Zone A/B.
+                _late_c_days = 0
+                _early_zone_cutoff = num_days
                 if num_days >= 5 and 'C' in _zorder:
                     _late_c_days = min(3, max(2, num_days - 3))
+                    _early_zone_cutoff = num_days - _late_c_days
                     for _d_fix177 in range(num_days - _late_c_days, num_days):
                         _day_zone_seq[_d_fix177] = 'C'
                     print(f"[FIX #177] Late-trip Zone C lock: days "
                           f"{num_days - _late_c_days + 1}-{num_days} → Zone C")
+
+                _zone_c_ids = {p.get("id") for p in zone_buckets.get("C", [])}
+
+                def _strip_zone_c(pool, day_idx):
+                    """FIX #179: Zone C POIs only from day (_early_zone_cutoff+1) onward."""
+                    if day_idx >= _early_zone_cutoff or not _zone_c_ids:
+                        return pool
+                    return [p for p in pool if p.get("id") not in _zone_c_ids]
 
                 print(f"[FIX #170] Zone day allocation (A→B→C weighted): "
                       f"{ {z: _zone_days[z] for z in _zorder} } over {num_days} days")
@@ -761,10 +813,13 @@ class PlanService:
                     else:
                         # No coords for this sub-cluster → safe full pool
                         fb = list(all_pois)
-                    # FIX #177: days 5+ always get full Zone C in fallback (5-7 day trips).
-                    if d >= 4 and 'C' in zone_buckets and num_days >= 5:
+                    # FIX #177/#179: Zone C fallback only on late-trip days.
+                    if d >= _early_zone_cutoff and 'C' in zone_buckets and num_days >= 5:
                         fb.extend(zone_buckets['C'])
-                    fallbacks.append(_dedupe_pois(fb))
+                    fb = _dedupe_pois(fb)
+                    day_pool = _strip_zone_c(day_pool, d)
+                    fb = _strip_zone_c(fb, d)
+                    fallbacks.append(fb)
 
                     print(f"[FIX #167/#170]   Day {d+1} → Zone {zone} sub[{occ % max(len(subs),1)}] "
                           f"({len(day_pool)} POIs, fallback {len(fallbacks[-1])})")
@@ -785,6 +840,14 @@ class PlanService:
                 return pools, fallbacks
 
             _zone_pools, _zone_fallbacks = _build_zone_pools(all_pois_dict, num_days)
+            # FIX #179: block Zone C POIs on early days (pool + engine filter).
+            _zones_with_c = 'C' in sorted(set(
+                p.get('zone', '').strip() for p in all_pois_dict if p.get('zone', '').strip()
+            ))
+            _late_c_ctx = min(3, max(2, num_days - 3)) if num_days >= 5 and _zones_with_c else 0
+            _early_cut_ctx = num_days - _late_c_ctx if _late_c_ctx else num_days
+            for _ci, _ctx in enumerate(contexts):
+                _ctx["exclude_zone_c_pois"] = (_ci < _early_cut_ctx)
             # ================================================================
             # END FIX #113 / #166 / #167
             # ================================================================
@@ -1197,11 +1260,16 @@ class PlanService:
                 "severity": "info",
             })
 
+        preference_coverage = self._compute_preference_coverage(
+            days, user.get("preferences", []), all_pois_dict
+        )
+
         return PlanResponse(
             plan_id=plan_id,
             version=1,
             days=days,
-            warnings=plan_warnings  # FIX #Problem7: Include preference validation warnings
+            warnings=plan_warnings,  # FIX #Problem7: Include preference validation warnings
+            preference_coverage=preference_coverage,  # FIX #179
         )
 
     def _convert_engine_result_to_items(

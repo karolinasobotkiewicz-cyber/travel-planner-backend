@@ -231,11 +231,10 @@ def load_zakopane_poi(path: str, city_filter: Optional[str] = None):
         tags_str = str(row.get("Tags", "")).strip()
         tags_list = []
         if tags_str and tags_str != "nan":
-            # FIX #163 (06.06.2026 - CLIENT DATA UPDATE): some newly added POIs use newline
-            # (or semicolon) separators in the Tags cell instead of commas. Without this the
-            # whole cell is parsed as ONE unknown tag → the POI scores 0 for every preference
-            # and never gets selected. Split on comma, newline, and semicolon defensively.
-            tags_list = [t.strip() for t in re.split(r"[,\n;]+", tags_str) if t.strip()]
+            # FIX #163 + #179 (06.06.2026): Tags cell may use newline/semicolon separators or
+            # literal "\\n" from Excel export — split defensively so each tag scores correctly.
+            tags_str = tags_str.replace("\\n", "\n").replace("\\r", "\r")
+            tags_list = [t.strip() for t in re.split(r"[,;\r\n]+", tags_str) if t.strip()]
         
         # CLIENT DATA UPDATE (05.02.2026): Parse Target group to list
         target_group_raw = str(row.get("Target group", "")).strip()

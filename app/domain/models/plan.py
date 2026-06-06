@@ -386,6 +386,10 @@ class PlanResponse(BaseModel):
         default_factory=list,
         description="Lista ostrzeżeń dotyczących planu (np. brak POI dla preferencji)"
     )
+    preference_coverage: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="FIX #179: Per-preference coverage report (covered, days, poi_count)",
+    )
 
     class Config:
         json_schema_extra = {
