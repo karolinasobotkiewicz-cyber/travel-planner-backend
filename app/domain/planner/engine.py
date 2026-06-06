@@ -1257,6 +1257,70 @@ def poi_name(p):
     return p.get("name", "Unnamed")
 
 
+def poi_repeat_cluster_key(name: str) -> str:
+    """
+    FIX #172 (06.06.2026 - CLIENT FEEDBACK): Cluster key for cross-day repeat detection.
+    Different POI IDs (Krupówki vs Dolna Rówień Krupowa) share one cluster so the planner
+    can penalise / block back-to-back visits to the same landmark area.
+    """
+    n = str(name or "").lower().strip()
+    if "krup" in n:
+        return "cluster_krupowki"
+    if "gubałów" in n or "gubalow" in n:
+        return "cluster_gubalowka"
+    if "skywalk" in n:
+        return "cluster_skywalk"
+    if "kasprowy" in n:
+        return "cluster_kasprowy"
+    return n
+
+
+_HIGH_REPEAT_CLUSTERS = frozenset({
+    "cluster_krupowki", "cluster_gubalowka", "cluster_skywalk", "cluster_kasprowy",
+})
+
+
+def should_block_consecutive_cluster_repeat(p: dict, context: dict | None) -> bool:
+    """Hard block when the same landmark cluster appeared too recently."""
+    if not context:
+        return False
+    cluster = poi_repeat_cluster_key(p.get("name", ""))
+    last_day = context.get("global_cluster_last_day", {}).get(cluster)
+    current_day = context.get("current_day_num", 1)
+    prior_uses = context.get("global_cluster_use_count", {}).get(cluster, 0)
+    num_days = context.get("num_days", 1)
+    if cluster in _HIGH_REPEAT_CLUSTERS and prior_uses >= 1:
+        # One visit per trip for landmark clusters; only the final day of 7+ day trips may revisit.
+        if not (num_days >= 7 and current_day >= num_days):
+            return True
+    if last_day is None:
+        return False
+    days_since = current_day - last_day
+    if days_since == 1:
+        return True
+    # Krupówki / Gubałówka / SkyWalk: also block within 2-day window (not just back-to-back)
+    if cluster in _HIGH_REPEAT_CLUSTERS and days_since <= 2:
+        return True
+    return False
+
+
+def is_museum_heritage_poi(p: dict) -> bool:
+    """True when POI is a museum / heritage attraction (for museum_heritage boost)."""
+    name_l = str(p.get("name", "")).lower()
+    if "muze" in name_l or "galeri" in name_l:
+        return True
+    tags = set(str(t).lower() for t in p.get("tags", []))
+    _museum_tags = {
+        "themed_museum", "regional_heritage", "museum_heritage", "museums",
+        "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
+        "interactive_exhibit", "local_history", "architecture_heritage",
+        "historic_building", "composer_artist_house", "intimate_small_museum",
+        "ethnographic_museum", "art_gallery", "temporary_exhibitions",
+        "cultural_heritage", "folk_traditions", "historical_exhibits",
+    }
+    return bool(_museum_tags & tags)
+
+
 # PHASE 8 FEATURE #7 (27.04.2026): POI classifier (main vs filler)
 # Formula: weight = time(40%) + priority(30%) + popularity(20%) + type(10%)
 # If weight ≥ 6.0 → main attraction (główna atrakcja dnia)
@@ -1713,6 +1777,26 @@ def score_poi(
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                 print(f"    [FIX #161 KIDS BOOST] {poi_name_safe}: +{_f161_boost:.1f} "
                       f"(family_kids explicitly wants kids_attractions)")
+
+    # FIX #173 (06.06.2026 - CLIENT FEEDBACK): museum_heritage under-delivered.
+    # Users pick museum_heritage but long mountain trips end up with 0 museums (test-08).
+    # Give genuine museum/heritage POIs a strong targeted boost; escalate when the trip
+    # still has no museums scheduled (trip_museum_count from plan_multiple_days).
+    if "museum_heritage" in user.get("preferences", []):
+        if is_museum_heritage_poi(p) or tag_bonus > 0:
+            _f173_boost = 100.0
+            _trip_museums = (context or {}).get("trip_museum_count", 0)
+            _cur_day = (context or {}).get("current_day_num", 1)
+            if _trip_museums == 0 and _cur_day >= 2:
+                _f173_boost += 60.0
+            if _trip_museums == 0 and _cur_day >= 3:
+                _f173_boost += 50.0
+            elif _trip_museums < 2 and _cur_day >= 4:
+                _f173_boost += 80.0
+            score += _f173_boost
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [FIX #173 MUSEUM BOOST] {poi_name_safe}: +{_f173_boost:.1f} "
+                  f"(museum_heritage pref, trip_museums={_trip_museums})")
 
     score += calculate_budget_score(p, user)
     score += calculate_premium_penalty(p, user)  # CLIENT REQUIREMENT (08.02.2026): Premium experience penalty at budget/standard levels
@@ -2681,6 +2765,42 @@ def score_poi(
             elif _tag_days_used >= 2:
                 score -= 10.0 * _day_scale  # Scaled mild penalty: already seen on 2 days
 
+    # FIX #172 (06.06.2026 - CLIENT FEEDBACK): Penalise reusing the same landmark cluster
+    # on recent days (Krupówki / Gubałówka / SkyWalk). Complements ID-based global_used
+    # which misses sibling POIs (Krupówki vs Dolna Rówień Krupowa).
+    _cluster_last = (context or {}).get("global_cluster_last_day", {})
+    _cluster_uses = (context or {}).get("global_cluster_use_count", {})
+    _cluster_key = poi_repeat_cluster_key(p.get("name", ""))
+    _prior_uses = _cluster_uses.get(_cluster_key, 0)
+    _num_days_172 = (context or {}).get("num_days", 1)
+    if _cluster_key in _HIGH_REPEAT_CLUSTERS and _prior_uses >= 1:
+        # Second+ visit to Krupówki/Gubałówka/SkyWalk in same trip — strong penalty.
+        # Late long-trip days (FIX D) get a softer penalty so day 7 can revisit if needed.
+        _late_trip = _num_days_172 >= 7 and _current_day >= _num_days_172
+        _repeat_penalty = -45.0 if _late_trip else -75.0
+        score += _repeat_penalty * min(_prior_uses, 2)
+        poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+        print(f"    [FIX #172 TRIP REPEAT] {poi_name_safe}: {_repeat_penalty * min(_prior_uses, 2):.1f} "
+              f"(cluster={_cluster_key}, prior_uses={_prior_uses})")
+    _last_cluster_day = _cluster_last.get(_cluster_key)
+    if _last_cluster_day is not None:
+        _days_since = _current_day - _last_cluster_day
+        if _days_since == 1:
+            _cluster_penalty = -90.0
+        elif _days_since == 2:
+            _cluster_penalty = -50.0
+        elif _days_since == 3:
+            _cluster_penalty = -35.0
+        elif _days_since <= 5:
+            _cluster_penalty = -20.0 if _cluster_key in _HIGH_REPEAT_CLUSTERS else -10.0
+        else:
+            _cluster_penalty = 0.0
+        if _cluster_penalty:
+            score += _cluster_penalty
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [FIX #172 CLUSTER PENALTY] {poi_name_safe}: {_cluster_penalty:.1f} "
+                  f"(cluster={_cluster_key}, last_day={_last_cluster_day}, days_since={_days_since})")
+
     return score
 
 
@@ -2873,6 +2993,11 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
     # Format: {"museum_heritage": 2, "scenic_viewpoint": 3, ...}
     global_type_tracking = {}  # tag -> number of days this tag type was represented
 
+    # FIX #172 (06.06.2026): Cross-day landmark cluster tracking (Krupówki, Gubałówka, SkyWalk).
+    global_cluster_last_day: dict = {}  # cluster_key -> last day number (1-based) used
+    global_cluster_use_count: dict = {}  # cluster_key -> times used earlier in trip
+    global_museum_count = 0  # museums scheduled so far (for FIX #173 escalation)
+
     # FIX D (02.06.2026): Sliding-window dedup for long trips (>=5 days, day 6+).
     # Problem: global_used_pois grows to exhaust entire POI pool by day 6-7,
     # leaving late days with no activities ("dead days").
@@ -2916,6 +3041,9 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         context["global_type_tracking"] = global_type_tracking
         context["current_day_num"] = day_num + 1  # 1-based day number (used for variety penalty threshold)
         context["num_days"] = num_days  # FIX D: total trip length (for late-trip pool-exhaustion softening)
+        context["global_cluster_last_day"] = global_cluster_last_day
+        context["global_cluster_use_count"] = global_cluster_use_count
+        context["trip_museum_count"] = global_museum_count
         _day_warnings: list = []  # FIX #130: collect per-day engine warnings
         # FIX #113 (07.06.2026): Use per-day POI pool if provided (zone system)
         _pois_for_day = pois_per_day[day_num] if pois_per_day is not None else pois
@@ -3084,6 +3212,18 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         for _tag in _day_tags_seen:
             global_type_tracking[_tag] = global_type_tracking.get(_tag, 0) + 1
         print(f"[FIX #89] Day {day_num + 1} type tracking updated: {len(global_type_tracking)} tracked tags")
+
+        # FIX #172: Update landmark cluster last-use day from today's attractions.
+        for item in day_plan:
+            if item.get("type") == "attraction" and item.get("poi"):
+                _ck = poi_repeat_cluster_key(item["poi"].get("name", ""))
+                global_cluster_last_day[_ck] = day_num + 1
+                global_cluster_use_count[_ck] = global_cluster_use_count.get(_ck, 0) + 1
+        # FIX #173: Count museums scheduled today for trip-level escalation.
+        for item in day_plan:
+            if item.get("type") == "attraction" and item.get("poi"):
+                if is_museum_heritage_poi(item["poi"]):
+                    global_museum_count += 1
         
         # Count POIs used in this day
         day_poi_count = 0
@@ -3784,6 +3924,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         for p in pois:
             if poi_id(p) in used:
                 continue
+            if should_block_consecutive_cluster_repeat(p, context):
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[FILTER] FIX#172 BLOCK consecutive cluster repeat: {poi_name_safe}")
+                continue
             
             # FIX #10/10.2/10.3/10.4 (22.02.2026 - UAT Round 3, TEST-03 FINAL FIX):
             # CRITICAL: Hard block kids-only POIs for adult groups (friends/couples/seniors/solo)
@@ -4317,6 +4461,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 for p in pois:
                     if poi_id(p) in used:
                         continue
+                    if should_block_consecutive_cluster_repeat(p, context):
+                        continue
                     
                     # Only collect core POI for rotation
                     is_core = is_core_poi(p)
@@ -4463,6 +4609,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # Re-scan to find all POI within 1% of best score
                 for p in pois:
                     if poi_id(p) in used:
+                        continue
+                    if should_block_consecutive_cluster_repeat(p, context):
                         continue
                     
                     # Apply same filters as before
@@ -4665,6 +4813,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
                 for p in _soft_poi_candidates:
                     if poi_id(p) in used:
+                        continue
+                    if should_block_consecutive_cluster_repeat(p, context):
                         continue
                     
                     # HOTFIX #10.8: Apply hard filters (target_group + intensity) to soft POI selection
@@ -5457,6 +5607,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             for p in pois:
                 if poi_id(p) in used:
                     continue
+                if should_block_consecutive_cluster_repeat(p, context):
+                    continue
                 
                 travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
                 test_start = now + travel
@@ -5485,6 +5637,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 soft_filled = False
                 for p in pois:
                     if poi_id(p) in used:
+                        continue
+                    if should_block_consecutive_cluster_repeat(p, context):
                         continue
                     
                     # FIX #10.7 (22.02.2026 - TEST-04 CRITICAL FIX): Add kids POI filter to gap filling
@@ -5811,6 +5965,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
             for p in _gf_candidates:
                 if poi_id(p) in used:
+                    continue
+                if should_block_consecutive_cluster_repeat(p, context):
                     continue
 
                 # FIX #163 (06.06.2026 - CLIENT FEEDBACK JSON1/JSON3): max 1 trail/day.

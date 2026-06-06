@@ -3200,7 +3200,57 @@ class PlanService:
             consolidated = consolidated[:_tail_start_idx] + [_merged_eod]
             print(f"[CONSOLIDATE] FIX#82: Collapsed {len(_tail_ft)} trailing EOD free_time blocks → 1 ({_merged_eod.duration_min} min, {_merged_eod.start_time}-{_merged_eod.end_time}, label={_merged_eod.label})")
 
+        # FIX #174 (06.06.2026 - CLIENT FEEDBACK): Merge consecutive free_time even when labels
+        # differ contextually (e.g. "Popołudniowy relaks" + "Spacer i fotografia" + "Przerwa kawowa").
+        # FIX #18 generic-label rule leaves 3 short evening blocks in a row; this pass collapses them.
+        consolidated = self._aggressive_merge_free_time_runs(consolidated)
+
         return consolidated
+
+    def _aggressive_merge_free_time_runs(self, items: List[Any]) -> List[Any]:
+        """FIX #174: Collapse 3+ consecutive free_time blocks, or 2+ evening blocks (>=17:00)."""
+        if not items:
+            return items
+
+        merged_items: List[Any] = []
+        i = 0
+        while i < len(items):
+            item = items[i]
+            if not hasattr(item, 'type') or item.type != ItemType.FREE_TIME:
+                merged_items.append(item)
+                i += 1
+                continue
+
+            run = [item]
+            j = i + 1
+            while j < len(items):
+                nxt = items[j]
+                if hasattr(nxt, 'type') and nxt.type == ItemType.FREE_TIME:
+                    run.append(nxt)
+                    j += 1
+                else:
+                    break
+
+            if len(run) >= 3:
+                merged_block = self._merge_free_time_blocks(run)
+                merged_items.append(merged_block)
+                print(f"[CONSOLIDATE] FIX#174: Merged {len(run)} contextual free_time blocks → 1 "
+                      f"({merged_block.duration_min} min, {merged_block.start_time}-{merged_block.end_time})")
+            elif len(run) == 2:
+                start_min = time_to_minutes(getattr(run[0], 'start_time', '00:00') or '00:00')
+                if start_min >= 17 * 60:
+                    merged_block = self._merge_free_time_blocks(run)
+                    merged_items.append(merged_block)
+                    print(f"[CONSOLIDATE] FIX#174: Merged 2 evening free_time blocks → 1 "
+                          f"({merged_block.duration_min} min, {merged_block.start_time}-{merged_block.end_time})")
+                else:
+                    merged_items.extend(run)
+            else:
+                merged_items.append(item)
+
+            i = j if j > i + 1 else i + 1
+
+        return merged_items
 
     def _should_merge_free_time(self, block1: FreeTimeItem, block2: FreeTimeItem) -> bool:
         """
