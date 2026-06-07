@@ -794,11 +794,10 @@ class PlanService:
                         ]
                     else:
                         _near_unzoned = list(pois_no_zone)
-                    # FIX #177: Zone C days use the FULL Zone C bucket as main pool.
-                    if zone == 'C' and num_days >= 5:
-                        day_pool = _dedupe_pois(list(zone_buckets.get('C', [])) + _near_unzoned)
-                    else:
-                        day_pool = _dedupe_pois(_near_unzoned + sub)
+                    # FIX #181 (ETAP A): Zone C days use their assigned sub-cluster only
+                    # (not the full Zone C bucket) so Pieniny and Słowacja are not mixed
+                    # in one day. FIX #140 tops up from fallback when the sub-cluster is tiny.
+                    day_pool = _dedupe_pois(_near_unzoned + sub)
 
                     # FALLBACK pool: own sub-cluster + every POI within
                     # _FALLBACK_RADIUS_KM of this sub-cluster's centroid (any zone).

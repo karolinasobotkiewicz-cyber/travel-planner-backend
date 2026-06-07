@@ -1278,10 +1278,63 @@ _HIGH_REPEAT_CLUSTERS = frozenset({
     "cluster_krupowki", "cluster_gubalowka", "cluster_skywalk", "cluster_kasprowy",
 })
 
+# FIX #181 (06.06.2026 - ETAP A): Far excursion regions — one thematic region visit per trip.
+_FAR_GEO_REGIONS = frozenset({
+    "region_pieniny", "region_spisz_bukowina", "region_slowacja",
+})
+
+
+def poi_geo_region_key(p: dict) -> str | None:
+    """Geographic region key for Zone C day-trip areas (Pieniny, Spisz, Słowacja)."""
+    name = str(p.get("name", "")).lower()
+    city = str(p.get("city", "") or p.get("City", "")).lower()
+    blob = f"{name} {city}"
+    if any(k in blob for k in (
+        "niedzica", "czorsztyn", "szczawnica", "sromowce", "pienin",
+        "dunajec", "flisack", "czorsztyńsk",
+    )):
+        return "region_pieniny"
+    if any(k in blob for k in (
+        "bielańsk", "bielansk", "demänov", "demanov", "ždiar", "zdiar",
+        "vysoké", "vysoke", "lipowiec", "słowac", "slowac", "tatransk",
+    )):
+        return "region_slowacja"
+    if any(k in blob for k in (
+        "bukowina", "jaworki", "bachled", "kluszkowce", "spisk", "spisz",
+        "czerwienne", "małe ciche", "male ciche",
+    )):
+        return "region_spisz_bukowina"
+    return None
+
+
+def should_block_geo_region_repeat(p: dict, context: dict | None) -> bool:
+    """FIX #181: Block revisiting the same far region on another day (5+ day trips)."""
+    if not context or context.get("num_days", 1) < 5:
+        return False
+    region = poi_geo_region_key(p)
+    if not region or region not in _FAR_GEO_REGIONS:
+        return False
+    if context.get("global_geo_region_use_count", {}).get(region, 0) >= 1:
+        poi_name_safe = str(p.get("name", "Unknown")).encode("ascii", errors="ignore").decode("ascii")
+        print(f"[FIX #181] Blocked far-region repeat: {poi_name_safe} ({region} already visited)")
+        return True
+    return False
+
+
+def _is_signature_valley_hike(p: dict) -> bool:
+    """FIX #182: Flagship all-day valley hikes (Kościeliska, Chochołowska, Strążyska)."""
+    n = poi_name(p).lower()
+    return any(m in n for m in (
+        "kościelisk", "koscielisk", "chochołowsk", "chocholowsk",
+        "strążysk", "strazysk",
+    ))
+
 
 def should_skip_poi_candidate(p: dict, context: dict | None) -> bool:
     """FIX #179: Combined hard filters for POI candidate selection."""
     if should_block_consecutive_cluster_repeat(p, context):
+        return True
+    if should_block_geo_region_repeat(p, context):
         return True
     if context and context.get("exclude_zone_c_pois") and str(p.get("zone", "")).strip() == "C":
         return True
@@ -2689,7 +2742,12 @@ def score_poi(
         
         elif target_group == "friends":
             # Friends prefer longer, more challenging trails
-            if avg_duration >= 180:  # ≥3 hours: substantial hike
+            _user_prefs_friends = user.get("preferences", [])
+            _mt_top2 = (
+                "mountain_trails" in _user_prefs_friends[:2]
+                or "hiking" in _user_prefs_friends[:2]
+            )
+            if avg_duration >= 180 and (_mt_top2 or not _is_signature_valley_hike(p)):
                 duration_boost = 15.0
                 score += duration_boost
                 print(f"    [TRAIL DURATION] {poi_name_safe}: +{duration_boost:.1f} (friends: substantial hike {avg_duration:.0f}min)")
@@ -2723,6 +2781,23 @@ def score_poi(
                 score += _long_trail_pen
                 print(f"    [FIX #178 LONG-TRAIL PENALTY] {poi_name_safe}: {_long_trail_pen:.1f} "
                       f"(mountain pref not in top-3, duration={avg_duration:.0f}min)")
+
+        # FIX #182 (06.06.2026 - ETAP A): Signature valley hikes only when mountain_trails/hiking
+        # is in top-2 preferences — prevents Kościeliska dominating cultural/relax profiles.
+        if _is_signature_valley_hike(p):
+            _mt_top2_182 = (
+                "mountain_trails" in user_preferences[:2]
+                or "hiking" in user_preferences[:2]
+            )
+            if not _mt_top2_182:
+                _valley_pen = -65.0
+                if avg_duration >= 240:
+                    _valley_pen -= 35.0
+                elif avg_duration >= 180:
+                    _valley_pen -= 20.0
+                score += _valley_pen
+                print(f"    [FIX #182 VALLEY HIKE] {poi_name_safe}: {_valley_pen:.1f} "
+                      f"(signature valley hike, mountain_trails/hiking not in top-2)")
         
         # 7. ELEVATION GAIN PENALTY (steep climbs hard for families/seniors)
         elevation_gain = safe_int(p.get("elevation_gain_m", 0), 0)
@@ -3069,6 +3144,8 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
     # FIX #172 (06.06.2026): Cross-day landmark cluster tracking (Krupówki, Gubałówka, SkyWalk).
     global_cluster_last_day: dict = {}  # cluster_key -> last day number (1-based) used
     global_cluster_use_count: dict = {}  # cluster_key -> times used earlier in trip
+    # FIX #181 (06.06.2026 - ETAP A): Far region tracking (Pieniny / Spisz / Słowacja).
+    global_geo_region_use_count: dict = {}  # region_key -> times visited in trip
     global_museum_count = 0  # museums scheduled so far (for FIX #173 escalation)
 
     # FIX #179 (06.06.2026): Trip-level preference coverage for quota boosts.
@@ -3116,6 +3193,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         context["num_days"] = num_days  # FIX D: total trip length (for late-trip pool-exhaustion softening)
         context["global_cluster_last_day"] = global_cluster_last_day
         context["global_cluster_use_count"] = global_cluster_use_count
+        context["global_geo_region_use_count"] = global_geo_region_use_count
         context["trip_museum_count"] = global_museum_count
         _all_user_prefs = user.get("preferences", [])
         context["trip_uncovered_preferences"] = set(_all_user_prefs) - global_trip_covered_prefs
@@ -3280,6 +3358,12 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
                 _ck = poi_repeat_cluster_key(item["poi"].get("name", ""))
                 global_cluster_last_day[_ck] = day_num + 1
                 global_cluster_use_count[_ck] = global_cluster_use_count.get(_ck, 0) + 1
+        # FIX #181: Mark far geo regions used today (one visit per region per trip).
+        for item in day_plan:
+            if item.get("type") == "attraction" and item.get("poi"):
+                _gr = poi_geo_region_key(item["poi"])
+                if _gr in _FAR_GEO_REGIONS:
+                    global_geo_region_use_count[_gr] = global_geo_region_use_count.get(_gr, 0) + 1
         # FIX #173: Count museums scheduled today for trip-level escalation.
         for item in day_plan:
             if item.get("type") == "attraction" and item.get("poi"):
