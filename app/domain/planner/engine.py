@@ -1395,6 +1395,26 @@ def _is_culture_led_trip(user_preferences: list) -> bool:
     return bool(_CULTURE_LED_PREFS & set(user_preferences[:3]))
 
 
+def should_exclude_trail_for_user(
+    p: dict, user: dict, start_time_min: int | None = None
+) -> bool:
+    """FIX #186: Unified trail hard-block — main loop, core rotation, variety, gap-fill."""
+    if p.get("type") != "trail":
+        return False
+    user_prefs = user.get("preferences", [])
+    strong_hiking = {"mountain_trails", "hiking", "active_sport"}
+    if not (
+        strong_hiking & set(user_prefs)
+        or user.get("target_group") == "adventure_seekers"
+    ):
+        return True
+    if start_time_min is not None and start_time_min >= 600:
+        return True
+    if _is_culture_led_trip(user_prefs):
+        return True
+    return False
+
+
 def should_block_consecutive_cluster_repeat(p: dict, context: dict | None) -> bool:
     """Hard block when the same landmark cluster appeared too recently."""
     if not context:
@@ -1946,10 +1966,11 @@ def score_poi(
     _trip_uncovered = (context or {}).get("trip_uncovered_preferences") or set()
     _num_days_179 = (context or {}).get("num_days", 1)
     _cur_day_179 = (context or {}).get("current_day_num", 1)
-    if _trip_uncovered and _num_days_179 >= 5 and _cur_day_179 >= 3:
+    if _trip_uncovered and _num_days_179 >= 2 and _cur_day_179 >= 2:
         for _upref in _trip_uncovered:
             if _upref in {
-                "museum_heritage", "local_food_experience", "water_attractions",
+                "museum_heritage", "history_mystery", "underground",
+                "local_food_experience", "water_attractions",
                 "attractions_for_kids", "cultural_experience", "relaxation",
             } and poi_matches_user_preference(p, _upref):
                 _quota_boost = 90.0
@@ -4323,64 +4344,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                               f"exposure={_trail_exposure}, month={_trail_month}, group={_trail_target}")
                         continue
 
-            # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #7): Trail timing - morning only
-            # CRITICAL: Trails must start early (08:00-10:00) to avoid afternoon/evening starts
-            # Problem: Trails scheduled at wrong times (trail start 14:00, 16:00)
-            # Solution: HARD FILTER trails by time-of-day (block if now >= 10:00 AM)
-            #
-            # Rationale:
-            #   - Mountain trails require daylight and safe descent time
-            #   - Starting after 10 AM risks finishing in darkness (trails are 3-13h long)
-            #   - Weather safety: early starts avoid afternoon storms in mountains
-            #
-            if p.get("type") == "trail":
-                TRAIL_CUTOFF_TIME = 600  # 10:00 AM in minutes (08:00=480, 10:00=600)
-                if now >= TRAIL_CUTOFF_TIME:
-                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-                    print(f"[TRAIL TIMING] EXCLUDED trail: {poi_name_safe} - too late in day "
-                          f"(now={minutes_to_time(now)}, cutoff=10:00)")
-                    continue  # SKIP - trails must start before 10:00 AM
-            
-            # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #6): Trail preference filtering
-            # CRITICAL: Trails should ONLY be included if user has hiking/mountain preferences
-            # Problem: Trails added to plans even for culture/food-focused travelers
-            # Solution: HARD FILTER trails by user preferences (not just scoring penalty)
-            #
-            # Trails are ONLY allowed if user has ANY of:
-            #   - "mountain_trails" preference
-            #   - "hiking" preference
-            #   - "active_sport" preference
-            #   - "outdoor" preference (weak match)
-            # OR target_group = "adventure_seekers" (hiking assumed)
-            #
-            if p.get("type") == "trail":
-                user_prefs = user.get("preferences", [])
-                target_group = user.get("target_group", "")
-                
-                # Required preferences for trails (strong matches)
-                strong_hiking_prefs = {"mountain_trails", "hiking", "active_sport"}
-                
-                # Weak preferences (outdoor alone is not enough unless adventure_seekers)
-                weak_hiking_prefs = {"outdoor", "nature"}
-                
-                has_strong_pref = bool(set(user_prefs) & strong_hiking_prefs)
-                has_weak_pref = bool(set(user_prefs) & weak_hiking_prefs)
-                is_adventure_group = target_group == "adventure_seekers"
-                
-                # Trail filtering logic:
-                # - Strong pref → always allow
-                # - Adventure_seekers + weak pref → allow (assume hiking interest)
-                # - Adventure_seekers alone → allow (group type implies hiking)
-                # - Weak pref alone → block (outdoor != mountain hiking)
-                # - No prefs → block
-                
-                trail_allowed = has_strong_pref or is_adventure_group
-                
-                if not trail_allowed:
-                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-                    print(f"[TRAIL FILTER] EXCLUDED trail: {poi_name_safe} - no hiking preferences "
-                          f"(user_prefs={user_prefs}, group={target_group})")
-                    continue  # SKIP - user not interested in mountain trails
+            # FIX #186: Trail preference/timing/culture-led block (see should_exclude_trail_for_user)
+            if should_exclude_trail_for_user(p, user, start_time_min=now):
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[TRAIL FILTER] EXCLUDED trail: {poi_name_safe} "
+                      f"(user_prefs={user.get('preferences', [])}, group={user.get('target_group', '')}, "
+                      f"now={minutes_to_time(now)})")
+                continue
             
             # FIX #47 (20.05.2026): Trail intensity matching to travel_style
             # Problem: Relax users (Json9) and seniors (Json6) got heavy 360+min trails
@@ -4806,6 +4776,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     start_time = now + travel
                     if start_time >= end:
                         continue
+
+                    # FIX #186: core rotation must apply same trail blocks as main loop
+                    if should_exclude_trail_for_user(p, user, start_time_min=start_time):
+                        continue
                     
                     duration = choose_duration(p, start_time, end, lunch_done, user)
                     if duration <= 0:
@@ -4952,6 +4926,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     
                     start_time = now + travel
                     if start_time >= end:
+                        continue
+
+                    # FIX #186: variety rescan must apply same trail blocks as main loop
+                    if should_exclude_trail_for_user(p, user, start_time_min=start_time):
                         continue
                     
                     duration = choose_duration(p, start_time, end, lunch_done, user)

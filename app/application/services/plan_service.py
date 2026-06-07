@@ -222,6 +222,139 @@ class PlanService:
             }
         return coverage
 
+    def _preference_not_covered_warning(self, pref: str, reason: str) -> Dict[str, Any]:
+        """FIX #186 (A2): Standard API warning for uncovered user preference."""
+        return {
+            "type": "preference_not_covered",
+            "preference": pref,
+            "message": (
+                f"Preferencja '{pref}' nie została pokryta atrakcją w planie. {reason}"
+            ),
+            "severity": "warning",
+        }
+
+    def _ensure_preference_coverage(
+        self,
+        days: List[DayPlan],
+        user: Dict[str, Any],
+        poi_pool: List[Dict[str, Any]],
+        contexts: List[Dict[str, Any]],
+    ) -> tuple[List[DayPlan], List[Dict[str, Any]]]:
+        """FIX #186 (A1): Swap weakest non-matching attraction for one POI per uncovered pref."""
+        from app.domain.planner.engine import poi_matches_user_preference
+
+        prefs = list(user.get("preferences") or [])
+        if not prefs or not days:
+            return days, []
+
+        poi_by_id = {p.get("id"): p for p in poi_pool if p.get("id")}
+        used_ids = {
+            it.poi_id for d in days for it in d.items
+            if getattr(it, "type", None) == ItemType.ATTRACTION and getattr(it, "poi_id", "")
+        }
+        warnings: List[Dict[str, Any]] = []
+        days_mut = list(days)
+
+        def _attr_matches_any_pref(poi: dict) -> int:
+            return sum(1 for pr in prefs if poi_matches_user_preference(poi, pr))
+
+        def _is_only_cover_for_pref(pref: str, poi_id: str) -> bool:
+            covering = []
+            for d in days_mut:
+                for it in d.items:
+                    if getattr(it, "type", None) != ItemType.ATTRACTION:
+                        continue
+                    p = poi_by_id.get(it.poi_id, {"tags": [], "name": it.name})
+                    if poi_matches_user_preference(p, pref):
+                        covering.append(it.poi_id)
+            return covering == [poi_id]
+
+        for pref in prefs:
+            coverage = self._compute_preference_coverage(days_mut, [pref], poi_pool)
+            if coverage.get(pref, {}).get("covered"):
+                continue
+
+            candidates = [
+                p for p in poi_pool
+                if p.get("id") not in used_ids
+                and poi_matches_user_preference(p, pref)
+            ]
+            if not candidates:
+                warnings.append(self._preference_not_covered_warning(
+                    pref,
+                    "Brak dostępnych POI w bazie dla tej preferencji.",
+                ))
+                continue
+
+            candidates.sort(
+                key=lambda p: (
+                    -float(p.get("must_see") or p.get("must_see_score") or 0),
+                    -float(p.get("priority") or p.get("priority_level") or 0),
+                ),
+            )
+            replacement = candidates[0]
+
+            best_victim: tuple | None = None
+            for di, day in enumerate(days_mut):
+                ctx = contexts[di] if di < len(contexts) else {}
+                for ii, item in enumerate(day.items):
+                    if getattr(item, "type", None) != ItemType.ATTRACTION:
+                        continue
+                    if not getattr(item, "poi_id", ""):
+                        continue
+                    victim_poi = poi_by_id.get(item.poi_id, {"tags": [], "name": item.name})
+                    if poi_matches_user_preference(victim_poi, pref):
+                        continue
+                    match_n = _attr_matches_any_pref(victim_poi)
+                    skip = False
+                    for other in prefs:
+                        if other == pref:
+                            continue
+                        oc = self._compute_preference_coverage(days_mut, [other], poi_pool)
+                        if not oc.get(other, {}).get("covered") and _is_only_cover_for_pref(
+                            other, item.poi_id
+                        ):
+                            skip = True
+                            break
+                    if skip:
+                        continue
+                    if (
+                        best_victim is None
+                        or match_n < best_victim[0]
+                        or (match_n == best_victim[0] and (di, ii) < (best_victim[1], best_victim[2]))
+                    ):
+                        best_victim = (match_n, di, ii, item, ctx)
+
+            if best_victim is None:
+                warnings.append(self._preference_not_covered_warning(
+                    pref,
+                    "Nie znaleziono bezpiecznej atrakcji do zamiany bez psucia innych preferencji.",
+                ))
+                continue
+
+            _, di, ii, old_item, ctx = best_victim
+            new_item = self._generate_attraction_item(
+                replacement,
+                old_item.start_time,
+                user,
+                user.get("target_group", "solo"),
+                context=ctx,
+            )
+            new_items = list(days_mut[di].items)
+            new_items[ii] = new_item
+            days_mut[di] = DayPlan(
+                day=days_mut[di].day,
+                title=_generate_day_title(new_items, days_mut[di].day),
+                items=new_items,
+                quality_badges=days_mut[di].quality_badges,
+            )
+            used_ids.discard(old_item.poi_id)
+            used_ids.add(replacement["id"])
+            print(f"[FIX #186] Preference guarantee: swapped '{old_item.name}' → "
+                  f"'{replacement.get('name')}' for pref={pref} on day {days_mut[di].day}")
+
+        return days_mut, warnings
+
     def generate_plan(self, trip_input: TripInput) -> PlanResponse:
         """
         Główna metoda generująca pełny plan podróży.
@@ -939,6 +1072,7 @@ class PlanService:
             # FIX #4 (15.02.2026): Add day_start and day_end to context for end-of-day logic
             day_context["day_start"] = day_start
             day_context["day_end"] = day_end
+            day_context["num_days"] = num_days  # FIX #186 (A3): multi-day gap-fill tuning
             
             # Konwersja engine result → PlanResponse items
             day_items = self._convert_engine_result_to_items(
@@ -1279,9 +1413,34 @@ class PlanService:
                 "severity": "info",
             })
 
+        # FIX #186 (A1/A2): Guarantee min. 1 POI per active preference + uncovered warnings.
+        _ctx_list = contexts if num_days > 1 else [context]
+        days, _pref_guarantee_warnings = self._ensure_preference_coverage(
+            days, user, all_pois_dict, _ctx_list,
+        )
+        for _pw in _pref_guarantee_warnings:
+            if not any(
+                w.get("type") == "preference_not_covered"
+                and w.get("preference") == _pw.get("preference")
+                for w in plan_warnings
+            ):
+                plan_warnings.append(_pw)
+
         preference_coverage = self._compute_preference_coverage(
             days, user.get("preferences", []), all_pois_dict
         )
+        for _pref, _pinfo in preference_coverage.items():
+            if not _pinfo.get("covered"):
+                _w = self._preference_not_covered_warning(
+                    _pref,
+                    "Sprawdź dostępność atrakcji w bazie lub skróć liczbę preferencji.",
+                )
+                if not any(
+                    x.get("type") == "preference_not_covered"
+                    and x.get("preference") == _pref
+                    for x in plan_warnings
+                ):
+                    plan_warnings.append(_w)
 
         return PlanResponse(
             plan_id=plan_id,
@@ -2398,7 +2557,9 @@ class PlanService:
                     # FIX: Always fill gaps >15 min regardless of POI open status
                     
                     # FIX #4 (15.02.2026): Lower threshold from 20 to 15 min
-                    if gap > 15:
+                    # FIX #186 (A3): 12 min gaps on 4+ day trips — less afternoon dead time.
+                    _gap_min = 12 if context.get("num_days", 1) >= 4 else 15
+                    if gap > _gap_min:
                         # HOTFIX (02.02.2026): Check if attraction limit reached
                         if attraction_count >= hard_limit:
                             print(f"[GAP FILLING] ✗ SKIP - attraction limit reached ({attraction_count}/{hard_limit})")

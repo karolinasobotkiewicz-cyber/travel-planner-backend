@@ -2864,6 +2864,17 @@ USER_PREFERENCES_TO_TAGS = {
     },
 }
 
+# FIX #186: Frontend preference key is "underground" (not caves_mines).
+# Reuse caves_mines config + short tags from Excel Zone B/C jaskinie.
+_EXTRA_UNDERGROUND_TAGS = ("cave", "underground", "karst-cave")
+_cm = USER_PREFERENCES_TO_TAGS["caves_mines"]
+USER_PREFERENCES_TO_TAGS["underground"] = {
+    "type_match": list(_cm["type_match"]),
+    "type_bonus": _cm["type_bonus"],
+    "tags": list(_cm["tags"]) + list(_EXTRA_UNDERGROUND_TAGS),
+    "tag_bonus": _cm["tag_bonus"],
+}
+
 
 def calculate_tag_preference_score(
     poi: Dict[str, Any], user_preferences: List[str]
