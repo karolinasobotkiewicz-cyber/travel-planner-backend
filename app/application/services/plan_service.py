@@ -660,7 +660,9 @@ class PlanService:
                 return _out
 
             def _build_zone_pools(all_pois, num_days):
-                """Return (per_day_pools, per_day_fallback_pools) respecting zone rotation.
+                """Return (per_day_pools, per_day_fallback_pools, per_day_geo_regions).
+
+                FIX #183: per_day_geo_regions locks each far day to one direction (Pieniny OR Słowacja).
 
                 FIX #113: rotate days through zones (A → B → C …) so a multi-day trip
                 visits the centre first and only reaches far zones on later days.
@@ -679,6 +681,11 @@ class PlanService:
                 into an early central day — the root cause of "the planner escapes
                 Zakopane on day 2-3 while Zakopane POIs stay unused".
                 """
+                from app.domain.planner.engine import (
+                    dominant_geo_region_key,
+                    filter_pois_by_geo_region,
+                )
+
                 _FALLBACK_RADIUS_KM = 16.0
                 pois_no_zone = [p for p in all_pois if not p.get('zone', '').strip()]
                 zones_present = sorted(set(
@@ -686,7 +693,7 @@ class PlanService:
                     if p.get('zone', '').strip()
                 ))
                 if not zones_present:
-                    return None, None  # no zone data → engine uses pois as-is
+                    return None, None, None  # no zone data → engine uses pois as-is
                 zone_buckets = {}
                 for z in zones_present:
                     zone_buckets[z] = [p for p in all_pois if p.get('zone', '').strip() == z]
@@ -770,6 +777,7 @@ class PlanService:
 
                 pools = []
                 fallbacks = []
+                day_geo_regions = []
                 zone_use = {z: 0 for z in zones_present}
                 for d in range(num_days):
                     zone = _day_zone_seq[d]
@@ -778,6 +786,8 @@ class PlanService:
                     zone_use[zone] += 1
                     sub = subs[occ % len(subs)] if subs else []
                     _sub_c = _geo_centroid(sub)
+                    _day_geo_region = dominant_geo_region_key(sub) if zone == 'C' else None
+                    day_geo_regions.append(_day_geo_region)
 
                     # FIX #170: MAIN pool = this region's coherent sub-cluster + only
                     # the unzoned POIs (mountain trails) within _MAIN_POOL_RADIUS_KM of
@@ -794,10 +804,10 @@ class PlanService:
                         ]
                     else:
                         _near_unzoned = list(pois_no_zone)
-                    # FIX #181 (ETAP A): Zone C days use their assigned sub-cluster only
-                    # (not the full Zone C bucket) so Pieniny and Słowacja are not mixed
-                    # in one day. FIX #140 tops up from fallback when the sub-cluster is tiny.
+                    # FIX #181/#183: Zone C days = one sub-cluster / one geo region per day.
                     day_pool = _dedupe_pois(_near_unzoned + sub)
+                    if _day_geo_region:
+                        day_pool = filter_pois_by_geo_region(day_pool, _day_geo_region)
 
                     # FALLBACK pool: own sub-cluster + every POI within
                     # _FALLBACK_RADIUS_KM of this sub-cluster's centroid (any zone).
@@ -812,16 +822,20 @@ class PlanService:
                     else:
                         # No coords for this sub-cluster → safe full pool
                         fb = list(all_pois)
-                    # FIX #177/#179: Zone C fallback only on late-trip days.
+                    # FIX #177/#183: late-trip Zone C fallback — same geo region only (no cross-cluster leak).
                     if d >= _early_zone_cutoff and 'C' in zone_buckets and num_days >= 5:
-                        fb.extend(zone_buckets['C'])
+                        _zc_extra = filter_pois_by_geo_region(zone_buckets['C'], _day_geo_region)
+                        fb.extend(_zc_extra)
                     fb = _dedupe_pois(fb)
+                    if _day_geo_region:
+                        fb = filter_pois_by_geo_region(fb, _day_geo_region)
                     day_pool = _strip_zone_c(day_pool, d)
                     fb = _strip_zone_c(fb, d)
                     fallbacks.append(fb)
 
+                    _reg_lbl = f", region={_day_geo_region}" if _day_geo_region else ""
                     print(f"[FIX #167/#170]   Day {d+1} → Zone {zone} sub[{occ % max(len(subs),1)}] "
-                          f"({len(day_pool)} POIs, fallback {len(fallbacks[-1])})")
+                          f"({len(day_pool)} POIs, fallback {len(fallbacks[-1])}{_reg_lbl})")
                     pools.append(day_pool)
 
                 # FIX #140 (31.05.2026): guard against a structurally tiny MAIN pool —
@@ -831,14 +845,18 @@ class PlanService:
                 _MIN_ZONE_POOL = 4
                 for d in range(num_days):
                     if len(pools[d]) < _MIN_ZONE_POOL:
-                        merged = _dedupe_pois(pools[d] + fallbacks[d])
+                        _topup = fallbacks[d]
+                        if day_geo_regions[d]:
+                            _topup = filter_pois_by_geo_region(_topup, day_geo_regions[d])
+                        merged = _dedupe_pois(pools[d] + _topup)
                         print(f"[FIX #140]   Day {d+1} sub-cluster only {len(pools[d])} POIs "
                               f"→ topped up to {len(merged)} from nearer zones")
                         pools[d] = merged
 
-                return pools, fallbacks
+                return pools, fallbacks, day_geo_regions
 
-            _zone_pools, _zone_fallbacks = _build_zone_pools(all_pois_dict, num_days)
+            _zone_pools, _zone_fallbacks, _day_geo_regions = _build_zone_pools(all_pois_dict, num_days)
+            _day_geo_regions = _day_geo_regions or []
             # FIX #179: block Zone C POIs on early days (pool + engine filter).
             _zones_with_c = 'C' in sorted(set(
                 p.get('zone', '').strip() for p in all_pois_dict if p.get('zone', '').strip()
@@ -847,6 +865,8 @@ class PlanService:
             _early_cut_ctx = num_days - _late_c_ctx if _late_c_ctx else num_days
             for _ci, _ctx in enumerate(contexts):
                 _ctx["exclude_zone_c_pois"] = (_ci < _early_cut_ctx)
+                if _ci < len(_day_geo_regions):
+                    _ctx["day_geo_region"] = _day_geo_regions[_ci]
             # ================================================================
             # END FIX #113 / #166 / #167
             # ================================================================

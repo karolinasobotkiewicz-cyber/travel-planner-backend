@@ -1307,6 +1307,23 @@ def poi_geo_region_key(p: dict) -> str | None:
     return None
 
 
+def dominant_geo_region_key(pois: list) -> str | None:
+    """Most common far-region key among a sub-cluster's POIs."""
+    counts: dict = {}
+    for _p in pois:
+        _r = poi_geo_region_key(_p)
+        if _r:
+            counts[_r] = counts.get(_r, 0) + 1
+    return max(counts, key=counts.get) if counts else None
+
+
+def filter_pois_by_geo_region(pois: list, region: str | None) -> list:
+    """Keep POIs with no far-region key or matching the day's assigned region."""
+    if not region:
+        return list(pois)
+    return [p for p in pois if poi_geo_region_key(p) in (None, region)]
+
+
 def should_block_geo_region_repeat(p: dict, context: dict | None) -> bool:
     """FIX #181: Block revisiting the same far region on another day (5+ day trips)."""
     if not context or context.get("num_days", 1) < 5:
@@ -1317,6 +1334,22 @@ def should_block_geo_region_repeat(p: dict, context: dict | None) -> bool:
     if context.get("global_geo_region_use_count", {}).get(region, 0) >= 1:
         poi_name_safe = str(p.get("name", "Unknown")).encode("ascii", errors="ignore").decode("ascii")
         print(f"[FIX #181] Blocked far-region repeat: {poi_name_safe} ({region} already visited)")
+        return True
+    return False
+
+
+def should_block_cross_region_in_day(p: dict, context: dict | None) -> bool:
+    """FIX #183: One geographic direction per day — no Pieniny + Słowacja mixing."""
+    if not context:
+        return False
+    day_region = context.get("day_geo_region")
+    if not day_region:
+        return False
+    poi_region = poi_geo_region_key(p)
+    if poi_region and poi_region != day_region:
+        poi_name_safe = str(p.get("name", "Unknown")).encode("ascii", errors="ignore").decode("ascii")
+        print(f"[FIX #183] Blocked cross-region POI: {poi_name_safe} "
+              f"({poi_region} ≠ day region {day_region})")
         return True
     return False
 
@@ -1336,9 +1369,30 @@ def should_skip_poi_candidate(p: dict, context: dict | None) -> bool:
         return True
     if should_block_geo_region_repeat(p, context):
         return True
+    if should_block_cross_region_in_day(p, context):
+        return True
     if context and context.get("exclude_zone_c_pois") and str(p.get("zone", "")).strip() == "C":
         return True
     return False
+
+
+_CULTURE_LED_PREFS = frozenset({
+    "history_mystery", "underground", "museum_heritage",
+    "cultural_experience", "castles_palaces", "caves_mines",
+})
+
+_ICONIC_MOUNTAIN_TRAILS = (
+    "morskie oko", "szymoszkowa", "rusinowa polana", "kasprowy wierch", "giewont",
+    "kopieniec", "pięć stawów", "piec stawow",
+)
+
+
+def _is_culture_led_trip(user_preferences: list) -> bool:
+    """True when culture/history/underground prefs lead and mountain_trails/hiking are not top-2."""
+    top2 = user_preferences[:2]
+    if "mountain_trails" in top2 or "hiking" in top2:
+        return False
+    return bool(_CULTURE_LED_PREFS & set(user_preferences[:3]))
 
 
 def should_block_consecutive_cluster_repeat(p: dict, context: dict | None) -> bool:
@@ -2165,8 +2219,13 @@ def score_poi(
         # Bug: JSON 7 (underground+history+museum + adventure) had Kopieniec mountain trail selected
         # because the 50%+100% adventure boost applied to ALL adventure plans regardless of preferences.
         # Fix: Only apply active/mountain boosts when user preferences include at least one outdoor pref.
+        # FIX #184 (06.06.2026): culture-led adventure — prefs beat travel_style (no trail dominance).
         outdoor_preference_keys = {"hiking", "outdoor", "nature", "mountain_trails", "trekking", "active_sport", "climbing"}
-        user_has_outdoor_prefs = bool(outdoor_preference_keys & set(user_preferences))
+        _culture_led_184 = _is_culture_led_trip(user_preferences)
+        user_has_outdoor_prefs = (
+            bool(outdoor_preference_keys & set(user_preferences))
+            and not _culture_led_184
+        )
         
         if user_has_outdoor_prefs:
             # Boost active POI for adventure travelers with outdoor preferences
@@ -2262,6 +2321,29 @@ def score_poi(
             score -= penalty
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [ADVENTURE PENALTY] {poi_name_safe}: -{penalty:.1f} (adventure style prefers active over culture)")
+
+        # FIX #184: adventure + history/underground/museum prefs — penalise iconic trails,
+        # boost matching culture POI so Morskie Oko / Szymoszkowa don't beat jaskinie/muzea.
+        if _culture_led_184:
+            _pname_l = str(p.get("name", "")).lower()
+            _ptype_l = str(p.get("type", "")).lower()
+            _trail_like = (
+                _ptype_l == "trail"
+                or bool({"hiking", "mountain_trails", "alpine_activities"} & poi_tags)
+            )
+            _iconic = any(_m in _pname_l for _m in _ICONIC_MOUNTAIN_TRAILS)
+            if _trail_like or _iconic:
+                _tpen = 95.0 if _iconic else 75.0
+                score -= _tpen
+                print(f"    [FIX #184 CULTURE-LED] {poi_name_safe}: -{_tpen:.1f} "
+                      f"(adventure but culture prefs — deprioritise trail)")
+            else:
+                for _cp in _CULTURE_LED_PREFS & set(user_preferences[:3]):
+                    if poi_matches_user_preference(p, _cp):
+                        score += 80.0
+                        print(f"    [FIX #184 CULTURE-LED] {poi_name_safe}: +80.0 "
+                              f"(adventure + matches {_cp})")
+                        break
     
     # ETAP 3 PHASE 5 (27.04.2026): CULTURAL BONUS for city tourism
     # City tourism trips boost museums, cultural sites, historical attractions
@@ -3248,7 +3330,8 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         _f160_attr, _f160_free = _f160_fill_metric(day_plan)
         # FIX #162 (05.06.2026): lowered the free-time trigger 180 → 120 min so days that
         # still leave ~2h of free_time (client JSON6/JSON9) also get a full-pool retry.
-        _f160_underfilled = (_f160_attr < 2) or (_f160_free > 120)
+        # FIX #185 (06.06.2026): 120 → 90 min — catch remaining sparse days with less free_time.
+        _f160_underfilled = (_f160_attr < 2) or (_f160_free > 90)
         if _f160_underfilled and pois_per_day is not None and len(_fallback_for_day) > len(_pois_for_day):
             print(f"[FIX #160] Day {day_num + 1}: under-filled ({_f160_attr} attractions, "
                   f"{_f160_free}min free) from zone pool ({len(_pois_for_day)} POIs) → "
