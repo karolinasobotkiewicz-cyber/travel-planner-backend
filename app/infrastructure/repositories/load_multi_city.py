@@ -150,7 +150,14 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
     # Handles both 'Kraków' == 'Krakow' and 'Gdańsk' == 'Gdansk'
     cities_normalized = {_normalize_city(city): city for city in cities}
     df_normalized_city = df['City'].apply(lambda c: _normalize_city(str(c)) if pd.notna(c) else '')
-    df_filtered = df[df_normalized_city.isin(cities_normalized.keys())]
+    if 'Hub' in df.columns:
+        df_normalized_hub = df['Hub'].apply(lambda c: _normalize_city(str(c)) if pd.notna(c) else '')
+        df_filtered = df[
+            df_normalized_city.isin(cities_normalized.keys())
+            | df_normalized_hub.isin(cities_normalized.keys())
+        ]
+    else:
+        df_filtered = df[df_normalized_city.isin(cities_normalized.keys())]
     
     if len(df_filtered) == 0:
         print(f"[WARNING] No POI found for cities: {cities}")
@@ -189,6 +196,7 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             "name": _name,
             "Name": _name,  # FIX #75: engine uses p.get("Name", "UNKNOWN") in several places
             "city": row.get('City', ''),
+            "hub_city": _safe_str(row.get('Hub', '')),
             
             # Location
             "lat": float(row.get('Lat', 0.0)),

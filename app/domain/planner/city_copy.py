@@ -34,9 +34,18 @@ def poi_city_norm(poi: Dict[str, Any]) -> str:
     return normalize_city_name(poi.get("city") or poi.get("City") or "")
 
 
+def poi_hub_norm(poi: Dict[str, Any]) -> str:
+    """Hub = sheet/region hub (FIX #189) — includes Zone C day-trip POIs near a city."""
+    return normalize_city_name(
+        poi.get("hub_city") or poi.get("Hub") or poi.get("hub") or ""
+    )
+
+
 def poi_matches_city_filter(poi: Dict[str, Any], city_filter: str) -> bool:
     req = normalize_city_name(city_filter)
     if not req:
+        return True
+    if poi_hub_norm(poi) == req:
         return True
     pc = poi_city_norm(poi)
     if req in ZAKOPANE_REGION_NORM:
@@ -61,7 +70,10 @@ def filter_pois_by_cities(
     if not norms:
         return pois
     before = len(pois)
-    out = [p for p in pois if poi_city_norm(p) in norms]
+    out = [
+        p for p in pois
+        if poi_city_norm(p) in norms or poi_hub_norm(p) in norms
+    ]
     if len(out) != before:
         print(f"[FIX #188] Multi-city guard {sorted(norms)}: {before} → {len(out)} POIs")
     return out

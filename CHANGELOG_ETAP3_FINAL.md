@@ -39,10 +39,20 @@ Podsumowanie dla klientki: co zostało dostarczone w silniku planowania Zakopane
 
 **Zrobione w repo (FIX #188 data):** poprawione `City` + współrzędne m.in. Muzeum Iluzji Wrocław, Ogród Botaniczny UWr, GoJump Wrocław, Fontanna Multimedialna Wrocław, 7× `Warsaw`→`Warszawa`, 7× puste `City` w Krakowie, usunięte 11 pustych stub-wierszy.
 
-**Do uzupełnienia przez klientkę:**
+**Zaimportowane w FIX #189** — plik klientki `Planer - miasta atrakcje6.xlsx` (kolumna `Zone` + `Hub`).
 
-1. **Kolumna `Zone`** (A = centrum, B = okolice, C = dalsze wycieczki) — bez niej silnik nie planuje „dni dalekich” na 5–7 dniowych wyjazdach (jak Zone C w Zakopanem).
-2. Przy kolejnych importach pilnować poprawnego `City` i spójnego nazewnictwa (`Warszawa`, nie `Warsaw`).
+## FIX #189 — Zone A/B/C dla wszystkich miast (czerwiec 2026)
+
+| ID | Opis |
+|----|------|
+| #189a | **Import atrakcje6** — 721 wierszy / 16 arkuszy → `multi_city_attractions.xlsx` (716) + `zakopane.xlsx` (95) |
+| #189b | **Kolumna `Hub`** — arkusz = hub wyjazdu; Zone C (np. Energylandia/Zator, Suntago, Ojców) ładuje się mimo `City` = miejscowość satelitarna |
+| #189c | **`poi_matches_city_filter`** — filtr po `City` **lub** `Hub` (FIX #188 + Zone C) |
+| #189d | **Poprawki City przy imporcie** — Wrocław GPS, `Warsaw`→`Warszawa`, NaN→Hub; Kraków-only fixes scoped per arkusz (Bulwary Wiślane Warszawa ≠ Kraków) |
+
+**Zone po imporcie:** A=511, B=124, C=81. Przykłady Zone C: Warszawa 5, Kraków 6, Wrocław 4, Gdańsk 8, Zakopane 17.
+
+**Dla klientki — nadal warto pilnować:** poprawne `City`, spójne nazewnictwo (`Warszawa` nie `Warsaw`), tagi w jednej komórce (bez `\n` w Excelu).
 
 ## FIX #187 — feedback klientki (czerwiec 2026)
 
@@ -71,7 +81,7 @@ python _check_dupes_client.py
 ## Znane ograniczenia (dane, nie bugi)
 
 - Plan **7-dniowy** wymaga bogatej bazy — im więcej POI, tym lepsze dni 6–7
-- **Inne miasta** (Kraków, Gdańsk…) — ten sam silnik, bez Zone C / Pienin (ścieżka uproszczona)
+- **Inne miasta** — Zone C działa od FIX #189 (wymaga kolumny `Zone` w Excelu klientki)
 - Pełne **twarde reguły relax** (max 2h szlak) — osobny pakiet EXTRA
 
 ---
