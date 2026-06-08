@@ -362,28 +362,11 @@ def load_zakopane_poi(path: str, city_filter: Optional[str] = None):
 
     # FIX: Cross-city POI contamination (15.05.2026)
     # Filter POIs by city BEFORE normalization (normalize_poi() drops City field)
-    # FIX #42 (Issue F): Zakopane-region termy (poi_16-19) are in nearby villages but
-    # are legitimate day-trip destinations from Zakopane. Include all Zakopane-region
-    # cities so these POIs are not silently excluded, causing sparse days 4-7.
-    ZAKOPANE_REGION_CITIES = {
-        "zakopane", "szaflary", "chochołów", "białka tatrzańska",
-        "bukowina tatrzańska", "kościelisko", "poronin",
-        # FIX #163 (06.06.2026 - CLIENT DATA UPDATE): Zone C day-trip towns added by the
-        # client to enrich far-zone / 6-7 day plans (Pieniny, Spisz, Dunajec, Tatry).
-        # Without these, the new Zone C POIs (17) would be silently filtered out on
-        # Zakopane requests and the updated base would have no effect.
-        "szczawnica", "niedzica", "niedzica-zamek", "sromowce wyżne", "kluszkowce",
-        "jaworki", "ždiar", "vysoké tatry", "małe ciche", "brzegi", "rusinowa polana",
-        "witów", "łopuszna", "czerwienne",
-    }
+    # FIX #188: city filter via city_copy (includes Zakopane-region satellite towns).
     if city_filter:
+        from app.domain.planner.city_copy import filter_pois_by_city
         original_count = len(pois)
-        city_filter_lower = city_filter.lower()
-        # For Zakopane region requests, include all nearby villages/towns
-        if city_filter_lower in ZAKOPANE_REGION_CITIES:
-            pois = [p for p in pois if p.get("City", "").lower() in ZAKOPANE_REGION_CITIES]
-        else:
-            pois = [p for p in pois if p.get("City", "").lower() == city_filter_lower]
+        pois = filter_pois_by_city(pois, city_filter)
         print(f"[POI FILTER] City: {city_filter} → Filtered {original_count} → {len(pois)} POIs")
         
         if len(pois) == 0:

@@ -26,6 +26,24 @@ Podsumowanie dla klientki: co zostało dostarczone w silniku planowania Zakopane
 | A3 | **Mniej pustego czasu** — agresywniejsze zapełnianie luk (12 min) na wyjazdach 4+ dni |
 | A4 | **Test naturalności** — 10 JSON-ów klientki + regiony + test-07 bez ikon szlaków |
 
+## FIX #188 — inne miasta (czerwiec 2026)
+
+| ID | Opis |
+|----|------|
+| #188a | **Neutralne sugestie** — Krupówki/Tatry/góralska tylko dla `is_zakopane_trip` |
+| #188b | **Filtr miasta** — diacritic-safe guard na każdej ścieżce ładowania POI |
+| #188c | **Gap-fill per-day** — pula strefowa dnia + `contexts[day_num]` zamiast globalnej puli |
+| #188d | **Domyślny `is_zakopane_trip=False`** w engine (bezpieczniejszy default) |
+
+### Dla klientki — uzupełnienia w Excelu (`multi_city_attractions.xlsx`)
+
+**Zrobione w repo (FIX #188 data):** poprawione `City` + współrzędne m.in. Muzeum Iluzji Wrocław, Ogród Botaniczny UWr, GoJump Wrocław, Fontanna Multimedialna Wrocław, 7× `Warsaw`→`Warszawa`, 7× puste `City` w Krakowie, usunięte 11 pustych stub-wierszy.
+
+**Do uzupełnienia przez klientkę:**
+
+1. **Kolumna `Zone`** (A = centrum, B = okolice, C = dalsze wycieczki) — bez niej silnik nie planuje „dni dalekich” na 5–7 dniowych wyjazdach (jak Zone C w Zakopanem).
+2. Przy kolejnych importach pilnować poprawnego `City` i spójnego nazewnictwa (`Warszawa`, nie `Warsaw`).
+
 ## FIX #187 — feedback klientki (czerwiec 2026)
 
 | ID | Opis |

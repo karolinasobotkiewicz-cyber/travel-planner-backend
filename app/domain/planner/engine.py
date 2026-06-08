@@ -240,7 +240,7 @@ def _add_buffer_item(plan, now, buffer_type, duration_min, reason_context=None, 
     return now + duration_min
 
 
-def _get_free_time_label(plan, now_min, duration_min, day_end_min, profile=None):
+def _get_free_time_label(plan, now_min, duration_min, day_end_min, profile=None, *, is_zakopane=False):
     """
     Generate smart, context-aware label for free_time items.
     
@@ -297,7 +297,8 @@ def _get_free_time_label(plan, now_min, duration_min, day_end_min, profile=None)
         if _prev_poi_type == "water_attractions":
             return "Spokojny czas po termach: kawa, zakupy, relaks"
         if _prev_poi_type == "local_food_experience":
-            return "Regionalny przystanek: oscypki, herbata góralska"
+            from app.domain.planner.city_copy import regional_food_free_time_label
+            return regional_food_free_time_label(is_zakopane)
         # FIX EXTRA4 (01.06.2026): Context label after museum/gallery/cultural POI
         # Client approved 24.05.2026: post-museum free time = coffee + relaxed exploration
         if _prev_poi_type in ("museum", "muzeum", "gallery", "galeria", "galeria_sztuki",
@@ -320,13 +321,13 @@ def _get_free_time_label(plan, now_min, duration_min, day_end_min, profile=None)
     
     # If free_time ends near day_end (within 60 min) OR fills large end-of-day gap
     if end_of_free_time >= day_end_min - 60 or (remaining_to_day_end > 90 and now_min >= 840):  # After 14:00
-        # FIX #86 (28.05.2026): Use "Wieczorny relaks" label for afternoon/evening free_time
-        # Client specifically requested: "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja"
-        # FIX EXTRA4 (01.06.2026): Split 18:00+ into "Kolacja i Krupówki" — client approved 24.05.2026
-        if now_min >= 1080:  # After 18:00 → Kolacja i Krupówki
-            return "Kolacja i Krupówki: restauracja, spacer po Krupówkach, zakupy pamiątek"
-        elif now_min >= 900:  # After 15:00 → wieczorny relaks territory
-            return "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja"
+        from app.domain.planner.city_copy import evening_relax_label, evening_kolacja_label
+        if now_min >= 1080:
+            if is_zakopane:
+                return "Kolacja i Krupówki: restauracja, spacer po Krupówkach, zakupy pamiątek"
+            return evening_kolacja_label(False, 60) + ", zakupy pamiątek"
+        elif now_min >= 900:
+            return evening_relax_label(is_zakopane, now_min)
         else:
             return "Czas wolny do końca dnia: kolacja, spacer, zakupy, relaks"
     
@@ -4008,7 +4009,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # Zakopane trips only (mirrors FIX #37/#69 in plan_service). For other cities the
                 # hardcoded ZAKOPANE_CENTER would compute a bogus distance to a foreign centre.
                 # Default True preserves existing behavior for build_day callers that omit the flag.
-                if last_poi and last_poi.get("type") != "city_center" and context.get("is_zakopane_trip", True):
+                if last_poi and last_poi.get("type") != "city_center" and context.get("is_zakopane_trip", False):
                     _lp_lat = last_poi.get("lat")
                     _lp_lng = last_poi.get("lng")
                     if _lp_lat and _lp_lng:
@@ -4140,7 +4141,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # ETAP 3 PHASE 3 (27.04.2026): Intelligent dinner suggestions from RestaurantRepository
                 # Use context["restaurants_available"] to find nearby dinner spots
                 # Fallback to generic suggestions if no restaurants available
-                dinner_suggestions = ["Regionalna restauracja", "Bacówka", "Karcma góralska"]  # Default fallback
+                from app.domain.planner.city_copy import dinner_suggestions as _dinner_sugg
+                dinner_suggestions = _dinner_sugg(context.get("is_zakopane_trip", False))
                 
                 restaurants_available = context.get("restaurants_available", [])
                 if restaurants_available:
@@ -5319,7 +5321,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         continue
                     
                     # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Smart label based on context
-                    smart_label = _get_free_time_label(plan, now, free_duration, end, profile=user.get("target_group"))
+                    smart_label = _get_free_time_label(
+                        plan, now, free_duration, end,
+                        profile=user.get("target_group"),
+                        is_zakopane=context.get("is_zakopane_trip", False),
+                    )
                     
                     plan.append({
                         "type": "free_time",
@@ -5631,7 +5637,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 _lunch_location_context = "centrum"
                 # FIX #156 (04.06.2026): see matching block above — gate the ZAKOPANE-hardcoded
                 # return-to-centrum to Zakopane trips only (default True keeps build_day behavior).
-                if best and best.get("type") != "city_center" and context.get("is_zakopane_trip", True):
+                if best and best.get("type") != "city_center" and context.get("is_zakopane_trip", False):
                     _bp_lat = best.get("lat")
                     _bp_lng = best.get("lng")
                     if _bp_lat and _bp_lng:
@@ -6153,7 +6159,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     overlaps, conflict = _check_time_overlap(plan, free_start_time, free_end_time)
                     if not overlaps:
                         # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Smart label based on context
-                        smart_label = _get_free_time_label(plan, now, free_duration, end, profile=user.get("target_group"))
+                        smart_label = _get_free_time_label(
+                        plan, now, free_duration, end,
+                        profile=user.get("target_group"),
+                        is_zakopane=context.get("is_zakopane_trip", False),
+                    )
                         
                         plan.append({
                             "type": "free_time",
@@ -6660,7 +6670,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 overlaps, conflict = _check_time_overlap(plan, free_start_time, free_end_time)
                 if not overlaps:
                     # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Smart label for end-of-day gaps
-                    smart_label = _get_free_time_label(plan, now, free_duration, end, profile=user.get("target_group"))
+                    smart_label = _get_free_time_label(
+                        plan, now, free_duration, end,
+                        profile=user.get("target_group"),
+                        is_zakopane=context.get("is_zakopane_trip", False),
+                    )
                     
                     plan.append({
                         "type": "free_time",

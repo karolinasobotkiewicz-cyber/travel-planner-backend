@@ -286,10 +286,20 @@ class PlanService:
                 ))
                 continue
 
+            def _prio_val(pp):
+                pv = pp.get("priority") or pp.get("priority_level") or 0
+                if isinstance(pv, str):
+                    return {"core": 12, "secondary": 6, "optional": 2,
+                            "high": 12, "medium": 6, "low": 2}.get(pv.strip().lower(), 0)
+                try:
+                    return float(pv)
+                except (TypeError, ValueError):
+                    return 0
+
             candidates.sort(
                 key=lambda p: (
                     -float(p.get("must_see") or p.get("must_see_score") or 0),
-                    -float(p.get("priority") or p.get("priority_level") or 0),
+                    -_prio_val(p),
                 ),
             )
             replacement = candidates[0]
@@ -383,7 +393,9 @@ class PlanService:
 
         # FIX #156 (04.06.2026): Flag Zakopane-only trips so the engine's ZAKOPANE-hardcoded
         # return-to-centrum block (FIX #129) runs only here, consistent with FIX #37/#69.
-        context["is_zakopane_trip"] = (trip_input.location.city or "").lower() in ("zakopane",)
+        _requested_city = trip_input.location.city or ""
+        context["is_zakopane_trip"] = _requested_city.lower() in ("zakopane",)
+        context["requested_city"] = _requested_city
         
         # ============================================================
         # ETAP 3 PHASE 2 + PHASE 7: INTELLIGENT TRIP TYPE ROUTING
@@ -494,25 +506,19 @@ class PlanService:
                         # Supports: Kraków, Warszawa, Gdańsk, Wrocław, Poznań, etc.
                         multi_city_excel_path = os.path.join("data", "multi_city_attractions.xlsx")
                         pois_excel = load_multi_city_poi(multi_city_excel_path, [requested_city])
-                        # FIX #68 (03.06.2026): Defensive guard against cross-city POI contamination.
-                        # load_multi_city_poi filters by City column, but if Excel data has wrong City
-                        # assignments (e.g., Wrocław POI tagged as Warszawa), this catches it.
-                        # FIX #126: Use diacritic-insensitive comparison so 'Krakow'=='Kraków', etc.
-                        import unicodedata as _ud
-                        def _norm(s: str) -> str:
-                            nfkd = _ud.normalize('NFKD', s.lower())
-                            return ''.join(c for c in nfkd if not _ud.combining(c))
-                        _city_norm = _norm(requested_city)
-                        pois_excel = [
-                            p for p in pois_excel
-                            if _norm(p.get("city", "")) == _city_norm
-                        ]
                         print(f"[ROUTER] Loaded {len(pois_excel)} POIs from multi_city Excel (city: {requested_city})")
                     else:
                         print(f"[ROUTER] Loaded {len(pois_excel)} POIs from Excel (city: {requested_city})")
                     all_pois_dict.extend(pois_excel)
             except Exception as e:
                 print(f"[ROUTER] WARNING: Failed to load POIs: {e}")
+
+        # FIX #188: hard city guard on every load path (diacritic-safe).
+        from app.domain.planner.city_copy import filter_pois_by_city, filter_pois_by_cities
+        if is_cluster and cities_to_load:
+            all_pois_dict = filter_pois_by_cities(all_pois_dict, cities_to_load)
+        elif _requested_city:
+            all_pois_dict = filter_pois_by_city(all_pois_dict, _requested_city)
         
         # Source 3: RestaurantDB (meals for all trip types)
         # NOTE: Restaurants loaded separately for meal optimizer, not mixed with attractions
@@ -654,6 +660,9 @@ class PlanService:
         
         # Track POIs across all days (for multi-day)
         global_used_pois = set()
+        _zone_pools = None
+        _zone_fallbacks = None
+        contexts: list = []
         
         if num_days > 1:
             # Multi-day plan: Use plan_multiple_days with cross-day tracking
@@ -997,6 +1006,7 @@ class PlanService:
             _late_c_ctx = min(3, max(2, num_days - 3)) if num_days >= 5 and _zones_with_c else 0
             _early_cut_ctx = num_days - _late_c_ctx if _late_c_ctx else num_days
             for _ci, _ctx in enumerate(contexts):
+                _ctx["current_day_num"] = _ci + 1
                 _ctx["exclude_zone_c_pois"] = (_ci < _early_cut_ctx)
                 if _ci < len(_day_geo_regions):
                     _ctx["day_geo_region"] = _day_geo_regions[_ci]
@@ -1066,13 +1076,16 @@ class PlanService:
                     engine_poi_ids.append(poi.get("id", "UNKNOWN"))
             print(f"[ENGINE OUTPUT] Day {day_num + 1} - POI IDs from engine: {engine_poi_ids}")
             
-            # Update context for this day (for conversion step)
-            day_context = context.copy()
+            # FIX #188: use per-day zone context (exclude_zone_c, day_geo_region, current_day_num).
+            if num_days > 1 and day_num < len(contexts):
+                day_context = contexts[day_num].copy()
+            else:
+                day_context = context.copy()
+                day_context["current_day_num"] = day_num + 1
             day_context["date"] = dates[day_num]
-            # FIX #4 (15.02.2026): Add day_start and day_end to context for end-of-day logic
             day_context["day_start"] = day_start
             day_context["day_end"] = day_end
-            day_context["num_days"] = num_days  # FIX #186 (A3): multi-day gap-fill tuning
+            day_context["num_days"] = num_days
             
             # Konwersja engine result → PlanResponse items
             day_items = self._convert_engine_result_to_items(
@@ -1097,12 +1110,22 @@ class PlanService:
             # 2. Transit start/end times are calculated in _convert_engine_result_to_items
             # 3. Gaps only appear after these adjustments
             # ETAP 2 - DAY 3: Pass global_used for cross-day tracking
+            from app.domain.planner.city_copy import build_day_gap_fill_pool
+            _day_gf_pool = build_day_gap_fill_pool(
+                day_num,
+                all_pois_dict,
+                zone_pools=_zone_pools if num_days > 1 else None,
+                zone_fallbacks=_zone_fallbacks if num_days > 1 else None,
+                requested_city=_requested_city,
+                cluster_cities=cities_to_load if is_cluster else None,
+            )
             day_items = self._fill_gaps_in_items(
                 day_items,
-                all_pois_dict,
-                day_context,  # Use day-specific context
+                _day_gf_pool,
+                day_context,
                 user,
-                global_used_pois  # Pass global set for cross-day tracking
+                global_used_pois,
+                all_pois_lookup=all_pois_dict,
             )
             
             # ETAP 2 - DAY 3: Update global_used with POIs added by gap filling
@@ -1275,7 +1298,10 @@ class PlanService:
 
             # FIX #18 (03.05.2026 - CLIENT FEEDBACK MAY 3): Consolidate consecutive free_time blocks
             # Apply BEFORE adding day_end to ensure day_end stays last
-            day_items = self._consolidate_consecutive_free_time_blocks(day_items)
+            day_items = self._consolidate_consecutive_free_time_blocks(
+                day_items,
+                is_zakopane=day_context.get("is_zakopane_trip", False),
+            )
             
             # FIX #35 (18.05.2026): Remove remaining technical buffers from final output
             # After consolidation, any still-marked is_technical_buffer items are tiny padding
@@ -1621,17 +1647,15 @@ class PlanService:
                 lunch_added = True
             
             elif item_type == "dinner_break":
-                # UAT Problem #11: DINNER_BREAK - z engine
+                from app.domain.planner.city_copy import dinner_suggestions
                 dinner_item = DinnerBreakItem(
                     type=ItemType.DINNER_BREAK,
                     start_time=item.get("start_time", "18:00"),
                     end_time=item.get("end_time", "19:30"),
                     duration_min=item.get("duration_min", 90),
-                    suggestions=item.get("suggestions", [
-                        "Regionalna restauracja",
-                        "Bacówka",
-                        "Karcma góralska"
-                    ])
+                    suggestions=item.get("suggestions", dinner_suggestions(
+                        context.get("is_zakopane_trip", False)
+                    ))
                 )
                 items.append(dinner_item)
             
@@ -1924,8 +1948,10 @@ class PlanService:
                 elif _ft78e_start_min < time_to_minutes("17:00"):
                     _ft78e_label = "Popołudniowy relaks" if duration_min >= 30 else "Chwila odpoczynku"
                 elif _ft78e_start_min < time_to_minutes("20:00"):
-                    # FIX EXTRA4 (01.06.2026): Client approved 24.05.2026 — evening = Kolacja i Krupówki
-                    _ft78e_label = "Kolacja i Krupówki: restauracja, spacer po Krupówkach" if duration_min >= 30 else "Czas przed kolacją"
+                    from app.domain.planner.city_copy import evening_kolacja_label
+                    _ft78e_label = evening_kolacja_label(
+                        context.get("is_zakopane_trip", False), duration_min
+                    )
                 else:
                     _ft78e_label = "Wieczór: relaks i podsumowanie dnia" if duration_min >= 30 else "Chwila na dobranoc"
                 free_time_item = FreeTimeItem(
@@ -2436,7 +2462,8 @@ class PlanService:
         all_pois: List[Dict[str, Any]],
         context: Dict[str, Any],
         user: Dict[str, Any],
-        global_used: set = None
+        global_used: set = None,
+        all_pois_lookup: List[Dict[str, Any]] | None = None,
     ) -> List[Any]:
         """
         Fill gaps >15 min between items with POI or free_time.
@@ -2472,7 +2499,10 @@ class PlanService:
             should_block_far_excursion_after_trail,
             should_skip_gap_fill_candidate,
         )
-        poi_by_id = {p.get("id"): p for p in all_pois if p.get("id")}
+        _lookup = all_pois_lookup if all_pois_lookup is not None else all_pois
+        poi_by_id = {p.get("id"): p for p in _lookup if p.get("id")}
+        from app.domain.planner.city_copy import poi_matches_city_filter
+        _req_city = context.get("requested_city", "")
         _day_max_trail_min = 0
         for _it in items:
             _pid = getattr(_it, "poi_id", None)
@@ -2645,8 +2675,10 @@ class PlanService:
                             elif current_end < time_to_minutes("17:00"):
                                 _ft78hl_label = "Popołudniowy relaks" if free_duration >= 30 else "Chwila odpoczynku"
                             elif current_end < time_to_minutes("20:00"):
-                                # FIX EXTRA4 (01.06.2026): Client approved 24.05.2026 — evening = Kolacja i Krupówki
-                                _ft78hl_label = "Kolacja i Krupówki: restauracja, spacer po Krupówkach" if free_duration >= 30 else "Czas przed kolacją"
+                                from app.domain.planner.city_copy import evening_kolacja_label
+                                _ft78hl_label = evening_kolacja_label(
+                                    context.get("is_zakopane_trip", False), free_duration
+                                )
                             else:
                                 _ft78hl_label = "Wieczór: relaks i podsumowanie dnia" if free_duration >= 30 else "Chwila na dobranoc"
                             result.append(FreeTimeItem(
@@ -2704,6 +2736,9 @@ class PlanService:
                             
                             # Skip if already used
                             if poi_id in used_poi_ids:
+                                continue
+
+                            if _req_city and not poi_matches_city_filter(poi, _req_city):
                                 continue
 
                             # FIX #187a: no Pieniny/Zone C after long trail same day
@@ -2974,8 +3009,10 @@ class PlanService:
                         elif current_end < time_to_minutes("17:00"):
                             label = "Popołudniowy relaks" if gap_duration >= 30 else "Chwila odpoczynku"
                         elif current_end < time_to_minutes("20:00"):
-                            # FIX EXTRA4 (01.06.2026): Client approved 24.05.2026 — evening = Kolacja i Krupówki
-                            label = "Kolacja i Krupówki: restauracja, spacer po Krupówkach" if gap_duration >= 30 else "Czas przed kolacją"
+                            from app.domain.planner.city_copy import evening_kolacja_label
+                            label = evening_kolacja_label(
+                                context.get("is_zakopane_trip", False), gap_duration
+                            )
                         else:
                             label = "Wieczór: relaks i podsumowanie dnia" if gap_duration >= 30 else "Chwila na dobranoc"
                         
@@ -3104,12 +3141,8 @@ class PlanService:
                         dinner_start = last_end_str
                         dinner_end = minutes_to_time(last_end_min + dinner_duration)
                         
-                        # Generate suggestions (simple default - user preferences not available here)
-                        suggestions = [
-                            "Regionalna restauracja z kuchnią góralską",
-                            "Bacówka z degustacją oscypka",
-                            "Karcma z tradycyjnymi potrawami"
-                        ]
+                        from app.domain.planner.city_copy import dinner_suggestions
+                        suggestions = dinner_suggestions(context.get("is_zakopane_trip", False))
                         
                         dinner_item = DinnerBreakItem(
                             type=ItemType.DINNER_BREAK,
@@ -3181,22 +3214,11 @@ class PlanService:
                         eod_block_end_min = last_end_min + eod_block_duration
                         eod_block_end_str = minutes_to_time(eod_block_end_min)
 
-                        # FIX #84 (27.05.2026): Context-aware evening anchor label based on gap size.
-                        if gap_to_end >= 90:
-                            eod_label = "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja"
-                            _ft84_sugg = [
-                                "Termy/SPA w okolicy",
-                                "Spacer po Krupówkach",
-                                "Kolacja w restauracji góralskiej"
-                            ]
-                        elif gap_to_end >= 60:
-                            eod_label = "Wieczór: spacer i kolacja w centrum"
-                            _ft84_sugg = [
-                                "Spacer po centrum Zakopanego",
-                                "Kolacja w restauracji",
-                                "Odpoczynek w hotelu"
-                            ]
-                        else:
+                        from app.domain.planner.city_copy import end_of_day_evening_copy
+                        eod_label, _ft84_sugg = end_of_day_evening_copy(
+                            context.get("is_zakopane_trip", False), gap_to_end
+                        )
+                        if gap_to_end < 60:
                             eod_label = "Czas wolny na koniec dnia"
                             # FIX #78 rotating suggestions still apply for short gaps
                             _FT78_SETS_EOD = [
@@ -3410,7 +3432,9 @@ class PlanService:
         
         return result
 
-    def _consolidate_consecutive_free_time_blocks(self, items: List[Any]) -> List[Any]:
+    def _consolidate_consecutive_free_time_blocks(
+        self, items: List[Any], *, is_zakopane: bool = False,
+    ) -> List[Any]:
         """
         FIX #18 (03.05.2026 - CLIENT FEEDBACK MAY 3): Consolidate consecutive free_time blocks.
         
@@ -3494,7 +3518,7 @@ class PlanService:
             
             # If we found multiple consecutive free_time blocks, merge them
             if len(free_time_group) > 1:
-                merged = self._merge_free_time_blocks(free_time_group)
+                merged = self._merge_free_time_blocks(free_time_group, is_zakopane=is_zakopane)
                 consolidated.append(merged)
                 print(f"[CONSOLIDATE] Merged {len(free_time_group)} free_time blocks into 1 ({merged.duration_min} min, {free_time_group[0].start_time}-{merged.end_time})")
             else:
@@ -3520,18 +3544,22 @@ class PlanService:
             else:
                 break  # hit a real activity — stop scanning
         if len(_tail_ft) >= 2:
-            _merged_eod = self._merge_free_time_blocks(_tail_ft)
+            _merged_eod = self._merge_free_time_blocks(_tail_ft, is_zakopane=is_zakopane)
             consolidated = consolidated[:_tail_start_idx] + [_merged_eod]
             print(f"[CONSOLIDATE] FIX#82: Collapsed {len(_tail_ft)} trailing EOD free_time blocks → 1 ({_merged_eod.duration_min} min, {_merged_eod.start_time}-{_merged_eod.end_time}, label={_merged_eod.label})")
 
         # FIX #174 (06.06.2026 - CLIENT FEEDBACK): Merge consecutive free_time even when labels
         # differ contextually (e.g. "Popołudniowy relaks" + "Spacer i fotografia" + "Przerwa kawowa").
         # FIX #18 generic-label rule leaves 3 short evening blocks in a row; this pass collapses them.
-        consolidated = self._aggressive_merge_free_time_runs(consolidated)
+        consolidated = self._aggressive_merge_free_time_runs(
+            consolidated, is_zakopane=is_zakopane,
+        )
 
         return consolidated
 
-    def _aggressive_merge_free_time_runs(self, items: List[Any]) -> List[Any]:
+    def _aggressive_merge_free_time_runs(
+        self, items: List[Any], *, is_zakopane: bool = False,
+    ) -> List[Any]:
         """FIX #174: Collapse 3+ consecutive free_time blocks, or 2+ evening blocks (>=17:00)."""
         if not items:
             return items
@@ -3556,14 +3584,14 @@ class PlanService:
                     break
 
             if len(run) >= 3:
-                merged_block = self._merge_free_time_blocks(run)
+                merged_block = self._merge_free_time_blocks(run, is_zakopane=is_zakopane)
                 merged_items.append(merged_block)
                 print(f"[CONSOLIDATE] FIX#174: Merged {len(run)} contextual free_time blocks → 1 "
                       f"({merged_block.duration_min} min, {merged_block.start_time}-{merged_block.end_time})")
             elif len(run) == 2:
                 start_min = time_to_minutes(getattr(run[0], 'start_time', '00:00') or '00:00')
                 if start_min >= 17 * 60:
-                    merged_block = self._merge_free_time_blocks(run)
+                    merged_block = self._merge_free_time_blocks(run, is_zakopane=is_zakopane)
                     merged_items.append(merged_block)
                     print(f"[CONSOLIDATE] FIX#174: Merged 2 evening free_time blocks → 1 "
                           f"({merged_block.duration_min} min, {merged_block.start_time}-{merged_block.end_time})")
@@ -3647,7 +3675,9 @@ class PlanService:
         # Merge if both labels are generic
         return label1_is_generic and label2_is_generic
 
-    def _merge_free_time_blocks(self, blocks: List[FreeTimeItem]) -> FreeTimeItem:
+    def _merge_free_time_blocks(
+        self, blocks: List[FreeTimeItem], *, is_zakopane: bool = False,
+    ) -> FreeTimeItem:
         """
         Helper for _consolidate_consecutive_free_time_blocks.
         
@@ -3683,9 +3713,10 @@ class PlanService:
         _is_evening_merge = _merge_end_min >= time_to_minutes("18:00") and total_duration >= 60
 
         # Generate smart label based on total duration
+        from app.domain.planner.city_copy import evening_relax_label
         if _is_evening_merge:
             if total_duration >= 90:
-                label = "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja"
+                label = evening_relax_label(is_zakopane, 1080, long_block=True)
             else:
                 label = "Wieczór: spacer i kolacja w centrum"
         elif total_duration >= 180:  # 3+ hours
@@ -3712,13 +3743,8 @@ class PlanService:
         # Use combined suggestions or default set
         # FIX #84 (27.05.2026): For evening merges, inject evening activity suggestions.
         if _is_evening_merge:
-            _evening_suggestions = [
-                "Termy/SPA w okolicy",
-                "Spacer po Krupówkach",
-                "Kolacja w restauracji góralskiej",
-                "Relaks w hotelu",
-                "Wieczorna kawa z widokiem na Tatry"
-            ]
+            from app.domain.planner.city_copy import evening_merge_suggestions
+            _evening_suggestions = evening_merge_suggestions(is_zakopane)
             # Prepend evening suggestions, keeping any unique original ones
             all_suggestions = _evening_suggestions + [s for s in all_suggestions if s not in _evening_suggestions]
         elif not all_suggestions:

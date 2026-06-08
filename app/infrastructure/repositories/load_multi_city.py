@@ -42,11 +42,9 @@ _CROWD_LEVEL_MAP = {
 }
 
 def _normalize_city(name: str) -> str:
-    """Normalize city name: lowercase + strip diacritics for fuzzy matching.
-    E.g. 'Kraków' → 'krakow', 'Gdańsk' → 'gdansk'.
-    """
-    nfkd = unicodedata.normalize('NFKD', name.lower())
-    return ''.join(c for c in nfkd if not unicodedata.combining(c))
+    """Normalize city name: lowercase + strip diacritics for fuzzy matching."""
+    from app.domain.planner.city_copy import normalize_city_name
+    return normalize_city_name(name)
 
 
 def _map_priority_level(raw) -> str:
