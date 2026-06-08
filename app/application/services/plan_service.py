@@ -2466,7 +2466,27 @@ class PlanService:
         print("[GAP FILLING] ACTIVE mode - try POI first, free_time LAST RESORT")
         
         # HOTFIX (02.02.2026): Get attraction limits for target group
-        from ...domain.planner.engine import GROUP_ATTRACTION_LIMITS
+        from ...domain.planner.engine import (
+            GROUP_ATTRACTION_LIMITS,
+            poi_geo_region_key,
+            should_block_far_excursion_after_trail,
+            should_skip_gap_fill_candidate,
+        )
+        poi_by_id = {p.get("id"): p for p in all_pois if p.get("id")}
+        _day_max_trail_min = 0
+        for _it in items:
+            _pid = getattr(_it, "poi_id", None)
+            if not _pid:
+                continue
+            _pp = poi_by_id.get(_pid, {})
+            if _pp.get("type") == "trail":
+                _dur = int(_pp.get("time_min") or _pp.get("duration_min") or 0)
+                _day_max_trail_min = max(_day_max_trail_min, _dur)
+        _f187_last_day_ps = (
+            context.get("current_day_num", 1) == context.get("num_days", 1)
+            and context.get("num_days", 1) >= 6
+            and bool(context.get("day_geo_region"))
+        )
         target_group = user.get("target_group", "solo")
         limits = GROUP_ATTRACTION_LIMITS.get(target_group, {"hard": 8})
         hard_limit = limits["hard"]
@@ -2558,7 +2578,8 @@ class PlanService:
                     
                     # FIX #4 (15.02.2026): Lower threshold from 20 to 15 min
                     # FIX #186 (A3): 12 min gaps on 4+ day trips — less afternoon dead time.
-                    _gap_min = 12 if context.get("num_days", 1) >= 4 else 15
+                    # FIX #187b: last Zone C day — fill smaller gaps too.
+                    _gap_min = 10 if _f187_last_day_ps else (12 if context.get("num_days", 1) >= 4 else 15)
                     if gap > _gap_min:
                         # HOTFIX (02.02.2026): Check if attraction limit reached
                         if attraction_count >= hard_limit:
@@ -2660,11 +2681,43 @@ class PlanService:
                         if prefer_soft_poi:
                             print(f"[GAP FILLING] Gap {gap} min >20 → PRIORITIZING SOFT POI (low intensity, 10-30min, must_see 0-2)")
                         
-                        for poi in all_pois:
+                        _gf_pool = all_pois
+                        if _f187_last_day_ps:
+                            _f187_reg = context.get("day_geo_region")
+                            _near_regs = {_f187_reg, "region_spisz_bukowina", "region_slowacja"}
+                            _near_regs.discard(None)
+                            _near_zone_c = [
+                                p for p in all_pois
+                                if str(p.get("zone", "")).strip() == "C"
+                                and poi_geo_region_key(p) in _near_regs
+                                and p.get("id") not in used_poi_ids
+                            ]
+                            if _near_zone_c:
+                                _gf_pool = _near_zone_c + [
+                                    p for p in all_pois
+                                    if p.get("id") not in {x.get("id") for x in _near_zone_c}
+                                    and p.get("id") not in used_poi_ids
+                                ]
+
+                        for poi in _gf_pool:
                             poi_id = poi.get('id', '')
                             
                             # Skip if already used
                             if poi_id in used_poi_ids:
+                                continue
+
+                            # FIX #187a: no Pieniny/Zone C after long trail same day
+                            if should_block_far_excursion_after_trail(
+                                poi, _day_max_trail_min > 0, _day_max_trail_min
+                            ):
+                                continue
+                            if should_skip_gap_fill_candidate(
+                                poi, context,
+                                last_zone_day=_f187_last_day_ps,
+                                allow_region_revisit=(
+                                    _f187_last_day_ps and attraction_count < 4
+                                ),
+                            ):
                                 continue
                             
                             # HOTFIX #9 (03.02.2026): Gap filling MUST respect target_group and intensity filters
@@ -2710,8 +2763,11 @@ class PlanService:
                             
                             # Check if POI fits in gap (travel + duration)
                             poi_duration = poi.get('time_min', 30)
-                            if travel + poi_duration > gap:
+                            _max_dur = 125 if (_f187_last_day_ps and gap > 120) else poi_duration
+                            if travel + min(poi_duration, _max_dur) > gap:
                                 continue  # Too long
+                            if _f187_last_day_ps and gap > 120:
+                                poi_duration = min(poi_duration, gap - travel, 125)
                             
                             # Check if POI is open at this time
                             poi_start = current_end + travel
@@ -2760,6 +2816,8 @@ class PlanService:
                             # Shorter = better (fits in gaps)
                             # Closer = better (less travel)
                             score = 100 - travel * 0.5 - poi_duration * 0.2
+                            if _f187_last_day_ps and poi_geo_region_key(poi) == context.get("day_geo_region"):
+                                score += 80.0
                             
                             # CLIENT FEEDBACK (30.01.2026): BOOST soft POI score for gaps >20 min
                             if prefer_soft_poi and is_soft_poi:

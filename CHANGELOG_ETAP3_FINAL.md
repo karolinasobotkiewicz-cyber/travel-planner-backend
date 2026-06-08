@@ -26,6 +26,13 @@ Podsumowanie dla klientki: co zostało dostarczone w silniku planowania Zakopane
 | A3 | **Mniej pustego czasu** — agresywniejsze zapełnianie luk (12 min) na wyjazdach 4+ dni |
 | A4 | **Test naturalności** — 10 JSON-ów klientki + regiony + test-07 bez ikon szlaków |
 
+## FIX #187 — feedback klientki (czerwiec 2026)
+
+| ID | Opis |
+|----|------|
+| #187a | **Brak dalekich wycieczek po długim szlaku** — po ≥3h hike żadnych POI Zone C / Pieniny / Słowacja tego samego dnia (Niedzica po 8h szlaku) |
+| #187b | **Mniej pustego D7** — agresywniejszy afternoon backfill na ostatnim dniu wyjazdu 6–7 dni (ten sam `day_geo_region`) |
+
 ## Baza danych
 
 - **95 POI** w `zakopane.xlsx` (wersja atrakcje5)

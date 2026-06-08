@@ -1376,6 +1376,32 @@ def should_skip_poi_candidate(p: dict, context: dict | None) -> bool:
     return False
 
 
+def should_skip_gap_fill_candidate(
+    p: dict,
+    context: dict | None,
+    *,
+    last_zone_day: bool = False,
+    allow_region_revisit: bool = False,
+) -> bool:
+    """Gap-fill filters; FIX #187b relaxes Spisz+Słowacja mix on last sparse Zone C day."""
+    if should_block_consecutive_cluster_repeat(p, context):
+        return True
+    if not allow_region_revisit and should_block_geo_region_repeat(p, context):
+        return True
+    if last_zone_day and str(p.get("zone", "")).strip() == "C":
+        poi_reg = poi_geo_region_key(p)
+        day_reg = (context or {}).get("day_geo_region")
+        if poi_reg == "region_pieniny" and day_reg != "region_pieniny":
+            return True
+        if day_reg == "region_pieniny" and poi_reg and poi_reg != "region_pieniny":
+            return True
+    elif should_block_cross_region_in_day(p, context):
+        return True
+    if context and context.get("exclude_zone_c_pois") and str(p.get("zone", "")).strip() == "C":
+        return True
+    return False
+
+
 _CULTURE_LED_PREFS = frozenset({
     "history_mystery", "underground", "museum_heritage",
     "cultural_experience", "castles_palaces", "caves_mines",
@@ -1393,6 +1419,22 @@ def _is_culture_led_trip(user_preferences: list) -> bool:
     if "mountain_trails" in top2 or "hiking" in top2:
         return False
     return bool(_CULTURE_LED_PREFS & set(user_preferences[:3]))
+
+
+_TRAIL_FAR_EXCURSION_MIN = 180  # FIX #187: 3h+ hike → no Zone C / Pieniny same day
+
+
+def should_block_far_excursion_after_trail(
+    p: dict, trail_day_mode: bool, trail_duration: int,
+) -> bool:
+    """FIX #187a: Block Pieniny/Słowacja/Zone C after a long hike (client: Niedzica after 8h trail)."""
+    if not trail_day_mode or trail_duration < _TRAIL_FAR_EXCURSION_MIN:
+        return False
+    if str(p.get("zone", "")).strip().upper() == "C":
+        return True
+    if poi_geo_region_key(p) is not None:
+        return True
+    return False
 
 
 def should_exclude_trail_for_user(
@@ -4445,6 +4487,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             print(f"[FIX #81/#85] EXCLUDED POI after {trail_duration}min {trail_difficulty} trail: "
                                   f"{poi_name_safe} (blocked_tags={_ACTIVE_TAGS_F81 & _p81_tags})")
                             continue
+
+                    # FIX #187a: no far Zone C / Pieniny / Słowacja after long trail
+                    if should_block_far_excursion_after_trail(p, trail_day_mode, trail_duration):
+                        poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                        print(f"[FIX #187] EXCLUDED far excursion after {trail_duration}min trail: {poi_name_safe}")
+                        continue
                     
                     # PHASE 8 FEATURE #2: Limit to max_poi_after_trail (1 for moderate, 2 for light)
                     if post_trail_poi_count >= max_poi_after_trail:
@@ -5032,6 +5080,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # Client requirement: gaps >60 min should have soft POI or free_time
             
             remaining_time = end - now
+
+            # FIX #187b: last sparse Zone C day — defer big gaps to END backfill (test-08 D7).
+            _f187_last_day_ml = (
+                context.get("current_day_num", 1) == context.get("num_days", 1)
+                and context.get("num_days", 1) >= 6
+                and bool(context.get("day_geo_region"))
+            )
+            _f187_sparse_ml = _f187_last_day_ml and attraction_count < 4
             
             if remaining_time >= 60:  # Only handle gaps >60 min (UAT Round 2 fix)
                 # Try to find soft POI: low intensity, short duration, low must_see
@@ -5047,11 +5103,33 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                            post_trail_poi_count >= max_poi_after_trail))
                     else pois
                 )
+                # FIX #187b: widen pool on sparse last day (day sub-cluster may have only 2 POIs).
+                if _f187_sparse_ml and fallback_pois is not None:
+                    _f187_seen = {poi_id(_pp) for _pp in _soft_poi_candidates}
+                    _f187_allow_regs = {"region_spisz_bukowina", "region_slowacja"}
+                    _f187_day_reg = context.get("day_geo_region")
+                    if _f187_day_reg:
+                        _f187_allow_regs.add(_f187_day_reg)
+                    _f187_reg_extra = [
+                        _pp for _pp in fallback_pois
+                        if poi_geo_region_key(_pp) in _f187_allow_regs
+                        and poi_id(_pp) not in _f187_seen
+                        and poi_id(_pp) not in used
+                    ]
+                    if _f187_reg_extra:
+                        _soft_poi_candidates = list(_soft_poi_candidates) + _f187_reg_extra
 
                 for p in _soft_poi_candidates:
                     if poi_id(p) in used:
                         continue
-                    if should_skip_poi_candidate(p, context):
+                    if _f187_sparse_ml:
+                        if should_skip_gap_fill_candidate(
+                            p, context,
+                            last_zone_day=_f187_last_day_ml,
+                            allow_region_revisit=True,
+                        ):
+                            continue
+                    elif should_skip_poi_candidate(p, context):
                         continue
                     
                     # HOTFIX #10.8: Apply hard filters (target_group + intensity) to soft POI selection
@@ -5104,6 +5182,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         _p81s_tags = set(p.get("tags") or [])
                         if _ACTIVE_TAGS_F81_SOFT & _p81s_tags:
                             continue  # Skip high-energy/cultural POIs after heavy trail
+                        if should_block_far_excursion_after_trail(p, trail_day_mode, trail_duration):
+                            continue
 
                     # FIX #164 (06.06.2026 - CLIENT FEEDBACK JSON4): viewpoint cap in soft loop.
                     if daily_viewpoint_count >= 2 and is_viewpoint_poi(p):
@@ -5160,13 +5240,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     # Soft POI criteria (client requirements)
                     # Since all Zakopane POI have intensity='medium', accept medium intensity
                     # Focus on: short duration (10-30 min) + low must_see_score (0-2)
-                    
+                    # FIX #187b: on sparse last day allow substantial POIs (SkyWalk, Homole).
+                    _soft_max_time = 125 if _f187_sparse_ml else 30
                     time_min = p.get("time_min", 60)
-                    if time_min > 30 or time_min < 10:  # 10-30 min range
+                    if time_min > _soft_max_time or time_min < 10:
                         continue
                     
                     must_see_score = p.get("must_see", p.get("must_see_score", 10))
-                    if must_see_score > 7:  # Allow POI with must_see up to 7
+                    if must_see_score > (10 if _f187_sparse_ml else 7):
                         continue
                     
                     # Calculate travel time
@@ -5206,6 +5287,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     best_travel = soft_travel_time  # Use stored travel time
                     best_duration = soft_duration
                 else:
+                    # FIX #187b: do not close sparse last day with one big free_time block.
+                    if _f187_sparse_ml and remaining_time > 90:
+                        print(
+                            f"[FIX #187b] Sparse last day: deferring {remaining_time}min "
+                            f"to END backfill (attractions={attraction_count})"
+                        )
+                        break
+
                     # No soft POI - add free_time with smart label
                     # BUGFIX (19.02.2026 - UAT Round 2, Bug #3): Remove 40 min limit, use smart labels
                     # Client feedback: 2-3h gaps need longer free_time, context-aware descriptions
@@ -5213,7 +5302,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     # CRITICAL FIX (01.05.2026): Changed cap from 120 to 60 min (CLIENT FEEDBACK - Problem #7)
                     # FIX #86 (28.05.2026): After 15:00 create ONE big evening block (no 60-min cap).
                     # Prevents multiple 60-min blocks — client wants "Wieczorny relaks" single block.
-                    if now >= 900:  # After 15:00 → one big "Wieczorny relaks" block
+                    _f187_keep_ml = _f187_sparse_ml and remaining_time > 90
+                    if now >= 900 and not _f187_keep_ml:
                         free_duration = min(remaining_time, end - now)
                     else:
                         free_duration = min(60, remaining_time, end - now)  # Max 60 min before afternoon
@@ -6159,6 +6249,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         if attraction_count < 2 or remaining_to_end > 120:
             max_gap_fill = max(max_gap_fill, 4)
 
+        # FIX #187b: last day of 6–7d Zone C trip — keep filling afternoon (client sparse_day D7).
+        _f187_last_day = (
+            context.get("current_day_num", 1) == context.get("num_days", 1)
+            and context.get("num_days", 1) >= 6
+            and bool(context.get("day_geo_region"))
+        )
+        if _f187_last_day and (attraction_count < 4 or remaining_to_end > 120):
+            max_gap_fill = max(max_gap_fill, 6)
+
         # FIX D (02.06.2026): Soften quality gates on late days of long trips (>=5 days, day 6+).
         # When the sliding-window dedup (FIX D part 1) re-opens the early-day POI pool,
         # the quality gates (FIX #136, #138) can still block them. Relax the thresholds
@@ -6169,7 +6268,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         if _fixd_is_late_trip:
             print(f"[FIX D] Day {_fixd_current_day}/{_fixd_num_days}: Late-trip quality gates softened")
         
-        while remaining_to_end > 90 and gap_fill_attempts < max_gap_fill:
+        _f187_min_remain = 60 if _f187_last_day else 90
+        while remaining_to_end > _f187_min_remain and gap_fill_attempts < max_gap_fill:
             # FIX #159 (PHASE 3): recompute "sparse" each pass. While the day has < 2
             # attractions OR still has a big free block (> 2h), we relax the gap-fill
             # quality/duration ceilings (below) so a SUBSTANTIAL POI can be added; once the
@@ -6210,11 +6310,33 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 _gf_extra = [_pp for _pp in fallback_pois if poi_id(_pp) not in _gf_seen_ids]
                 if _gf_extra:
                     _gf_candidates = list(pois) + _gf_extra
+            # FIX #187b: last Zone C day — pull unused nearby Zone C POIs (Słowacja+Spisz).
+            if _f187_last_day and fallback_pois is not None:
+                _f187_reg = context.get("day_geo_region")
+                _allow_regs = {"region_spisz_bukowina", "region_slowacja"}
+                if _f187_reg:
+                    _allow_regs.add(_f187_reg)
+                _gf_seen_ids = {poi_id(_pp) for _pp in _gf_candidates}
+                _f187_reg_extra = [
+                    _pp for _pp in fallback_pois
+                    if poi_geo_region_key(_pp) in _allow_regs
+                    and poi_id(_pp) not in _gf_seen_ids
+                    and poi_id(_pp) not in used
+                ]
+                if _f187_reg_extra:
+                    _gf_candidates = list(_gf_candidates) + _f187_reg_extra
 
             for p in _gf_candidates:
                 if poi_id(p) in used:
                     continue
-                if should_skip_poi_candidate(p, context):
+                if should_skip_gap_fill_candidate(
+                    p, context,
+                    last_zone_day=_f187_last_day,
+                    allow_region_revisit=_f187_last_day and attraction_count < 4,
+                ):
+                    continue
+
+                if should_block_far_excursion_after_trail(p, trail_day_mode, trail_duration):
                     continue
 
                 # FIX #163 (06.06.2026 - CLIENT FEEDBACK JSON1/JSON3): max 1 trail/day.
@@ -6394,6 +6516,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     except (TypeError, ValueError):
                         _f159_ms = 5.0
                     score = _f159_ms * 10 - travel * 0.5
+                    if _f187_last_day and poi_geo_region_key(p) == context.get("day_geo_region"):
+                        score += 150.0
                     if _f159_uncovered_prefs:
                         from app.domain.scoring.tag_preferences import USER_PREFERENCES_TO_TAGS
                         _f159_ptags = set(p.get("tags", []))
@@ -6518,11 +6642,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # FIX #3 (22.02.2026): Also cap at day_end to prevent violations
                 # CRITICAL FIX (01.05.2026): Changed cap from 180 to 60 min (CLIENT FEEDBACK - Problem #7)
                 # FIX #86 (28.05.2026): After 15:00 (900 min), create ONE large block instead of 60-min loop.
-                # Client wants "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja" — not 3×60 min blocks.
-                if now >= 900:  # After 15:00 → create ONE big "Wieczorny relaks" block
+                # FIX #187b: on last sparse Zone C day keep trying POIs — use 60-min chunks, no early exit.
+                _f187_keep_filling = (
+                    _f187_last_day and attraction_count < 4 and remaining_to_end > 90
+                )
+                if now >= 900 and not _f187_keep_filling:
                     free_duration = min(remaining_to_end, end - now)
                 else:
-                    free_duration = min(60, remaining_to_end, end - now)  # Max 60 min before afternoon
+                    free_duration = min(60, remaining_to_end, end - now)
                 free_start_time = minutes_to_time(now)
                 free_end_time = minutes_to_time(now + free_duration)
                 
@@ -6546,7 +6673,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     remaining_to_end = end - now
                     print(f"[GAP FILL END] Added free_time ({free_duration}min), remaining={remaining_to_end}min, label: {smart_label.encode('ascii', errors='ignore').decode('ascii')}")
                 
-                break  # Exit after adding free_time (stop gap filling)
+                if _f187_keep_filling:
+                    gap_fill_attempts += 1
+                else:
+                    break  # Exit after adding free_time (stop gap filling)
 
     # BUGFIX (16.02.2026 - CLIENT FEEDBACK Problem #10):
     # Standardize all items to use start_time/end_time (not "time")

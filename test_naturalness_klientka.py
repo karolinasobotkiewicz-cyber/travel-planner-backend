@@ -88,6 +88,52 @@ def check_test08_regions(resp, poi_by_id: dict) -> list[str]:
     return errs
 
 
+def check_no_far_excursion_after_long_trail(resp, poi_by_id: dict) -> list[str]:
+    """FIX #187a: no Zone C / Pieniny after 3h+ trail on same day."""
+    errs = []
+    for day in resp.days:
+        max_trail = 0
+        for it in day.items:
+            if getattr(it, "type", None) != ItemType.ATTRACTION:
+                continue
+            p = poi_by_id.get(getattr(it, "poi_id", ""), {})
+            if p.get("type") == "trail":
+                max_trail = max(max_trail, int(p.get("time_min") or p.get("duration_min") or 0))
+        if max_trail < 180:
+            continue
+        for it in day.items:
+            if getattr(it, "type", None) != ItemType.ATTRACTION:
+                continue
+            p = poi_by_id.get(getattr(it, "poi_id", ""), {})
+            if p.get("type") == "trail":
+                continue
+            if poi_geo_region_key(p) or str(p.get("zone", "")).strip().upper() == "C":
+                errs.append(
+                    f"day {day.day}: far excursion '{it.name}' after {max_trail}min trail"
+                )
+    return errs
+
+
+def check_test08_day7_fill(resp) -> list[str]:
+    """FIX #187b: last day should not be mostly empty."""
+    errs = []
+    d7 = next((d for d in resp.days if d.day == 7), None)
+    if not d7:
+        return errs
+    ft = sum(
+        getattr(it, "duration_min", 0) or 0
+        for it in d7.items if getattr(it, "type", None) == ItemType.FREE_TIME
+    )
+    attrs = sum(
+        1 for it in d7.items if getattr(it, "type", None) == ItemType.ATTRACTION
+    )
+    if ft > 240:
+        errs.append(f"day 7: too much free_time ({ft}min)")
+    if attrs < 3:
+        errs.append(f"day 7: only {attrs} attractions (expected >=3)")
+    return errs
+
+
 def main():
     svc = PlanService(POIRepository(str(BACKEND_DIR / "data" / "zakopane.xlsx")))
     from app.infrastructure.repositories.load_zakopane import load_zakopane_poi
@@ -98,7 +144,7 @@ def main():
     failed = []
 
     print("=" * 70)
-    print("NATURALNESS TEST — Testy_Klientki (FIX #186)")
+    print("NATURALNESS TEST — Testy_Klientki (FIX #186 + #187)")
     print("=" * 70)
 
     for n in TEST_NUMBERS:
@@ -106,8 +152,10 @@ def main():
         issues = check_preferences(data, resp, n)
         if n == 7:
             issues.extend(check_test07_trails(resp))
+        issues.extend(check_no_far_excursion_after_long_trail(resp, poi_by_id))
         if n == 8:
             issues.extend(check_test08_regions(resp, poi_by_id))
+            issues.extend(check_test08_day7_fill(resp))
 
         # dup check
         names = []
