@@ -13,6 +13,7 @@ Usage:
     )
     # Returns list of POI dicts for all 3 cities combined
 """
+import re
 import unicodedata
 import pandas as pd
 from typing import List, Dict, Any
@@ -230,7 +231,13 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             "type_of_attraction": _category,
             "Type of attraction": _category,
             "subcategory": _safe_str(row.get('Activity_style', row.get('Subcategory'))),
-            "tags": apply_tag_mapping([t.strip().strip("[]'\"") for t in str(row.get('Tags', '')).split(',') if t.strip().strip("[]\'\"")])  if pd.notna(row.get('Tags')) else [],  # FIX #111 + FIX #150: strip Python list literal brackets/quotes
+            "tags_excel": (
+                [t.strip().strip("[]'\"") for t in re.split(r"[,;\r\n]+", str(row.get('Tags', '')).replace("\\n", "\n")) if t.strip().strip("[]'\"")]
+                if pd.notna(row.get('Tags')) else []
+            ),
+            "tags": apply_tag_mapping(
+                [t.strip().strip("[]'\"") for t in re.split(r"[,;\r\n]+", str(row.get('Tags', '')).replace("\\n", "\n")) if t.strip().strip("[]'\"")]
+            ) if pd.notna(row.get('Tags')) else [],
             
             # Target groups  # FIX #38: Excel uses 'Target group' (with space)
             "target_group": str(row.get('Target group', 'all')).split(',') if pd.notna(row.get('Target group')) else ['all'],

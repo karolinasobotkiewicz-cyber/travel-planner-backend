@@ -18,7 +18,7 @@ from app.domain.models.trip_input import (
 )
 from app.application.services.plan_service import PlanService
 from app.infrastructure.repositories.poi_repository import POIRepository
-from app.domain.planner.city_copy import normalize_city_name, poi_city_norm
+from app.domain.planner.city_copy import normalize_city_name, poi_city_norm, poi_hub_norm
 from app.domain.models.plan import ItemType
 
 ZAKOPANE_LEAKS = (
@@ -56,23 +56,34 @@ def check_no_zakopane_copy(resp, city: str) -> list[str]:
     return errs
 
 
-def check_attraction_cities(resp, city: str) -> list[str]:
+def check_attraction_cities(resp, city: str, poi_by_id: dict) -> list[str]:
     errs = []
     want = normalize_city_name(city)
     for day in resp.days:
         for it in day.items:
             if getattr(it, "type", None) != ItemType.ATTRACTION:
                 continue
-            ac = normalize_city_name(getattr(it, "city", "") or "")
-            if ac and ac != want:
+            p = poi_by_id.get(getattr(it, "poi_id", ""), {})
+            ac = normalize_city_name(getattr(it, "city", "") or p.get("city", "") or "")
+            hub = poi_hub_norm(p) if p else ""
+            # FIX #191: Zone C day-trips keep satellite City (Ojców, Kiścinne) but Hub = trip city.
+            if hub == want or ac == want:
+                continue
+            if ac:
                 errs.append(
-                    f"{city} day{day.day}: '{it.name}' city={getattr(it,'city','')} (expected {city})"
+                    f"{city} day{day.day}: '{it.name}' city={getattr(it,'city','')} hub={hub} (expected {city})"
                 )
     return errs
 
 
 def main():
     svc = PlanService(POIRepository(str(BACKEND_DIR / "data" / "zakopane.xlsx")))
+    from app.infrastructure.repositories.load_multi_city import load_multi_city_poi
+    mc_pois = load_multi_city_poi(
+        str(BACKEND_DIR / "data" / "multi_city_attractions.xlsx"),
+        ["Warszawa", "Kraków", "Wrocław", "Gdańsk"],
+    )
+    poi_by_id = {p.get("id"): p for p in mc_pois if p.get("id")}
     cities = ["Warszawa", "Kraków", "Wrocław", "Gdańsk"]
     passed = 0
     failed = []
@@ -85,7 +96,7 @@ def main():
         try:
             resp = svc.generate_plan(_base_trip(city, days=3))
             issues = check_no_zakopane_copy(resp, city)
-            issues.extend(check_attraction_cities(resp, city))
+            issues.extend(check_attraction_cities(resp, city, poi_by_id))
             if issues:
                 failed.append((city, issues))
                 print(f"  FAIL  {city}")

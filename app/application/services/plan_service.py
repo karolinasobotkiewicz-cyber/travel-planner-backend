@@ -188,16 +188,13 @@ class PlanService:
         poi_pool: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """FIX #179: Trip-level report — which user preferences were actually scheduled."""
-        from app.domain.planner.engine import (
-            is_underground_poi,
-            is_scenic_experience_poi,
-            poi_matches_user_preference,
-        )
+        from app.domain.planner.engine import is_underground_poi
+        from app.domain.scoring.preference_coverage import poi_covers_preference_report
 
         def _poi_covers_pref(poi: dict, pref: str) -> bool:
             if pref == "underground":
                 return is_underground_poi(poi)
-            return poi_matches_user_preference(poi, pref)
+            return poi_covers_preference_report(poi, pref)
 
         poi_by_id = {p.get("id"): p for p in poi_pool if p.get("id")}
         coverage: Dict[str, Any] = {}
@@ -252,14 +249,14 @@ class PlanService:
         """FIX #186 (A1): Swap weakest non-matching attraction for one POI per uncovered pref."""
         from app.domain.planner.engine import (
             is_underground_poi,
-            is_scenic_experience_poi,
             poi_matches_user_preference,
         )
+        from app.domain.scoring.preference_coverage import poi_covers_preference_report
 
-        def _poi_covers_pref(poi: dict, pref: str) -> bool:
+        def _poi_covers_pref_report(poi: dict, pref: str) -> bool:
             if pref == "underground":
                 return is_underground_poi(poi)
-            return poi_matches_user_preference(poi, pref)
+            return poi_covers_preference_report(poi, pref)
 
         prefs = list(user.get("preferences") or [])
         if not prefs or not days:
@@ -274,7 +271,7 @@ class PlanService:
         days_mut = list(days)
 
         def _attr_matches_any_pref(poi: dict) -> int:
-            return sum(1 for pr in prefs if _poi_covers_pref(poi, pr))
+            return sum(1 for pr in prefs if _poi_covers_pref_report(poi, pr))
 
         def _is_only_cover_for_pref(pref: str, poi_id: str) -> bool:
             covering = []
@@ -283,7 +280,7 @@ class PlanService:
                     if getattr(it, "type", None) != ItemType.ATTRACTION:
                         continue
                     p = poi_by_id.get(it.poi_id, {"tags": [], "name": it.name})
-                    if _poi_covers_pref(p, pref):
+                    if _poi_covers_pref_report(p, pref):
                         covering.append(it.poi_id)
             return covering == [poi_id]
 
@@ -295,7 +292,10 @@ class PlanService:
             candidates = [
                 p for p in poi_pool
                 if p.get("id") not in used_ids
-                and _poi_covers_pref(p, pref)
+                and (
+                    is_underground_poi(p) if pref == "underground"
+                    else poi_matches_user_preference(p, pref)
+                )
             ]
             if pref == "underground":
                 candidates.sort(
@@ -335,7 +335,7 @@ class PlanService:
                     if not getattr(item, "poi_id", ""):
                         continue
                     victim_poi = poi_by_id.get(item.poi_id, {"tags": [], "name": item.name})
-                    if _poi_covers_pref(victim_poi, pref):
+                    if _poi_covers_pref_report(victim_poi, pref):
                         continue
                     match_n = _attr_matches_any_pref(victim_poi)
                     skip = False
@@ -755,10 +755,16 @@ class PlanService:
             # ================================================================
             MIN_ATTRACTIONS_PER_DAY = 3  # Minimum attractions per day for a meaningful plan
             # FIX #113 (07.06.2026): With zones, count the smallest zone pool (worst case per day)
+            # FIX #191: Zone-min pool only for Zakopane — multi-city Zone C is small by design
+            # (e.g. Warszawa 51×A + 5×C was reduced to 1 day). Other cities use total pool.
             _check_zones = sorted(set(
                 p.get('zone', '').strip() for p in all_pois_dict if p.get('zone', '').strip()
             ))
-            if _check_zones:
+            _is_zakopane_shortage = (
+                str(_pref_location_label).lower() == "zakopane"
+                or context.get("is_zakopane_trip", False)
+            )
+            if _check_zones and _is_zakopane_shortage:
                 _pois_no_zone_count = sum(1 for p in all_pois_dict if not p.get('zone', '').strip())
                 _min_zone_count = min(
                     sum(1 for p in all_pois_dict if p.get('zone', '').strip() == z)

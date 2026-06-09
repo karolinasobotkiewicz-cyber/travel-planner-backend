@@ -285,6 +285,7 @@ def load_zakopane_poi(path: str, city_filter: Optional[str] = None):
             "type": poi_type,  # PHASE 8 FIX (27.04.2026): Add "type" field ("poi" or "trail")
             "name": poi_name,  # Lowercase for consistency
             "Name": poi_name,  # Keep uppercase for backward compat
+            "tags_excel": list(tags_list),  # FIX #191: raw Excel tags for coverage reports
             "tags": apply_tag_mapping(tags_list),  # CLIENT DATA UPDATE + FIX #111: tag mapping
             "Description_short": str(row.get("Description_short", "")).strip(),
             "Description_long": str(row.get("Description_long", "")).strip(),

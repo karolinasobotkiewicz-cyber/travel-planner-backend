@@ -41,6 +41,14 @@ Podsumowanie dla klientki: co zostało dostarczone w silniku planowania Zakopane
 
 **Zaimportowane w FIX #189** — plik klientki `Planer - miasta atrakcje6.xlsx` (kolumna `Zone` + `Hub`).
 
+## FIX #191 — inne miasta: dni + raport preferencji (czerwiec 2026)
+
+| ID | Opis |
+|----|------|
+| #191a | **FIX #112** — redukcja dni tylko dla Zakopanego (min. strefa); Warszawa/Kraków używają całej puli POI |
+| #191b | **`tags_excel`** — surowe tagi z Excela oddzielnie od tagów scoringowych |
+| #191c | **Strict `preference_coverage`** — raport API po tagach Excela + denylist (Most ≠ nature, Bulwary ≠ local_food) |
+
 ## FIX #190 — finalne poprawki Zakopanego (czerwiec 2026)
 
 | ID | Opis |
