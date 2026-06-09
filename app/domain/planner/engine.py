@@ -827,6 +827,21 @@ _VIEWPOINT_TAGS = {
     "panoramic_mountain_views", "tatra_viewpoint",
 }
 
+_SCENIC_EXPERIENCE_TAGS = {
+    "scenic_view", "scenic_views", "mountain_views", "mountain_viewpoint",
+    "panoramic_mountain_views",
+}
+
+_SCENIC_EXPERIENCE_NAME_MARKERS = (
+    "wierch", "krokiew", "polana ", "kasprowy", "gubałów", "gubalow",
+    "panoram", "widokow",
+)
+
+_UNDERGROUND_POI_TAGS = frozenset({
+    "cave", "underground", "karst-cave", "karst_cave", "underground_attraction",
+    "underground_tour", "limestone_cave", "underground_exploration",
+})
+
 
 def is_viewpoint_poi(poi):
     """
@@ -840,6 +855,37 @@ def is_viewpoint_poi(poi):
         return True
     name = str(poi.get("name", "")).lower()
     return "punkt widokowy" in name or "viewpoint" in name or "wierch" in name
+
+
+def is_scenic_experience_poi(poi: dict) -> bool:
+    """FIX #190: Broader scenic cap — cable cars, polany, wierchy (JSON8: 4 widoki/dzień)."""
+    if is_viewpoint_poi(poi):
+        return True
+    tags = set(str(t).lower() for t in (poi.get("tags") or []))
+    if _SCENIC_EXPERIENCE_TAGS & tags:
+        return True
+    name = str(poi.get("name", "")).lower()
+    if any(m in name for m in _SCENIC_EXPERIENCE_NAME_MARKERS):
+        return True
+    return False
+
+
+def is_underground_poi(p: dict) -> bool:
+    """FIX #190: True cave/underground POI (not generic museum with history tag)."""
+    tags = set(str(t).lower() for t in (p.get("tags") or []))
+    if tags & _UNDERGROUND_POI_TAGS:
+        return True
+    name = str(p.get("name", "")).lower()
+    return "jaskin" in name
+
+
+def user_wants_nature_museum_balance(user: dict) -> bool:
+    """FIX #190: nature_landscape + museum/history prefs — avoid museum-only days."""
+    prefs = user.get("preferences", [])[:3]
+    return (
+        "nature_landscape" in prefs
+        and ("museum_heritage" in prefs or "history_mystery" in prefs)
+    )
 
 
 def is_kids_focused_poi(poi):
@@ -1423,6 +1469,7 @@ def _is_culture_led_trip(user_preferences: list) -> bool:
 
 
 _TRAIL_FAR_EXCURSION_MIN = 180  # FIX #187: 3h+ hike → no Zone C / Pieniny same day
+_TRAIL_RELAX_ONLY_MIN = 180   # FIX #190: 3h+ hike → termy/spa only (no Niedzica)
 
 
 def should_block_far_excursion_after_trail(
@@ -1436,6 +1483,20 @@ def should_block_far_excursion_after_trail(
     if poi_geo_region_key(p) is not None:
         return True
     return False
+
+
+def should_block_non_relax_after_long_trail(
+    p: dict, trail_day_mode: bool, trail_duration: int,
+) -> bool:
+    """FIX #190: After 3h+ trail only recovery (termy/spa) — no castles, museums, sightseeing."""
+    if not trail_day_mode or trail_duration < _TRAIL_RELAX_ONLY_MIN:
+        return False
+    if is_termy_spa(p):
+        return False
+    _relax_tags = {"relax_wellness", "relaxation", "spa", "wellness", "thermal_baths"}
+    if _relax_tags & set(p.get("tags") or []):
+        return False
+    return True
 
 
 def should_exclude_trail_for_user(
@@ -1508,6 +1569,14 @@ def _deterministic_pick_scored(candidates: list) -> dict:
         candidates,
         key=lambda c: (c.get("score", 0), str(poi_id(c.get("poi", {})))),
     )
+
+
+def is_heritage_culture_site_poi(p: dict) -> bool:
+    """FIX #190: museums + chapels + cemeteries + heritage villas (culture-heavy sites)."""
+    if is_museum_heritage_poi(p):
+        return True
+    name_l = str(p.get("name", "")).lower()
+    return any(m in name_l for m in ("kaplic", "cmentarz", "willa ", "archiw", "galeri"))
 
 
 def is_museum_heritage_poi(p: dict) -> bool:
@@ -1893,7 +1962,23 @@ def score_poi(
         # Calculate tag-based preference bonus
         tag_bonus = calculate_tag_preference_score(p, user_preferences)
         poi_matches_preferences = (tag_bonus > 0)
-    
+        # FIX #190: caves must win over generic museums when underground is requested.
+        if "underground" in user_preferences and is_underground_poi(p):
+            tag_bonus += 55
+            poi_matches_preferences = True
+        # FIX #190: nature_landscape + museum/history — push nature when museums dominate trip.
+        if user_wants_nature_museum_balance(user):
+            _nat_tags = set(p.get("tags") or [])
+            if (
+                "nature_landscape" in _nat_tags
+                or "nature_immersion" in _nat_tags
+                or p.get("type") == "trail"
+            ):
+                _trip_mus = (context or {}).get("trip_museum_count", 0)
+                if _trip_mus >= 2:
+                    tag_bonus += 35
+                    poi_matches_preferences = True
+
     # Apply conditional must_see bonus
     # PHASE 5: Apply must_see_bonus multiplier from router (city_tourism gets 1.5x)
     must_see_value = safe_float(p.get("must_see"))
@@ -4268,12 +4353,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     print(f"[WALK FILTER] EXCLUDED: {poi_name_safe} - parking walk {_walk_min}min > 20 (seniors limit)")
                     continue
 
-            # FIX #164 (06.06.2026 - CLIENT FEEDBACK JSON4): Hard cap max 2 viewpoints/day.
-            # Prevents "3 viewpoints next to each other" (Bachledzki Wierch + Punkt widokowy
-            # na Tatry + Punkt widokowy na Antałówce) — keeps each day's experiences varied.
-            if daily_viewpoint_count >= 2 and is_viewpoint_poi(p):
+            # FIX #164 / #190: Hard cap max 2 scenic experiences/day (widoki, wierchy, polany).
+            if daily_viewpoint_count >= 2 and is_scenic_experience_poi(p):
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-                print(f"[VIEWPOINT CAP] EXCLUDED: {poi_name_safe} - max 2 viewpoints/day (daily_viewpoint_count={daily_viewpoint_count})")
+                print(f"[VIEWPOINT CAP] EXCLUDED: {poi_name_safe} - max 2 scenic/day (count={daily_viewpoint_count})")
+                continue
+
+            # FIX #190: nature + museum/history prefs — max 2 culture sites/day.
+            if user_wants_nature_museum_balance(user) and daily_museum_count >= 2 and is_heritage_culture_site_poi(p):
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[FIX #190] EXCLUDED culture site: {poi_name_safe} - nature balance cap ({daily_museum_count}/2)")
                 continue
 
             # FIX #58 (21.05.2026): Hard cap: max 1 museum per day for adventure profile
@@ -4494,6 +4583,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if should_block_far_excursion_after_trail(p, trail_day_mode, trail_duration):
                         poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                         print(f"[FIX #187] EXCLUDED far excursion after {trail_duration}min trail: {poi_name_safe}")
+                        continue
+
+                    # FIX #190: 3h+ trail → relax only (no Niedzica / museums / sightseeing)
+                    if should_block_non_relax_after_long_trail(p, trail_day_mode, trail_duration):
+                        poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                        print(f"[FIX #190] EXCLUDED non-relax after {trail_duration}min trail: {poi_name_safe}")
                         continue
                     
                     # PHASE 8 FEATURE #2: Limit to max_poi_after_trail (1 for moderate, 2 for light)
@@ -5186,10 +5281,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             continue  # Skip high-energy/cultural POIs after heavy trail
                         if should_block_far_excursion_after_trail(p, trail_day_mode, trail_duration):
                             continue
+                        if should_block_non_relax_after_long_trail(p, trail_day_mode, trail_duration):
+                            continue
 
-                    # FIX #164 (06.06.2026 - CLIENT FEEDBACK JSON4): viewpoint cap in soft loop.
-                    if daily_viewpoint_count >= 2 and is_viewpoint_poi(p):
-                        continue  # Already have 2 viewpoints today — keep the day varied
+                    # FIX #164 / #190: scenic cap in soft loop.
+                    if daily_viewpoint_count >= 2 and is_scenic_experience_poi(p):
+                        continue
 
                     # FIX #88 (28.05.2026): Adventure profile museum cap in soft fallback loop too.
                     if travel_style == "adventure" and daily_museum_count >= 1:
@@ -5575,10 +5672,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # treats the day as done and stops". Raised 1→2; the FIX #81/#85 recovery
             # blocklist still keeps post-trail POIs calm (no active/museum/viewpoint after a
             # hard trail), so the extra slot is realistically used by termy/spa/café only.
-            if _trail_diff_early in ["hard", "extreme"] or _trail_raw_dur_early >= 240:
-                max_poi_after_trail = 2  # FIX #162 (was 1): trail + 1 light POI + evening termy
-            elif _trail_diff_early == "moderate" or _trail_raw_dur_early >= 180:
-                max_poi_after_trail = 2  # FIX #162 (was 1)
+            if _trail_diff_early in ["hard", "extreme"] or _trail_raw_dur_early >= _TRAIL_RELAX_ONLY_MIN:
+                max_poi_after_trail = 1  # FIX #190: termy/spa only after 3h+ trail
             else:
                 max_poi_after_trail = 2
             print(f"[FIX #46] trail_day_mode=True set early (before lunch check) - max_poi_after_trail={max_poi_after_trail}")
@@ -5818,14 +5913,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # FIX #162 (05.06.2026 - CLIENT FEEDBACK): allow a light EVENING recovery POI
             # (termy/spa/café) after a long trail so the day isn't cut short with free_time.
             # FIX #81/#85 recovery blocklist still restricts the extra slot to calm POIs.
-            if trail_difficulty in ["hard", "extreme"] or trail_raw_duration >= 240:
-                max_poi_after_trail = 2  # FIX #162 (was 1): trail + light POI + evening termy
+            if trail_difficulty in ["hard", "extreme"] or trail_raw_duration >= _TRAIL_RELAX_ONLY_MIN:
+                max_poi_after_trail = 1  # FIX #190: termy/spa only after 3h+ trail
                 trail_category = "heavy"
             elif trail_difficulty == "moderate" or trail_raw_duration >= 180:
-                max_poi_after_trail = 2  # FIX #162 (was 1): allow evening recovery POI
+                max_poi_after_trail = 1
                 trail_category = "moderate"
             else:  # easy or <3h
-                max_poi_after_trail = 2  # Max 2 POI after light trails
+                max_poi_after_trail = 2
                 trail_category = "light"
             
             print(f"[TRAIL DAY] Trail added (difficulty={trail_difficulty}, RAW duration: {minutes_to_time(trail_raw_duration)}, "
@@ -5852,20 +5947,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             termy_count += 1
             print(f"[LIMITS] Termy/spa POI added: {termy_count}/1 per day")
 
-        # FIX #164 (06.06.2026 - CLIENT FEEDBACK JSON4): increment daily viewpoint counter.
-        if is_viewpoint_poi(best):
+        # FIX #164 / #190: increment daily scenic-experience counter.
+        if is_scenic_experience_poi(best):
             daily_viewpoint_count += 1
-            print(f"[VIEWPOINT CAP] Viewpoint added today: {daily_viewpoint_count}/2")
+            print(f"[VIEWPOINT CAP] Scenic added today: {daily_viewpoint_count}/2")
 
-        # FIX #58: Increment daily museum counter for adventure profile
-        if travel_style == "adventure":
-            _mus_cnt_tags = {"themed_museum", "regional_heritage", "museum_heritage", "museums",
-                             "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
-                             "interactive_exhibit", "local_history", "architecture_heritage",
-                             "art_gallery", "temporary_exhibitions", "composer_artist_house",
-                             "intimate_small_museum", "ethnographic_museum"}
-            if _mus_cnt_tags & set(best.get("tags", [])):
-                daily_museum_count += 1
+        # FIX #58 / #190: universal culture-site counter (adventure cap + nature balance cap).
+        if is_heritage_culture_site_poi(best):
+            daily_museum_count += 1
+            if travel_style == "adventure" and is_museum_heritage_poi(best):
                 print(f"[MUSEUM CAP] Museum added today: {daily_museum_count}/1 (adventure)")
 
         # FIX #99D: Increment daily museum counter for friends profile
@@ -6348,6 +6438,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
                 if should_block_far_excursion_after_trail(p, trail_day_mode, trail_duration):
                     continue
+                if should_block_non_relax_after_long_trail(p, trail_day_mode, trail_duration):
+                    continue
 
                 # FIX #163 (06.06.2026 - CLIENT FEEDBACK JSON1/JSON3): max 1 trail/day.
                 # A trail is a full-day activity, never a light gap-filler. Skip trail-type
@@ -6378,8 +6470,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # FIX #70 (23.05.2026): Apply termy/spa daily limit to ALL groups (not just seniors)
                 if is_termy_spa(p) and termy_count >= 1:
                     continue
-                # FIX #164 (06.06.2026 - CLIENT FEEDBACK JSON4): viewpoint cap in gap-fill loop.
-                if daily_viewpoint_count >= 2 and is_viewpoint_poi(p):
+                # FIX #164 / #190: scenic cap in gap-fill loop.
+                if daily_viewpoint_count >= 2 and is_scenic_experience_poi(p):
                     continue
                 # FIX #88 (28.05.2026): Adventure profile — museum cap in gap-fill loop.
                 # Main loop checks daily_museum_count for adventure, gap-fill loop was missing this.
@@ -6607,8 +6699,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # FIX #Problem10 (14.05.2026): Apply to ALL groups (not just seniors)
                 if is_termy_spa(soft_best):
                     termy_count += 1
-                # FIX #164: increment viewpoint counter for gap-fill additions too.
-                if is_viewpoint_poi(soft_best):
+                # FIX #164 / #190: increment scenic counter for gap-fill additions too.
+                if is_scenic_experience_poi(soft_best):
                     daily_viewpoint_count += 1
                 
                 # Update budget

@@ -41,6 +41,15 @@ Podsumowanie dla klientki: co zostało dostarczone w silniku planowania Zakopane
 
 **Zaimportowane w FIX #189** — plik klientki `Planer - miasta atrakcje6.xlsx` (kolumna `Zone` + `Hub`).
 
+## FIX #190 — finalne poprawki Zakopanego (czerwiec 2026)
+
+| ID | Opis |
+|----|------|
+| #190a | **Po szlaku 3h+** — tylko relaks (termy/spa); blokada Niedzicy / Zone C / zwiedzania |
+| #190b | **Jaskinie** — tagi `cave`/`underground` OK; coverage wymaga prawdziwej jaskini; boost scoringu |
+| #190c | **Natura + muzeum + historia** — max 2 muzea/dzień, boost natury gdy muzea dominują |
+| #190d | **JSON8** — max 2 scenic/dzień (wierchy, polany, kolejki); gap-fill w plan_service |
+
 ## FIX #189 — Zone A/B/C dla wszystkich miast (czerwiec 2026)
 
 | ID | Opis |

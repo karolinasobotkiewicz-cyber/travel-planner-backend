@@ -23,7 +23,11 @@ sys.path.insert(0, str(BACKEND_DIR))
 from app.application.services.plan_service import PlanService
 from app.domain.models.plan import ItemType
 from app.domain.models.trip_input import TripInput
-from app.domain.planner.engine import poi_geo_region_key
+from app.domain.planner.engine import (
+    is_scenic_experience_poi,
+    is_underground_poi,
+    poi_geo_region_key,
+)
 from app.infrastructure.repositories.poi_repository import POIRepository
 
 TESTS_DIR = BACKEND_DIR.parent / "Testy_Klientki"
@@ -114,6 +118,61 @@ def check_no_far_excursion_after_long_trail(resp, poi_by_id: dict) -> list[str]:
     return errs
 
 
+def check_underground_caves(resp, poi_by_id: dict) -> list[str]:
+    """FIX #190: underground pref must schedule a real cave, not only museums."""
+    caves = []
+    for day in resp.days:
+        for it in day.items:
+            if getattr(it, "type", None) != ItemType.ATTRACTION:
+                continue
+            p = poi_by_id.get(getattr(it, "poi_id", ""), {"name": it.name, "tags": []})
+            if is_underground_poi(p):
+                caves.append(it.name)
+    if not caves:
+        return ["underground: no cave POI in plan (expected Jaskinia Mroźna/Raptawicka/Bielańska)"]
+    return []
+
+
+def check_test04_nature_balance(resp, poi_by_id: dict) -> list[str]:
+    """FIX #190: nature+museum+history — no museum-only days, max 3 museums/day."""
+    errs = []
+    _museum_name_markers = ("muze", "galeri", "kaplic", "cmentarz", "willa", "archiw")
+    for day in resp.days:
+        museums = 0
+        nature = 0
+        for it in day.items:
+            if getattr(it, "type", None) != ItemType.ATTRACTION:
+                continue
+            p = poi_by_id.get(getattr(it, "poi_id", ""), {"name": it.name, "tags": []})
+            name_l = (it.name or "").lower()
+            tags = set(p.get("tags") or [])
+            if any(m in name_l for m in _museum_name_markers) or "museum_heritage" in tags:
+                museums += 1
+            if "nature_landscape" in tags or p.get("type") == "trail":
+                nature += 1
+        if museums >= 4 and nature == 0:
+            errs.append(f"day {day.day}: {museums} museum-like attractions, no nature/trail")
+        if museums >= 5:
+            errs.append(f"day {day.day}: {museums} museum-like attractions (too many)")
+    return errs
+
+
+def check_test08_scenic_cap(resp, poi_by_id: dict) -> list[str]:
+    """FIX #190: max 2 scenic experiences per day (JSON8 viewpoint clustering)."""
+    errs = []
+    for day in resp.days:
+        scenic = []
+        for it in day.items:
+            if getattr(it, "type", None) != ItemType.ATTRACTION:
+                continue
+            p = poi_by_id.get(getattr(it, "poi_id", ""), {"name": it.name, "tags": []})
+            if is_scenic_experience_poi(p):
+                scenic.append(it.name)
+        if len(scenic) > 2:
+            errs.append(f"day {day.day}: {len(scenic)} scenic POIs {scenic}")
+    return errs
+
+
 def check_test08_day7_fill(resp) -> list[str]:
     """FIX #187b: last day should not be mostly empty."""
     errs = []
@@ -150,11 +209,15 @@ def main():
     for n in TEST_NUMBERS:
         data, resp = run_plan(n, svc)
         issues = check_preferences(data, resp, n)
+        if n == 4:
+            issues.extend(check_test04_nature_balance(resp, poi_by_id))
         if n == 7:
             issues.extend(check_test07_trails(resp))
+            issues.extend(check_underground_caves(resp, poi_by_id))
         issues.extend(check_no_far_excursion_after_long_trail(resp, poi_by_id))
         if n == 8:
             issues.extend(check_test08_regions(resp, poi_by_id))
+            issues.extend(check_test08_scenic_cap(resp, poi_by_id))
             issues.extend(check_test08_day7_fill(resp))
 
         # dup check

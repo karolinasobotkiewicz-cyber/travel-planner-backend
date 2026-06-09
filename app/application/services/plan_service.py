@@ -188,7 +188,16 @@ class PlanService:
         poi_pool: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """FIX #179: Trip-level report — which user preferences were actually scheduled."""
-        from app.domain.planner.engine import poi_matches_user_preference
+        from app.domain.planner.engine import (
+            is_underground_poi,
+            is_scenic_experience_poi,
+            poi_matches_user_preference,
+        )
+
+        def _poi_covers_pref(poi: dict, pref: str) -> bool:
+            if pref == "underground":
+                return is_underground_poi(poi)
+            return poi_matches_user_preference(poi, pref)
 
         poi_by_id = {p.get("id"): p for p in poi_pool if p.get("id")}
         coverage: Dict[str, Any] = {}
@@ -207,7 +216,7 @@ class PlanService:
                         "tags": [],
                         "type": "poi",
                     }
-                    if poi_matches_user_preference(poi, pref):
+                    if _poi_covers_pref(poi, pref):
                         poi_count += 1
                         if not day_hit:
                             hit_days.append(day.day)
@@ -241,7 +250,16 @@ class PlanService:
         contexts: List[Dict[str, Any]],
     ) -> tuple[List[DayPlan], List[Dict[str, Any]]]:
         """FIX #186 (A1): Swap weakest non-matching attraction for one POI per uncovered pref."""
-        from app.domain.planner.engine import poi_matches_user_preference
+        from app.domain.planner.engine import (
+            is_underground_poi,
+            is_scenic_experience_poi,
+            poi_matches_user_preference,
+        )
+
+        def _poi_covers_pref(poi: dict, pref: str) -> bool:
+            if pref == "underground":
+                return is_underground_poi(poi)
+            return poi_matches_user_preference(poi, pref)
 
         prefs = list(user.get("preferences") or [])
         if not prefs or not days:
@@ -256,7 +274,7 @@ class PlanService:
         days_mut = list(days)
 
         def _attr_matches_any_pref(poi: dict) -> int:
-            return sum(1 for pr in prefs if poi_matches_user_preference(poi, pr))
+            return sum(1 for pr in prefs if _poi_covers_pref(poi, pr))
 
         def _is_only_cover_for_pref(pref: str, poi_id: str) -> bool:
             covering = []
@@ -265,7 +283,7 @@ class PlanService:
                     if getattr(it, "type", None) != ItemType.ATTRACTION:
                         continue
                     p = poi_by_id.get(it.poi_id, {"tags": [], "name": it.name})
-                    if poi_matches_user_preference(p, pref):
+                    if _poi_covers_pref(p, pref):
                         covering.append(it.poi_id)
             return covering == [poi_id]
 
@@ -277,8 +295,12 @@ class PlanService:
             candidates = [
                 p for p in poi_pool
                 if p.get("id") not in used_ids
-                and poi_matches_user_preference(p, pref)
+                and _poi_covers_pref(p, pref)
             ]
+            if pref == "underground":
+                candidates.sort(
+                    key=lambda p: (0 if is_underground_poi(p) else 1, p.get("name", ""))
+                )
             if not candidates:
                 warnings.append(self._preference_not_covered_warning(
                     pref,
@@ -313,7 +335,7 @@ class PlanService:
                     if not getattr(item, "poi_id", ""):
                         continue
                     victim_poi = poi_by_id.get(item.poi_id, {"tags": [], "name": item.name})
-                    if poi_matches_user_preference(victim_poi, pref):
+                    if _poi_covers_pref(victim_poi, pref):
                         continue
                     match_n = _attr_matches_any_pref(victim_poi)
                     skip = False
@@ -2495,8 +2517,10 @@ class PlanService:
         # HOTFIX (02.02.2026): Get attraction limits for target group
         from ...domain.planner.engine import (
             GROUP_ATTRACTION_LIMITS,
+            is_scenic_experience_poi,
             poi_geo_region_key,
             should_block_far_excursion_after_trail,
+            should_block_non_relax_after_long_trail,
             should_skip_gap_fill_candidate,
         )
         _lookup = all_pois_lookup if all_pois_lookup is not None else all_pois
@@ -2527,12 +2551,16 @@ class PlanService:
         used_poi_ids = set(global_used) if global_used is not None else set()
         
         attraction_count = 0  # Count attractions to enforce limit
+        daily_scenic_count = 0  # FIX #190: cap scenic experiences in plan_service gap fill
         
         # Collect POIs already used in plan and count attractions
         for item in items:
             if hasattr(item, 'poi_id'):
                 used_poi_ids.add(item.poi_id)
                 attraction_count += 1
+                _ex_poi = poi_by_id.get(item.poi_id, {"name": getattr(item, "name", "")})
+                if is_scenic_experience_poi(_ex_poi):
+                    daily_scenic_count += 1
         
         for i, item in enumerate(items):
             result.append(item)
@@ -2741,10 +2769,16 @@ class PlanService:
                             if _req_city and not poi_matches_city_filter(poi, _req_city):
                                 continue
 
-                            # FIX #187a: no Pieniny/Zone C after long trail same day
+                            # FIX #187a / #190: no far excursions / sightseeing after long trail
                             if should_block_far_excursion_after_trail(
                                 poi, _day_max_trail_min > 0, _day_max_trail_min
                             ):
+                                continue
+                            if should_block_non_relax_after_long_trail(
+                                poi, _day_max_trail_min >= 180, _day_max_trail_min
+                            ):
+                                continue
+                            if daily_scenic_count >= 2 and is_scenic_experience_poi(poi):
                                 continue
                             if should_skip_gap_fill_candidate(
                                 poi, context,
@@ -2838,7 +2872,12 @@ class PlanService:
                                 
                                 # POI is soft if meets 3/4 criteria (flexible)
                                 criteria_met = sum([intensity_ok, duration_ok, must_see_ok, type_ok])
-                                is_soft_poi = criteria_met >= 3
+                                _soft_need = (
+                                    2
+                                    if context.get("num_days", 1) >= 7 and attraction_count < 4
+                                    else 3
+                                )
+                                is_soft_poi = criteria_met >= _soft_need
                                 
                                 if is_soft_poi:
                                     print(f"[SOFT POI] ✓ POI {poi.get('id')}: intensity={poi_intensity}, duration={poi_duration}min, must_see={must_see}, criteria={criteria_met}/4")
@@ -2921,6 +2960,8 @@ class PlanService:
                             
                             # HOTFIX (02.02.2026): Increment attraction counter
                             attraction_count += 1
+                            if is_scenic_experience_poi(best_poi):
+                                daily_scenic_count += 1
                             print(f"[GAP FILLING] Attraction count after fill: {attraction_count}/{hard_limit}")
                             
                             continue  # Skip free_time - POI added instead
