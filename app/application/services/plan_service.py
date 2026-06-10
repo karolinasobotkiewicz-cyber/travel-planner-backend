@@ -248,7 +248,6 @@ class PlanService:
     ) -> tuple[List[DayPlan], List[Dict[str, Any]]]:
         """FIX #186 (A1): Swap weakest non-matching attraction for one POI per uncovered pref."""
         from app.domain.planner.engine import (
-            is_heavy_sightseeing_poi,
             is_museum_heritage_poi,
             is_underground_poi,
             poi_matches_user_preference,
@@ -282,6 +281,16 @@ class PlanService:
         warnings: List[Dict[str, Any]] = []
         days_mut = list(days)
 
+        def _prio_val(pp):
+            pv = pp.get("priority") or pp.get("priority_level") or 0
+            if isinstance(pv, str):
+                return {"core": 12, "secondary": 6, "optional": 2,
+                        "high": 12, "medium": 6, "low": 2}.get(pv.strip().lower(), 0)
+            try:
+                return float(pv)
+            except (TypeError, ValueError):
+                return 0
+
         def _attr_matches_any_pref(poi: dict) -> int:
             return sum(1 for pr in prefs if _poi_covers_pref_report(poi, pr))
 
@@ -295,17 +304,30 @@ class PlanService:
                     mx = max(mx, int(p.get("time_min") or p.get("duration_min") or 0))
             return mx
 
+        def _other_trail_count(exclude_poi_id: str) -> int:
+            """FIX #193: ile innych szlaków zostanie po zamianie jednego."""
+            n = 0
+            for d in days_mut:
+                for it in d.items:
+                    if getattr(it, "type", None) != ItemType.ATTRACTION:
+                        continue
+                    pid = getattr(it, "poi_id", "") or ""
+                    if pid == exclude_poi_id:
+                        continue
+                    if poi_by_id.get(pid, {}).get("type") == "trail":
+                        n += 1
+            return n
+
         def _blocked_after_trail(poi: dict, day_plan: DayPlan) -> bool:
-            """FIX #192: preference swap — block far trips + castles; light history OK."""
+            """FIX #193: swap — bez jaskiń/zamków/dalekich; lekkie muzea OK (test-03 history)."""
             td = _day_max_trail_min(day_plan)
             if td < 180:
                 return False
             if should_block_far_excursion_after_trail(poi, True, td):
                 return True
-            if is_heavy_sightseeing_poi(poi):
+            if is_underground_poi(poi):
                 return True
-            dur = int(poi.get("time_min") or poi.get("duration_min") or 0)
-            if dur > 75 and is_museum_heritage_poi(poi):
+            if "zamek" in str(poi.get("name", "")).lower():
                 return True
             return False
 
@@ -342,6 +364,16 @@ class PlanService:
                         p.get("name", ""),
                     )
                 )
+            elif pref == "history_mystery":
+                # FIX #193: po szlaku jaskinie zablokowane — muzeum/folklor zamiast cave
+                candidates = [p for p in candidates if not is_underground_poi(p)]
+                candidates.sort(
+                    key=lambda p: (
+                        0 if is_museum_heritage_poi(p) else 1,
+                        -float(p.get("must_see") or p.get("must_see_score") or 0),
+                        -_prio_val(p),
+                    ),
+                )
             if not candidates:
                 warnings.append(self._preference_not_covered_warning(
                     pref,
@@ -349,17 +381,7 @@ class PlanService:
                 ))
                 continue
 
-            def _prio_val(pp):
-                pv = pp.get("priority") or pp.get("priority_level") or 0
-                if isinstance(pv, str):
-                    return {"core": 12, "secondary": 6, "optional": 2,
-                            "high": 12, "medium": 6, "low": 2}.get(pv.strip().lower(), 0)
-                try:
-                    return float(pv)
-                except (TypeError, ValueError):
-                    return 0
-
-            if pref != "underground":
+            if pref not in ("underground", "history_mystery"):
                 candidates.sort(
                     key=lambda p: (
                         -float(p.get("must_see") or p.get("must_see_score") or 0),
@@ -381,8 +403,11 @@ class PlanService:
                         if not getattr(item, "poi_id", ""):
                             continue
                         victim_poi = poi_by_id.get(item.poi_id, {"tags": [], "name": item.name})
-                        if victim_poi.get("type") == "trail" and pref != "mountain_trails":
-                            if "mountain_trails" in prefs or "hiking" in prefs:
+                        if victim_poi.get("type") == "trail" and pref not in (
+                            "mountain_trails", "hiking", "active_sport",
+                        ):
+                            trail_prefs = {"mountain_trails", "hiking", "active_sport"} & set(prefs)
+                            if trail_prefs and _other_trail_count(item.poi_id) < 1:
                                 continue
                         if _poi_covers_pref_report(victim_poi, pref):
                             continue
@@ -2867,7 +2892,10 @@ class PlanService:
                             ):
                                 continue
                             if should_block_non_relax_after_long_trail(
-                                poi, _day_max_trail_min >= 180, _day_max_trail_min
+                                poi,
+                                _day_max_trail_min >= 180,
+                                _day_max_trail_min,
+                                start_time_min=current_end,
                             ):
                                 continue
                             if daily_scenic_count >= 2 and is_scenic_experience_poi(poi):
@@ -3198,50 +3226,38 @@ class PlanService:
                         #           with additional free_time blocks (recursive filling)
                         remaining_gap = gap - gap_duration
                         current_fill_end = current_end + gap_duration
-                        
-                        while remaining_gap > 15:  # Continue filling if gap > 15 min remains
-                            # Calculate next free_time block duration (max 60 min)
-                            next_duration = min(remaining_gap, 60)
-                            
-                            # Cap at day_end if applicable
+
+                        def _append_remaining_free_time(rem_gap: int, fill_end: int) -> int:
+                            """FIX #193: fill leftover gap as one block (not 5×60min)."""
+                            if rem_gap <= 15:
+                                return fill_end
+                            next_duration = rem_gap
                             if day_end_str:
                                 day_end_min = time_to_minutes(day_end_str)
-                                if current_fill_end + next_duration > day_end_min:
-                                    next_duration = day_end_min - current_fill_end
-                                    if next_duration < 5:  # Too short, skip
-                                        break
-                            
-                            next_free_time_start = minutes_to_time(current_fill_end)
-                            next_free_time_end = minutes_to_time(current_fill_end + next_duration)
-                            
-                            print(f"[GAP FILLING] FIX #17: Filling remaining {remaining_gap} min gap with additional free_time ({next_free_time_start}-{next_free_time_end})")
-                            
-                            # FIX #78 (27.05.2026): Rotate labels for recursive fill blocks (avoid repetition)
-                            _FT78_NEXT_LABELS = [
-                                "Swobodne zwiedzanie okolicy",
-                                "Przerwa kawowa i odpoczynek",
-                                "Czas na własne odkrycia",
-                                "Relaks i chwila wytchnienia",
-                                "Spacer i fotografia podróżnicza",
-                            ]
-                            _ft78_next_idx = (current_fill_end // 30) % len(_FT78_NEXT_LABELS)
-                            next_label = _FT78_NEXT_LABELS[_ft78_next_idx]
-                            
-                            next_free_time = FreeTimeItem(
-                                type=ItemType.FREE_TIME,
-                                start_time=next_free_time_start,
-                                end_time=next_free_time_end,
-                                duration_min=next_duration,
-                                label=next_label,
-                                suggestions=free_time_suggestions[:3] if 'free_time_suggestions' in locals() else None,  # Use same suggestions
-                                is_technical_buffer=(next_duration < 5)  # FIX #39
+                                if fill_end + next_duration > day_end_min:
+                                    next_duration = day_end_min - fill_end
+                                    if next_duration < 5:
+                                        return fill_end
+                            next_start = minutes_to_time(fill_end)
+                            next_end = minutes_to_time(fill_end + next_duration)
+                            print(f"[GAP FILLING] FIX #193: remaining {rem_gap}min → single free_time ({next_start}-{next_end})")
+                            merged_label = (
+                                "Dłuższy odpoczynek / spacer po okolicy"
+                                if next_duration >= 90
+                                else "Czas wolny / relaks"
                             )
-                            
-                            result.append(next_free_time)
-                            
-                            # Update for next iteration
-                            remaining_gap -= next_duration
-                            current_fill_end += next_duration
+                            result.append(FreeTimeItem(
+                                type=ItemType.FREE_TIME,
+                                start_time=next_start,
+                                end_time=next_end,
+                                duration_min=next_duration,
+                                label=merged_label,
+                                suggestions=free_time_suggestions[:3] if 'free_time_suggestions' in locals() else None,
+                                is_technical_buffer=False,
+                            ))
+                            return fill_end + next_duration
+
+                        current_fill_end = _append_remaining_free_time(remaining_gap, current_fill_end)
         
         # FIX #4 (15.02.2026): Add end-of-day free_time if gap >30 min before day_end
         # FIX #4.5 (20.02.2026): Changed threshold from 30 to 15 min to be consistent with main gap filling
@@ -3635,7 +3651,7 @@ class PlanService:
             # Engine/gap_filler never creates blocks >60 min; consolidation must respect same limit.
             # FIX #86 (28.05.2026): Raised cap to 180 min — engine now creates large afternoon/evening
             # blocks directly (FIX #86), so consolidation should merge them up to 3h.
-            MAX_MERGED_FREE_TIME = 180
+            MAX_MERGED_FREE_TIME = 300  # FIX #193: merge 4-5h runs into one sensible block
             
             while j < len(items):
                 next_item = items[j]
@@ -3687,14 +3703,9 @@ class PlanService:
             else:
                 break  # hit a real activity — stop scanning
         if len(_tail_ft) >= 2:
-            _tail_total = sum(getattr(b, "duration_min", 0) or 0 for b in _tail_ft)
-            # FIX #192: keep trailing blocks separate when >2.5h — signals need for more POIs.
-            if _tail_total > 150:
-                pass  # leave _tail_ft unmerged in consolidated (already in list)
-            else:
-                _merged_eod = self._merge_free_time_blocks(_tail_ft, is_zakopane=is_zakopane)
-                consolidated = consolidated[:_tail_start_idx] + [_merged_eod]
-                print(f"[CONSOLIDATE] FIX#82: Collapsed {len(_tail_ft)} trailing EOD free_time blocks → 1 ({_merged_eod.duration_min} min, {_merged_eod.start_time}-{_merged_eod.end_time}, label={_merged_eod.label})")
+            _merged_eod = self._merge_free_time_blocks(_tail_ft, is_zakopane=is_zakopane)
+            consolidated = consolidated[:_tail_start_idx] + [_merged_eod]
+            print(f"[CONSOLIDATE] FIX#82/#193: Collapsed {len(_tail_ft)} trailing EOD free_time blocks → 1 ({_merged_eod.duration_min} min, {_merged_eod.start_time}-{_merged_eod.end_time}, label={_merged_eod.label})")
 
         # FIX #174 (06.06.2026 - CLIENT FEEDBACK): Merge consecutive free_time even when labels
         # differ contextually (e.g. "Popołudniowy relaks" + "Spacer i fotografia" + "Przerwa kawowa").
@@ -3731,25 +3742,11 @@ class PlanService:
                 else:
                     break
 
-            if len(run) >= 3:
-                _run_total = sum(getattr(b, "duration_min", 0) or 0 for b in run)
-                # FIX #192: don't collapse 3h+ free_time into one mega-block — keeps POI pressure visible.
-                if _run_total > 150:
-                    merged_items.extend(run)
-                else:
-                    merged_block = self._merge_free_time_blocks(run, is_zakopane=is_zakopane)
-                    merged_items.append(merged_block)
-                    print(f"[CONSOLIDATE] FIX#174: Merged {len(run)} contextual free_time blocks → 1 "
-                          f"({merged_block.duration_min} min, {merged_block.start_time}-{merged_block.end_time})")
-            elif len(run) == 2:
-                start_min = time_to_minutes(getattr(run[0], 'start_time', '00:00') or '00:00')
-                if start_min >= 17 * 60:
-                    merged_block = self._merge_free_time_blocks(run, is_zakopane=is_zakopane)
-                    merged_items.append(merged_block)
-                    print(f"[CONSOLIDATE] FIX#174: Merged 2 evening free_time blocks → 1 "
-                          f"({merged_block.duration_min} min, {merged_block.start_time}-{merged_block.end_time})")
-                else:
-                    merged_items.extend(run)
+            if len(run) >= 2:
+                merged_block = self._merge_free_time_blocks(run, is_zakopane=is_zakopane)
+                merged_items.append(merged_block)
+                print(f"[CONSOLIDATE] FIX#193: Merged {len(run)} consecutive free_time blocks → 1 "
+                      f"({merged_block.duration_min} min, {merged_block.start_time}-{merged_block.end_time})")
             else:
                 merged_items.append(item)
 
@@ -3806,10 +3803,19 @@ class PlanService:
             "Relaks",
             "Dłuższy odpoczynek",
             "Krótki odpoczynek",
-            "Wieczór:",  # Matches "Wieczór: spacer, zakupy, relaks w hotelu"
-            "Wieczorny relaks",  # FIX #86: "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja"
+            "Wieczór:",
+            "Wieczorny relaks",
             "Czas wolny / relaks",
             "Odpoczynek / spacer",
+            "Romantyczna przerwa",
+            "Przerwa kawowa",
+            "Przerwa południowa",
+            "Popołudniowy relaks",
+            "Poranny spacer",
+            "Spokojny",
+            "Regeneracja po trasie",
+            "Swobodne zwiedzanie",
+            "Przerwa rodzinna",
         ]
         
         # Check if both labels start with generic patterns

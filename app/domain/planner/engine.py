@@ -1479,6 +1479,16 @@ def _is_culture_led_trip(user_preferences: list) -> bool:
 
 _TRAIL_FAR_EXCURSION_MIN = 180  # FIX #187: 3h+ hike → no Zone C / Pieniny same day
 _TRAIL_RELAX_ONLY_MIN = 180   # FIX #190: 3h+ hike → termy/spa only (no Niedzica)
+_TRAIL_ZERO_POI_AFTER_MIN = 300  # FIX #193: 5h+ hike → no extra attractions (tylko termy/free_time)
+_TRAIL_EVENING_CUTOFF_MIN = 960  # 16:00 — po długim szlaku atrakcje zwiedzaniowe zamknięte
+
+
+def is_post_trail_recovery_poi(p: dict) -> bool:
+    """FIX #193: Jedyna dozwolona aktywność po długim szlaku — termy/spa."""
+    if is_termy_spa(p):
+        return True
+    _relax_tags = {"relax_wellness", "relaxation", "spa", "wellness", "thermal_baths"}
+    return bool(_relax_tags & set(p.get("tags") or []))
 
 
 def should_block_far_excursion_after_trail(
@@ -1495,18 +1505,23 @@ def should_block_far_excursion_after_trail(
 
 
 def should_block_non_relax_after_long_trail(
-    p: dict, trail_day_mode: bool, trail_duration: int,
+    p: dict,
+    trail_day_mode: bool,
+    trail_duration: int,
+    start_time_min: int | None = None,
 ) -> bool:
-    """FIX #190/#192: After 3h+ trail only recovery — no castles, museums, far trips."""
+    """FIX #190/#193: Po 3h+ szlaku tylko regeneracja — bez jaskiń, muzeów, zamków."""
     if not trail_day_mode or trail_duration < _TRAIL_RELAX_ONLY_MIN:
         return False
-    if is_termy_spa(p):
+    if is_post_trail_recovery_poi(p):
         return False
-    _relax_tags = {"relax_wellness", "relaxation", "spa", "wellness", "thermal_baths"}
-    if _relax_tags & set(p.get("tags") or []):
-        return False
-    # FIX #192: even preference-covering castles (Niedzica) are blocked after long hike.
-    if is_heavy_sightseeing_poi(p):
+    if is_underground_poi(p) or is_museum_heritage_poi(p) or is_heavy_sightseeing_poi(p):
+        return True
+    if (
+        start_time_min is not None
+        and start_time_min >= _TRAIL_EVENING_CUTOFF_MIN
+        and trail_duration >= 240
+    ):
         return True
     return True
 
@@ -4648,7 +4663,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         continue
 
                     # FIX #190: 3h+ trail → relax only (no Niedzica / museums / sightseeing)
-                    if should_block_non_relax_after_long_trail(p, trail_day_mode, trail_duration):
+                    if should_block_non_relax_after_long_trail(
+                        p, trail_day_mode, trail_duration, start_time_min=now,
+                    ):
                         poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                         print(f"[FIX #190] EXCLUDED non-relax after {trail_duration}min trail: {poi_name_safe}")
                         continue
@@ -5344,7 +5361,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             continue  # Skip high-energy/cultural POIs after heavy trail
                         if should_block_far_excursion_after_trail(p, trail_day_mode, trail_duration):
                             continue
-                        if should_block_non_relax_after_long_trail(p, trail_day_mode, trail_duration):
+                        if should_block_non_relax_after_long_trail(
+                            p, trail_day_mode, trail_duration, start_time_min=now,
+                        ):
                             continue
 
                     # FIX #164 / #190: scenic cap in soft loop.
@@ -5744,7 +5763,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # treats the day as done and stops". Raised 1→2; the FIX #81/#85 recovery
             # blocklist still keeps post-trail POIs calm (no active/museum/viewpoint after a
             # hard trail), so the extra slot is realistically used by termy/spa/café only.
-            if _trail_diff_early in ["hard", "extreme"] or _trail_raw_dur_early >= _TRAIL_RELAX_ONLY_MIN:
+            if _trail_raw_dur_early >= _TRAIL_ZERO_POI_AFTER_MIN:
+                max_poi_after_trail = 0  # FIX #193: 5h+ → brak atrakcji po szlaku
+            elif _trail_diff_early in ["hard", "extreme"] or _trail_raw_dur_early >= _TRAIL_RELAX_ONLY_MIN:
                 max_poi_after_trail = 1  # FIX #190: termy/spa only after 3h+ trail
             else:
                 max_poi_after_trail = 2
@@ -5985,7 +6006,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # FIX #162 (05.06.2026 - CLIENT FEEDBACK): allow a light EVENING recovery POI
             # (termy/spa/café) after a long trail so the day isn't cut short with free_time.
             # FIX #81/#85 recovery blocklist still restricts the extra slot to calm POIs.
-            if trail_difficulty in ["hard", "extreme"] or trail_raw_duration >= _TRAIL_RELAX_ONLY_MIN:
+            if trail_raw_duration >= _TRAIL_ZERO_POI_AFTER_MIN:
+                max_poi_after_trail = 0  # FIX #193: 5h+ → tylko free_time / termy w planie
+                trail_category = "very_heavy"
+            elif trail_difficulty in ["hard", "extreme"] or trail_raw_duration >= _TRAIL_RELAX_ONLY_MIN:
                 max_poi_after_trail = 1  # FIX #190: termy/spa only after 3h+ trail
                 trail_category = "heavy"
             elif trail_difficulty == "moderate" or trail_raw_duration >= 180:
@@ -6510,7 +6534,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
                 if should_block_far_excursion_after_trail(p, trail_day_mode, trail_duration):
                     continue
-                if should_block_non_relax_after_long_trail(p, trail_day_mode, trail_duration):
+                if should_block_non_relax_after_long_trail(
+                    p, trail_day_mode, trail_duration, start_time_min=now,
+                ):
                     continue
 
                 # FIX #163 (06.06.2026 - CLIENT FEEDBACK JSON1/JSON3): max 1 trail/day.

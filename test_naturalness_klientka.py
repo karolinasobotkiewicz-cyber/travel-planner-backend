@@ -92,6 +92,48 @@ def check_test08_regions(resp, poi_by_id: dict) -> list[str]:
     return errs
 
 
+def check_no_sightseeing_after_long_trail(resp, poi_by_id: dict) -> list[str]:
+    """FIX #193: po 3h+ szlaku — bez jaskiń, muzeów, zamków (tylko termy/free_time)."""
+    from app.domain.planner.engine import (
+        is_museum_heritage_poi,
+        is_post_trail_recovery_poi,
+        is_underground_poi,
+    )
+    errs = []
+    for day in resp.days:
+        trail_end_min = None
+        max_trail = 0
+        for it in day.items:
+            if getattr(it, "type", None) != ItemType.ATTRACTION:
+                continue
+            p = poi_by_id.get(getattr(it, "poi_id", ""), {})
+            if p.get("type") == "trail":
+                dur = int(p.get("time_min") or p.get("duration_min") or 0)
+                max_trail = max(max_trail, dur)
+                if it.end_time:
+                    from app.domain.planner.engine import time_to_minutes
+                    trail_end_min = time_to_minutes(it.end_time)
+        if max_trail < 180:
+            continue
+        for it in day.items:
+            if getattr(it, "type", None) != ItemType.ATTRACTION:
+                continue
+            p = poi_by_id.get(getattr(it, "poi_id", ""), {"name": it.name})
+            if p.get("type") == "trail":
+                continue
+            if is_post_trail_recovery_poi(p):
+                continue
+            if trail_end_min and it.start_time:
+                from app.domain.planner.engine import time_to_minutes
+                if time_to_minutes(it.start_time) < trail_end_min:
+                    continue
+            if is_underground_poi(p) or is_museum_heritage_poi(p) or "zamek" in (it.name or "").lower():
+                errs.append(
+                    f"day {day.day}: '{it.name}' after {max_trail}min trail (sightseeing blocked)"
+                )
+    return errs
+
+
 def check_no_far_excursion_after_long_trail(resp, poi_by_id: dict) -> list[str]:
     """FIX #187a: no Zone C / Pieniny after 3h+ trail on same day."""
     errs = []
@@ -137,6 +179,23 @@ def check_underground_caves(resp, poi_by_id: dict) -> list[str]:
         errs.append(f"underground: museum Archiwum in plan instead of cave: {bad}")
     if not caves:
         errs.append("underground: no cave POI (expected Mroźna/Raptawicka/Bielańska)")
+    return errs
+
+
+def check_consecutive_free_time_merged(resp) -> list[str]:
+    """FIX #193: max 2 kolejne bloki free_time (scalenie w jeden sensowny)."""
+    errs = []
+    for day in resp.days:
+        run = 0
+        max_run = 0
+        for it in day.items:
+            if getattr(it, "type", None) == ItemType.FREE_TIME:
+                run += 1
+                max_run = max(max_run, run)
+            else:
+                run = 0
+        if max_run > 2:
+            errs.append(f"day {day.day}: {max_run} consecutive free_time blocks (expected <=2)")
     return errs
 
 
@@ -244,6 +303,8 @@ def main():
             issues.extend(check_test07_trails(resp))
             issues.extend(check_underground_caves(resp, poi_by_id))
         issues.extend(check_no_far_excursion_after_long_trail(resp, poi_by_id))
+        issues.extend(check_no_sightseeing_after_long_trail(resp, poi_by_id))
+        issues.extend(check_consecutive_free_time_merged(resp))
         if n == 8:
             issues.extend(check_test08_regions(resp, poi_by_id))
             issues.extend(check_test08_scenic_cap(resp, poi_by_id))
