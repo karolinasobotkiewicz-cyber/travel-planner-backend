@@ -248,8 +248,11 @@ class PlanService:
     ) -> tuple[List[DayPlan], List[Dict[str, Any]]]:
         """FIX #186 (A1): Swap weakest non-matching attraction for one POI per uncovered pref."""
         from app.domain.planner.engine import (
+            is_heavy_sightseeing_poi,
+            is_museum_heritage_poi,
             is_underground_poi,
             poi_matches_user_preference,
+            should_block_far_excursion_after_trail,
         )
         from app.domain.scoring.preference_coverage import poi_covers_preference_report
 
@@ -262,6 +265,15 @@ class PlanService:
         if not prefs or not days:
             return days, []
 
+        if "underground" in prefs:
+            poi_pool = [
+                p for p in poi_pool
+                if not (
+                    "archiw" in str(p.get("name", "")).lower()
+                    and "planety" in str(p.get("name", "")).lower()
+                )
+            ]
+
         poi_by_id = {p.get("id"): p for p in poi_pool if p.get("id")}
         used_ids = {
             it.poi_id for d in days for it in d.items
@@ -272,6 +284,30 @@ class PlanService:
 
         def _attr_matches_any_pref(poi: dict) -> int:
             return sum(1 for pr in prefs if _poi_covers_pref_report(poi, pr))
+
+        def _day_max_trail_min(day_plan: DayPlan) -> int:
+            mx = 0
+            for it in day_plan.items:
+                if getattr(it, "type", None) != ItemType.ATTRACTION:
+                    continue
+                p = poi_by_id.get(getattr(it, "poi_id", ""), {})
+                if p.get("type") == "trail":
+                    mx = max(mx, int(p.get("time_min") or p.get("duration_min") or 0))
+            return mx
+
+        def _blocked_after_trail(poi: dict, day_plan: DayPlan) -> bool:
+            """FIX #192: preference swap — block far trips + castles; light history OK."""
+            td = _day_max_trail_min(day_plan)
+            if td < 180:
+                return False
+            if should_block_far_excursion_after_trail(poi, True, td):
+                return True
+            if is_heavy_sightseeing_poi(poi):
+                return True
+            dur = int(poi.get("time_min") or poi.get("duration_min") or 0)
+            if dur > 75 and is_museum_heritage_poi(poi):
+                return True
+            return False
 
         def _is_only_cover_for_pref(pref: str, poi_id: str) -> bool:
             covering = []
@@ -298,8 +334,13 @@ class PlanService:
                 )
             ]
             if pref == "underground":
+                candidates = [p for p in candidates if is_underground_poi(p)]
                 candidates.sort(
-                    key=lambda p: (0 if is_underground_poi(p) else 1, p.get("name", ""))
+                    key=lambda p: (
+                        0 if "jaskin" in str(p.get("name", "")).lower() else 1,
+                        -float(p.get("must_see") or p.get("must_see_score") or 0),
+                        p.get("name", ""),
+                    )
                 )
             if not candidates:
                 warnings.append(self._preference_not_covered_warning(
@@ -318,46 +359,56 @@ class PlanService:
                 except (TypeError, ValueError):
                     return 0
 
-            candidates.sort(
-                key=lambda p: (
-                    -float(p.get("must_see") or p.get("must_see_score") or 0),
-                    -_prio_val(p),
-                ),
-            )
-            replacement = candidates[0]
+            if pref != "underground":
+                candidates.sort(
+                    key=lambda p: (
+                        -float(p.get("must_see") or p.get("must_see_score") or 0),
+                        -_prio_val(p),
+                    ),
+                )
 
+            replacement = None
             best_victim: tuple | None = None
-            for di, day in enumerate(days_mut):
-                ctx = contexts[di] if di < len(contexts) else {}
-                for ii, item in enumerate(day.items):
-                    if getattr(item, "type", None) != ItemType.ATTRACTION:
+            for replacement in candidates:
+                best_victim = None
+                for di, day in enumerate(days_mut):
+                    if _blocked_after_trail(replacement, day):
                         continue
-                    if not getattr(item, "poi_id", ""):
-                        continue
-                    victim_poi = poi_by_id.get(item.poi_id, {"tags": [], "name": item.name})
-                    if _poi_covers_pref_report(victim_poi, pref):
-                        continue
-                    match_n = _attr_matches_any_pref(victim_poi)
-                    skip = False
-                    for other in prefs:
-                        if other == pref:
+                    ctx = contexts[di] if di < len(contexts) else {}
+                    for ii, item in enumerate(day.items):
+                        if getattr(item, "type", None) != ItemType.ATTRACTION:
                             continue
-                        oc = self._compute_preference_coverage(days_mut, [other], poi_pool)
-                        if not oc.get(other, {}).get("covered") and _is_only_cover_for_pref(
-                            other, item.poi_id
+                        if not getattr(item, "poi_id", ""):
+                            continue
+                        victim_poi = poi_by_id.get(item.poi_id, {"tags": [], "name": item.name})
+                        if victim_poi.get("type") == "trail" and pref != "mountain_trails":
+                            if "mountain_trails" in prefs or "hiking" in prefs:
+                                continue
+                        if _poi_covers_pref_report(victim_poi, pref):
+                            continue
+                        match_n = _attr_matches_any_pref(victim_poi)
+                        skip = False
+                        for other in prefs:
+                            if other == pref:
+                                continue
+                            oc = self._compute_preference_coverage(days_mut, [other], poi_pool)
+                            if not oc.get(other, {}).get("covered") and _is_only_cover_for_pref(
+                                other, item.poi_id
+                            ):
+                                skip = True
+                                break
+                        if skip:
+                            continue
+                        if (
+                            best_victim is None
+                            or match_n < best_victim[0]
+                            or (match_n == best_victim[0] and (di, ii) < (best_victim[1], best_victim[2]))
                         ):
-                            skip = True
-                            break
-                    if skip:
-                        continue
-                    if (
-                        best_victim is None
-                        or match_n < best_victim[0]
-                        or (match_n == best_victim[0] and (di, ii) < (best_victim[1], best_victim[2]))
-                    ):
-                        best_victim = (match_n, di, ii, item, ctx)
+                            best_victim = (match_n, di, ii, item, ctx)
+                if best_victim is not None:
+                    break
 
-            if best_victim is None:
+            if best_victim is None or replacement is None:
                 warnings.append(self._preference_not_covered_warning(
                     pref,
                     "Nie znaleziono bezpiecznej atrakcji do zamiany bez psucia innych preferencji.",
@@ -541,6 +592,16 @@ class PlanService:
             all_pois_dict = filter_pois_by_cities(all_pois_dict, cities_to_load)
         elif _requested_city:
             all_pois_dict = filter_pois_by_city(all_pois_dict, _requested_city)
+
+        # FIX #192: Archiwum Planety is not a cave — drop from pool when underground requested.
+        if "underground" in (trip_input.preferences or []):
+            all_pois_dict = [
+                p for p in all_pois_dict
+                if not (
+                    "archiw" in str(p.get("name", "")).lower()
+                    and "planety" in str(p.get("name", "")).lower()
+                )
+            ]
         
         # Source 3: RestaurantDB (meals for all trip types)
         # NOTE: Restaurants loaded separately for meal optimizer, not mixed with attractions
@@ -856,7 +917,8 @@ class PlanService:
                     filter_pois_by_geo_region,
                 )
 
-                _FALLBACK_RADIUS_KM = 16.0
+                # FIX #192: wider backfill on 5-7 day trips → less afternoon free_time.
+                _FALLBACK_RADIUS_KM = 22.0 if num_days >= 5 else 16.0
                 pois_no_zone = [p for p in all_pois if not p.get('zone', '').strip()]
                 zones_present = sorted(set(
                     p['zone'].strip() for p in all_pois
@@ -895,7 +957,7 @@ class PlanService:
                 # and zones are scheduled strictly near→far so the far Zone C is only
                 # reached on the LAST days of the trip.
                 import math as _math
-                _MAIN_POOL_RADIUS_KM = 14.0
+                _MAIN_POOL_RADIUS_KM = 18.0 if num_days >= 5 else 14.0
                 _zone_pois = {z: len(zone_buckets[z]) for z in zones_present}
                 _zorder = list(zones_present)  # already sorted A,B,C = near→far by design
                 _zone_days = {z: 0 for z in zones_present}
@@ -1155,6 +1217,25 @@ class PlanService:
                 global_used_pois,
                 all_pois_lookup=all_pois_dict,
             )
+
+            # FIX #192: extra gap-fill passes with full city pool when day still sparse.
+            if num_days >= 4:
+                for _gf_pass in range(2):
+                    _ft_before = sum(
+                        (getattr(it, "duration_min", 0) or 0)
+                        for it in day_items
+                        if getattr(it, "type", None) == ItemType.FREE_TIME
+                    )
+                    if _ft_before <= 90:
+                        break
+                    day_items = self._fill_gaps_in_items(
+                        day_items,
+                        all_pois_dict,
+                        day_context,
+                        user,
+                        global_used_pois,
+                        all_pois_lookup=all_pois_dict,
+                    )
             
             # ETAP 2 - DAY 3: Update global_used with POIs added by gap filling
             for item in day_items:
@@ -2775,6 +2856,11 @@ class PlanService:
                             if _req_city and not poi_matches_city_filter(poi, _req_city):
                                 continue
 
+                            if "underground" in (user.get("preferences") or [])[:3]:
+                                _gfn = str(poi.get("name", "")).lower()
+                                if "archiw" in _gfn and "planety" in _gfn:
+                                    continue
+
                             # FIX #187a / #190: no far excursions / sightseeing after long trail
                             if should_block_far_excursion_after_trail(
                                 poi, _day_max_trail_min > 0, _day_max_trail_min
@@ -2867,8 +2953,11 @@ class PlanService:
                                 duration_ok = 10 <= poi_duration <= 30
                                 
                                 # Criteria 3: must_see_score low (0-2)
-                                must_see = poi.get('must_see_score', 0) or 0
-                                must_see_ok = must_see <= 2
+                                must_see = poi.get('must_see_score', 0) or poi.get('must_see', 0) or 0
+                                must_see_ok = must_see <= (
+                                    9 if context.get("num_days", 1) >= 5 and attraction_count < 3
+                                    else 2
+                                )
                                 
                                 # Criteria 4: type=spacer, punkt widokowy, plac, deptak, krótka ekspozycja
                                 poi_type = str(poi.get('type', '')).lower()
@@ -2880,7 +2969,7 @@ class PlanService:
                                 criteria_met = sum([intensity_ok, duration_ok, must_see_ok, type_ok])
                                 _soft_need = (
                                     2
-                                    if context.get("num_days", 1) >= 7 and attraction_count < 4
+                                    if context.get("num_days", 1) >= 5 and attraction_count < 4
                                     else 3
                                 )
                                 is_soft_poi = criteria_met >= _soft_need
@@ -2904,8 +2993,15 @@ class PlanService:
                                 score += 50  # Strong boost for soft POI in large gaps
                                 print(f"[SOFT POI] Score boost: {score-50:.1f} → {score:.1f} (soft POI)")
                             elif prefer_soft_poi and not is_soft_poi:
-                                score -= 30  # Penalty for non-soft POI in large gaps (but still possible as fallback)
-                                print(f"[SOFT POI] Score penalty: {score+30:.1f} → {score:.1f} (non-soft fallback)")
+                                _pen = (
+                                    10
+                                    if context.get("num_days", 1) >= 5
+                                    and attraction_count < 3
+                                    and gap > 90
+                                    else 30
+                                )
+                                score -= _pen
+                                print(f"[SOFT POI] Score penalty: {score+_pen:.1f} → {score:.1f} (non-soft fallback)")
                             
                             if score > best_score:
                                 best_poi = poi
@@ -3591,9 +3687,14 @@ class PlanService:
             else:
                 break  # hit a real activity — stop scanning
         if len(_tail_ft) >= 2:
-            _merged_eod = self._merge_free_time_blocks(_tail_ft, is_zakopane=is_zakopane)
-            consolidated = consolidated[:_tail_start_idx] + [_merged_eod]
-            print(f"[CONSOLIDATE] FIX#82: Collapsed {len(_tail_ft)} trailing EOD free_time blocks → 1 ({_merged_eod.duration_min} min, {_merged_eod.start_time}-{_merged_eod.end_time}, label={_merged_eod.label})")
+            _tail_total = sum(getattr(b, "duration_min", 0) or 0 for b in _tail_ft)
+            # FIX #192: keep trailing blocks separate when >2.5h — signals need for more POIs.
+            if _tail_total > 150:
+                pass  # leave _tail_ft unmerged in consolidated (already in list)
+            else:
+                _merged_eod = self._merge_free_time_blocks(_tail_ft, is_zakopane=is_zakopane)
+                consolidated = consolidated[:_tail_start_idx] + [_merged_eod]
+                print(f"[CONSOLIDATE] FIX#82: Collapsed {len(_tail_ft)} trailing EOD free_time blocks → 1 ({_merged_eod.duration_min} min, {_merged_eod.start_time}-{_merged_eod.end_time}, label={_merged_eod.label})")
 
         # FIX #174 (06.06.2026 - CLIENT FEEDBACK): Merge consecutive free_time even when labels
         # differ contextually (e.g. "Popołudniowy relaks" + "Spacer i fotografia" + "Przerwa kawowa").
@@ -3631,10 +3732,15 @@ class PlanService:
                     break
 
             if len(run) >= 3:
-                merged_block = self._merge_free_time_blocks(run, is_zakopane=is_zakopane)
-                merged_items.append(merged_block)
-                print(f"[CONSOLIDATE] FIX#174: Merged {len(run)} contextual free_time blocks → 1 "
-                      f"({merged_block.duration_min} min, {merged_block.start_time}-{merged_block.end_time})")
+                _run_total = sum(getattr(b, "duration_min", 0) or 0 for b in run)
+                # FIX #192: don't collapse 3h+ free_time into one mega-block — keeps POI pressure visible.
+                if _run_total > 150:
+                    merged_items.extend(run)
+                else:
+                    merged_block = self._merge_free_time_blocks(run, is_zakopane=is_zakopane)
+                    merged_items.append(merged_block)
+                    print(f"[CONSOLIDATE] FIX#174: Merged {len(run)} contextual free_time blocks → 1 "
+                          f"({merged_block.duration_min} min, {merged_block.start_time}-{merged_block.end_time})")
             elif len(run) == 2:
                 start_min = time_to_minutes(getattr(run[0], 'start_time', '00:00') or '00:00')
                 if start_min >= 17 * 60:

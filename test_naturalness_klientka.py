@@ -119,18 +119,45 @@ def check_no_far_excursion_after_long_trail(resp, poi_by_id: dict) -> list[str]:
 
 
 def check_underground_caves(resp, poi_by_id: dict) -> list[str]:
-    """FIX #190: underground pref must schedule a real cave, not only museums."""
+    """FIX #190/#192: underground pref → real jaskinia, not Archiwum Planety."""
     caves = []
+    bad = []
     for day in resp.days:
         for it in day.items:
             if getattr(it, "type", None) != ItemType.ATTRACTION:
                 continue
             p = poi_by_id.get(getattr(it, "poi_id", ""), {"name": it.name, "tags": []})
+            name_l = (it.name or "").lower()
+            if "archiw" in name_l and "planety" in name_l:
+                bad.append(it.name)
             if is_underground_poi(p):
                 caves.append(it.name)
+    errs = []
+    if bad:
+        errs.append(f"underground: museum Archiwum in plan instead of cave: {bad}")
     if not caves:
-        return ["underground: no cave POI in plan (expected Jaskinia Mroźna/Raptawicka/Bielańska)"]
-    return []
+        errs.append("underground: no cave POI (expected Mroźna/Raptawicka/Bielańska)")
+    return errs
+
+
+def check_free_time_long_trips(resp, num_days: int) -> list[str]:
+    """FIX #192: 5-7 day plans — cap afternoon dead time (was 5-6h/day)."""
+    if num_days < 5:
+        return []
+    _max_ft = 280 if num_days >= 7 else 240
+    errs = []
+    for day in resp.days:
+        attrs = sum(
+            1 for it in day.items if getattr(it, "type", None) == ItemType.ATTRACTION
+        )
+        ft = sum(
+            getattr(it, "duration_min", 0) or 0
+            for it in day.items if getattr(it, "type", None) == ItemType.FREE_TIME
+        )
+        day_max = 360 if attrs <= 2 else _max_ft
+        if ft > day_max:
+            errs.append(f"day {day.day}: too much free_time ({ft}min, max {day_max})")
+    return errs
 
 
 def check_test04_nature_balance(resp, poi_by_id: dict) -> list[str]:
@@ -209,6 +236,8 @@ def main():
     for n in TEST_NUMBERS:
         data, resp = run_plan(n, svc)
         issues = check_preferences(data, resp, n)
+        if n in (4, 8):
+            issues.extend(check_free_time_long_trips(resp, data.get("trip_length", {}).get("days", 0)))
         if n == 4:
             issues.extend(check_test04_nature_balance(resp, poi_by_id))
         if n == 7:

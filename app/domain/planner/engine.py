@@ -838,9 +838,10 @@ _SCENIC_EXPERIENCE_NAME_MARKERS = (
 )
 
 _UNDERGROUND_POI_TAGS = frozenset({
-    "cave", "underground", "karst-cave", "karst_cave", "underground_attraction",
-    "underground_tour", "limestone_cave", "underground_exploration",
+    "cave", "karst-cave", "karst_cave", "limestone_cave",
+    "underground_attraction", "underground_tour", "underground_exploration",
 })
+# Bare tag "underground" alone is too broad — Archiwum Planety Ziemia is a museum.
 
 
 def is_viewpoint_poi(poi):
@@ -871,12 +872,20 @@ def is_scenic_experience_poi(poi: dict) -> bool:
 
 
 def is_underground_poi(p: dict) -> bool:
-    """FIX #190: True cave/underground POI (not generic museum with history tag)."""
+    """FIX #190/#192: Real cave visit — not museums mis-tagged with 'underground'."""
+    name = str(p.get("name", "")).lower()
+    if "jaskin" in name:
+        return True
     tags = set(str(t).lower() for t in (p.get("tags") or []))
     if tags & _UNDERGROUND_POI_TAGS:
+        if "archiw" in name or "muze" in name:
+            return False
         return True
-    name = str(p.get("name", "")).lower()
-    return "jaskin" in name
+    if "underground" in tags:
+        if "archiw" in name or "muze" in name:
+            return False
+        return True
+    return False
 
 
 def user_wants_nature_museum_balance(user: dict) -> bool:
@@ -1488,7 +1497,7 @@ def should_block_far_excursion_after_trail(
 def should_block_non_relax_after_long_trail(
     p: dict, trail_day_mode: bool, trail_duration: int,
 ) -> bool:
-    """FIX #190: After 3h+ trail only recovery (termy/spa) — no castles, museums, sightseeing."""
+    """FIX #190/#192: After 3h+ trail only recovery — no castles, museums, far trips."""
     if not trail_day_mode or trail_duration < _TRAIL_RELAX_ONLY_MIN:
         return False
     if is_termy_spa(p):
@@ -1496,6 +1505,9 @@ def should_block_non_relax_after_long_trail(
     _relax_tags = {"relax_wellness", "relaxation", "spa", "wellness", "thermal_baths"}
     if _relax_tags & set(p.get("tags") or []):
         return False
+    # FIX #192: even preference-covering castles (Niedzica) are blocked after long hike.
+    if is_heavy_sightseeing_poi(p):
+        return True
     return True
 
 
@@ -1594,6 +1606,19 @@ def is_museum_heritage_poi(p: dict) -> bool:
         "cultural_heritage", "folk_traditions", "historical_exhibits",
     }
     return bool(_museum_tags & tags)
+
+
+def is_heavy_sightseeing_poi(p: dict) -> bool:
+    """FIX #192: Castles / long indoor visits — too much after a long hike."""
+    name = str(p.get("name", "")).lower()
+    if "zamek" in name or "castle" in name:
+        return True
+    dur = safe_int(p.get("time_min") or p.get("duration_min"), 0)
+    if dur >= 90 and (is_museum_heritage_poi(p) or is_heritage_culture_site_poi(p)):
+        return True
+    if dur >= 120 and p.get("type") != "trail":
+        return True
+    return False
 
 
 # PHASE 8 FEATURE #7 (27.04.2026): POI classifier (main vs filler)
@@ -1962,11 +1987,14 @@ def score_poi(
         # Calculate tag-based preference bonus
         tag_bonus = calculate_tag_preference_score(p, user_preferences)
         poi_matches_preferences = (tag_bonus > 0)
-        # FIX #190: caves must win over generic museums when underground is requested.
-        if "underground" in user_preferences and is_underground_poi(p):
-            tag_bonus += 55
-            poi_matches_preferences = True
-        # FIX #190: nature_landscape + museum/history — push nature when museums dominate trip.
+        # FIX #190/#192: real caves must win over Archiwum Planety / generic museums.
+        if "underground" in user_preferences:
+            if is_underground_poi(p):
+                tag_bonus += 95
+                poi_matches_preferences = True
+            elif "underground" in set(str(t).lower() for t in (p.get("tags") or [])):
+                tag_bonus -= 70
+        # FIX #190/#192: nature_landscape + museum/history — favour trails and nature.
         if user_wants_nature_museum_balance(user):
             _nat_tags = set(p.get("tags") or [])
             if (
@@ -1974,10 +2002,15 @@ def score_poi(
                 or "nature_immersion" in _nat_tags
                 or p.get("type") == "trail"
             ):
+                tag_bonus += 50
                 _trip_mus = (context or {}).get("trip_museum_count", 0)
                 if _trip_mus >= 2:
                     tag_bonus += 35
-                    poi_matches_preferences = True
+                poi_matches_preferences = True
+            elif is_heritage_culture_site_poi(p):
+                _day_mus = (context or {}).get("day_museum_count", 0)
+                if _day_mus >= 1:
+                    tag_bonus -= 30
 
     # Apply conditional must_see bonus
     # PHASE 5: Apply must_see_bonus multiplier from router (city_tourism gets 1.5x)
@@ -3480,11 +3513,26 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         # FIX #162 (05.06.2026): lowered the free-time trigger 180 → 120 min so days that
         # still leave ~2h of free_time (client JSON6/JSON9) also get a full-pool retry.
         # FIX #185 (06.06.2026): 120 → 90 min — catch remaining sparse days with less free_time.
-        _f160_underfilled = (_f160_attr < 2) or (_f160_free > 90)
-        if _f160_underfilled and pois_per_day is not None and len(_fallback_for_day) > len(_pois_for_day):
+        # FIX #192 (06.06.2026): 5-7 day trips — retry sooner (client: 5-6h free_time/day).
+        _f160_nd = context.get("num_days", 1)
+        _f160_underfilled = (
+            (_f160_attr < 2) or (_f160_free > 90)
+            or (_f160_nd >= 5 and _f160_free > 60 and _f160_attr < 4)
+            or (_f160_nd >= 5 and _f160_free > 150)
+        )
+        _f160_retry_pool = (
+            pois
+            if _f160_nd >= 5 and _f160_free > 90
+            else _fallback_for_day
+        )
+        if (
+            _f160_underfilled
+            and pois_per_day is not None
+            and len(_f160_retry_pool) > len(_pois_for_day)
+        ):
             print(f"[FIX #160] Day {day_num + 1}: under-filled ({_f160_attr} attractions, "
                   f"{_f160_free}min free) from zone pool ({len(_pois_for_day)} POIs) → "
-                  f"retrying with zone-restricted fallback ({len(_fallback_for_day)} POIs)")
+                  f"retrying with expanded pool ({len(_f160_retry_pool)} POIs)")
             # --- capture the ORIGINAL build's contribution so we can undo/redo cleanly ---
             _f160_gu_added = set(_global_used_for_day) - set(_global_used_before_day)
             _f160_termy_added = sum(1 for _it in day_plan
@@ -3506,7 +3554,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
 
             _f160_warnings: list = []
             _f160_retry = build_day(
-                pois=_fallback_for_day,  # FIX #166: zone-restricted (no far-zone leak)
+                pois=_f160_retry_pool,
                 user=user,
                 context=context,
                 day_start=day_start,
@@ -3515,7 +3563,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
                 global_termy_tracking=global_termy_tracking,
                 global_trail_tracking=global_trail_tracking,
                 warnings_out=_f160_warnings,
-                fallback_pois=_fallback_for_day,  # FIX #166: keep gap-fill restricted too
+                fallback_pois=_f160_retry_pool,
             )
             _f160_rattr, _f160_rfree = _f160_fill_metric(_f160_retry)
             _f160_better = (_f160_rattr > _f160_attr) or (
@@ -3836,9 +3884,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         print(f"[LIMITS] Travel style 'adventure' modifier applied: soft={limits['soft']}, hard={limits['hard']}")
 
     # FIX #123 (30.05.2026): Solo progressive daily limits — fewer POIs as trip continues
-    # Prevents POI exhaustion on compact destinations (e.g. Zakopane ~15 high-priority POIs)
-    # Day 1-2: standard hard=7, Day 3-4: hard=5, Day 5+: hard=4
-    if user.get("target_group") == "solo":
+    # FIX #192: skip on 5+ day balanced trips (caused sparse afternoons with huge free_time).
+    if (
+        user.get("target_group") == "solo"
+        and travel_style != "balanced"
+        and context.get("num_days", 1) < 5
+    ):
         _solo_day = context.get("current_day_num", 1)
         if _solo_day >= 5:
             limits["soft"] = min(limits["soft"], 4)
@@ -3846,7 +3897,6 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         elif _solo_day >= 3:
             limits["soft"] = min(limits["soft"], 5)
             limits["hard"] = min(limits["hard"], 5)
-        # days 1-2: keep standard limits
         print(f"[SOLO FATIGUE FIX#123] Day {_solo_day}: soft={limits['soft']}, hard={limits['hard']}")
 
     # HUMAN STATE
@@ -4484,6 +4534,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                       f"(user_prefs={user.get('preferences', [])}, group={user.get('target_group', '')}, "
                       f"now={minutes_to_time(now)})")
                 continue
+
+            # FIX #192: Archiwum Planety etc. — not a cave when underground is requested.
+            if "underground" in (user.get("preferences") or [])[:3]:
+                _nl192 = str(p.get("name", "")).lower()
+                if "archiw" in _nl192 and "planety" in _nl192:
+                    print(f"[FIX #192] EXCLUDED Archiwum Planety (use jaskinie): {p.get('name')}")
+                    continue
+                _u_tags = set(str(t).lower() for t in (p.get("tags") or []))
+                if "underground" in _u_tags and not is_underground_poi(p):
+                    poi_name_safe = str(p.get("name", "Unknown")).encode("ascii", errors="ignore").decode("ascii")
+                    print(f"[FIX #192] EXCLUDED fake-underground: {poi_name_safe}")
+                    continue
             
             # FIX #47 (20.05.2026): Trail intensity matching to travel_style
             # Problem: Relax users (Json9) and seniors (Json6) got heavy 360+min trails
@@ -4708,6 +4770,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             print(f"[BEFORE SCORE_POI] About to score poi_id={poi_id_debug}")
             # FIX #133: inject current consecutive-short count for scoring
             ctx["consecutive_short_count"] = consecutive_short_count
+            ctx["day_museum_count"] = daily_museum_count  # FIX #192
             score = score_poi(
                 p=p,
                 user=user,
@@ -5340,7 +5403,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     # Since all Zakopane POI have intensity='medium', accept medium intensity
                     # Focus on: short duration (10-30 min) + low must_see_score (0-2)
                     # FIX #187b: on sparse last day allow substantial POIs (SkyWalk, Homole).
-                    _soft_max_time = 125 if _f187_sparse_ml else 30
+                    _soft_max_time = (
+                        125 if _f187_sparse_ml
+                        else (90 if context.get("num_days", 1) >= 5 else 30)
+                    )
                     time_min = p.get("time_min", 60)
                     if time_min > _soft_max_time or time_min < 10:
                         continue
@@ -5402,10 +5468,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     # FIX #86 (28.05.2026): After 15:00 create ONE big evening block (no 60-min cap).
                     # Prevents multiple 60-min blocks — client wants "Wieczorny relaks" single block.
                     _f187_keep_ml = _f187_sparse_ml and remaining_time > 90
-                    if now >= 900 and not _f187_keep_ml:
+                    # FIX #192: 5-7 day trips — no single 3-6h evening block when day still sparse.
+                    _f192_sparse_evening = (
+                        context.get("num_days", 1) >= 5
+                        and attraction_count < 4
+                        and remaining_time > 90
+                    )
+                    if now >= 900 and not _f187_keep_ml and not _f192_sparse_evening:
                         free_duration = min(remaining_time, end - now)
                     else:
-                        free_duration = min(60, remaining_time, end - now)  # Max 60 min before afternoon
+                        free_duration = min(60, remaining_time, end - now)
                     free_start_time = minutes_to_time(now)
                     free_end_time = minutes_to_time(now + free_duration)
                     

@@ -34,12 +34,13 @@ COPY static/ ./static/
 # Ensure scripts in .local are usable
 ENV PATH=/root/.local/bin:$PATH
 
-# Expose port
+# Render (and most PaaS) assign a dynamic port via $PORT — must bind to it, not a fixed 8000.
+ENV PORT=8000
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/health')"
+# Health check (stdlib only; respects $PORT)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\", \"8000\")}/health')"
 
-# Run application
-CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run application — shell form required so $PORT is expanded
+CMD ["sh", "-c", "uvicorn app.api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
