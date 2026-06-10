@@ -239,6 +239,116 @@ class PlanService:
             "severity": "warning",
         }
 
+    def _afternoon_topup_items(
+        self,
+        items: List[Any],
+        pool: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        user: Dict[str, Any],
+        global_used: set,
+        all_pois_lookup: List[Dict[str, Any]] | None = None,
+    ) -> List[Any]:
+        """FIX #195: usuń wielki popołudniowy free_time i spróbuj lekkich POI."""
+        from app.domain.planner.engine import should_afternoon_topup_before_free_time
+
+        lookup = all_pois_lookup or pool
+        poi_by_id = {p.get("id"): p for p in lookup if p.get("id")}
+
+        max_trail = 0
+        post_trail_attr = 0
+        trail_seen = False
+        for it in items:
+            if getattr(it, "type", None) != ItemType.ATTRACTION:
+                continue
+            p = poi_by_id.get(getattr(it, "poi_id", ""), {})
+            if p.get("type") == "trail":
+                trail_seen = True
+                max_trail = max(
+                    max_trail,
+                    int(p.get("time_min") or p.get("duration_min") or 0),
+                )
+            elif trail_seen:
+                post_trail_attr += 1
+
+        if max_trail >= 300:
+            return items
+
+        last_attr_idx = None
+        for i, it in enumerate(items):
+            if getattr(it, "type", None) == ItemType.ATTRACTION:
+                last_attr_idx = i
+
+        if last_attr_idx is None:
+            return items
+
+        ft_indices = []
+        total_ft = 0
+        ft_start_min = None
+        last_end_min = None
+        if getattr(items[last_attr_idx], "end_time", None):
+            last_end_min = time_to_minutes(items[last_attr_idx].end_time)
+        gap_to_dinner = 0
+        for i in range(last_attr_idx + 1, len(items)):
+            it = items[i]
+            t = getattr(it, "type", None)
+            if t == ItemType.FREE_TIME:
+                ft_indices.append(i)
+                total_ft += int(getattr(it, "duration_min", 0) or 0)
+                if ft_start_min is None and getattr(it, "start_time", None):
+                    ft_start_min = time_to_minutes(it.start_time)
+                if getattr(it, "end_time", None):
+                    last_end_min = time_to_minutes(it.end_time)
+            elif t == ItemType.ATTRACTION:
+                return items
+            elif t == ItemType.DINNER_BREAK and getattr(it, "start_time", None):
+                if last_end_min is not None:
+                    gap_to_dinner = time_to_minutes(it.start_time) - last_end_min
+                break
+            elif getattr(it, "end_time", None):
+                last_end_min = time_to_minutes(it.end_time)
+
+        afternoon_slack = max(total_ft, gap_to_dinner)
+        if afternoon_slack < 90:
+            return items
+
+        trail_day = max_trail >= 180
+        max_after = 0 if max_trail >= 300 else (1 if trail_day else 2)
+        if not should_afternoon_topup_before_free_time(
+            ft_start_min or last_end_min or 900,
+            afternoon_slack,
+            trail_day,
+            max_after,
+            max_trail,
+            post_trail_attr,
+        ):
+            return items
+
+        trimmed = [it for i, it in enumerate(items) if i not in ft_indices]
+        print(
+            f"[FIX #195] Afternoon top-up: removed {total_ft}min free_time "
+            f"({gap_to_dinner}min gap to dinner), retrying gap-fill"
+        )
+        ctx = {**context, "afternoon_topup_pass": True}
+        out = trimmed
+        base_attrs = sum(
+            1 for it in trimmed if getattr(it, "type", None) == ItemType.ATTRACTION
+        )
+        for _attempt in range(5):
+            prev_attrs = sum(
+                1 for it in out if getattr(it, "type", None) == ItemType.ATTRACTION
+            )
+            out = self._fill_gaps_in_items(
+                out, pool, ctx, user, global_used, all_pois_lookup=lookup,
+            )
+            new_attrs = sum(
+                1 for it in out if getattr(it, "type", None) == ItemType.ATTRACTION
+            )
+            if new_attrs <= prev_attrs:
+                break
+            if new_attrs >= base_attrs + 2:
+                break
+        return out
+
     def _day_density_warnings(
         self,
         days: List[DayPlan],
@@ -1237,6 +1347,18 @@ class PlanService:
         
         # Process each day's engine result
         days = []
+
+        # FIX #195: engine plans all days upfront — gap-fill must not steal future-day POIs.
+        _engine_reserved_future_by_day: list[set] = []
+        for _dnum, _eres in enumerate(engine_results):
+            _future_ids: set = set()
+            for _fut in engine_results[_dnum + 1:]:
+                for _it in _fut:
+                    if _it.get("type") == "attraction" and _it.get("poi"):
+                        _fpid = _it["poi"].get("id")
+                        if _fpid:
+                            _future_ids.add(_fpid)
+            _engine_reserved_future_by_day.append(_future_ids)
         
         print(f"[GENERATE_PLAN] Processing {len(engine_results)} engine results")
         
@@ -1259,6 +1381,8 @@ class PlanService:
             day_context["day_start"] = day_start
             day_context["day_end"] = day_end
             day_context["num_days"] = num_days
+            if day_num < len(_engine_reserved_future_by_day):
+                day_context["engine_reserved_future_pois"] = _engine_reserved_future_by_day[day_num]
             
             # Konwersja engine result → PlanResponse items
             day_items = self._convert_engine_result_to_items(
@@ -1300,6 +1424,26 @@ class PlanService:
                 global_used_pois,
                 all_pois_lookup=all_pois_dict,
             )
+
+            # FIX #195: replace mega afternoon free_time with light POI attempts (≤2 passes).
+            for _f195_i in range(2):
+                _ft_big = sum(
+                    int(getattr(it, "duration_min", 0) or 0)
+                    for it in day_items
+                    if getattr(it, "type", None) == ItemType.FREE_TIME
+                    and getattr(it, "start_time", None)
+                    and time_to_minutes(it.start_time) < 960
+                )
+                if _ft_big < 90:
+                    break
+                day_items = self._afternoon_topup_items(
+                    day_items,
+                    all_pois_dict,
+                    day_context,
+                    user,
+                    global_used_pois,
+                    all_pois_lookup=all_pois_dict,
+                )
 
             # FIX #192/#194: extra gap-fill passes with full city pool when day still sparse.
             _f194_gf = day_context.get("multi_city_density_mode", False)
@@ -1388,7 +1532,6 @@ class PlanService:
             
             # FIX #3 FAIL-SAFE (22.02.2026): Remove/truncate items that exceed day_end
             # Even if engine or gap filling creates items past day_end, this ensures compliance
-            from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
             day_end_min = time_to_minutes(day_end)
             cleaned_items = []
             
@@ -1508,6 +1651,19 @@ class PlanService:
                 day_items,
                 is_zakopane=day_context.get("is_zakopane_trip", False),
             )
+
+            # FIX #195: consolidation can re-merge afternoon chunks — one more top-up pass.
+            day_items = self._afternoon_topup_items(
+                day_items,
+                all_pois_dict,
+                day_context,
+                user,
+                global_used_pois,
+                all_pois_lookup=all_pois_dict,
+            )
+            for item in day_items:
+                if hasattr(item, "poi_id") and item.poi_id:
+                    global_used_pois.add(item.poi_id)
             
             # FIX #35 (18.05.2026): Remove remaining technical buffers from final output
             # After consolidation, any still-marked is_technical_buffer items are tiny padding
@@ -2738,6 +2894,7 @@ class PlanService:
         limits = GROUP_ATTRACTION_LIMITS.get(target_group, {"hard": 8})
         hard_limit = limits["hard"]
         _f194_mc = context.get("multi_city_density_mode", False)
+        _f195_pass = context.get("afternoon_topup_pass", False)
         
         result = []
         
@@ -2747,6 +2904,13 @@ class PlanService:
         attraction_count = 0  # Count attractions to enforce limit
         daily_scenic_count = 0  # FIX #190: cap scenic experiences in plan_service gap fill
         
+        _today_poi_ids = {
+            getattr(it, "poi_id", None)
+            for it in items
+            if getattr(it, "type", None) == ItemType.ATTRACTION
+            and getattr(it, "poi_id", None)
+        }
+
         # Collect POIs already used in plan and count attractions
         for item in items:
             if hasattr(item, 'poi_id'):
@@ -2930,7 +3094,7 @@ class PlanService:
                         best_travel = 0
                         
                         # Determine if we should prioritize soft POI (gaps >20 min)
-                        prefer_soft_poi = gap > 20
+                        prefer_soft_poi = gap > 20 or (_f195_pass and gap >= 60)
                         
                         if prefer_soft_poi:
                             print(f"[GAP FILLING] Gap {gap} min >20 → PRIORITIZING SOFT POI (low intensity, 10-30min, must_see 0-2)")
@@ -2956,12 +3120,21 @@ class PlanService:
                         for poi in _gf_pool:
                             poi_id = poi.get('id', '')
                             
-                            # Skip if already used
                             if poi_id in used_poi_ids:
+                                continue
+                            _future_reserved = context.get("engine_reserved_future_pois") or set()
+                            if poi_id in _future_reserved and poi_id not in _today_poi_ids:
                                 continue
 
                             if _req_city and not poi_matches_city_filter(poi, _req_city):
                                 continue
+
+                            # FIX #195: afternoon top-up — lekkie POI only (no szlaki / długie wizyty).
+                            if _f195_pass:
+                                if str(poi.get("type", "")).lower() == "trail":
+                                    continue
+                                if int(poi.get("time_min") or poi.get("duration_min") or 30) > 90:
+                                    continue
 
                             if "underground" in (user.get("preferences") or [])[:3]:
                                 _gfn = str(poi.get("name", "")).lower()
@@ -3018,10 +3191,10 @@ class PlanService:
                             if not poi_name or str(poi_name).lower() == 'nan':
                                 continue  # Invalid POI data
                             
-                            # FIX #3.2: POI dict has capitalized keys from Excel ("Lat", "Lng")
-                            poi_lat = poi.get('Lat', 0)
-                            poi_lng = poi.get('Lng', 0)
-                            if poi_lat == 0 or poi_lng == 0:
+                            # FIX #3.2 / #195: Excel uses Lat/Lng; normalized pool may use lat/lng
+                            poi_lat = poi.get('Lat') or poi.get('lat') or 0
+                            poi_lng = poi.get('Lng') or poi.get('lng') or 0
+                            if not poi_lat or not poi_lng:
                                 continue  # Missing location data
                             
                             # Calculate travel time
@@ -3034,7 +3207,10 @@ class PlanService:
                             
                             # Check if POI fits in gap (travel + duration)
                             poi_duration = poi.get('time_min', 30)
-                            _max_dur = 125 if (_f187_last_day_ps and gap > 120) else poi_duration
+                            _max_dur = (
+                                125 if (_f187_last_day_ps and gap > 120)
+                                else (min(gap - 15, 120) if _f195_pass else poi_duration)
+                            )
                             if travel + min(poi_duration, _max_dur) > gap:
                                 continue  # Too long
                             if _f187_last_day_ps and gap > 120:
@@ -3056,17 +3232,26 @@ class PlanService:
                             is_soft_poi = False
                             if prefer_soft_poi:
                                 # Criteria 1: intensity=low (or medium if duration <20min)
-                                poi_intensity = str(poi.get('intensity', '')).lower()
+                                poi_intensity = str(
+                                    poi.get('intensity') or poi.get('Intensity') or ''
+                                ).lower()
                                 intensity_ok = (poi_intensity == 'low') or (poi_intensity == 'medium' and poi_duration < 20)
                                 
                                 # Criteria 2: time_min=10-30 min
-                                duration_ok = 10 <= poi_duration <= 30
+                                duration_ok = (
+                                    (10 <= poi_duration <= 90)
+                                    if _f195_pass
+                                    else (10 <= poi_duration <= 30)
+                                )
                                 
                                 # Criteria 3: must_see_score low (0-2)
                                 must_see = poi.get('must_see_score', 0) or poi.get('must_see', 0) or 0
                                 must_see_ok = must_see <= (
                                     9 if context.get("num_days", 1) >= 5 and attraction_count < 3
-                                    else (6 if _f194_mc and attraction_count < 3 else 2)
+                                    else (
+                                        10 if _f195_pass and attraction_count < 5
+                                        else (6 if _f194_mc and attraction_count < 3 else 2)
+                                    )
                                 )
                                 
                                 # Criteria 4: type=spacer, punkt widokowy, plac, deptak, krótka ekspozycja
@@ -3078,12 +3263,16 @@ class PlanService:
                                 # POI is soft if meets 3/4 criteria (flexible)
                                 criteria_met = sum([intensity_ok, duration_ok, must_see_ok, type_ok])
                                 _soft_need = (
-                                    2
-                                    if (
-                                        (_f194_mc and attraction_count < 3)
-                                        or (context.get("num_days", 1) >= 5 and attraction_count < 4)
+                                    1
+                                    if _f195_pass and attraction_count < 6
+                                    else (
+                                        2
+                                        if (
+                                            (_f194_mc and attraction_count < 3)
+                                            or (context.get("num_days", 1) >= 5 and attraction_count < 4)
+                                        )
+                                        else 3
                                     )
-                                    else 3
                                 )
                                 is_soft_poi = criteria_met >= _soft_need
                                 
@@ -3109,7 +3298,8 @@ class PlanService:
                                 _pen = (
                                     10
                                     if (
-                                        (_f194_mc and attraction_count < 3)
+                                        (_f195_pass and gap >= 90)
+                                        or (_f194_mc and attraction_count < 3)
                                         or (
                                             context.get("num_days", 1) >= 5
                                             and attraction_count < 3
@@ -3128,6 +3318,16 @@ class PlanService:
                                 best_travel = travel
                                 poi_found = True
                         
+                        if poi_found and best_poi:
+                            _day_end_cap = context.get("day_end")
+                            if _day_end_cap:
+                                _de_min = time_to_minutes(_day_end_cap)
+                                if current_end + best_travel + best_duration > _de_min:
+                                    print(
+                                        f"[GAP FILLING] SKIP POI {best_poi.get('id')} — "
+                                        f"would exceed day_end {_day_end_cap}"
+                                    )
+                                    poi_found = False
                         if poi_found and best_poi:
                             # Add POI to fill gap!
                             print(f"[GAP FILLING] FILLING {gap} min gap with POI_ID: {best_poi.get('id', 'unknown')}")
@@ -3198,7 +3398,9 @@ class PlanService:
                         # CRITICAL FIX (01.05.2026): Apply cap FIRST, then check day_end (bug: day_end check bypassed cap)
                         
                         # STEP 1: Apply cap based on gap size (ALWAYS apply this first)
-                        if prefer_soft_poi:  # gap > 20
+                        if _f195_pass:
+                            gap_duration = min(gap, 60)
+                        elif prefer_soft_poi:  # gap > 20
                             gap_duration = min(gap, 40)  # Cap at 40 min for soft activities
                         else:
                             gap_duration = min(gap, 60)  # Cap at 60 min for smaller gaps
@@ -3318,10 +3520,10 @@ class PlanService:
                         current_fill_end = current_end + gap_duration
 
                         def _append_remaining_free_time(rem_gap: int, fill_end: int) -> int:
-                            """FIX #193: fill leftover gap as one block (not 5×60min)."""
+                            """FIX #193: fill leftover gap; FIX #195: 60min chunks only."""
                             if rem_gap <= 15:
                                 return fill_end
-                            next_duration = rem_gap
+                            next_duration = min(rem_gap, 60) if _f195_pass else rem_gap
                             if day_end_str:
                                 day_end_min = time_to_minutes(day_end_str)
                                 if fill_end + next_duration > day_end_min:
@@ -3330,7 +3532,11 @@ class PlanService:
                                         return fill_end
                             next_start = minutes_to_time(fill_end)
                             next_end = minutes_to_time(fill_end + next_duration)
-                            print(f"[GAP FILLING] FIX #193: remaining {rem_gap}min → single free_time ({next_start}-{next_end})")
+                            tag = "FIX #195" if _f195_pass else "FIX #193"
+                            print(
+                                f"[GAP FILLING] {tag}: remaining {rem_gap}min → "
+                                f"free_time ({next_start}-{next_end})"
+                            )
                             merged_label = (
                                 "Dłuższy odpoczynek / spacer po okolicy"
                                 if next_duration >= 90
@@ -3345,7 +3551,11 @@ class PlanService:
                                 suggestions=free_time_suggestions[:3] if 'free_time_suggestions' in locals() else None,
                                 is_technical_buffer=False,
                             ))
-                            return fill_end + next_duration
+                            new_end = fill_end + next_duration
+                            new_rem = rem_gap - next_duration
+                            if _f195_pass and new_rem > 15:
+                                return _append_remaining_free_time(new_rem, new_end)
+                            return new_end
 
                         current_fill_end = _append_remaining_free_time(remaining_gap, current_fill_end)
         

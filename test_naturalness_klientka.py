@@ -182,6 +182,57 @@ def check_underground_caves(resp, poi_by_id: dict) -> list[str]:
     return errs
 
 
+def check_afternoon_topup(resp, poi_by_id: dict) -> list[str]:
+    """FIX #195: bez ciężkiego szlaku — nie jeden wielki popołudniowy free_time (>3h od 14:00)."""
+    from app.domain.planner.engine import time_to_minutes
+    errs = []
+    for day in resp.days:
+        max_trail = 0
+        for it in day.items:
+            if getattr(it, "type", None) != ItemType.ATTRACTION:
+                continue
+            p = poi_by_id.get(getattr(it, "poi_id", ""), {})
+            item_dur = int(getattr(it, "duration_min", 0) or 0)
+            if p.get("type") == "trail":
+                max_trail = max(
+                    max_trail,
+                    int(p.get("time_min") or p.get("duration_min") or item_dur or 0),
+                )
+            elif item_dur >= 180:
+                max_trail = max(max_trail, item_dur)
+        if max_trail >= 300:
+            continue
+        # Po szlaku z regeneracją (atrakcja po szlaku lub 4h+) — duży free_time OK.
+        if max_trail >= 120:
+            has_post_trail = False
+            trail_done = False
+            for it in day.items:
+                if getattr(it, "type", None) != ItemType.ATTRACTION:
+                    continue
+                p = poi_by_id.get(getattr(it, "poi_id", ""), {})
+                _idur = int(getattr(it, "duration_min", 0) or 0)
+                _trail_like = p.get("type") == "trail" or _idur >= 180
+                if _trail_like:
+                    trail_done = True
+                elif trail_done:
+                    has_post_trail = True
+                    break
+            if has_post_trail or max_trail >= 240:
+                continue
+        for it in day.items:
+            if getattr(it, "type", None) != ItemType.FREE_TIME:
+                continue
+            dur = int(getattr(it, "duration_min", 0) or 0)
+            if dur < 180 or not it.start_time:
+                continue
+            if time_to_minutes(it.start_time) < 960:
+                errs.append(
+                    f"day {day.day}: {dur}min free_time from {it.start_time} "
+                    f"(afternoon top-up expected)"
+                )
+    return errs
+
+
 def check_consecutive_free_time_merged(resp) -> list[str]:
     """FIX #193: max 2 kolejne bloki free_time (scalenie w jeden sensowny)."""
     errs = []
@@ -304,6 +355,7 @@ def main():
             issues.extend(check_underground_caves(resp, poi_by_id))
         issues.extend(check_no_far_excursion_after_long_trail(resp, poi_by_id))
         issues.extend(check_no_sightseeing_after_long_trail(resp, poi_by_id))
+        issues.extend(check_afternoon_topup(resp, poi_by_id))
         issues.extend(check_consecutive_free_time_merged(resp))
         if n == 8:
             issues.extend(check_test08_regions(resp, poi_by_id))
