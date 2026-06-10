@@ -83,6 +83,17 @@ def is_zakopane_trip(context: Optional[Dict[str, Any]] = None) -> bool:
     return bool(context and context.get("is_zakopane_trip"))
 
 
+def multi_city_density_mode(
+    context: Optional[Dict[str, Any]] = None,
+    city_pool_size: int = 0,
+) -> bool:
+    """FIX #194: looser fill gates for single-city trips with a modest POI pool."""
+    if not context or context.get("is_zakopane_trip") or context.get("is_cluster"):
+        return False
+    pool = city_pool_size or int(context.get("city_pool_size") or 0)
+    return 0 < pool < 85
+
+
 def dinner_suggestions(is_zakopane: bool) -> List[str]:
     if is_zakopane:
         return ["Regionalna restauracja", "Bacówka", "Karcma góralska"]
@@ -195,4 +206,19 @@ def build_day_gap_fill_pool(
         pool = filter_pois_by_cities(pool, cluster_cities)
     elif requested_city:
         pool = filter_pois_by_city(pool, requested_city)
+    return pool
+
+
+def build_multi_city_gap_fill_pool(
+    all_pois: List[Dict[str, Any]],
+    *,
+    requested_city: str = "",
+    cluster_cities: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """FIX #194: full city pool for sparse-day gap-fill (non-Zakopane only)."""
+    pool = list(all_pois)
+    if cluster_cities:
+        return filter_pois_by_cities(pool, cluster_cities)
+    if requested_city:
+        return filter_pois_by_city(pool, requested_city)
     return pool

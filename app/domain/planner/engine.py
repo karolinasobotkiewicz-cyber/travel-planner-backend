@@ -3484,8 +3484,20 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         _fallback_for_day = (fallback_per_day[day_num]
                              if fallback_per_day is not None else pois)
 
-        # FIX #175: always pass the FULL trip-wide used set — no sliding window.
+        # FIX #175: trip-wide dedup (Zakopane). FIX #194: sliding window for modest multi-city pools.
         _global_used_before_day = frozenset(global_used_pois)
+        _f194_sliding = (
+            context.get("multi_city_density_mode")
+            and num_days >= 4
+            and int(context.get("city_pool_size") or 0) < 60
+        )
+        if _f194_sliding and day_num >= 2:
+            _reopen = set()
+            for _prev in daily_used_sets[:max(0, day_num - 2)]:
+                _reopen.update(_prev)
+            for _pid in _reopen:
+                global_used_pois.discard(_pid)
+            print(f"[FIX #194] Day {day_num + 1}: sliding dedup reopened {len(_reopen)} POIs")
         _global_used_for_day = global_used_pois
 
         day_plan = build_day(
@@ -3530,14 +3542,16 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         # FIX #185 (06.06.2026): 120 → 90 min — catch remaining sparse days with less free_time.
         # FIX #192 (06.06.2026): 5-7 day trips — retry sooner (client: 5-6h free_time/day).
         _f160_nd = context.get("num_days", 1)
+        _f160_mc = context.get("multi_city_density_mode")
         _f160_underfilled = (
             (_f160_attr < 2) or (_f160_free > 90)
             or (_f160_nd >= 5 and _f160_free > 60 and _f160_attr < 4)
             or (_f160_nd >= 5 and _f160_free > 150)
+            or (_f160_mc and _f160_attr < 3 and _f160_free > 60)
         )
         _f160_retry_pool = (
             pois
-            if _f160_nd >= 5 and _f160_free > 90
+            if (_f160_nd >= 5 and _f160_free > 90) or (_f160_mc and _f160_underfilled)
             else _fallback_for_day
         )
         if (
@@ -6444,6 +6458,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         # substantial POIs instead of leaving multi-hour free_time. (FIX #162: 180 → 120.)
         if attraction_count < 2 or remaining_to_end > 120:
             max_gap_fill = max(max_gap_fill, 4)
+        if context.get("multi_city_density_mode") and attraction_count < 3:
+            max_gap_fill = max(max_gap_fill, 5)
 
         # FIX #187b: last day of 6–7d Zone C trip — keep filling afternoon (client sparse_day D7).
         _f187_last_day = (
@@ -6472,7 +6488,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # day has >= 2 attractions AND the remaining gap is < 2h we revert to the
             # original light-filler behaviour (zero regression for already-filled days).
             # (FIX #162: lowered 180 → 120 to also close ~2h residual free blocks.)
-            _f159_sparse_mode = (attraction_count < 2 or remaining_to_end > 120)
+            _f194_mc = context.get("multi_city_density_mode")
+            _f159_sparse_mode = (
+                attraction_count < (3 if _f194_mc else 2)
+                or remaining_to_end > (90 if _f194_mc else 120)
+            )
             _f159_uncovered_prefs = (
                 [pp for pp in user.get("preferences", [])[:3] if pp not in covered_preferences]
                 if _f159_sparse_mode else []
@@ -6625,29 +6645,28 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # Skip low-quality fillers (must_see < 4) when day is already well-filled (>=3 POIs)
                 # and there is still significant time left (>60 min) — prevents padding with noise.
                 # FIX D: Softened to must_see < 2.5 and attraction_count >= 2 on late long-trip days.
-                if user.get("target_group") == "solo":
-                    _gf136_must_see = p.get("must_see", p.get("must_see_score", 5))
-                    try:
-                        _gf136_must_see = float(_gf136_must_see)
-                    except (TypeError, ValueError):
-                        _gf136_must_see = 5.0
-                    _gf136_threshold = 2.5 if _fixd_is_late_trip else 4.0
-                    _gf136_count = 2 if _fixd_is_late_trip else 4
-                    if _gf136_must_see < _gf136_threshold and attraction_count >= _gf136_count and remaining_to_end > 60:
-                        continue  # Solo: skip low-quality fillers when day is already well-filled
+                # FIX #194: skip gate when multi-city day still sparse (<3 attractions).
+                if not (_f194_mc and attraction_count < 3):
+                    if user.get("target_group") == "solo":
+                        _gf136_must_see = p.get("must_see", p.get("must_see_score", 5))
+                        try:
+                            _gf136_must_see = float(_gf136_must_see)
+                        except (TypeError, ValueError):
+                            _gf136_must_see = 5.0
+                        _gf136_threshold = 2.5 if _fixd_is_late_trip else 4.0
+                        _gf136_count = 2 if _fixd_is_late_trip else 4
+                        if _gf136_must_see < _gf136_threshold and attraction_count >= _gf136_count and remaining_to_end > 60:
+                            continue  # Solo: skip low-quality fillers when day is already well-filled
 
-                # FIX #138 (31.05.2026): Global filler quality gate — ALL profiles
-                # Skip noise-level fillers (must_see < 3) when day already has >=3 attractions
-                # and >45 min remain. Lower thresholds than FIX #136 (solo-only) — global floor.
-                # FIX D: Softened to attraction_count >= 2 on late long-trip days.
-                _gf138_must_see = p.get("must_see", p.get("must_see_score", 5))
-                try:
-                    _gf138_must_see = float(_gf138_must_see)
-                except (TypeError, ValueError):
-                    _gf138_must_see = 5.0
-                _gf138_count = 2 if _fixd_is_late_trip else 4
-                if _gf138_must_see < 2.0 and attraction_count >= _gf138_count and remaining_to_end > 45:
-                    continue  # Global: skip noise-level fillers on already well-filled days
+                    # FIX #138 (31.05.2026): Global filler quality gate — ALL profiles
+                    _gf138_must_see = p.get("must_see", p.get("must_see_score", 5))
+                    try:
+                        _gf138_must_see = float(_gf138_must_see)
+                    except (TypeError, ValueError):
+                        _gf138_must_see = 5.0
+                    _gf138_count = 2 if _fixd_is_late_trip else 4
+                    if _gf138_must_see < 2.0 and attraction_count >= _gf138_count and remaining_to_end > 45:
+                        continue  # Global: skip noise-level fillers on already well-filled days
 
                 # FIX #125 (30.05.2026): Block long activities for toddlers in gap-fill (children_age <= 5)
                 _ca_gf_125 = user.get("children_age")

@@ -239,6 +239,43 @@ class PlanService:
             "severity": "warning",
         }
 
+    def _day_density_warnings(
+        self,
+        days: List[DayPlan],
+        day_start: str,
+        day_end: str,
+    ) -> List[Dict[str, Any]]:
+        """FIX #194: flag days with too few attractions or >50% free_time."""
+        warnings: List[Dict[str, Any]] = []
+        window_min = max(time_to_minutes(day_end) - time_to_minutes(day_start), 1)
+        for day_plan in days:
+            attrs = sum(
+                1 for it in day_plan.items
+                if getattr(it, "type", None) == ItemType.ATTRACTION
+            )
+            ft_min = sum(
+                (getattr(it, "duration_min", 0) or 0)
+                for it in day_plan.items
+                if getattr(it, "type", None) == ItemType.FREE_TIME
+            )
+            ft_ratio = ft_min / window_min
+            if attrs >= 2 and ft_ratio <= 0.5:
+                continue
+            warnings.append({
+                "type": "day_density_low",
+                "day": day_plan.day,
+                "attractions": attrs,
+                "free_time_min": ft_min,
+                "free_time_pct": int(ft_ratio * 100),
+                "message": (
+                    f"Dzień {day_plan.day}: {attrs} atrakcji, "
+                    f"{int(ft_ratio * 100)}% czasu wolnego — rozważ krótszy wyjazd "
+                    f"lub uzupełnienie bazy POI."
+                ),
+                "severity": "info" if attrs >= 2 else "warning",
+            })
+        return warnings
+
     def _ensure_preference_coverage(
         self,
         days: List[DayPlan],
@@ -684,6 +721,15 @@ class PlanService:
             )
         
         print(f"[ROUTER] TOTAL attractions/trails loaded: {len(all_pois_dict)}\n")
+        # FIX #194: modest single-city pools (Kraków, Warszawa…) — looser fill, not Zakopane.
+        from app.domain.planner.city_copy import multi_city_density_mode
+        context["is_cluster"] = is_cluster
+        context["city_pool_size"] = len(all_pois_dict)
+        context["multi_city_density_mode"] = multi_city_density_mode(
+            context, len(all_pois_dict),
+        )
+        if context["multi_city_density_mode"]:
+            print(f"[FIX #194] Multi-city density mode ON ({len(all_pois_dict)} POIs)")
         # ============================================================
         
         # ============================================================
@@ -1110,6 +1156,18 @@ class PlanService:
                               f"→ topped up to {len(merged)} from nearer zones")
                         pools[d] = merged
 
+                # FIX #194: thin zone slice on multi-city day → top up from full city pool.
+                if context.get("multi_city_density_mode"):
+                    _MC_MIN_POOL = 15
+                    for d in range(num_days):
+                        if len(pools[d]) < _MC_MIN_POOL:
+                            merged = _dedupe_pois(pools[d] + all_pois)
+                            print(f"[FIX #194]   Day {d+1} zone pool {len(pools[d])} "
+                                  f"→ {len(merged)} (city top-up)")
+                            pools[d] = merged
+                        if len(fallbacks[d]) < _MC_MIN_POOL:
+                            fallbacks[d] = _dedupe_pois(fallbacks[d] + all_pois)
+
                 return pools, fallbacks, day_geo_regions
 
             _zone_pools, _zone_fallbacks, _day_geo_regions = _build_zone_pools(all_pois_dict, num_days)
@@ -1243,19 +1301,33 @@ class PlanService:
                 all_pois_lookup=all_pois_dict,
             )
 
-            # FIX #192: extra gap-fill passes with full city pool when day still sparse.
-            if num_days >= 4:
-                for _gf_pass in range(2):
+            # FIX #192/#194: extra gap-fill passes with full city pool when day still sparse.
+            _f194_gf = day_context.get("multi_city_density_mode", False)
+            if num_days >= 4 or _f194_gf:
+                _gf_passes = 3 if _f194_gf else 2
+                for _gf_pass in range(_gf_passes):
                     _ft_before = sum(
                         (getattr(it, "duration_min", 0) or 0)
                         for it in day_items
                         if getattr(it, "type", None) == ItemType.FREE_TIME
                     )
-                    if _ft_before <= 90:
+                    _attr_n = sum(
+                        1 for it in day_items
+                        if getattr(it, "type", None) == ItemType.ATTRACTION
+                    )
+                    if _ft_before <= 90 and (not _f194_gf or _attr_n >= 3):
                         break
+                    _gf_pool = all_pois_dict
+                    if _f194_gf:
+                        from app.domain.planner.city_copy import build_multi_city_gap_fill_pool
+                        _gf_pool = build_multi_city_gap_fill_pool(
+                            all_pois_dict,
+                            requested_city=_requested_city,
+                            cluster_cities=cities_to_load if is_cluster else None,
+                        )
                     day_items = self._fill_gaps_in_items(
                         day_items,
-                        all_pois_dict,
+                        _gf_pool,
                         day_context,
                         user,
                         global_used_pois,
@@ -1589,6 +1661,15 @@ class PlanService:
         preference_coverage = self._compute_preference_coverage(
             days, user.get("preferences", []), all_pois_dict
         )
+
+        if context.get("multi_city_density_mode"):
+            for _dw in self._day_density_warnings(days, day_start, day_end):
+                if not any(
+                    w.get("type") == "day_density_low" and w.get("day") == _dw.get("day")
+                    for w in plan_warnings
+                ):
+                    plan_warnings.append(_dw)
+
         for _pref, _pinfo in preference_coverage.items():
             if not _pinfo.get("covered"):
                 _w = self._preference_not_covered_warning(
@@ -2656,6 +2737,7 @@ class PlanService:
         target_group = user.get("target_group", "solo")
         limits = GROUP_ATTRACTION_LIMITS.get(target_group, {"hard": 8})
         hard_limit = limits["hard"]
+        _f194_mc = context.get("multi_city_density_mode", False)
         
         result = []
         
@@ -2984,7 +3066,7 @@ class PlanService:
                                 must_see = poi.get('must_see_score', 0) or poi.get('must_see', 0) or 0
                                 must_see_ok = must_see <= (
                                     9 if context.get("num_days", 1) >= 5 and attraction_count < 3
-                                    else 2
+                                    else (6 if _f194_mc and attraction_count < 3 else 2)
                                 )
                                 
                                 # Criteria 4: type=spacer, punkt widokowy, plac, deptak, krótka ekspozycja
@@ -2997,7 +3079,10 @@ class PlanService:
                                 criteria_met = sum([intensity_ok, duration_ok, must_see_ok, type_ok])
                                 _soft_need = (
                                     2
-                                    if context.get("num_days", 1) >= 5 and attraction_count < 4
+                                    if (
+                                        (_f194_mc and attraction_count < 3)
+                                        or (context.get("num_days", 1) >= 5 and attraction_count < 4)
+                                    )
                                     else 3
                                 )
                                 is_soft_poi = criteria_met >= _soft_need
@@ -3023,9 +3108,14 @@ class PlanService:
                             elif prefer_soft_poi and not is_soft_poi:
                                 _pen = (
                                     10
-                                    if context.get("num_days", 1) >= 5
-                                    and attraction_count < 3
-                                    and gap > 90
+                                    if (
+                                        (_f194_mc and attraction_count < 3)
+                                        or (
+                                            context.get("num_days", 1) >= 5
+                                            and attraction_count < 3
+                                            and gap > 90
+                                        )
+                                    )
                                     else 30
                                 )
                                 score -= _pen
