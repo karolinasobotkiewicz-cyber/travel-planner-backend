@@ -505,10 +505,11 @@ def normalize_poi(p, index):
         "id": poi_id,  # CLIENT DATA UPDATE: Use loader ID
         "name": _safe_str(p.get("name") or p.get("Name")),
         "description_short": _safe_str(p.get("Description_short")),
-        "address": _safe_str(p.get("Address")),
-        "city": _safe_str(p.get("City")),  # FIX: Cross-city POI contamination (15.05.2026) - preserve City for filtering and display
-        "lat": _safe_float(p.get("Lat")),
-        "lng": _safe_float(p.get("Lng")),
+        # FIX #198: multi_city loader uses lowercase lat/lng/address/city; Zakopane uses Excel casing
+        "address": _safe_str(p.get("address") or p.get("Address")),
+        "city": _safe_str(p.get("city") or p.get("City")),
+        "lat": _safe_float(p.get("lat") or p.get("Lat")),
+        "lng": _safe_float(p.get("lng") or p.get("Lng")),
         "time_min": int(_safe_float(p.get("time_min"), 30)),
         "time_max": int(_safe_float(p.get("time_max"), 60)),
         "must_see": must_see,

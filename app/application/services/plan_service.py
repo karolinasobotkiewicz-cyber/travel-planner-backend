@@ -308,10 +308,15 @@ class PlanService:
                 last_end_min = time_to_minutes(it.end_time)
 
         afternoon_slack = max(total_ft, gap_to_dinner)
-        if afternoon_slack < 90:
+        from app.domain.planner.city_copy import is_city_tourism_trip
+        # FIX #198: city 2–3 day trips — top-up przy ≥60 min (było 90)
+        _topup_min = 60 if (
+            is_city_tourism_trip(context)
+            or context.get("multi_city_density_mode")
+        ) else 90
+        if afternoon_slack < _topup_min:
             return items
 
-        from app.domain.planner.city_copy import is_city_tourism_trip
         if is_city_tourism_trip(context):
             _cap_n = sum(
                 1 for it in items if getattr(it, "type", None) == ItemType.ATTRACTION
@@ -1492,8 +1497,10 @@ class PlanService:
                 all_pois_lookup=all_pois_dict,
             )
 
-            # FIX #195: replace mega afternoon free_time with light POI attempts (≤2 passes).
-            for _f195_i in range(2):
+            # FIX #195/#198: replace mega afternoon free_time with light POI attempts.
+            _f195_max = 3 if day_context.get("multi_city_density_mode") else 2
+            _f195_ft_thresh = 60 if day_context.get("multi_city_density_mode") else 90
+            for _f195_i in range(_f195_max):
                 _ft_big = sum(
                     int(getattr(it, "duration_min", 0) or 0)
                     for it in day_items
@@ -1501,7 +1508,7 @@ class PlanService:
                     and getattr(it, "start_time", None)
                     and time_to_minutes(it.start_time) < 960
                 )
-                if _ft_big < 90:
+                if _ft_big < _f195_ft_thresh:
                     break
                 day_items = self._afternoon_topup_items(
                     day_items,
@@ -2078,7 +2085,6 @@ class PlanService:
             first_lng = first_poi.get("lng")  # lowercase! POI from engine has lowercase keys
             
             if not is_outside_zakopane and first_lat and first_lng:
-                from app.domain.planner.engine import haversine_distance
                 distance_km = haversine_distance(hotel_location["lat"], hotel_location["lng"], first_lat, first_lng)
                 # Consider outside if distance > 5 km from centrum
                 is_outside_zakopane = distance_km > 5.0
@@ -3160,7 +3166,9 @@ class PlanService:
                     # FIX #4 (15.02.2026): Lower threshold from 20 to 15 min
                     # FIX #186 (A3): 12 min gaps on 4+ day trips — less afternoon dead time.
                     # FIX #187b: last Zone C day — fill smaller gaps too.
-                    _gap_min = 10 if _f187_last_day_ps else (12 if context.get("num_days", 1) >= 4 else 15)
+                    _gap_min = 10 if _f187_last_day_ps else (
+                        12 if (context.get("num_days", 1) >= 4 or _f194_mc) else 15
+                    )
                     if gap > _gap_min:
                         # HOTFIX (02.02.2026): Check if attraction limit reached
                         if attraction_count >= hard_limit:

@@ -142,10 +142,38 @@ def main():
     failed = []
 
     print("=" * 70)
-    print("MULTI-CITY DENSITY TEST — FIX #194 + #197")
+    print("MULTI-CITY DENSITY TEST — FIX #194 + #197 + #198")
     print("=" * 70)
 
     from app.domain.scoring.preference_coverage import poi_covers_preference_report
+
+    # FIX #198: GPS/address must survive normalize merge
+    _wawa = load_multi_city_poi(mc_path, ["Warszawa"])
+    _bad_gps = [
+        p for p in _wawa
+        if not p.get("lat") or not p.get("lng") or not p.get("city")
+    ]
+    if _bad_gps:
+        failed.append(("Warszawa-GPS", [f"{len(_bad_gps)} POI bez lat/lng/city"]))
+        print(f"  FAIL  Warszawa-GPS: {len(_bad_gps)} POI bez współrzędnych")
+    else:
+        passed += 1
+        print("  PASS  Warszawa-GPS (coords preserved)")
+
+    # FIX #198: urban landmarks ≠ nature_landscape in coverage report
+    _deny_names = ("Pałac Kultury", "Pomnik Syreny")
+    _cov_bad = []
+    for p in _wawa:
+        nm = p.get("name", "")
+        if any(d in nm for d in _deny_names):
+            if poi_covers_preference_report(p, "nature_landscape"):
+                _cov_bad.append(nm)
+    if _cov_bad:
+        failed.append(("coverage-deny", _cov_bad))
+        print(f"  FAIL  coverage-deny: {_cov_bad}")
+    else:
+        passed += 1
+        print("  PASS  coverage-deny (PKiN/Syrenka)")
 
     for city in cities:
         try:
@@ -192,7 +220,7 @@ def main():
         print(f"  FAIL  Kraków-5d: {e}")
 
     print("=" * 70)
-    total = len(cities) + 1
+    total = len(cities) + 3
     print(f"SUMMARY: {passed}/{total} passed")
     if failed:
         for city, issues in failed:

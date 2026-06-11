@@ -22,6 +22,10 @@ _COVERAGE_DENY: Dict[str, frozenset] = {
         # FIX #197: arenas / landmarks mis-tagged as nature (Spodek, Syrenka views…)
         "stadium", "sports_venue", "arena", "iconic_architecture", "iconic_landmark",
         "city_symbol", "landmark", "sports_hall", "event_venue",
+        # FIX #198: urban observation decks / city icons (PKiN, Syrenka…)
+        "panoramic_view", "panoramic_views", "panoramic_viewpoint",
+        "observation_deck", "architecture_icon", "city_landmark",
+        "photo_spot", "mermaid_statue", "scenic_photo_spot",
     }),
     "local_food_experience": frozenset({
         "urban_life", "leisure_space", "riverside_walk", "city_views", "city_view",
@@ -66,8 +70,20 @@ def excel_tags(poi: Dict[str, Any]) -> Set[str]:
     return {str(t).strip().lower() for t in (poi.get("tags") or []) if t and str(t).strip()}
 
 
+_NATURE_LANDMARK_NAME_DENY = (
+    "pałac kultury",
+    "pomnik syreny",
+    "syrenka warszawska",
+    "pkin",
+)
+
+
 def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
     """True when Excel tags justify reporting this POI under `pref` in coverage API."""
+    if pref == "nature_landscape":
+        _name = (poi.get("name") or poi.get("Name") or "").lower()
+        if any(_frag in _name for _frag in _NATURE_LANDMARK_NAME_DENY):
+            return False
     tags = excel_tags(poi)
     if not tags:
         return False
