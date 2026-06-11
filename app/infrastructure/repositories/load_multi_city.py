@@ -310,6 +310,30 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
     for city in cities:
         city_count = len([p for p in poi_list if p['city'].lower() == city.lower()])
         print(f"    - {city}: {city_count} POI")
+
+    # FIX #197 (06.06.2026): normalize like Zakopane loader — must_see, target_groups,
+    # recommended_time_of_day, budget_level, kids_only (engine hard filters depend on these).
+    from app.infrastructure.repositories.normalizer import normalize_pois
+
+    prepped = []
+    for p in poi_list:
+        q = dict(p)
+        q.setdefault("recommended_time_of_day", q.get("best_time"))
+        if q.get("target_group") and not q.get("target_groups"):
+            q["target_groups"] = q["target_group"]
+        prepped.append(q)
+    normalized = normalize_pois(prepped)
+    merged = []
+    for orig, norm in zip(poi_list, normalized):
+        m = {**orig, **norm}
+        m["tags_excel"] = orig.get("tags_excel") or orig.get("tags", [])
+        m["target_groups"] = norm.get("target_groups") or orig.get("target_group", [])
+        m["recommended_time_of_day"] = (
+            norm.get("recommended_time_of_day") or orig.get("best_time") or "any"
+        )
+        merged.append(m)
+    poi_list = merged
+    print(f"[FIX #197] Normalized {len(poi_list)} multi-city POIs (must_see/target_groups/tod)")
     
     return poi_list
 

@@ -12,7 +12,10 @@ from app.domain.scoring import (
     calculate_body_transition_score,
     get_next_body_state,
 )
-from app.domain.scoring.family_fit import should_exclude_by_target_group
+from app.domain.scoring.family_fit import (
+    is_child_oriented_attraction,
+    should_exclude_by_target_group,
+)
 from app.domain.scoring.intensity_scoring import should_exclude_by_intensity, calculate_intensity_score
 from app.domain.scoring.preferences import calculate_preference_score, calculate_priority_bonus
 from app.domain.scoring.travel_style import calculate_travel_style_score
@@ -895,6 +898,43 @@ def user_wants_nature_museum_balance(user: dict) -> bool:
         "nature_landscape" in prefs
         and ("museum_heritage" in prefs or "history_mystery" in prefs)
     )
+
+
+_PARK_GREEN_TAGS = frozenset({
+    "park", "urban_park", "city_park", "historic_city_park", "botanical_garden",
+    "historic_botanical_garden", "forest_park_trails", "riverside_park", "green_belt",
+    "nature_park", "green_space", "public_garden",
+})
+
+_PARK_NAME_MARKERS = (
+    " park", "planty", "bulwar", "ogród ", "ogrod ", "las ", "rezerwat",
+)
+
+
+def is_park_or_green_space_poi(poi: dict) -> bool:
+    """FIX #197: cap park/green POI per day (Kraków nature_landscape overload)."""
+    tags = {str(t).lower() for t in (poi.get("tags") or []) if t}
+    if tags & _PARK_GREEN_TAGS:
+        return True
+    name = f" {str(poi.get('name', '')).lower()} "
+    return any(m in name for m in _PARK_NAME_MARKERS)
+
+
+def is_evening_only_poi(poi: dict) -> bool:
+    """FIX #197: POI that must not be scheduled before dusk (e.g. Galeria Neonów)."""
+    tod = str(poi.get("recommended_time_of_day") or poi.get("best_time") or "").lower()
+    if tod:
+        parts = [x.strip() for x in tod.replace("/", ",").split(",") if x.strip()]
+        ev_only = {"evening", "night", "wieczor", "wieczór", "noc"}
+        if parts and all(p in ev_only or p in ("any", "") for p in parts):
+            if any(p in ev_only for p in parts):
+                return True
+        if len(parts) == 1 and parts[0] in ev_only:
+            return True
+    name = str(poi.get("name", "")).lower()
+    if "neon" in name and ("galeria" in name or "neon side" in name):
+        return True
+    return False
 
 
 def is_kids_focused_poi(poi):
@@ -2054,7 +2094,9 @@ def score_poi(
 
     # Apply conditional must_see bonus
     # PHASE 5: Apply must_see_bonus multiplier from router (city_tourism gets 1.5x)
-    must_see_value = safe_float(p.get("must_see"))
+    must_see_value = safe_float(
+        p.get("must_see") or p.get("must_see_score") or p.get("Must see score")
+    )
     must_see_multiplier = scoring_weights.get("must_see_bonus", 1.0)
     
     if poi_matches_preferences or not user_preferences:
@@ -2068,6 +2110,21 @@ def score_poi(
         if must_see_value > 5:  # Log for high must_see POI
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [MUST_SEE REDUCED] {poi_name_safe}: {must_see_boost:.1f} (no preference match, user wants: {user_preferences}, must_see_bonus={must_see_multiplier})")
+
+    # FIX #197: extra iconic boost for city symbols (must_see >= 8)
+    from app.domain.planner.city_copy import is_city_tourism_trip
+    if must_see_value >= 8 and is_city_tourism_trip(context):
+        iconic_extra = must_see_value * 1.5 * must_see_multiplier
+        score += iconic_extra
+
+    # FIX #197: Be Happy Museum and similar selfie-museums — lower when not must-see icon
+    _pname197 = str(p.get("name", "")).lower()
+    if "be happy" in _pname197 and must_see_value < 7:
+        score -= 30.0
+
+    # FIX #197: family_kids — prefer child attractions over dry history museums
+    if user.get("target_group") == "family_kids" and is_child_oriented_attraction(p):
+        score += 25.0
     
     # FIX #Problem6 (CLIENT FEEDBACK 03.05.2026 - Round 2): Conditional priority bonus
     # Tests 03, 07, 09, 10: High-priority generic POI (museums, viewpoints) dominate plans
@@ -3511,10 +3568,12 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
 
         # FIX #175: trip-wide dedup (Zakopane). FIX #194: sliding window for modest multi-city pools.
         _global_used_before_day = frozenset(global_used_pois)
+        # FIX #197: sliding dedup caused repeat POI on 5-7 day city trips — disable for 5+ days.
         _f194_sliding = (
             context.get("multi_city_density_mode")
             and num_days >= 4
-            and int(context.get("city_pool_size") or 0) < 60
+            and num_days < 5
+            and int(context.get("city_pool_size") or 0) < 50
         )
         if _f194_sliding and day_num >= 2:
             _reopen = set()
@@ -3896,6 +3955,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     # Client: "Day 5 has 3 viewpoints next to each other (Bachledzki Wierch, Punkt widokowy
     # na Tatry, Punkt widokowy na Antałówce)". Limit clustering of same-experience POIs.
     daily_viewpoint_count = 0
+    daily_park_count = 0  # FIX #197: cap parks/green spaces per day
 
     # FIX #133 (31.05.2026): Track consecutive short POIs (time_min <= 35) per day
     # Short POIs back-to-back create a "checklist tourist" feel — penalise the 3rd+
@@ -3936,6 +3996,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         limits["soft"] = min(8, limits["soft"] + 1)  # Cap at 8 (9 POI/day too dense)
         limits["hard"] = min(9, limits["hard"] + 1)  # Cap at 9 absolute max
         print(f"[LIMITS] Travel style 'adventure' modifier applied: soft={limits['soft']}, hard={limits['hard']}")
+
+    # FIX #197: city tourism — max ~6 attractions/day (client: 7-8 too intensive)
+    from app.domain.planner.city_copy import is_city_tourism_trip
+    if is_city_tourism_trip(context):
+        limits["soft"] = min(limits["soft"], 5)
+        limits["hard"] = min(limits["hard"], 6)
+        print(f"[FIX #197] City tourism cap: soft={limits['soft']}, hard={limits['hard']}")
 
     # FIX #123 (30.05.2026): Solo progressive daily limits — fewer POIs as trip continues
     # FIX #192: skip on 5+ day balanced trips (caused sparse afternoons with huge free_time).
@@ -4463,6 +4530,19 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 print(f"[VIEWPOINT CAP] EXCLUDED: {poi_name_safe} - max 2 scenic/day (count={daily_viewpoint_count})")
                 continue
 
+            # FIX #197: max 2 parks/green per day (Kraków nature_landscape overload)
+            _park_cap = 2
+            if daily_park_count >= _park_cap and is_park_or_green_space_poi(p):
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[FIX #197] PARK CAP: EXCLUDED {poi_name_safe} ({daily_park_count}/{_park_cap})")
+                continue
+
+            # FIX #197: evening-only POI (Neon Side) — not before 17:00
+            if is_evening_only_poi(p) and now < 17 * 60:
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[FIX #197] EVENING ONLY: EXCLUDED {poi_name_safe} before 17:00")
+                continue
+
             # FIX #190: nature + museum/history prefs — max 2 culture sites/day.
             if user_wants_nature_museum_balance(user) and daily_museum_count >= 2 and is_heritage_culture_site_poi(p):
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
@@ -4775,6 +4855,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if potential_cost > daily_limit:
                     print(f"[FILTER] EXCLUDED by budget: POI_ID={poi_id(p)} (cost={poi_cost_total:.0f} PLN, current={daily_cost:.0f}/{daily_limit} PLN)")
                     continue  # EXCLUDE - would exceed daily budget limit
+                # FIX #197: single POI must not exceed daily cap (Bungee 996 / limit 500)
+                if poi_cost_total > daily_limit:
+                    print(f"[FIX #197] BUDGET: EXCLUDED POI cost {poi_cost_total:.0f} > daily {daily_limit}")
+                    continue
+                _budget_lvl = user.get("budget")
+                if (
+                    isinstance(_budget_lvl, (int, float))
+                    and _budget_lvl <= 2
+                    and poi_cost_total > daily_limit * 0.85
+                ):
+                    print(f"[FIX #197] BUDGET: EXCLUDED expensive POI ({poi_cost_total:.0f} > 85% of {daily_limit})")
+                    continue
 
             travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
             
@@ -6096,6 +6188,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         if is_scenic_experience_poi(best):
             daily_viewpoint_count += 1
             print(f"[VIEWPOINT CAP] Scenic added today: {daily_viewpoint_count}/2")
+
+        if is_park_or_green_space_poi(best):
+            daily_park_count += 1
+            print(f"[FIX #197] Park/green added today: {daily_park_count}/2")
 
         # FIX #58 / #190: universal culture-site counter (adventure cap + nature balance cap).
         if is_heritage_culture_site_poi(best):

@@ -311,6 +311,14 @@ class PlanService:
         if afternoon_slack < 90:
             return items
 
+        from app.domain.planner.city_copy import is_city_tourism_trip
+        if is_city_tourism_trip(context):
+            _cap_n = sum(
+                1 for it in items if getattr(it, "type", None) == ItemType.ATTRACTION
+            )
+            if _cap_n >= 6:
+                return items
+
         trail_day = max_trail >= 180
         max_after = 0 if max_trail >= 300 else (1 if trail_day else 2)
         if not should_afternoon_topup_before_free_time(
@@ -347,6 +355,40 @@ class PlanService:
                 break
             if new_attrs >= base_attrs + 2:
                 break
+        return out
+
+    def _enforce_city_attraction_cap(
+        self,
+        items: List[Any],
+        context: Dict[str, Any],
+        poi_by_id: Dict[str, Dict[str, Any]],
+        max_attrs: int = 6,
+    ) -> List[Any]:
+        """FIX #197: gap-fill/top-up may exceed engine hard limit — trim lowest must_see."""
+        from app.domain.planner.city_copy import is_city_tourism_trip
+
+        if not is_city_tourism_trip(context):
+            return items
+        attr_slots = [
+            (i, it) for i, it in enumerate(items)
+            if getattr(it, "type", None) == ItemType.ATTRACTION
+        ]
+        if len(attr_slots) <= max_attrs:
+            return items
+
+        def _must_see(it) -> float:
+            p = poi_by_id.get(getattr(it, "poi_id", ""), {})
+            try:
+                return float(p.get("must_see") or p.get("must_see_score") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        drop_n = len(attr_slots) - max_attrs
+        drop_indices = {
+            i for i, _ in sorted(attr_slots, key=lambda x: _must_see(x[1]))[:drop_n]
+        }
+        out = [it for i, it in enumerate(items) if i not in drop_indices]
+        print(f"[FIX #197] City cap: trimmed {drop_n} attractions ({len(attr_slots)} → {max_attrs})")
         return out
 
     def _day_density_warnings(
@@ -395,6 +437,7 @@ class PlanService:
     ) -> tuple[List[DayPlan], List[Dict[str, Any]]]:
         """FIX #186 (A1): Swap weakest non-matching attraction for one POI per uncovered pref."""
         from app.domain.planner.engine import (
+            calculate_poi_cost_for_group,
             is_museum_heritage_poi,
             is_underground_poi,
             poi_matches_user_preference,
@@ -494,9 +537,20 @@ class PlanService:
             if coverage.get(pref, {}).get("covered"):
                 continue
 
+            from app.domain.scoring.family_fit import should_exclude_by_target_group
+
+            def _coverage_candidate_ok(p: dict) -> bool:
+                if should_exclude_by_target_group(p, user):
+                    return False
+                dl = user.get("daily_limit")
+                if dl and calculate_poi_cost_for_group(p, user) > dl:
+                    return False
+                return True
+
             candidates = [
                 p for p in poi_pool
                 if p.get("id") not in used_ids
+                and _coverage_candidate_ok(p)
                 and (
                     is_underground_poi(p) if pref == "underground"
                     else poi_matches_user_preference(p, pref)
@@ -513,9 +567,15 @@ class PlanService:
                 )
             elif pref == "history_mystery":
                 # FIX #193: po szlaku jaskinie zablokowane — muzeum/folklor zamiast cave
+                _industrial_tags = {
+                    "industrial_heritage", "mining_heritage", "historic_mine", "coal_mining",
+                    "industrial_architecture", "historic_factory", "underground_mine",
+                    "regional_heritage", "local_history",
+                }
                 candidates = [p for p in candidates if not is_underground_poi(p)]
                 candidates.sort(
                     key=lambda p: (
+                        0 if (set(p.get("tags") or []) & _industrial_tags) else 1,
                         0 if is_museum_heritage_poi(p) else 1,
                         -float(p.get("must_see") or p.get("must_see_score") or 0),
                         -_prio_val(p),
@@ -820,6 +880,13 @@ class PlanService:
         context["scoring_weights"] = router_config["scoring_weights"]
         # FIX #111 (06.06.2026): Pass cluster signals so engine uses correct road speeds + drive limits
         context["signals"] = router_config.get("signals", {})
+        # FIX #197: urban road speeds for single-city tourism (Kraków, Warszawa…)
+        if router_config["trip_type"] == TripType.CITY_TOURISM:
+            context["signals"] = {
+                **context.get("signals", {}),
+                "cluster_type": "urban_organism",
+            }
+        context["cluster_cities"] = cities_to_load if is_cluster else []
         
         # Fallback: If no data loaded, return empty plan
         if not all_pois_dict:
@@ -1478,6 +1545,12 @@ class PlanService:
                         all_pois_lookup=all_pois_dict,
                     )
             
+            # FIX #197: final city-tourism attraction cap (gap-fill / top-up safety net)
+            _poi_lookup_cap = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+            day_items = self._enforce_city_attraction_cap(
+                day_items, day_context, _poi_lookup_cap, max_attrs=6,
+            )
+
             # ETAP 2 - DAY 3: Update global_used with POIs added by gap filling
             for item in day_items:
                 if hasattr(item, 'poi_id') and item.poi_id:
@@ -2944,6 +3017,9 @@ class PlanService:
         # HOTFIX (02.02.2026): Get attraction limits for target group
         from ...domain.planner.engine import (
             GROUP_ATTRACTION_LIMITS,
+            calculate_poi_cost_for_group,
+            is_evening_only_poi,
+            is_park_or_green_space_poi,
             is_scenic_experience_poi,
             poi_geo_region_key,
             should_block_far_excursion_after_trail,
@@ -2952,8 +3028,9 @@ class PlanService:
         )
         _lookup = all_pois_lookup if all_pois_lookup is not None else all_pois
         poi_by_id = {p.get("id"): p for p in _lookup if p.get("id")}
-        from app.domain.planner.city_copy import poi_matches_city_filter
+        from app.domain.planner.city_copy import filter_pois_by_cities, poi_matches_city_filter
         _req_city = context.get("requested_city", "")
+        _cluster_cities = context.get("cluster_cities") or []
         _day_max_trail_min = 0
         for _it in items:
             _pid = getattr(_it, "poi_id", None)
@@ -2971,7 +3048,12 @@ class PlanService:
         target_group = user.get("target_group", "solo")
         limits = GROUP_ATTRACTION_LIMITS.get(target_group, {"hard": 8})
         hard_limit = limits["hard"]
+        from app.domain.planner.city_copy import is_city_tourism_trip
+        if is_city_tourism_trip(context):
+            hard_limit = min(hard_limit, 6)  # FIX #197: city tourism intensity cap
         _f194_mc = context.get("multi_city_density_mode", False)
+        _daily_limit_gf = user.get("daily_limit")
+        _daily_cost_gf = 0
         _f195_pass = context.get("afternoon_topup_pass", False)
         
         result = []
@@ -2981,6 +3063,7 @@ class PlanService:
         
         attraction_count = 0  # Count attractions to enforce limit
         daily_scenic_count = 0  # FIX #190: cap scenic experiences in plan_service gap fill
+        daily_park_count_gf = 0  # FIX #197
         
         _today_poi_ids = {
             getattr(it, "poi_id", None)
@@ -2997,6 +3080,10 @@ class PlanService:
                 _ex_poi = poi_by_id.get(item.poi_id, {"name": getattr(item, "name", "")})
                 if is_scenic_experience_poi(_ex_poi):
                     daily_scenic_count += 1
+                if is_park_or_green_space_poi(_ex_poi):
+                    daily_park_count_gf += 1
+                if _daily_limit_gf:
+                    _daily_cost_gf += calculate_poi_cost_for_group(_ex_poi, user)
         
         for i, item in enumerate(items):
             result.append(item)
@@ -3204,8 +3291,20 @@ class PlanService:
                             if poi_id in _future_reserved and poi_id not in _today_poi_ids:
                                 continue
 
-                            if _req_city and not poi_matches_city_filter(poi, _req_city):
+                            if _cluster_cities:
+                                if not filter_pois_by_cities([poi], _cluster_cities):
+                                    continue
+                            elif _req_city and not poi_matches_city_filter(poi, _req_city):
                                 continue
+
+                            if daily_park_count_gf >= 2 and is_park_or_green_space_poi(poi):
+                                continue
+                            if is_evening_only_poi(poi) and current_end < 17 * 60:
+                                continue
+                            if _daily_limit_gf:
+                                _poi_cost = calculate_poi_cost_for_group(poi, user)
+                                if _poi_cost > _daily_limit_gf or _daily_cost_gf + _poi_cost > _daily_limit_gf:
+                                    continue
 
                             # FIX #195: afternoon top-up — lekkie POI only (no szlaki / długie wizyty).
                             if _f195_pass:
@@ -3470,6 +3569,10 @@ class PlanService:
                             attraction_count += 1
                             if is_scenic_experience_poi(best_poi):
                                 daily_scenic_count += 1
+                            if is_park_or_green_space_poi(best_poi):
+                                daily_park_count_gf += 1
+                            if _daily_limit_gf:
+                                _daily_cost_gf += calculate_poi_cost_for_group(best_poi, user)
                             print(f"[GAP FILLING] Attraction count after fill: {attraction_count}/{hard_limit}")
                             
                             continue  # Skip free_time - POI added instead

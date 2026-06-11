@@ -19,11 +19,15 @@ _COVERAGE_DENY: Dict[str, frozenset] = {
         "river_crossing", "architecture_feature", "meeting_spot", "tourist_promenade",
         "optical_illusion", "interactive_fun", "fun_photo_spot", "visual_tricks",
         "educational_space",
+        # FIX #197: arenas / landmarks mis-tagged as nature (Spodek, Syrenka views…)
+        "stadium", "sports_venue", "arena", "iconic_architecture", "iconic_landmark",
+        "city_symbol", "landmark", "sports_hall", "event_venue",
     }),
     "local_food_experience": frozenset({
         "urban_life", "leisure_space", "riverside_walk", "city_views", "city_view",
         "shopping", "meeting_spot", "tourist_promenade", "leisure_activity",
         "botanical_collection", "plants", "greenhouse", "modern_bridge",
+        "square", "plaza", "european_square", "city_square", "memorial",
     }),
     "kids_attractions": frozenset({
         "botanical_collection", "plants", "greenhouse", "educational_space",
@@ -35,10 +39,22 @@ _COVERAGE_DENY: Dict[str, frozenset] = {
         "riverside_walk", "city_views", "urban_life", "leisure_space",
         "optical_illusion", "fun_photo_spot", "visual_tricks",
         "modern_bridge", "river_crossing",
+        # FIX #197: monuments / guard ceremonies / bridges — not museums
+        "memorial", "war_memorial", "tomb", "monument", "statue", "symbol",
+        "national_heritage", "guard_ceremony", "military_ceremony", "outdoor_memorial",
+        "bridge", "historic_bridge", "bastion", "fortification",
     }),
     "history_mystery": frozenset({
         "city_view", "city_views", "riverside_walk", "urban_life", "leisure_space",
         "botanical_collection", "optical_illusion", "plants", "greenhouse",
+        # FIX #197: paintball / extreme sports ≠ history
+        "paintball", "adventure_sport", "extreme_sport", "team_building",
+        "adrenaline_attractions", "outdoor_activity", "sports_activity",
+    }),
+    "relaxation": frozenset({
+        "modern_bridge", "river_crossing", "bridge", "historic_bridge",
+        "city_views", "city_view", "riverside_walk", "urban_life",
+        "architecture_feature", "landmark", "iconic_landmark",
     }),
 }
 

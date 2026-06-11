@@ -83,6 +83,13 @@ def is_zakopane_trip(context: Optional[Dict[str, Any]] = None) -> bool:
     return bool(context and context.get("is_zakopane_trip"))
 
 
+def is_city_tourism_trip(context: Optional[Dict[str, Any]] = None) -> bool:
+    """FIX #197: single-city urban trips (Kraków, Poznań…) — not Zakopane/mountain-only."""
+    if not context or context.get("is_zakopane_trip"):
+        return False
+    return context.get("trip_type") in ("city_tourism", "mixed", "cluster")
+
+
 def multi_city_density_mode(
     context: Optional[Dict[str, Any]] = None,
     city_pool_size: int = 0,

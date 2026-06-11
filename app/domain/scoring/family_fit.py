@@ -17,8 +17,16 @@ _CHILD_POI_NAME_MARKERS = (
     "akwariat", "podwodny świat", "podwodny swiat", "myszogród", "myszogrod",
     "dino park", "park rozrywki", "sala zabaw", "plac zabaw", "tatra family",
     "park harnasia", "góralski ślizg", "goral ski slizg", "woskowych", "iluzja park",
-    "lego", "wielka wystawa klock",
+    "lego", "wielka wystawa klock", "loopy", "pixel xl",
 )
+# FIX #197: recurring client mismatches (name heuristics when Excel target_group is loose)
+_GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
+    "friends": ("farma wuja toma", "wuja tom"),
+    "seniors": ("kopiec powstania",),
+    "family_kids": ("grób nieznanego", "grob nieznanego", "changing of the guard"),
+    "solo": ("pixel xl", "pixel"),
+    "couples": ("pixel xl", "pixel", "loopy"),
+}
 _CHILD_POI_TAGS = frozenset({
     "family_kids", "kids", "zoo", "aquarium", "playground", "theme_park",
     "kids_entertainment", "family_friendly",
@@ -104,6 +112,13 @@ def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
     if not user_group:
         print(f"[DEBUG TARGET #{check_id}] -> ALLOW (no user_group)")
         return False
+
+    # FIX #197: name-based denylist (Farma Wuja Toma/friends, Kopiec/seniors, …)
+    poi_name = _safe_str(poi.get("name") or "")
+    for marker in _GROUP_POI_NAME_DENY.get(user_group, ()):
+        if marker in poi_name:
+            print(f"[DEBUG TARGET #{check_id}] -> EXCLUDE (FIX#197 name deny '{marker}')")
+            return True
     
     # Kids_only = hard exclude dla grup nie-family
     # HOTFIX #7: bool("false") = True w Pythonie! Sprawdzamy wartość prawdziwie boolean
@@ -131,6 +146,11 @@ def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
         print(f"[DEBUG TARGET #{check_id}] -> EXCLUDE (error in target_groups)")
         return True
     
+    # "all" in target_groups → neutral (open to every profile)
+    if "all" in tg:
+        print(f"[DEBUG TARGET #{check_id}] -> ALLOW (target_groups contains 'all')")
+        return False
+
     # Jeśli user_group NIE jest w target_groups POI -> EXCLUDE
     if user_group not in tg:
         print(f"[DEBUG TARGET #{check_id}] -> EXCLUDE (user_group={user_group} NOT IN target_groups={tg})")
