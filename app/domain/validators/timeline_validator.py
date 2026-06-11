@@ -194,6 +194,37 @@ def validate_timeline_integrity(
     return overlaps
 
 
+def _update_item_times(item: Any, new_start: str, new_end: str) -> Any:
+    """FIX #196: Pydantic v2-safe time shift (model_copy, not __dict__ hack)."""
+    new_start_min = time_to_minutes(new_start)
+    new_end_min = time_to_minutes(new_end)
+    new_duration = max(new_end_min - new_start_min, 0)
+
+    if hasattr(item, "model_copy"):
+        updates: Dict[str, Any] = {
+            "start_time": new_start,
+            "end_time": new_end,
+        }
+        if hasattr(item, "duration_min"):
+            updates["duration_min"] = new_duration
+        return item.model_copy(update=updates)
+
+    if isinstance(item, dict):
+        item = dict(item)
+        item["start_time"] = new_start
+        item["end_time"] = new_end
+        if "duration_min" in item:
+            item["duration_min"] = new_duration
+        return item
+
+    if hasattr(item, "__dict__"):
+        item.__dict__["start_time"] = new_start
+        item.__dict__["end_time"] = new_end
+        if hasattr(item, "duration_min"):
+            item.__dict__["duration_min"] = new_duration
+    return item
+
+
 def heal_timeline_overlaps(
     day_items: List[Any],
     max_iterations: int = 3
@@ -269,29 +300,11 @@ def heal_timeline_overlaps(
                 # Shift this item and all subsequent items
                 for j in range(i + 1, len(items)):
                     item = items[j]
-                    
-                    # Get current times
                     old_start = _get_item_time(item, 'start_time')
                     old_end = _get_item_time(item, 'end_time')
-                    
-                    # Calculate new times
-                    new_start_min = time_to_minutes(old_start) + shift_amount
-                    new_end_min = time_to_minutes(old_end) + shift_amount
-                    
-                    new_start = minutes_to_time(new_start_min)
-                    new_end = minutes_to_time(new_end_min)
-                    
-                    # Update item times (works for both Pydantic and dict)
-                    if hasattr(item, 'start_time'):
-                        # Pydantic model - need to use model_copy or setattr
-                        # Since Pydantic models are immutable, we'll create modified dict
-                        # and let caller handle reconstruction if needed
-                        if hasattr(item, '__dict__'):
-                            item.__dict__['start_time'] = new_start
-                            item.__dict__['end_time'] = new_end
-                    elif isinstance(item, dict):
-                        item['start_time'] = new_start
-                        item['end_time'] = new_end
+                    new_start = minutes_to_time(time_to_minutes(old_start) + shift_amount)
+                    new_end = minutes_to_time(time_to_minutes(old_end) + shift_amount)
+                    items[j] = _update_item_times(item, new_start, new_end)
                 
                 # Break inner loop to re-sort and validate
                 break

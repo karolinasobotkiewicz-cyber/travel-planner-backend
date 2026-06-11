@@ -1664,6 +1664,62 @@ class PlanService:
             for item in day_items:
                 if hasattr(item, "poi_id") and item.poi_id:
                     global_used_pois.add(item.poi_id)
+
+            # FIX #196: afternoon top-up po konsolidacji może tworzyć nakładki (np. POI vs kolacja).
+            day_items = self._sort_items_by_time(day_items)
+            day_items, _f196_warnings = validate_and_heal_timeline(
+                day_items,
+                day_number=day_num + 1,
+                raise_on_failure=False,
+            )
+            if _f196_warnings:
+                print(f"[FIX #196] Day {day_num + 1} post-topup timeline:")
+                for _w in _f196_warnings:
+                    print(f"  {_w}")
+            day_end_min = time_to_minutes(day_end)
+            _f196_cleaned = []
+            for item in day_items:
+                if hasattr(item, "model_dump"):
+                    item_dict = item.model_dump()
+                elif hasattr(item, "dict"):
+                    item_dict = item.dict()
+                else:
+                    _f196_cleaned.append(item)
+                    continue
+                item_type = item_dict.get("type")
+                if item_type == "day_start":
+                    _f196_cleaned.append(item)
+                    continue
+                end_time_str = item_dict.get("end_time")
+                if not end_time_str:
+                    _f196_cleaned.append(item)
+                    continue
+                item_end_min = time_to_minutes(end_time_str)
+                if item_end_min <= day_end_min:
+                    _f196_cleaned.append(item)
+                    continue
+                start_time_str = item_dict.get("start_time")
+                if not start_time_str:
+                    continue
+                item_start_min = time_to_minutes(start_time_str)
+                if item_start_min < day_end_min:
+                    new_duration = day_end_min - item_start_min
+                    if new_duration >= 5:
+                        truncated_dict = item_dict.copy()
+                        truncated_dict["end_time"] = day_end
+                        truncated_dict["duration_min"] = new_duration
+                        try:
+                            _f196_cleaned.append(type(item)(**truncated_dict))
+                        except Exception:
+                            _f196_cleaned.append(item)
+                else:
+                    print(
+                        f"[FIX #196] Day {day_num + 1}: removed {item_type} "
+                        f"{start_time_str}-{end_time_str} (past day_end)"
+                    )
+            day_items = _f196_cleaned
+            day_items = self._sort_items_by_time(day_items)
+            day_items = self._remove_timeline_overlaps(day_items, day_num + 1)
             
             # FIX #35 (18.05.2026): Remove remaining technical buffers from final output
             # After consolidation, any still-marked is_technical_buffer items are tiny padding
@@ -1692,6 +1748,10 @@ class PlanService:
             removed_ft = before_ft_filter - len(day_items)
             if removed_ft:
                 print(f"[FIX #119] Day {day_num + 1}: removed {removed_ft} micro free_time block(s) (<{MIN_FREE_TIME_DISPLAY} min)")
+
+            # FIX #196: final overlap sweep (after all gap-fill / top-up mutations).
+            day_items = self._sort_items_by_time(day_items)
+            day_items = self._remove_timeline_overlaps(day_items, day_num + 1)
 
             # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
             # This ensures day_end is always the last item in timeline
@@ -1806,6 +1866,24 @@ class PlanService:
         days, _pref_guarantee_warnings = self._ensure_preference_coverage(
             days, user, all_pois_dict, _ctx_list,
         )
+
+        # FIX #196: preference swap może wstawić atrakcję na zajęty slot (overlap z szlakiem/kolacją).
+        _finalized_days: List[DayPlan] = []
+        for day_plan in days:
+            _fitems = list(day_plan.items)
+            _fitems, _ = validate_and_heal_timeline(
+                _fitems, day_number=day_plan.day, raise_on_failure=False,
+            )
+            _fitems = self._sort_items_by_time(_fitems)
+            _fitems = self._remove_timeline_overlaps(_fitems, day_plan.day)
+            _finalized_days.append(DayPlan(
+                day=day_plan.day,
+                title=_generate_day_title(_fitems, day_plan.day),
+                items=_fitems,
+                quality_badges=day_plan.quality_badges,
+            ))
+        days = _finalized_days
+
         for _pw in _pref_guarantee_warnings:
             if not any(
                 w.get("type") == "preference_not_covered"
@@ -3166,7 +3244,10 @@ class PlanService:
                             
                             # HOTFIX #9 (03.02.2026): Gap filling MUST respect target_group and intensity filters
                             # Import filter functions from scoring modules
-                            from app.domain.scoring.family_fit import should_exclude_by_target_group
+                            from app.domain.scoring.family_fit import (
+                                is_child_oriented_attraction,
+                                should_exclude_by_target_group,
+                            )
                             from app.domain.scoring.intensity_scoring import should_exclude_by_intensity
                             
                             # STEP 1: Target group hard filter
@@ -3185,6 +3266,13 @@ class PlanService:
                             # STEP 2: Intensity hard filter
                             if should_exclude_by_intensity(poi, user):
                                 continue  # EXCLUDE - intensity conflict
+
+                            # FIX #196: couples — nie wpychaj typowo dziecięcych atrakcji w gap-fill.
+                            if (
+                                str(user.get("target_group", "")).lower() == "couples"
+                                and is_child_oriented_attraction(poi)
+                            ):
+                                continue
                             
                             # BUGFIX (01.02.2026): Skip POI with invalid data (NaN values)
                             poi_name = poi.get('name', '')
@@ -3711,93 +3799,88 @@ class PlanService:
 
     def _remove_timeline_overlaps(self, items: List[Any], day_num: int) -> List[Any]:
         """
-        FIX #Problem9 (14.05.2026): Remove overlapping items from timeline.
-        
-        Problem:
-        - Gap filling can add both POI and free_time independently
-        - This creates overlaps when POI selection changes (e.g. due to lunch timing fixes)
-        - Example from test-03: attraction 18:17-18:52 overlaps with free_time 18:19-19:19
-        
-        Strategy:
-        - Iterate through sorted items
-        - If current item overlaps with previous: remove the less important one
-        - Priority: attraction/meal > free_time (prefer non-free_time)
-        
-        Args:
-            items: Sorted list of timeline items
-            day_num: Day number for logging
-            
-        Returns:
-            List of items without overlaps
+        FIX #Problem9 / #196: usuń nakładające się bloki (skan parowy, nie tylko sąsiedzi).
         """
         if not items:
             return items
-        
-        result = []
-        prev_item = None
+
+        def _item_dict(item: Any) -> dict:
+            if hasattr(item, "model_dump"):
+                return item.model_dump()
+            if hasattr(item, "dict"):
+                return item.dict()
+            return item if isinstance(item, dict) else {}
+
+        def _overlap_priority(item_type, item_dict) -> int:
+            if item_type in ("day_start", "day_end", ItemType.DAY_START, ItemType.DAY_END):
+                return 100
+            if item_type in (
+                "lunch_break", "dinner_break",
+                ItemType.LUNCH_BREAK, ItemType.DINNER_BREAK,
+            ):
+                return 90
+            dur = int(item_dict.get("duration_min") or 0)
+            if dur >= 180:
+                return 85
+            if item_type in ("free_time", ItemType.FREE_TIME):
+                return 10
+            return 50
+
+        def _timed_entries(seq: List[Any]) -> list[tuple[Any, dict, int, int]]:
+            out = []
+            for item in seq:
+                d = _item_dict(item)
+                st = d.get("start_time") or d.get("time")
+                en = d.get("end_time")
+                if not st or not en:
+                    continue
+                out.append((item, d, time_to_minutes(st), time_to_minutes(en)))
+            return out
+
+        working = self._sort_items_by_time(list(items))
         overlaps_removed = 0
-        
-        for item in items:
-            # Get time ranges
-            item_dict = item.dict() if hasattr(item, 'dict') else item
-            item_type = item_dict.get('type')
-            item_start_str = item_dict.get('start_time') or item_dict.get('time')
-            item_end_str = item_dict.get('end_time')
-            
-            # Skip items without time info (like day_start, day_end handled separately)
-            if not item_start_str:
-                result.append(item)
-                continue
-            
-            item_start = time_to_minutes(item_start_str)
-            item_end = time_to_minutes(item_end_str) if item_end_str else item_start
-            
-            # Check overlap with previous item
-            if prev_item is not None:
-                prev_dict = prev_item.dict() if hasattr(prev_item, 'dict') else prev_item
-                prev_type = prev_dict.get('type')
-                prev_end_str = prev_dict.get('end_time')
-                
-                if prev_end_str:
-                    prev_end = time_to_minutes(prev_end_str)
-                    
-                    # Check if overlap: current starts before previous ends
-                    if item_start < prev_end:
-                        # OVERLAP DETECTED
-                        overlap_min = prev_end - item_start
-                        
-                        # Determine which item to keep
-                        # Priority: non-free_time > free_time
-                        prev_is_free = prev_type == 'free_time' or prev_type == ItemType.FREE_TIME
-                        curr_is_free = item_type == 'free_time' or item_type == ItemType.FREE_TIME
-                        
-                        if curr_is_free and not prev_is_free:
-                            # Current is free_time, previous is attraction/meal - SKIP current
-                            print(f"[OVERLAP HEAL] Day {day_num}: Removed free_time {item_start_str}-{item_end_str} (overlaps {overlap_min}min with {prev_type})")
-                            overlaps_removed += 1
-                            continue
-                        elif prev_is_free and not curr_is_free:
-                            # Previous is free_time, current is attraction/meal - REMOVE previous, keep current
-                            print(f"[OVERLAP HEAL] Day {day_num}: Removed previous free_time (overlaps {overlap_min}min with {item_type} {item_start_str}-{item_end_str})")
-                            result.pop()  # Remove previous free_time
-                            overlaps_removed += 1
-                            # Don't update prev_item yet - will be set below
-                        else:
-                            # Both same priority (both free_time or both non-free_time) - keep first
-                            print(f"[OVERLAP HEAL] Day {day_num}: Removed {item_type} {item_start_str}-{item_end_str} (overlaps {overlap_min}min with previous {prev_type})")
-                            overlaps_removed += 1
-                            continue
-            
-            # Add current item and update prev_item
-            result.append(item)
-            prev_item = item
-        
+
+        for _pass in range(max(len(working), 1)):
+            timed = _timed_entries(working)
+            remove_ids: set[int] = set()
+            for i in range(len(timed)):
+                for j in range(i + 1, len(timed)):
+                    item_i, di, si, ei = timed[i]
+                    item_j, dj, sj, ej = timed[j]
+                    if ei <= sj or ej <= si:
+                        continue
+                    type_i, type_j = di.get("type"), dj.get("type")
+                    pri_i = _overlap_priority(type_i, di)
+                    pri_j = _overlap_priority(type_j, dj)
+                    overlap_min = min(ei, ej) - max(si, sj)
+                    if pri_j > pri_i:
+                        remove_ids.add(id(item_i))
+                        print(
+                            f"[OVERLAP HEAL] Day {day_num}: Removed {type_i} "
+                            f"({di.get('start_time')}-{di.get('end_time')}, "
+                            f"overlaps {overlap_min}min with higher-priority {type_j})"
+                        )
+                    else:
+                        remove_ids.add(id(item_j))
+                        print(
+                            f"[OVERLAP HEAL] Day {day_num}: Removed {type_j} "
+                            f"({dj.get('start_time')}-{dj.get('end_time')}, "
+                            f"overlaps {overlap_min}min with {type_i})"
+                        )
+                    overlaps_removed += 1
+                    break
+                if remove_ids:
+                    break
+            if not remove_ids:
+                break
+            working = [it for it in working if id(it) not in remove_ids]
+
         if overlaps_removed > 0:
             print(f"[OVERLAP HEAL] Day {day_num}: Removed {overlaps_removed} overlapping items")
         else:
             print(f"[OVERLAP HEAL] Day {day_num}: No overlaps detected")
-        
-        return result
+
+        return working
 
     def _sort_items_by_time(self, items: List[Any]) -> List[Any]:
         """

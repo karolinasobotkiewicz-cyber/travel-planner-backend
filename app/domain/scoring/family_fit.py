@@ -12,6 +12,49 @@ def _safe_str(x):
     return str(x).strip().lower() if x is not None else ""
 
 
+_CHILD_POI_NAME_MARKERS = (
+    "mini zoo", "papugarn", "papuga", "królikarn", "krolikarn", "królikarnia",
+    "akwariat", "podwodny świat", "podwodny swiat", "myszogród", "myszogrod",
+    "dino park", "park rozrywki", "sala zabaw", "plac zabaw", "tatra family",
+    "park harnasia", "góralski ślizg", "goral ski slizg", "woskowych", "iluzja park",
+    "lego", "wielka wystawa klock",
+)
+_CHILD_POI_TAGS = frozenset({
+    "family_kids", "kids", "zoo", "aquarium", "playground", "theme_park",
+    "kids_entertainment", "family_friendly",
+})
+
+
+def is_child_oriented_attraction(poi: dict) -> bool:
+    """FIX #196: atrakcje typowo dziecięce (zoo, papugarnie, sale zabaw itd.)."""
+    kids_only_val = poi.get("kids_only")
+    if kids_only_val is True or (
+        isinstance(kids_only_val, str) and kids_only_val.lower() in ("true", "1", "yes")
+    ):
+        return True
+
+    target_groups = poi.get("target_groups") or []
+    tg = {_safe_str(x) for x in target_groups}
+    if tg == {"family_kids"}:
+        return True
+
+    name = _safe_str(poi.get("name") or "")
+    if any(marker in name for marker in _CHILD_POI_NAME_MARKERS):
+        return True
+
+    tags = {_safe_str(t) for t in (poi.get("tags") or []) if t}
+    if _CHILD_POI_TAGS & tags:
+        return True
+
+    toa = _safe_str(
+        poi.get("type_of_attraction") or poi.get("Type of attraction") or ""
+    )
+    if any(k in toa for k in ("zoo", "aquarium", "theme", "playground", "family")):
+        return True
+
+    return False
+
+
 def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
     """
     Hard filter: Czy POI powinno być wykluczone z powodu target_group mismatch?
@@ -151,6 +194,11 @@ def calculate_family_score(poi, user):
     
     # Normalizacja POI target_groups do set
     tg = set([_safe_str(x) for x in target_groups])
+
+    # FIX #196 (06.2026): couples — obniż scoring typowo dziecięcych atrakcji
+    # (mini zoo, papugarnie, królikarnie, akwaria — nawet gdy couples ∈ target_groups).
+    if user_group == "couples" and is_child_oriented_attraction(poi):
+        return -40.0
     
     # CLIENT REQUIREMENT (04.02.2026): Kids-focused POI penalty for non-family groups
     # Kids-focused = POI with ONLY family_kids in target_groups (not multi-group POI)

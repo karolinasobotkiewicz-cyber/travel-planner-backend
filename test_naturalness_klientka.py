@@ -233,6 +233,32 @@ def check_afternoon_topup(resp, poi_by_id: dict) -> list[str]:
     return errs
 
 
+def check_no_timeline_overlaps(resp) -> list[str]:
+    """FIX #196: brak nakładających się bloków w timeline."""
+    from app.domain.planner.engine import time_to_minutes
+    errs = []
+    for day in resp.days:
+        items = [
+            it for it in day.items
+            if getattr(it, "start_time", None) and getattr(it, "end_time", None)
+        ]
+        for i, a in enumerate(items):
+            for b in items[i + 1:]:
+                as_ = time_to_minutes(a.start_time)
+                ae = time_to_minutes(a.end_time)
+                bs = time_to_minutes(b.start_time)
+                be = time_to_minutes(b.end_time)
+                if ae <= bs or be <= as_:
+                    continue
+                an = getattr(a, "name", None) or getattr(a, "label", str(getattr(a, "type", "")))
+                bn = getattr(b, "name", None) or getattr(b, "label", str(getattr(b, "type", "")))
+                errs.append(
+                    f"day {day.day}: overlap {a.start_time}-{a.end_time} ({an}) "
+                    f"vs {b.start_time}-{b.end_time} ({bn})"
+                )
+    return errs
+
+
 def check_consecutive_free_time_merged(resp) -> list[str]:
     """FIX #193: max 2 kolejne bloki free_time (scalenie w jeden sensowny)."""
     errs = []
@@ -356,6 +382,7 @@ def main():
         issues.extend(check_no_far_excursion_after_long_trail(resp, poi_by_id))
         issues.extend(check_no_sightseeing_after_long_trail(resp, poi_by_id))
         issues.extend(check_afternoon_topup(resp, poi_by_id))
+        issues.extend(check_no_timeline_overlaps(resp))
         issues.extend(check_consecutive_free_time_merged(resp))
         if n == 8:
             issues.extend(check_test08_regions(resp, poi_by_id))
