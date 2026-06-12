@@ -141,6 +141,23 @@ from app.domain.planner.quality_checker import validate_day_quality, check_poi_q
 from app.domain.planner.explainability import explain_poi_selection
 
 
+def _poi_lat_lng(poi_dict: Dict[str, Any]):
+    """FIX #199: unified coords — multi_city uses lowercase, Zakopane Excel uses Lat/Lng."""
+    lat = poi_dict.get("lat")
+    if lat is None or lat == 0.0:
+        lat = poi_dict.get("Lat")
+    lng = poi_dict.get("lng")
+    if lng is None or lng == 0.0:
+        lng = poi_dict.get("Lng")
+    return lat, lng
+
+
+def _is_urban_trip(context: Dict[str, Any]) -> bool:
+    from app.domain.planner.city_copy import is_city_tourism_trip
+    rt = str(context.get("region_type") or "").lower()
+    return rt in ("city", "urban") or is_city_tourism_trip(context)
+
+
 def _generate_day_title(day_items: list, day_num: int) -> str:
     """Generate a short descriptive title for a day based on its attractions.
 
@@ -1920,7 +1937,9 @@ class PlanService:
         # FIX #92 (28.05.2026): Add informational warnings for common trip scenarios.
         # These give users/clients useful context about plan characteristics.
         num_days_built = len(days)
-        if num_days_built > 5:
+        from app.domain.planner.city_copy import is_city_tourism_trip
+        _warn_city = _requested_city or "mieście"
+        if num_days_built > 5 and context.get("is_zakopane_trip"):
             plan_warnings.append({
                 "type": "long_trip_variety",
                 "days": num_days_built,
@@ -1928,6 +1947,17 @@ class PlanService:
                     f"Plan {num_days_built}-dniowy w Zakopanem: po dniu 4-5 różnorodność może być "
                     f"mniejsza ze względu na ograniczoną liczbę unikalnych atrakcji w bazie. "
                     f"Zalecamy łączenie z wycieczkami poza Zakopane (Nowy Targ, Czorsztyn, Bukowina)."
+                ),
+                "severity": "info",
+            })
+        elif num_days_built > 5 and is_city_tourism_trip(context):
+            plan_warnings.append({
+                "type": "long_trip_variety",
+                "days": num_days_built,
+                "message": (
+                    f"Plan {num_days_built}-dniowy w {_warn_city}: po dniu 4-5 różnorodność może być "
+                    f"mniejsza ze względu na ograniczoną liczbę unikalnych atrakcji w bazie. "
+                    f"Rozważ krótszy pobyt lub rozszerzenie o okoliczne miejscowości."
                 ),
                 "severity": "info",
             })
@@ -2199,9 +2229,8 @@ class PlanService:
                 
                 poi = item.get("poi", {})
                 current_parking_name = poi.get("parking_name", "")
-                # FIX #3.2: POI dict has capitalized keys from Excel ("Lat", "Lng")
-                current_lat = poi.get("Lat")
-                current_lng = poi.get("Lng")
+                current_lat, current_lng = _poi_lat_lng(poi)
+                _urban_trip = _is_urban_trip(context)
                 
                 # Check if location changed from previous attraction
                 location_changed = False
@@ -2223,9 +2252,10 @@ class PlanService:
                 # But ParkingItem is NOT created as separate timeline waypoint
                 attr_start_time = item.get("start_time")  # Default: use engine time
                 
-                if (has_car and 
-                    first_attraction_index > 0 and 
-                    location_changed):
+                if (has_car and
+                    first_attraction_index > 0 and
+                    location_changed and
+                    not _urban_trip):
                     
                     # Calculate adjusted attraction start time (accounting for parking + walk)
                     # This ensures timeline realism even without ParkingItem waypoint
@@ -2268,8 +2298,8 @@ class PlanService:
                 # BUGFIX: Correct first attraction timing if parking exists
                 # FIX #2: Only adjust if this is first attraction
                 # FIX #4 (30.04.2026): Use current item (not first_attraction variable) for walk_time
-                if first_attraction_index == 0 and has_car and first_attraction:
-                    # First attraction with parking - adjust start time
+                if first_attraction_index == 0 and has_car and first_attraction and not _urban_trip:
+                    # First attraction with parking - adjust start time (Zakopane/mountain only)
                     from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
                     from app.domain.planner.engine import is_open as engine_is_open
                     
@@ -2387,13 +2417,17 @@ class PlanService:
                     last_transit_was_car = False
                     continue
 
-                # FIX #103 (29.05.2026): Context-aware transit buffer instead of flat +15min.
-                # Previously: always +15min regardless of distance (made 10→25, 20→35 look like placeholders).
-                # Now: +5min for short trips (<5km), +10min for medium/long trips.
-                # Rationale: Short urban walks need less buffer (parking/maps overhead is minimal).
-                _buffer_min = 5 if _transit_dist_km < 5.0 else 10
+                # FIX #103 / #199: urban trips — minimal buffer; close POIs get none.
+                _urban = _is_urban_trip(context)
+                if _urban and _transit_dist_km < 1.0:
+                    _buffer_min = 0
+                elif _urban and _transit_dist_km < 5.0:
+                    _buffer_min = 0
+                else:
+                    _buffer_min = 5 if _transit_dist_km < 5.0 else 10
                 duration += _buffer_min
-                print(f"[TIMING BUFFERS] Transit {_transit_dist_km:.1f}km: +{_buffer_min}min buffer (total: {duration}min)")
+                if _buffer_min:
+                    print(f"[TIMING BUFFERS] Transit {_transit_dist_km:.1f}km: +{_buffer_min}min buffer (total: {duration}min)")
                 
                 # Use previous item's end_time as start, or default to 09:00
                 if items:
@@ -2416,8 +2450,8 @@ class PlanService:
                 region_type = context.get("region_type", "")
                 
                 if has_car and duration >= 10:
-                    if region_type == "city":
-                        # FIX #75: In cities, short transfers are walkable; medium → public transport
+                    if region_type in ("city", "urban") or _is_urban_trip(context):
+                        # FIX #75/#199: In cities, short transfers are walkable; medium → public transport
                         if duration <= 25:
                             mode = TransitMode.WALK
                         else:
@@ -2609,11 +2643,13 @@ class PlanService:
         # FIX #3.2: POI dict has capitalized keys from Excel ("Lat", "Lng")
         parking_lat = poi_dict.get("parking_lat")
         if parking_lat is None or parking_lat == 0.0:
-            parking_lat = poi_dict.get("Lat", 0.0)
-        
+            parking_lat, _ = _poi_lat_lng(poi_dict)
+            parking_lat = parking_lat or 0.0
+
         parking_lng = poi_dict.get("parking_lng")
         if parking_lng is None or parking_lng == 0.0:
-            parking_lng = poi_dict.get("Lng", 0.0)
+            _, parking_lng = _poi_lat_lng(poi_dict)
+            parking_lng = parking_lng or 0.0
         
         # FIX #107 (28.05.2026): Read parking_type from POI data (was hardcoded PAID).
         # Excel has "paid"/"free" values — map to ParkingType enum. Default to PAID if missing.
@@ -2704,14 +2740,15 @@ class PlanService:
         poi_id_from_dict = poi_dict.get("id", "")
         print(f"[ATTRACTION ITEM] Creating item: poi_id={poi_id_from_dict}")
         
-        # FIX #3.2: Extract lat/lng with fallback (same pattern as parking)
-        lat_value = poi_dict.get("Lat")
-        if lat_value is None or lat_value == 0.0:
-            lat_value = poi_dict.get("lat", 0.0)
-        
-        lng_value = poi_dict.get("Lng")
-        if lng_value is None or lng_value == 0.0:
-            lng_value = poi_dict.get("lng", 0.0)
+        lat_value, lng_value = _poi_lat_lng(poi_dict)
+        lat_value = lat_value or 0.0
+        lng_value = lng_value or 0.0
+        _pk_lat = poi_dict.get("parking_lat")
+        if _pk_lat is None or _pk_lat == 0.0:
+            _pk_lat = lat_value or None
+        _pk_lng = poi_dict.get("parking_lng")
+        if _pk_lng is None or _pk_lng == 0.0:
+            _pk_lng = lng_value or None
         
         # CLIENT FEEDBACK (30.01.2026 - Requirement #5): Ticket prices mapping
         # Extract ticket_normal/ticket_reduced with fallback (same pattern as lat/lng)
@@ -2843,8 +2880,8 @@ class PlanService:
                 parking_type=_parking_type_enum,
                 cost=int(_raw_parking_cost) if _raw_parking_cost else None,
                 walk_time_min=poi_dict.get("parking_walk_time_min", 5) or 5,
-                lat=poi_dict.get("parking_lat"),
-                lng=poi_dict.get("parking_lng")
+                lat=_pk_lat,
+                lng=_pk_lng,
             ),
             pro_tip=poi_dict.get("pro_tip"),  # ADD pro_tip from POI
             why_selected=why_selected,  # ETAP 2 Day 5

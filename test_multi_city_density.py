@@ -142,7 +142,7 @@ def main():
     failed = []
 
     print("=" * 70)
-    print("MULTI-CITY DENSITY TEST — FIX #194 + #197 + #198")
+    print("MULTI-CITY DENSITY TEST — FIX #194 + #197 + #198 + #199")
     print("=" * 70)
 
     from app.domain.scoring.preference_coverage import poi_covers_preference_report
@@ -159,6 +159,21 @@ def main():
     else:
         passed += 1
         print("  PASS  Warszawa-GPS (coords preserved)")
+
+    # FIX #199: Rynek/kościół ≠ museum_heritage (tylko historic_building)
+    _kat = load_multi_city_poi(mc_path, ["Katowice"])
+    _cov_mus_bad = []
+    for p in _kat:
+        nm = p.get("name", "")
+        if any(x in nm for x in ("Rynek", "Parafia")):
+            if poi_covers_preference_report(p, "museum_heritage"):
+                _cov_mus_bad.append(nm)
+    if _cov_mus_bad:
+        failed.append(("coverage-museum", _cov_mus_bad))
+        print(f"  FAIL  coverage-museum: {_cov_mus_bad}")
+    else:
+        passed += 1
+        print("  PASS  coverage-museum (Rynek/kościół)")
 
     # FIX #198: urban landmarks ≠ nature_landscape in coverage report
     _deny_names = ("Pałac Kultury", "Pomnik Syreny")
@@ -220,7 +235,7 @@ def main():
         print(f"  FAIL  Kraków-5d: {e}")
 
     print("=" * 70)
-    total = len(cities) + 3
+    total = len(cities) + 4
     print(f"SUMMARY: {passed}/{total} passed")
     if failed:
         for city, issues in failed:

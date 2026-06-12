@@ -77,6 +77,31 @@ _NATURE_LANDMARK_NAME_DENY = (
     "pkin",
 )
 
+# FIX #199: squares/churches tagged historic_building must not count as museums.
+_MUSEUM_STRONG_TAGS = frozenset({
+    "museum_heritage", "themed_museum", "multimedia_exhibition", "regional_heritage",
+    "art_museum", "history_museum", "science_museum", "interactive_museum",
+    "open_air_museum", "ethnographic_museum", "archaeological_exhibits",
+    "art_collection", "art_exhibition", "historical_museum", "city_history_exhibits",
+    "folklore_museum", "industrial_heritage_museum", "museum", "historic_museum",
+    "historical_exhibits", "ancient_artifacts_collection", "national_art_collection",
+    "polish_art_history", "schindler_factory", "ww2_history", "early_polish_history",
+    "aircraft_collection", "medieval_market_history",
+})
+
+_HISTORY_STRONG_TAGS = frozenset({
+    "history_mystery", "historical_site", "castle", "underground", "medieval",
+    "folklore", "ancient_legend_site", "regional_heritage", "themed_museum",
+    "archaeological_exhibits", "city_history", "fortress", "folklore_museum",
+    "ww2_history", "schindler_factory", "polish_history", "royal_castle_complex",
+    "medieval_market_history", "early_polish_history", "historic_jewish_district",
+})
+
+_WEAK_HERITAGE_ONLY = frozenset({
+    "historic_building", "architecture_heritage", "historical_exhibits",
+    "square", "plaza", "church", "cathedral", "basilica", "parish",
+})
+
 
 def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
     """True when Excel tags justify reporting this POI under `pref` in coverage API."""
@@ -89,6 +114,19 @@ def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
         return False
     if pref in tags:
         return True
+    # FIX #199: Rynek / kościół z samym historic_building ≠ museum ani historia.
+    if pref == "museum_heritage":
+        _strong = tags & _MUSEUM_STRONG_TAGS
+        if not _strong:
+            return False
+        if (
+            _strong <= {"historical_exhibits"}
+            and tags & {"historic_building", "architecture_heritage"}
+        ):
+            return False
+    if pref == "history_mystery":
+        if tags & _WEAK_HERITAGE_ONLY and not (tags & _HISTORY_STRONG_TAGS):
+            return False
     from app.domain.scoring.tag_preferences import USER_PREFERENCES_TO_TAGS
 
     cfg = USER_PREFERENCES_TO_TAGS.get(pref)
