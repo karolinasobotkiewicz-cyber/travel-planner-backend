@@ -7,9 +7,19 @@ Backend API do planowania wielodniowych wycieczek po Polsce. Projekt dla Karolin
 **ETAP 1: COMPLETED** (29.01.2026)  
 **ETAP 2: COMPLETED & PAID** (26.02.2026) ✅  
 **Payment Received:** 02.03.2026 ✅  
-**Last Update:** 02.03.2026  
+**Last Update:** 8.06.2026 (FIX #198–#201)  
 **Live API:** https://travel-planner-backend-xbsp.onrender.com  
 **Docs:** https://travel-planner-backend-xbsp.onrender.com/docs
+
+### Dokumentacja wewnętrzna (czerwiec 2026)
+
+| Plik | Opis |
+|------|------|
+| `docs/WIEDZA_SILNIK_FIX198_201.md` | Wiedza operacyjna — FIX #198–#201 |
+| `docs/RAPORT_FIX198_201_08_06_2026.md` | Pełny raport techniczny |
+| `docs/ODPOWIEDZ_KLIENTKA_FIX201.md` | Szkic wiadomości dla klientki |
+
+**Regresja:** `test_naturalness_klientka.py` 10/10, `test_multi_city_density.py` 10/10
 
 ## Co działa
 
