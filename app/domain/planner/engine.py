@@ -2611,11 +2611,16 @@ def score_poi(
                 or bool({"hiking", "mountain_trails", "alpine_activities"} & poi_tags)
             )
             _iconic = any(_m in _pname_l for _m in _ICONIC_MOUNTAIN_TRAILS)
-            if _trail_like or _iconic:
-                _tpen = 95.0 if _iconic else 75.0
+            # FIX #200: culture-led adventure — deprioritise viewpoints / scenic peaks too.
+            _scenic_only = bool({
+                "scenic_viewpoint", "viewpoint", "panoramic_view", "mountain_view",
+                "mountain_views", "peak_summit", "scenic_panorama",
+            } & poi_tags) and not bool(_CULTURE_LED_PREFS & set(user_preferences))
+            if _trail_like or _iconic or _scenic_only:
+                _tpen = 95.0 if _iconic else (70.0 if _scenic_only else 75.0)
                 score -= _tpen
                 print(f"    [FIX #184 CULTURE-LED] {poi_name_safe}: -{_tpen:.1f} "
-                      f"(adventure but culture prefs — deprioritise trail)")
+                      f"(adventure but culture prefs — deprioritise trail/viewpoint)")
             else:
                 for _cp in _CULTURE_LED_PREFS & set(user_preferences[:3]):
                     if poi_matches_user_preference(p, _cp):

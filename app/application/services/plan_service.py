@@ -152,6 +152,14 @@ def _poi_lat_lng(poi_dict: Dict[str, Any]):
     return lat, lng
 
 
+def _last_attraction_name(items: list) -> str:
+    """FIX #200: real origin label for gap-fill transits."""
+    for it in reversed(items):
+        if getattr(it, "type", None) == ItemType.ATTRACTION:
+            return getattr(it, "name", "") or ""
+    return ""
+
+
 def _is_urban_trip(context: Dict[str, Any]) -> bool:
     from app.domain.planner.city_copy import is_city_tourism_trip
     rt = str(context.get("region_type") or "").lower()
@@ -1536,10 +1544,11 @@ class PlanService:
                     all_pois_lookup=all_pois_dict,
                 )
 
-            # FIX #192/#194: extra gap-fill passes with full city pool when day still sparse.
+            # FIX #192/#194/#200: extra gap-fill — cluster long trips need more passes.
             _f194_gf = day_context.get("multi_city_density_mode", False)
-            if num_days >= 4 or _f194_gf:
-                _gf_passes = 3 if _f194_gf else 2
+            _cluster_long = is_cluster and num_days >= 5
+            if num_days >= 4 or _f194_gf or _cluster_long:
+                _gf_passes = 5 if _cluster_long else (4 if _f194_gf else 2)
                 for _gf_pass in range(_gf_passes):
                     _ft_before = sum(
                         (getattr(it, "duration_min", 0) or 0)
@@ -1732,6 +1741,7 @@ class PlanService:
                 if p.get("name") and p.get("lat") and p.get("lng")
             }
             day_items = self._update_transit_destinations(day_items, _poi_coord_map)
+            day_items = self._validate_transit_endpoints(day_items)
 
             # FIX #157 (04.06.2026 - CLIENT FEEDBACK): collapse duplicate transit
             # legs. After _update_transit_destinations rewrites every transit to
@@ -1849,6 +1859,8 @@ class PlanService:
             # FIX #196: final overlap sweep (after all gap-fill / top-up mutations).
             day_items = self._sort_items_by_time(day_items)
             day_items = self._remove_timeline_overlaps(day_items, day_num + 1)
+            day_items = self._update_transit_destinations(day_items, _poi_coord_map)
+            day_items = self._validate_transit_endpoints(day_items)
 
             # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
             # This ensures day_end is always the last item in timeline
@@ -2167,7 +2179,7 @@ class PlanService:
         # FIX #3 (20.02.2026 - UAT Round 3): Track location changes instead of transit mode
         last_attraction_location = None  # (lat, lng) of previous attraction
         
-        for item in engine_result:
+        for idx, item in enumerate(engine_result):
             item_type = item.get("type")
             
             if item_type == "accommodation_start":
@@ -2251,6 +2263,14 @@ class PlanService:
                 # Backend uses parking data for walk_time calculation
                 # But ParkingItem is NOT created as separate timeline waypoint
                 attr_start_time = item.get("start_time")  # Default: use engine time
+                # FIX #200: snap attraction to transit end — no unexplained 10–20 min gaps.
+                if items and getattr(items[-1], "type", None) == ItemType.TRANSIT:
+                    _te = getattr(items[-1], "end_time", None)
+                    if _te:
+                        _ts = time_to_minutes(attr_start_time)
+                        _tend = time_to_minutes(_te)
+                        if _ts > _tend + 2:
+                            attr_start_time = _te
                 
                 if (has_car and
                     first_attraction_index > 0 and
@@ -2481,10 +2501,16 @@ class PlanService:
                     end_time=end_time,
                     duration_min=duration,
                     mode=mode,
-                    from_location=item.get("from"),
-                    to_location=item.get("to")
+                    from_location=item.get("from") or _last_attraction_name(items) or "",
+                    to_location=item.get("to") or "",
                 )
                 items.append(transit_item)
+                # FIX #200: if engine named a destination not yet in timeline, rewrite after next attraction.
+                if not transit_item.to_location:
+                    for _future in engine_result[idx + 1:]:
+                        if _future.get("type") == "attraction":
+                            transit_item.to_location = (_future.get("poi") or {}).get("name", "")
+                            break
             
             elif item_type == "free_time":
                 # 7. FREE_TIME - from engine fallback for gaps >20 min
@@ -2847,8 +2873,13 @@ class PlanService:
             _parking_type_enum = ParkingType.PAID
         else:
             _parking_type_enum = ParkingType.FREE
-        # When no parking data at all → show neutral "Brak danych o parkingu"
-        _parking_display_name = _pname if _pname else "Brak danych o parkingu"
+        # When no parking data at all → urban default label (FIX #200)
+        if _pname:
+            _parking_display_name = _pname
+        elif _is_urban_trip(context or {}):
+            _parking_display_name = "Parking w okolicy atrakcji"
+        else:
+            _parking_display_name = "Brak danych o parkingu"
         return AttractionItem(
             type=ItemType.ATTRACTION,
             start_time=start_time,
@@ -3589,7 +3620,7 @@ class PlanService:
                                     end_time=transit_end,
                                     duration_min=best_travel,
                                     mode=mode,
-                                    from_location="Previous location",
+                                    from_location=_last_attraction_name(result) or "Poprzednia atrakcja",
                                     to_location=best_poi.get('name', 'Attraction')
                                 )
                                 result.append(transit_item)
@@ -4542,6 +4573,29 @@ class PlanService:
             result.append(item)
         
         return result
+
+    def _validate_transit_endpoints(self, items: List[Any]) -> List[Any]:
+        """FIX #200: drop transits whose from/to don't match scheduled attractions."""
+        attr_names = {
+            getattr(it, "name", "")
+            for it in items
+            if getattr(it, "type", None) == ItemType.ATTRACTION and getattr(it, "name", "")
+        }
+        out = []
+        for it in items:
+            if getattr(it, "type", None) != ItemType.TRANSIT:
+                out.append(it)
+                continue
+            _from = getattr(it, "from_location", "") or ""
+            _to = getattr(it, "to_location", "") or ""
+            if _from and _from not in attr_names and _from not in ("Zakopane (Hotel)",):
+                print(f"[FIX #200] Removing transit with unknown origin: '{_from}' -> '{_to}'")
+                continue
+            if _to and _to not in attr_names:
+                print(f"[FIX #200] Removing transit with unknown destination: '{_from}' -> '{_to}'")
+                continue
+            out.append(it)
+        return out
 
     def _recompute_transit_leg(self, item, items, idx, poi_coords):
         """Correct one transit's transport_mode/duration from endpoint coords.

@@ -45,9 +45,14 @@ def poi_matches_city_filter(poi: Dict[str, Any], city_filter: str) -> bool:
     req = normalize_city_name(city_filter)
     if not req:
         return True
-    if poi_hub_norm(poi) == req:
-        return True
+    hub = poi_hub_norm(poi)
     pc = poi_city_norm(poi)
+    # FIX #200: hub is authoritative when set — wrong City column cannot pull POI into another trip
+    # (e.g. Ogród Botaniczny Wrocławski with City=Kraków must not appear in Kraków plans).
+    if hub:
+        if req in ZAKOPANE_REGION_NORM:
+            return hub in ZAKOPANE_REGION_NORM or pc in ZAKOPANE_REGION_NORM
+        return hub == req
     if req in ZAKOPANE_REGION_NORM:
         return pc in ZAKOPANE_REGION_NORM
     return pc == req

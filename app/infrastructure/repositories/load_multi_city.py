@@ -333,6 +333,10 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
                 m[_k] = _ov
         m["Lat"] = m.get("lat")
         m["Lng"] = m.get("lng")
+        # FIX #200: Hub is source of truth for city when Excel City column is wrong.
+        _hub = (m.get("hub_city") or "").strip()
+        if _hub and _hub.lower() not in ("", "nan"):
+            m["city"] = _hub
         m["tags_excel"] = orig.get("tags_excel") or orig.get("tags", [])
         m["target_groups"] = norm.get("target_groups") or orig.get("target_group", [])
         m["recommended_time_of_day"] = (
