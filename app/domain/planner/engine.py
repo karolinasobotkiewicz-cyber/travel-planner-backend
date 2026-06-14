@@ -843,8 +843,48 @@ _SCENIC_EXPERIENCE_NAME_MARKERS = (
 _UNDERGROUND_POI_TAGS = frozenset({
     "cave", "karst-cave", "karst_cave", "limestone_cave",
     "underground_attraction", "underground_tour", "underground_exploration",
+    # FIX #201
+    "underground_route", "mining_heritage", "show_mine", "tourist_mine",
+    "gold_mine", "salt_mine", "underground_trail", "mining_museum",
 })
+_UNDERGROUND_NAME_MARKERS = (
+    "jaskin", "podziemn", "kopalni", "sztolnia", "niedźwied", "niedzwied",
+    "podziemna trasa",
+)
+
+_WATER_ATTRACTION_TAGS = frozenset({
+    "water_attractions", "waterfall", "waterfalls", "aquapark", "water_park",
+    "thermal_baths", "termy", "lake", "river_cruise", "beach", "marina",
+    "water_wellness", "rafting", "kayak",
+})
+_WATER_NAME_MARKERS = ("wodospad", "aquapark", "term", "jezioro", "kąpiel")
+
+_QUICK_STOP_NAME_MARKERS = (
+    "pomnik bamber", "brama chlebnicka", "brama wyżynna", "fontanna neptuna",
+    "ulica długa", "skwer ", "plac zdrojowy", "deptak", "most świętokrzyski",
+)
 # Bare tag "underground" alone is too broad — Archiwum Planety Ziemia is a museum.
+
+
+def is_quick_stop_poi(poi: dict) -> bool:
+    """FIX #201: short photo-stop POIs should not get must_see/core badges."""
+    name = str(poi.get("name", "")).lower()
+    ms = poi.get("must_see") or poi.get("must_see_score")
+    try:
+        if ms is not None and float(ms) >= 9:
+            return False
+    except (TypeError, ValueError):
+        pass
+    return any(m in name for m in _QUICK_STOP_NAME_MARKERS)
+
+
+def is_water_attraction_poi(p: dict) -> bool:
+    """FIX #201: waterfalls, aquaparks, termy for water_attractions coverage."""
+    name = str(p.get("name", "")).lower()
+    if any(m in name for m in _WATER_NAME_MARKERS):
+        return True
+    tags = set(str(t).lower() for t in (p.get("tags") or []))
+    return bool(tags & _WATER_ATTRACTION_TAGS)
 
 
 def is_viewpoint_poi(poi):
@@ -875,8 +915,12 @@ def is_scenic_experience_poi(poi: dict) -> bool:
 
 
 def is_underground_poi(p: dict) -> bool:
-    """FIX #190/#192: Real cave visit — not museums mis-tagged with 'underground'."""
+    """FIX #190/#192/#201: Real cave/mine visit — not museums mis-tagged."""
     name = str(p.get("name", "")).lower()
+    if any(m in name for m in _UNDERGROUND_NAME_MARKERS):
+        if "archiw" in name or ("muze" in name and "kopal" not in name):
+            return False
+        return True
     if "jaskin" in name:
         return True
     tags = set(str(t).lower() for t in (p.get("tags") or []))
@@ -2113,7 +2157,8 @@ def score_poi(
 
     # FIX #197: extra iconic boost for city symbols (must_see >= 8)
     from app.domain.planner.city_copy import is_city_tourism_trip
-    if must_see_value >= 8 and is_city_tourism_trip(context):
+    # FIX #201: iconic boost only for genuine must_see (score≥8), not quick stops
+    if must_see_value >= 8 and is_city_tourism_trip(context) and not is_quick_stop_poi(p):
         iconic_extra = must_see_value * 1.5 * must_see_multiplier
         score += iconic_extra
 
@@ -4603,7 +4648,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     print(f"[MUSEUM CAP] EXCLUDED: {poi_name_safe} - max 2 museums/day for couples (couples_museum_today={couples_museum_today})")
                     continue
 
-            # FIX #125 (30.05.2026): Block long activities for toddlers (children_age <= 5)
+            # FIX #125 / #201: toddlers — no long visits; no mountain cable-car trails
             _ca_f125 = user.get("children_age")
             if (user.get("target_group") == "family_kids"
                     and isinstance(_ca_f125, (int, float)) and _ca_f125 <= 5):
@@ -4611,6 +4656,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if _poi_dur_f125 > 90:
                     poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                     print(f"[DURATION FILTER FIX#125] EXCLUDED: {poi_name_safe} - duration {_poi_dur_f125}min > 90 for children_age={_ca_f125}")
+                    continue
+                _pn125 = str(p.get("name", "")).lower()
+                _mountain_kids_deny = (
+                    "czarna góra", "czarna gora", "jawornik", "trojak", "śnieżka", "sniezka",
+                    "karkonosze", "szlaki", "szlak ", "wierch", "kopiec",
+                )
+                if p.get("type") == "trail" or any(m in _pn125 for m in _mountain_kids_deny):
+                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                    print(f"[FIX #201] EXCLUDED: {poi_name_safe} - mountain/trail blocked for children_age={_ca_f125}")
                     continue
 
             # FIX #64 (22.05.2026): Experience-type dedup (max 1 per day per unique experience tag)

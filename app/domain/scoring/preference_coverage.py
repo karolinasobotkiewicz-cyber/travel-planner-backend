@@ -199,7 +199,8 @@ def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
     if pref == "local_food_experience" and not (tags & _LOCAL_FOOD_STRONG_TAGS):
         return False
     if pref == "water_attractions" and not (tags & _WATER_STRONG_TAGS):
-        return False
+        from app.domain.planner.engine import is_water_attraction_poi
+        return is_water_attraction_poi(poi)
     if pref == "underground" and not (tags & _UNDERGROUND_STRONG_TAGS):
         from app.domain.planner.engine import is_underground_poi
         return is_underground_poi(poi)

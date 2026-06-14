@@ -8,7 +8,7 @@ Single source for:
 from __future__ import annotations
 
 import unicodedata
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 ZAKOPANE_REGION_RAW = (
     "zakopane", "szaflary", "chochołów", "białka tatrzańska",
@@ -234,3 +234,63 @@ def build_multi_city_gap_fill_pool(
     if requested_city:
         return filter_pois_by_city(pool, requested_city)
     return pool
+
+
+def build_cluster_hub_day_pools(
+    all_pois: List[Dict[str, Any]],
+    num_days: int,
+    cluster_cities: Optional[List[str]] = None,
+) -> tuple[List[List[Dict[str, Any]]], List[List[Dict[str, Any]]]]:
+    """FIX #201: one hub city per day for clusters (Trójmiasto, Kotlina…)."""
+    import math
+
+    hubs: Dict[str, List[Dict[str, Any]]] = {}
+    for p in all_pois:
+        h = poi_hub_norm(p) or poi_city_norm(p)
+        if not h:
+            continue
+        hubs.setdefault(h, []).append(p)
+    if not hubs:
+        full = list(all_pois)
+        return [full] * num_days, [full] * num_days
+
+    if cluster_cities:
+        hub_order = []
+        for c in cluster_cities:
+            cn = normalize_city_name(c)
+            if cn in hubs and cn not in hub_order:
+                hub_order.append(cn)
+        for h in sorted(hubs.keys(), key=lambda x: -len(hubs[x])):
+            if h not in hub_order:
+                hub_order.append(h)
+    else:
+        hub_order = sorted(hubs.keys(), key=lambda x: -len(hubs[x]))
+
+    hub_days = {h: 1 for h in hub_order}
+    if num_days <= len(hub_order):
+        day_hub_seq = hub_order[:num_days]
+    else:
+        extra = num_days - len(hub_order)
+        total = sum(len(hubs[h]) for h in hub_order) or 1
+        raw = {h: extra * len(hubs[h]) / total for h in hub_order}
+        base = {h: int(math.floor(raw[h])) for h in hub_order}
+        for h in hub_order:
+            hub_days[h] = 1 + base[h]
+        rem = extra - sum(base.values())
+        rank = {h: i for i, h in enumerate(hub_order)}
+        for h in sorted(hub_order, key=lambda z: (-(raw[z] - base[z]), rank[z]))[:rem]:
+            hub_days[h] += 1
+        day_hub_seq = []
+        for h in hub_order:
+            day_hub_seq += [h] * hub_days[h]
+        day_hub_seq = (day_hub_seq + [hub_order[0]] * num_days)[:num_days]
+
+    pools: List[List[Dict[str, Any]]] = []
+    fallbacks: List[List[Dict[str, Any]]] = []
+    for d in range(num_days):
+        h = day_hub_seq[d]
+        pool = list(hubs.get(h, []))
+        pools.append(pool)
+        fallbacks.append(list(pool))
+        print(f"[FIX #201] Cluster day {d + 1} → hub '{h}' ({len(pool)} POI)")
+    return pools, fallbacks

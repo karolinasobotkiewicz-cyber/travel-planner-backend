@@ -213,12 +213,14 @@ class PlanService:
         poi_pool: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """FIX #179: Trip-level report — which user preferences were actually scheduled."""
-        from app.domain.planner.engine import is_underground_poi
+        from app.domain.planner.engine import is_underground_poi, is_water_attraction_poi
         from app.domain.scoring.preference_coverage import poi_covers_preference_report
 
         def _poi_covers_pref(poi: dict, pref: str) -> bool:
             if pref == "underground":
                 return is_underground_poi(poi)
+            if pref == "water_attractions":
+                return is_water_attraction_poi(poi) or poi_covers_preference_report(poi, pref)
             return poi_covers_preference_report(poi, pref)
 
         poi_by_id = {p.get("id"): p for p in poi_pool if p.get("id")}
@@ -1378,6 +1380,13 @@ class PlanService:
                 return pools, fallbacks, day_geo_regions
 
             _zone_pools, _zone_fallbacks, _day_geo_regions = _build_zone_pools(all_pois_dict, num_days)
+            if _zone_pools is None and is_cluster:
+                from app.domain.planner.city_copy import build_cluster_hub_day_pools
+                _zone_pools, _zone_fallbacks = build_cluster_hub_day_pools(
+                    all_pois_dict, num_days, cities_to_load,
+                )
+                _day_geo_regions = [None] * num_days
+                print(f"[FIX #201] Cluster hub day pools enabled ({num_days} days)")
             _day_geo_regions = _day_geo_regions or []
             # FIX #179: block Zone C POIs on early days (pool + engine filter).
             _zones_with_c = 'C' in sorted(set(
@@ -1825,6 +1834,11 @@ class PlanService:
                         f"{start_time_str}-{end_time_str} (past day_end)"
                     )
             day_items = _f196_cleaned
+
+            # FIX #201: top-up must not schedule activities after dinner_break.
+            day_items = self._enforce_dinner_before_day_end(
+                day_items, day_end, day_num=day_num + 1,
+            )
             day_items = self._sort_items_by_time(day_items)
             day_items = self._remove_timeline_overlaps(day_items, day_num + 1)
             
@@ -4152,6 +4166,77 @@ class PlanService:
             result.append(day_end_item)
         
         return result
+
+    def _enforce_dinner_before_day_end(
+        self,
+        items: List[Any],
+        day_end: str,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #201: Cap dinner_break and drop post-dinner items added by afternoon top-up."""
+        if not items:
+            return items
+
+        day_end_min = time_to_minutes(day_end)
+        dinner_idx = None
+        dinner_start_min = None
+
+        for i, item in enumerate(items):
+            itype = getattr(item, "type", None)
+            if itype == ItemType.DINNER_BREAK:
+                dinner_idx = i
+                st = getattr(item, "start_time", None)
+                if st:
+                    dinner_start_min = time_to_minutes(st)
+                break
+
+        if dinner_idx is None:
+            return items
+
+        cleaned: List[Any] = []
+        for i, item in enumerate(items):
+            itype = getattr(item, "type", None)
+            if itype in (ItemType.DAY_START, ItemType.DAY_END):
+                cleaned.append(item)
+                continue
+
+            if itype == ItemType.DINNER_BREAK:
+                st = getattr(item, "start_time", None)
+                en = getattr(item, "end_time", None)
+                if st and en:
+                    start_min = time_to_minutes(st)
+                    end_min = time_to_minutes(en)
+                    if end_min > day_end_min:
+                        new_dur = max(day_end_min - start_min, 15)
+                        new_end = minutes_to_time(start_min + new_dur)
+                        try:
+                            data = item.model_dump() if hasattr(item, "model_dump") else item.dict()
+                            data["end_time"] = new_end
+                            data["duration_min"] = new_dur
+                            cleaned.append(type(item)(**data))
+                        except Exception:
+                            cleaned.append(item)
+                        print(
+                            f"[FIX #201] Day {day_num}: capped dinner_break "
+                            f"{en} → {new_end}"
+                        )
+                        continue
+                cleaned.append(item)
+                continue
+
+            if i > dinner_idx and dinner_start_min is not None:
+                st = getattr(item, "start_time", None)
+                if st and time_to_minutes(st) >= dinner_start_min:
+                    print(
+                        f"[FIX #201] Day {day_num}: removed post-dinner "
+                        f"{itype} {getattr(item, 'name', '')}"
+                    )
+                    continue
+
+            cleaned.append(item)
+
+        return cleaned
 
     def _consolidate_consecutive_free_time_blocks(
         self, items: List[Any], *, is_zakopane: bool = False,

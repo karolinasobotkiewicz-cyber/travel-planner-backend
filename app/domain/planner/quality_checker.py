@@ -154,12 +154,13 @@ def check_poi_quality(poi: Dict[str, Any], context: Dict[str, Any], user: Dict[s
     else:
         priority = int(_pl) if _pl else 0
     
-    # Badge: must_see (priority >= 11)
-    if priority >= 11:
+    # Badge: must_see (priority >= 11) — FIX #201: skip quick photo-stops
+    from app.domain.planner.engine import is_quick_stop_poi
+    if priority >= 11 and not is_quick_stop_poi(poi):
         badges.append("must_see")
     
     # Badge: core_attraction (priority == 12)
-    if priority == 12:
+    if priority == 12 and not is_quick_stop_poi(poi):
         badges.append("core_attraction")
     
     # BUGFIX (16.02.2026 - Problem #6): Removed "perfect_timing" badge
@@ -183,9 +184,9 @@ def check_poi_quality(poi: Dict[str, Any], context: Dict[str, Any], user: Dict[s
     if budget_level == 1 and ticket_normal <= 10:
         badges.append("budget_friendly")
     
-    # Badge: premium_experience (KULIGI, SPAs, high-end)
+    # Badge: premium_experience (KULIGI, SPAs, high-end) — FIX #201: not quick stops
     poi_name = poi.get("name", "").lower()
-    if "kuligi" in poi_name or "termy" in poi_name or "spa" in poi_name:
+    if ("kuligi" in poi_name or "termy" in poi_name or "spa" in poi_name) and not is_quick_stop_poi(poi):
         badges.append("premium_experience")
     
     return badges

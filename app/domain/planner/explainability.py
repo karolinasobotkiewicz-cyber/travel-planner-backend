@@ -34,39 +34,13 @@ def _explain_preference_match(
     preferences = user.get("preferences", [])
     if not preferences:
         return None
-    
-    # Get POI tags
-    poi_tags_list = poi.get("tags", [])
-    
-    # Convert tags to list if string
-    if isinstance(poi_tags_list, str):
-        if poi_tags_list:
-            poi_tags_list = [
-                t.strip().lower()
-                for t in poi_tags_list.split(",")
-                if t.strip()
-            ]
-        else:
-            poi_tags_list = []
-    
-    # Normalize POI tags to lowercase
-    poi_tags_normalized = [str(tag).lower() for tag in poi_tags_list]
-    
-    # Find matched preferences
-    matched_prefs = []
+
+    from app.domain.scoring.preference_coverage import poi_covers_preference_report
+
     for pref in preferences:
-        pref_lower = pref.lower()
-        # Check if preference matches any POI tag (exact or substring)
-        if any(
-            pref_lower in tag or tag in pref_lower
-            for tag in poi_tags_normalized
-        ):
-            matched_prefs.append(pref)
-    
-    if matched_prefs:
-        # Return first matched preference (most relevant)
-        pref_text = matched_prefs[0].replace("_", " ")
-        return f"Matches your {pref_text} preference"
+        if poi_covers_preference_report(poi, pref):
+            pref_text = pref.replace("_", " ")
+            return f"Matches your {pref_text} preference"
     
     return None
 
@@ -205,6 +179,8 @@ def _explain_travel_style_match(
     travel_style = user.get("travel_style", "").lower()
     if not travel_style:
         return None
+
+    preferences = [str(p).lower() for p in (user.get("preferences") or [])]
     
     poi_type = poi.get("type", "").lower()
     poi_tags = poi.get("tags", [])
@@ -236,8 +212,8 @@ def _explain_travel_style_match(
         ):
             return "Cultural experience (matches your style)"
     
-    # Relax style matching
-    if travel_style == "relax":
+    # Relax style matching — FIX #201: only when relaxation is an active preference
+    if travel_style == "relax" and "relaxation" in preferences:
         relax_indicators = [
             "spa", "termy", "wellness",
             "relax", "peaceful", "scenic_view"
