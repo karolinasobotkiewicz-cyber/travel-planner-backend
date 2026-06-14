@@ -2948,3 +2948,20 @@ def get_all_preferences() -> List[str]:
         List of preference strings
     """
     return list(USER_PREFERENCES_TO_TAGS.keys())
+
+
+def get_all_registered_tags() -> frozenset:
+    """FIX #202: All tags/types the engine understands (for Excel validation)."""
+    tags: set = set()
+    for pref, cfg in USER_PREFERENCES_TO_TAGS.items():
+        tags.add(pref.lower())
+        for t in cfg.get("tags", []):
+            tags.add(str(t).strip().lower())
+        for t in cfg.get("type_match", []):
+            tags.add(str(t).strip().lower())
+    try:
+        from app.domain.scoring.tag_mapper import TAG_ALIASES
+        tags.update(k.lower() for k in TAG_ALIASES)
+    except ImportError:
+        pass
+    return frozenset(tags)

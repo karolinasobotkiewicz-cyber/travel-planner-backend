@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import ast
 import math
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,10 +44,17 @@ import pandas as pd
 # Known-good values (mirrors tag_preferences.py + normalizer.py)
 # ──────────────────────────────────────────────────────────────────────────────
 
-# All tags that appear in USER_PREFERENCES_TO_TAGS across ALL preferences.
-# Kept here (not imported) so the validator has zero side-effects on engine code.
+def _get_known_tags() -> set:
+    """FIX #202: Sync validator with live tag_preferences + tag_mapper vocabulary."""
+    try:
+        from app.domain.scoring.tag_preferences import get_all_registered_tags
+        return set(get_all_registered_tags()) | _KNOWN_TAGS
+    except ImportError:
+        return set(_KNOWN_TAGS)
+
+
+# Legacy fallback set (merged into _get_known_tags at runtime).
 _KNOWN_TAGS: set = {
-    # attractions_for_kids / kids_attractions
     "playground", "interactive_exhibition_kids", "petting_zoo", "farm_animals",
     "feeding_experience", "miniature_world", "fairytale_world", "illusion_kids",
     "aquatic_playground", "adventure_playground", "trampoline_park",
@@ -215,8 +223,9 @@ def _parse_tag_list(raw) -> List[str]:
                 return [str(t).strip().lower() for t in parsed if str(t).strip()]
         except (ValueError, SyntaxError):
             pass
-    # Fallback: plain comma-separated
-    return [t.strip().lower() for t in s.split(",") if t.strip()]
+    # Fallback: plain comma/newline-separated
+    parts = re.split(r"[,;\n\r]+", s)
+    return [t.strip().lower() for t in parts if t.strip()]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Data classes
@@ -481,7 +490,7 @@ def _check_tags(row: pd.Series, excel_row: int, report: ValidationReport) -> Non
         return
 
     tags = _parse_tag_list(raw)
-    unknown = [t for t in tags if t not in _KNOWN_TAGS]
+    unknown = [t for t in tags if t not in _get_known_tags()]
 
     if unknown:
         report.issues.append(ValidationIssue(
