@@ -56,6 +56,12 @@ COVERAGE_CASES = [
     ("Kłodzko", "Twierdza Kłodzko", "history_mystery", True),
     ("Kudowa-Zdrój", "Błędne Skały", "history_mystery", False),
     ("Kudowa-Zdrój", "Szczeliniec", "nature_landscape", True),
+    # FIX #204 (16.06.2026): mountain_trails strict allowlist (no urban parks);
+    # spa-resort buildings are not history_mystery.
+    ("Katowice", "Park Kościuszki", "mountain_trails", False),
+    ("Katowice", "Park Śląski", "mountain_trails", False),
+    ("Sopot", "Dom Zdrojowy", "history_mystery", False),
+    ("Sopot", "Plac Zdrojowy", "history_mystery", False),
 ]
 
 _pool_cache = {}

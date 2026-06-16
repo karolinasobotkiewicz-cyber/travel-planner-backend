@@ -862,6 +862,14 @@ _WATER_NAME_MARKERS = ("wodospad", "aquapark", "term", "jezioro", "kąpiel")
 _QUICK_STOP_NAME_MARKERS = (
     "pomnik bamber", "brama chlebnicka", "brama wyżynna", "fontanna neptuna",
     "ulica długa", "skwer ", "plac zdrojowy", "deptak", "most świętokrzyski",
+    # FIX #204 (16.06.2026): client — squares / monuments / footbridges keep
+    # being promoted as MAIN day attractions and even earning the "must_see"
+    # badge (e.g. Plac Ratuszowy w Jeleniej Górze). Treat them as quick photo
+    # stops so they lose the iconic boost + must_see/core badge. POIs with a
+    # real Excel must_see >= 9 stay exempt (see guard above), so Rynek Główny
+    # in Kraków and Molo/Bulwar (client wants those) are unaffected.
+    "plac ratuszowy", "rynek ", "pomnik ", "syrenka", "syreny", "most ",
+    "kładka", "plac europejski", "taras widokowy",
 )
 # Bare tag "underground" alone is too broad — Archiwum Planety Ziemia is a museum.
 
@@ -2161,6 +2169,15 @@ def score_poi(
     if must_see_value >= 8 and is_city_tourism_trip(context) and not is_quick_stop_poi(p):
         iconic_extra = must_see_value * 1.5 * must_see_multiplier
         score += iconic_extra
+
+    # FIX #204 (16.06.2026): demote low-value "micro-POIs" as MAIN day anchors.
+    # Client across many cities: squares / monuments / footbridges / promenades
+    # were being chosen instead of top attractions. is_quick_stop_poi() already
+    # exempts genuine icons (Excel must_see >= 9), so this only hits low-value
+    # photo-stops. Penalty is moderate so they can still serve as short fillers
+    # via gap-fill, but lose to real attractions in the main argmax.
+    if is_quick_stop_poi(p) and must_see_value < 7:
+        score -= 35.0
 
     # FIX #197: Be Happy Museum and similar selfie-museums — lower when not must-see icon
     _pname197 = str(p.get("name", "")).lower()

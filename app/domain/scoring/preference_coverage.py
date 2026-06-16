@@ -127,7 +127,7 @@ _STRONG_BY_PREF: Dict[str, frozenset] = {
         "royal_castle_complex", "medieval_market_history", "early_polish_history",
         "historic_jewish_district", "historic_island", "cathedral_area",
         "gothic_cathedral", "historic_cathedral", "historic_ruins", "ruins_remains",
-        "historic_tower", "historic_city_gate", "historic_tunnel_route",
+        "historic_tower", "historic_tunnel_route",
         "knights_history", "aristocratic_history", "regional_history",
         "military_secret", "military_heritage", "naval_history", "maritime_history",
         "dark_history", "hidden_history", "ww2_site", "war_history",
@@ -236,6 +236,22 @@ _STRONG_BY_PREF: Dict[str, frozenset] = {
         "outdoor_activity", "sport", "fitness", "fitness_path", "health_trail",
         "golf_course_resort", "horse_riding", "mountain_adventure", "adventure_sport",
     }),
+    # FIX #204 (16.06.2026): mountain_trails had NO strict allowlist, so it fell
+    # back to the broad scoring vocabulary and credited urban parks (Park
+    # Kościuszki / Park Śląski / Park Chopina in Katowice) via generic
+    # forest_walk / nature_immersion / scenic_landscape tags. Require a GENUINE
+    # mountain-hiking tag (or a real trail object). Flat urban-green tags are
+    # deliberately excluded.
+    "mountain_trails": frozenset({
+        "mountain_trails", "mountain_trail", "hiking", "hiking_trail", "trekking",
+        "mountain_hike", "mountain_hiking", "mountain_walk", "summit_trail",
+        "summit_hike", "summit_views", "peak_summit", "ridge_trail", "ridge_walk",
+        "scenic_ridge_walk", "via_ferrata", "mountain_pass", "mountain_adventure",
+        "alpine_meadow", "alpine_meadows", "forest_hike", "forest_hill_walk",
+        "waterfall_trail", "viewpoint_trail", "panoramic_route", "nature_trail",
+        "table_mountains_trail", "iconic_hiking_destination", "tatra_viewpoint",
+        "panoramic_mountain_views", "mountain_views", "stone_geological_trail",
+    }),
 }
 _STRONG_BY_PREF["attractions_for_kids"] = _STRONG_BY_PREF["kids_attractions"]
 _STRONG_BY_PREF["family_favorite"] = _STRONG_BY_PREF["kids_attractions"]
@@ -343,14 +359,22 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "most tumski", "rynek", "fontanna",
     ),
     "history_mystery": (
+        # FIX #204: client (Sopot/Gdańsk) — spa-resort buildings & promenade gates
+        # were treated as history_mystery. Deny zdrój/spa quarter buildings.
         "fontanna neptuna", "brama krowia", "pomnik smoka", "kładka",
-        "błędne skały", "plac ",
+        "błędne skały", "plac ", "dom zdrojowy", "zdrojowy", "deptak",
+        "molo", "promenada",
     ),
     "kids_attractions": (
         "podziemia rynku",
     ),
     "active_sport": (
         "zoo", "ogród zoologiczny", "rynek", "muzeum",
+    ),
+    # FIX #204: Katowice marked urban recreation parks as mountain trails.
+    "mountain_trails": (
+        "park kościuszki", "park śląski", "park slaski", "park chopina",
+        "park miejski", "rynek", "zoo", "muzeum", "skansen",
     ),
 }
 

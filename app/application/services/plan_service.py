@@ -1514,9 +1514,20 @@ class PlanService:
             # 3. Gaps only appear after these adjustments
             # ETAP 2 - DAY 3: Pass global_used for cross-day tracking
             from app.domain.planner.city_copy import build_day_gap_fill_pool
+            # FIX #204 (16.06.2026): gap-fill candidate pool must respect season.
+            # The engine main loop calls filter_by_season(), but gap-fill/top-up
+            # passes drew straight from all_pois_dict, so an out-of-season POI
+            # (e.g. "Dyniolandia" — autumn only) could be re-injected into a
+            # February plan. Season-filter the CANDIDATE pool while keeping the
+            # full dict for coordinate/transit lookups.
+            from app.domain.filters.seasonality import filter_by_season as _filter_by_season
+            try:
+                _gf_season_pois = _filter_by_season(all_pois_dict, dates[day_num])
+            except Exception:
+                _gf_season_pois = all_pois_dict
             _day_gf_pool = build_day_gap_fill_pool(
                 day_num,
-                all_pois_dict,
+                _gf_season_pois,
                 zone_pools=_zone_pools if num_days > 1 else None,
                 zone_fallbacks=_zone_fallbacks if num_days > 1 else None,
                 requested_city=_requested_city,
@@ -1546,7 +1557,7 @@ class PlanService:
                     break
                 day_items = self._afternoon_topup_items(
                     day_items,
-                    all_pois_dict,
+                    _gf_season_pois,
                     day_context,
                     user,
                     global_used_pois,
@@ -1570,11 +1581,11 @@ class PlanService:
                     )
                     if _ft_before <= 90 and (not _f194_gf or _attr_n >= 3):
                         break
-                    _gf_pool = all_pois_dict
+                    _gf_pool = _gf_season_pois
                     if _f194_gf:
                         from app.domain.planner.city_copy import build_multi_city_gap_fill_pool
                         _gf_pool = build_multi_city_gap_fill_pool(
-                            all_pois_dict,
+                            _gf_season_pois,
                             requested_city=_requested_city,
                             cluster_cities=cities_to_load if is_cluster else None,
                         )
