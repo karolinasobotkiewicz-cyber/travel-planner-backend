@@ -130,7 +130,25 @@ class TripTypeRouter:
         travel_style = trip_input.travel_style or "balanced"
         group_type = trip_input.group.type  # 'solo', 'couples', 'friends', 'family_kids', 'seniors'
         is_cluster = trip_input.location.is_cluster  # PHASE 7: Multi-city cluster
-        
+
+        # FIX #203 (16.06.2026): Clients send region_type="cluster" with a member
+        # city (e.g. {city:"Gdańsk", region_type:"cluster"}) instead of setting
+        # is_cluster=True. Previously this fell through to single-city logic, so the
+        # planner never left the base city (Trójmiasto/Karkonosze/Kotlina collapsed
+        # to one town). Treat region_type="cluster" on a known cluster member as a
+        # cluster request so all cities in the cluster are loaded.
+        if (
+            not is_cluster
+            and str(region_type).lower() == "cluster"
+            and DestinationClusters.is_cluster_city(location)
+        ):
+            is_cluster = True
+            loc_safe = str(location).encode("ascii", "ignore").decode("ascii")
+            print(
+                f"[ROUTER] FIX #203: region_type='cluster' + member city "
+                f"'{loc_safe}' → activating CLUSTER mode."
+            )
+
         # ================================================================
         # PHASE 7: CLUSTER DETECTION (Priority over single-city logic)
         # ================================================================

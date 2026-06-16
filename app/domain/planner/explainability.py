@@ -181,7 +181,13 @@ def _explain_travel_style_match(
         return None
 
     preferences = [str(p).lower() for p in (user.get("preferences") or [])]
-    
+
+    # FIX #203 (16.06.2026): keep style reasons consistent with preference_coverage.
+    # The client repeatedly saw "Relaxing activity / matches your style" while the
+    # coverage report said relaxation=false. A style reason may only be emitted when
+    # the matching preference is actually credited for this POI in the coverage API.
+    from app.domain.scoring.preference_coverage import poi_covers_preference_report
+
     poi_type = poi.get("type", "").lower()
     poi_tags = poi.get("tags", [])
     
@@ -201,40 +207,25 @@ def _explain_travel_style_match(
         ]
         if any(indicator in poi_name or indicator in tags_str for indicator in local_tradition_indicators):
             return "Local tradition (cultural experience)"
-        
-        cultural_indicators = [
-            "museum", "heritage", "history",
-            "gallery", "art", "cultural"
-        ]
-        if any(
-            indicator in poi_type or indicator in tags_str
-            for indicator in cultural_indicators
+
+        if (
+            poi_covers_preference_report(poi, "museum_heritage")
+            or poi_covers_preference_report(poi, "history_mystery")
         ):
             return "Cultural experience (matches your style)"
     
-    # Relax style matching — FIX #201: only when relaxation is an active preference
-    if travel_style == "relax" and "relaxation" in preferences:
-        relax_indicators = [
-            "spa", "termy", "wellness",
-            "relax", "peaceful", "scenic_view"
-        ]
-        if any(
-            indicator in poi_type or indicator in tags_str
-            for indicator in relax_indicators
-        ):
-            return "Relaxing activity (matches your style)"
+    # Relax style matching — FIX #201: only when relaxation is an active preference;
+    # FIX #203: and only when the POI genuinely covers relaxation.
+    if (
+        travel_style == "relax"
+        and "relaxation" in preferences
+        and poi_covers_preference_report(poi, "relaxation")
+    ):
+        return "Relaxing activity (matches your style)"
     
-    # Active style matching
-    if travel_style == "active":
-        active_indicators = [
-            "trail", "hiking", "adventure",
-            "sport", "active", "outdoor"
-        ]
-        if any(
-            indicator in poi_type or indicator in tags_str
-            for indicator in active_indicators
-        ):
-            return "Active adventure (matches your style)"
+    # Active style matching (engine uses "adventure" travel_style for active trips)
+    if travel_style in ("active", "adventure") and poi_covers_preference_report(poi, "active_sport"):
+        return "Active adventure (matches your style)"
     
     return None
 

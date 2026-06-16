@@ -2004,6 +2004,15 @@ class PlanService:
         )
 
         # FIX #196: preference swap może wstawić atrakcję na zajęty slot (overlap z szlakiem/kolacją).
+        # FIX #203 (16.06.2026): _ensure_preference_coverage (above) can SWAP attractions
+        # AFTER the per-day transit reconciliation ran, leaving transit from/to pointing at
+        # POIs that are no longer in the timeline (client: "transit z nieistniejącego POI",
+        # "transit do POI którego nie ma w planie"). Re-run the endpoint reconciliation here,
+        # the final mutation, so every transit reflects its real neighbours.
+        _final_coord_map = {
+            p.get("name"): p for p in all_pois_dict
+            if p.get("name") and p.get("lat") and p.get("lng")
+        }
         _finalized_days: List[DayPlan] = []
         for day_plan in days:
             _fitems = list(day_plan.items)
@@ -2012,6 +2021,37 @@ class PlanService:
             )
             _fitems = self._sort_items_by_time(_fitems)
             _fitems = self._remove_timeline_overlaps(_fitems, day_plan.day)
+            _fitems = self._update_transit_destinations(_fitems, _final_coord_map)
+            _fitems = self._validate_transit_endpoints(_fitems)
+            # FIX #203: the heal/overlap passes above can re-introduce items that run
+            # past the day window (dinner shifted late, free_time stretched to fill).
+            # Client: "harmonogram wykracza poza zadany limit dnia" /
+            # "free_time kończy się po day_end". Re-cap dinner and clamp every item
+            # to the day_end as the final mutation.
+            _fitems = self._enforce_dinner_before_day_end(
+                _fitems, day_end, day_num=day_plan.day,
+            )
+            _de_min = time_to_minutes(day_end)
+            _clamped = []
+            for _it in _fitems:
+                _et = getattr(_it, "end_time", None)
+                _st = getattr(_it, "start_time", None)
+                if not _et or time_to_minutes(_et) <= _de_min:
+                    _clamped.append(_it)
+                    continue
+                if _st and time_to_minutes(_st) < _de_min:
+                    _new_dur = _de_min - time_to_minutes(_st)
+                    if _new_dur >= 5:
+                        try:
+                            _d = _it.model_dump() if hasattr(_it, "model_dump") else _it.dict()
+                            _d["end_time"] = day_end
+                            _d["duration_min"] = _new_dur
+                            _clamped.append(type(_it)(**_d))
+                        except Exception:
+                            _clamped.append(_it)
+                    # else: too short after clamp → drop
+                # else: starts at/after day_end → drop
+            _fitems = _clamped
             _finalized_days.append(DayPlan(
                 day=day_plan.day,
                 title=_generate_day_title(_fitems, day_plan.day),
