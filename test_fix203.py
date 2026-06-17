@@ -62,6 +62,16 @@ COVERAGE_CASES = [
     ("Katowice", "Park Śląski", "mountain_trails", False),
     ("Sopot", "Dom Zdrojowy", "history_mystery", False),
     ("Sopot", "Plac Zdrojowy", "history_mystery", False),
+    # FIX #205 (17.06.2026): coverage RECALL — granular Excel tags must still be
+    # credited (client: "plan has 6 nature/kids POIs, coverage shows 1").
+    ("Kraków", "Zakrzówek", "nature_landscape", True),
+    ("Kraków", "Zakrzówek", "water_attractions", True),
+    ("Kraków", "Błonia", "nature_landscape", True),
+    ("Kraków", "Ogród Zoologiczny", "kids_attractions", True),
+    ("Kraków", "Henryka Jordana", "relaxation", True),
+    ("Kraków", "Park Linowy", "active_sport", True),
+    # FIX #205 precision: market square / old town are NOT history_mystery.
+    ("Kraków", "Stare Miasto", "history_mystery", False),
 ]
 
 _pool_cache = {}

@@ -313,6 +313,87 @@ _COVERAGE_DENY: Dict[str, frozenset] = {
 }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FIX #205 (17.06.2026): SUBSTRING keyword fallback per preference.
+# Client reported systemic UNDERCOUNT (plan has 6 kids/nature/relax POIs, coverage
+# shows 1). Root cause: the Excel tag vocabulary is highly granular/descriptive
+# (e.g. "turquoise_limestone_lake", "city_zoo_animals", "large_city_meadow",
+# "historic_city_park", "urban_lake_beach", "forest_rope_courses"), so the exact
+# strong-tag allowlist misses genuine matches. These keywords are matched as
+# SUBSTRINGS against each normalized tag. This step is ADDITIVE (runs only after
+# the strong allowlist misses) and is gated by the name-deny lists that run FIRST,
+# so the audited false-positives (Pomnik Smoka, Sky Tower, Park Kościuszki as
+# mountain trail, spa-buildings as history…) stay denied.
+# Keywords are deliberately CONCRETE — no ambiguous tokens like bare "park"
+# (theme_park / water_park) or "view"/"scenic" (urban viewpoints).
+# ─────────────────────────────────────────────────────────────────────────────
+_KEYWORDS_BY_PREF: Dict[str, tuple] = {
+    "nature_landscape": (
+        "nature", "mountain", "forest", "woodland", "waterfall", "lake", "river",
+        "meadow", "cliff", "cave", "valley", "gorge", "canyon", "reserve",
+        "botanic", "arboretum", "alpine", "dune", "coastal", "seaside", "limestone",
+        "geolog", "wetland", "glade", "sandstone", "greenery", "glacial", "garden",
+        "city_park", "urban_park", "green_space", "green_recreation", "national_park",
+        "island_park", "riverside_park", "rock_formation",
+    ),
+    "water_attractions": (
+        "water", "aqua", "pool", "swim", "beach", "marina", "kayak", "raft", "sail",
+        "boat", "wave", "_slide", "thermal", "lagoon", "seaside", "yacht", "harbour",
+        "harbor", "river_cruise", "waterfall", "lake", "river_view",
+    ),
+    "relaxation": (
+        "relax", "spa", "therm", "wellness", "sauna", "jacuzzi", "massage", "zdroj",
+        "tranquil", "peaceful", "calm", "leisure", "picnic", "resort", "sanatorium",
+        "pump_room", "mineral_spring", "stroll", "promenade", "garden", "green_space",
+        "green_recreation", "city_park", "urban_park", "park_walk", "lake_relax",
+        "recreation_area", "seafront",
+    ),
+    "active_sport": (
+        "climb", "rope", "zipline", "zip_line", "via_ferrata", "kayak", "raft",
+        "canoe", "bike", "cycl", "ski", "snowboard", "sled", "toboggan", "bobsled",
+        "trampoline", "paintball", "kart", "obstacle", "ninja", "quad", "atv",
+        "surf", "_sup", "watersport", "fitness", "adventure", "adrenalin", "hiking",
+        "trekking", "climbing", "horse_rid", "golf",
+    ),
+    "kids_attractions": (
+        "kids", "children", "child_", "playground", "petting", "zoo", "animal",
+        "wildlife", "aquarium", "oceanarium", "dinosaur", "fairytale", "fairy_tale",
+        "storybook", "trampoline", "rope_course", "rope_park", "amusement",
+        "theme_park", "fun_park", "lego", "miniature", "illusion", "puppet", "candy",
+        "sweet", "chocolate", "butterfly", "parrot", "family_fun", "_fun_",
+        "soft_play", "jump", "mascot", "game_arena", "interactive_game",
+    ),
+    "museum_heritage": (
+        # Only unambiguous museum tokens — "heritage"/"exhibition" matched squares
+        # and churches (architecture_heritage, historical_exhibits). The strong
+        # allowlist already covers the rich museum vocabulary.
+        "museum", "gallery",
+    ),
+    "history_mystery": (
+        # NOTE: deliberately NO bare "medieval" — it matched "largest_medieval_square"
+        # (a market square). Specific medieval_* castle/tower tags live in the strong set.
+        "castle", "fortress", "fortif", "stronghold", "citadel",
+        "legend", "mystery", "dark_history", "hidden_history", "dungeon", "catacomb",
+        "crypt", "ruins", "knight", "ww2_site", "war_history", "underground_history",
+    ),
+    "mountain_trails": (
+        "mountain_trail", "mountain_hik", "summit", "ridge", "via_ferrata",
+        "hiking_trail", "trekking", "table_mountains_trail",
+    ),
+}
+
+
+def _keyword_hit(pref: str, tags: Set[str]) -> bool:
+    kws = _KEYWORDS_BY_PREF.get(pref)
+    if not kws:
+        return False
+    for t in tags:
+        for kw in kws:
+            if kw in t:
+                return True
+    return False
+
+
 def _norm_tag(t: Any) -> str:
     # FIX #203: many multi-city tags use hyphens (food-hall, local-food,
     # historic-site, water-activity). Normalize to underscores so a single
@@ -363,7 +444,7 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         # were treated as history_mystery. Deny zdrój/spa quarter buildings.
         "fontanna neptuna", "brama krowia", "pomnik smoka", "kładka",
         "błędne skały", "plac ", "dom zdrojowy", "zdrojowy", "deptak",
-        "molo", "promenada",
+        "molo", "promenada", "rynek", "stare miasto",
     ),
     "kids_attractions": (
         "podziemia rynku",
@@ -402,21 +483,27 @@ def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
         return True
 
     # FIX #203: strict allowlist for every audited preference — require a STRONG tag.
+    # FIX #205: if the strong allowlist misses, fall back to the concrete substring
+    # keyword set (handles granular Excel tags) — ADDITIVE, name-deny already ran.
     strong = _STRONG_BY_PREF.get(pref)
     if strong is not None:
         if pref == "museum_heritage":
             # A square/church tagged only 'historical_exhibits' + 'historic_building'
             # is not a museum.
             _hit = tags & strong
-            if not _hit:
-                return False
-            if _hit <= {"historical_exhibits"} and (tags & {"historic_building", "architecture_heritage"}):
-                return False
-            return True
+            if _hit and not (
+                _hit <= {"historical_exhibits"}
+                and (tags & {"historic_building", "architecture_heritage"})
+            ):
+                return True
+            return _keyword_hit(pref, tags)
         if pref == "history_mystery":
-            if tags & _WEAK_HERITAGE_ONLY and not (tags & strong):
-                return False
-        return bool(tags & strong)
+            if tags & strong and not (tags & _WEAK_HERITAGE_ONLY and not (tags & strong)):
+                return True
+            return _keyword_hit(pref, tags)
+        if tags & strong:
+            return True
+        return _keyword_hit(pref, tags)
 
     # Legacy fallback for any non-audited preference: broad vocabulary minus deny.
     from app.domain.scoring.tag_preferences import USER_PREFERENCES_TO_TAGS
@@ -436,7 +523,12 @@ def matched_coverage_tags(poi: Dict[str, Any], pref: str) -> list[str]:
         return [pref]
     strong = _STRONG_BY_PREF.get(pref)
     if strong is not None:
-        return sorted(tags & strong)
+        _hit = sorted(tags & strong)
+        if _hit:
+            return _hit
+        # FIX #205: report which granular tags matched via keyword fallback.
+        kws = _KEYWORDS_BY_PREF.get(pref) or ()
+        return sorted(t for t in tags if any(kw in t for kw in kws))
     from app.domain.scoring.tag_preferences import USER_PREFERENCES_TO_TAGS
 
     cfg = USER_PREFERENCES_TO_TAGS.get(pref)
