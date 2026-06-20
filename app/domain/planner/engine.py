@@ -872,6 +872,8 @@ _HARD_QUICK_STOP_MARKERS = (
     # FIX #207 (19.06.2026): Poznań/Wrocław micro-POI still core (Pręgierz, Okrąglak…)
     "pręgierz", "pregierz", "domy kupieckie", "okrąglak", "okraglak", "plac wolności",
     "pomnik ofiar", "pomnik bamber", "bastion ", "wyspa słodowa",
+    # FIX #208: Karkonosze micro-POI
+    "anomalii grawitacyjnej", "miejsce anomalii", "plac piastowski",
 )
 
 _QUICK_STOP_NAME_MARKERS = (
@@ -891,6 +893,8 @@ _QUICK_STOP_NAME_MARKERS = (
     # FIX #207: Poznań/Wrocław
     "pręgierz", "pregierz", "domy kupieckie", "okrąglak", "plac wolności",
     "pomnik ofiar", "bastion", "wyspa słodowa",
+    # FIX #208: Karkonosze micro-POI
+    "anomalii grawitacyjnej", "miejsce anomalii", "plac piastowski",
 )
 # Bare tag "underground" alone is too broad — Archiwum Planety Ziemia is a museum.
 
@@ -2663,10 +2667,14 @@ def score_poi(
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                 print(f"    [URBAN ACTIVE BOOST] {poi_name_safe}: +{_ca_boost:.1f} (city + active_sport/adventure)")
 
-        # FIX #207: city adventure without culture prefs — deprioritize iconic heritage fillers.
+        # FIX #207/#208: city/mountain cluster adventure without culture prefs.
         _top3_adv = user_preferences[:3]
         _culture_in_top3 = bool({"museum_heritage", "history_mystery"} & set(_top3_adv))
-        if _is_city_206(context) and not _culture_in_top3:
+        _adv_cluster208 = _is_city_206(context) or (
+            context.get("is_cluster")
+            and (context.get("signals") or {}).get("cluster_type") == "radius_based"
+        )
+        if _adv_cluster208 and not _culture_in_top3:
             _heritage_names = ("rynek", "ostrów tumski", "ostrow tumski", "stare miasto", "ratusz")
             _heritage_tags = {"cathedral_area", "historic_island", "old_town", "heritage_site"}
             if (
@@ -2873,24 +2881,50 @@ def score_poi(
                 print(f"    [RELAX GREEN BOOST] {poi_name_safe}: +50.0 (relax + park/bulwar/lake)")
 
     # FIX #207 (19.06.2026): city-tourism only — Wrocław/Poznań nature/food balance.
-    from app.domain.planner.city_copy import is_city_tourism_trip as _is_city_207
+    from app.domain.planner.city_copy import (
+        is_city_tourism_trip as _is_city_207,
+        normalize_city_name as _norm_city_208,
+        poi_city_norm as _poi_city_208,
+        poi_hub_norm as _poi_hub_208,
+    )
+    _is_mtn_cluster208 = bool(
+        context.get("is_cluster")
+        and (context.get("signals") or {}).get("cluster_type") == "radius_based"
+    )
+
+    # FIX #208: cluster base city — boost requested town, penalise off-hub on early days.
+    _req_city208 = _norm_city_208(context.get("requested_city", ""))
+    if context.get("is_cluster") and _req_city208:
+        _hub208 = _poi_hub_208(p) or _poi_city_208(p)
+        _day208 = int(context.get("current_day_num") or 1)
+        _nd208 = int(context.get("num_days") or 1)
+        if _hub208 == _req_city208:
+            score += 40.0
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [BASE CITY BOOST] {poi_name_safe}: +40.0 (cluster hub={_req_city208})")
+        elif _day208 <= max(1, int(_nd208 * 0.55)):
+            score -= 35.0
+
     _nature_hit207 = {
         "japanese_garden", "botanical_collection", "greenhouse", "botanical_garden",
         "riverside", "river_cruise", "forest", "lake", "waterfall", "city_park",
         "nature", "garden", "arboretum", "meadow", "plant_exhibits", "riverside_island",
     }
-    if _is_city_207(context) and "nature_landscape" in _prefs206[:3]:
+    if (_is_city_207(context) or _is_mtn_cluster208) and "nature_landscape" in _prefs206[:3]:
         _tags207 = set(str(t).lower() for t in (p.get("tags") or []))
         if (
             (_nature_hit207 & _tags207)
             or is_park_or_green_space_poi(p)
-            or any(x in _name206 for x in ("ogród", "ogrod ", "rejs", "wodospad", "japoński", "botaniczny"))
+            or any(x in _name206 for x in (
+                "ogród", "ogrod ", "rejs", "wodospad", "japoński", "botaniczny",
+                "wodospad", "kamieniec", "szklarka", "kocioł", "śnieżka", "kociol",
+            ))
         ) and not is_quick_stop_poi(p):
             score += 45.0
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [NATURE BOOST] {poi_name_safe}: +45.0 (nature_landscape in top-3 prefs)")
 
-    if _is_city_207(context) and "nature_landscape" in _prefs206[:3] and "museum_heritage" in _prefs206[:3]:
+    if (_is_city_207(context) or _is_mtn_cluster208) and "nature_landscape" in _prefs206[:3] and "museum_heritage" in _prefs206[:3]:
         _museum_only = {
             "themed_museum", "multimedia_exhibition", "interactive_exhibits",
             "local_history", "art_gallery", "museum", "exhibition_space",
@@ -2909,6 +2943,38 @@ def score_poi(
             score += 40.0
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [LOCAL FOOD BOOST] {poi_name_safe}: +40.0 (local_food in top-3 prefs)")
+
+    # FIX #208: Karkonosze cluster — relax, active_sport, no long hikes on relax style.
+    if _is_mtn_cluster208:
+        if user.get("travel_style") == "relax" or "relaxation" in _prefs206:
+            _relax_mtn_tags = {"relaxation", "spa", "termy", "wellness", "thermal_pools", "aquapark", "aqua_park"}
+            _relax_mtn_names = ("aquapark", "sandera", "term", "cieplick", "wellness", "spa")
+            if _relax_mtn_tags & _tags206 or any(n in _name206 for n in _relax_mtn_names):
+                score += 55.0
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [MTN RELAX BOOST] {poi_name_safe}: +55.0 (Karkonosze relax POI)")
+        if "active_sport" in _prefs206[:3]:
+            _active_mtn = {
+                "rope_park", "forest_rope_courses", "climbing", "ski", "bike", "cycling",
+                "adventure_park", "obstacle_course", "zipline", "via_ferrata", "sled",
+                "active_sport", "sports", "outdoor_adventure",
+            }
+            if _active_mtn & _tags206 or str(p.get("type", "")).lower() == "trail":
+                score += 45.0
+        if "family_kids" in _prefs206[:3] and "nature_landscape" in _prefs206[:3]:
+            if "kids_attractions" in _tags206 and not (_nature_hit207 & _tags206):
+                score -= 30.0
+
+    if user.get("travel_style") == "relax" and "mountain_trails" not in _prefs206[:3]:
+        _tmax208 = safe_int(p.get("time_max"), 60)
+        _trail_like208 = (
+            str(p.get("type", "")).lower() == "trail"
+            or bool({"mountain_trails", "hiking", "forest_trail", "moderate_hike"} & _tags206)
+        )
+        if _tmax208 > 150 or (_trail_like208 and _tmax208 > 120):
+            score -= 60.0
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [RELAX LONG PENALTY] {poi_name_safe}: -60.0 (relax + duration {_tmax208}min)")
 
     # FIX #6 (02.02.2026): Priority_level bonus (core: +25, secondary: +10, optional: 0)
     score += calculate_priority_bonus(p, user)

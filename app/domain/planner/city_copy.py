@@ -240,8 +240,13 @@ def build_cluster_hub_day_pools(
     all_pois: List[Dict[str, Any]],
     num_days: int,
     cluster_cities: Optional[List[str]] = None,
+    base_city: str = "",
 ) -> tuple[List[List[Dict[str, Any]]], List[List[Dict[str, Any]]]]:
-    """FIX #201: one hub city per day for clusters (Trójmiasto, Kotlina…)."""
+    """FIX #201/#208: one hub city per day for clusters (Trójmiasto, Karkonosze…).
+
+    FIX #208: when ``base_city`` is set (user's requested town), that hub gets the
+    majority of early days before sibling cluster cities are introduced.
+    """
     import math
 
     hubs: Dict[str, List[Dict[str, Any]]] = {}
@@ -254,8 +259,12 @@ def build_cluster_hub_day_pools(
         full = list(all_pois)
         return [full] * num_days, [full] * num_days
 
+    base_norm = normalize_city_name(base_city) if base_city else ""
+
     if cluster_cities:
         hub_order = []
+        if base_norm and base_norm in hubs:
+            hub_order.append(base_norm)
         for c in cluster_cities:
             cn = normalize_city_name(c)
             if cn in hubs and cn not in hub_order:
@@ -265,25 +274,52 @@ def build_cluster_hub_day_pools(
                 hub_order.append(h)
     else:
         hub_order = sorted(hubs.keys(), key=lambda x: -len(hubs[x]))
+        if base_norm and base_norm in hub_order:
+            hub_order = [base_norm] + [h for h in hub_order if h != base_norm]
 
-    hub_days = {h: 1 for h in hub_order}
-    if num_days <= len(hub_order):
+    if base_norm and base_norm in hub_order and num_days > len(hub_order):
+        other_hubs = [h for h in hub_order if h != base_norm]
+        base_days = max(1, round(num_days * 0.55))
+        day_hub_seq = [base_norm] * base_days
+        for i in range(num_days - base_days):
+            day_hub_seq.append(other_hubs[i % len(other_hubs)] if other_hubs else base_norm)
+        day_hub_seq = day_hub_seq[:num_days]
+    elif num_days <= len(hub_order):
         day_hub_seq = hub_order[:num_days]
+        if base_norm and base_norm in hub_order:
+            day_hub_seq[0] = base_norm
     else:
+        hub_days = {h: 1 for h in hub_order}
         extra = num_days - len(hub_order)
         total = sum(len(hubs[h]) for h in hub_order) or 1
-        raw = {h: extra * len(hubs[h]) / total for h in hub_order}
-        base = {h: int(math.floor(raw[h])) for h in hub_order}
-        for h in hub_order:
-            hub_days[h] = 1 + base[h]
-        rem = extra - sum(base.values())
-        rank = {h: i for i, h in enumerate(hub_order)}
-        for h in sorted(hub_order, key=lambda z: (-(raw[z] - base[z]), rank[z]))[:rem]:
-            hub_days[h] += 1
+        if base_norm and base_norm in hub_order:
+            base_share = max(1, round(extra * 0.55))
+            hub_days[base_norm] += base_share
+            extra -= base_share
+            others = [h for h in hub_order if h != base_norm]
+            ototal = sum(len(hubs[h]) for h in others) or 1
+            for h in others:
+                add = int(math.floor(extra * len(hubs[h]) / ototal)) if extra > 0 else 0
+                hub_days[h] += add
+            rem = extra - sum(int(math.floor(extra * len(hubs[h]) / ototal)) for h in others)
+            rank = {h: i for i, h in enumerate(others)}
+            for h in sorted(others, key=lambda z: (-len(hubs[z]), rank.get(z, 99)))[:rem]:
+                hub_days[h] += 1
+        else:
+            raw = {h: extra * len(hubs[h]) / total for h in hub_order}
+            base = {h: int(math.floor(raw[h])) for h in hub_order}
+            for h in hub_order:
+                hub_days[h] = 1 + base[h]
+            rem = extra - sum(base.values())
+            rank = {h: i for i, h in enumerate(hub_order)}
+            for h in sorted(hub_order, key=lambda z: (-(raw[z] - base[z]), rank[z]))[:rem]:
+                hub_days[h] += 1
         day_hub_seq = []
         for h in hub_order:
             day_hub_seq += [h] * hub_days[h]
         day_hub_seq = (day_hub_seq + [hub_order[0]] * num_days)[:num_days]
+        if base_norm and base_norm in hub_order:
+            day_hub_seq[0] = base_norm
 
     pools: List[List[Dict[str, Any]]] = []
     fallbacks: List[List[Dict[str, Any]]] = []
@@ -292,5 +328,6 @@ def build_cluster_hub_day_pools(
         pool = list(hubs.get(h, []))
         pools.append(pool)
         fallbacks.append(list(pool))
-        print(f"[FIX #201] Cluster day {d + 1} → hub '{h}' ({len(pool)} POI)")
+        label = base_city if h == base_norm else h
+        print(f"[FIX #201/#208] Cluster day {d + 1} → hub '{label}' ({len(pool)} POI)")
     return pools, fallbacks

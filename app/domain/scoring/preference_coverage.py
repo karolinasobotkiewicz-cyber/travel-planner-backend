@@ -440,6 +440,9 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "ulica", "plac ", "pomnik", "kładka", "most ", "marina", "sky tower",
         "neon side", "fort ", "góra gradowa", "ambersky", "amber sky",
         "stare miasto", "norblin", "wilanów", "taras widokowy",
+        # FIX #208: Karkonosze — shows/aquapark are not nature coverage.
+        "karkonoskie tajemnice", "tajemnice", "aquapark", "sandera", "anomalii",
+        "grawitacyjnej", "iluzja",
     ),
     "local_food_experience": (
         "wyspa słodowa", "plac europejski", "deptak", "rynek",
@@ -468,6 +471,13 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
     ),
 }
 
+# FIX #208: tags that must never credit nature_landscape via keyword fallback.
+_NATURE_COVERAGE_TAG_DENY = frozenset({
+    "mountain_folklore", "lazy_river", "multimedia_exhibition", "interactive_exhibition",
+    "legend_story", "aquapark", "indoor_attraction", "curiosity_spot", "optical_illusion",
+    "gravity_anomaly", "fun_photo_spot",
+})
+
 
 def _name_denied(poi: Dict[str, Any], pref: str) -> bool:
     name = (poi.get("name") or poi.get("Name") or "").lower()
@@ -486,6 +496,8 @@ def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
         if any(_frag in _name for _frag in _NATURE_LANDMARK_NAME_DENY):
             return False
     tags = excel_tags(poi)
+    if pref == "nature_landscape":
+        tags = {t for t in tags if t not in _NATURE_COVERAGE_TAG_DENY}
     if not tags:
         return False
     if pref in tags:
@@ -528,6 +540,8 @@ def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
 def matched_coverage_tags(poi: Dict[str, Any], pref: str) -> list[str]:
     """Tags that justified coverage (for debugging / API detail)."""
     tags = excel_tags(poi)
+    if pref == "nature_landscape":
+        tags = {t for t in tags if t not in _NATURE_COVERAGE_TAG_DENY}
     if pref in tags:
         return [pref]
     strong = _STRONG_BY_PREF.get(pref)

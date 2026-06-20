@@ -1018,6 +1018,7 @@ class PlanService:
         # ETAP 2 - DAY 3 (15.02.2026): Multi-day routing
         # Route to appropriate planner based on trip length
         num_days = trip_input.trip_length.days
+        context["num_days"] = num_days
         
         # DEBUG: Check POI types BEFORE FIX #24 - WRITE TO FILE
         
@@ -1380,13 +1381,16 @@ class PlanService:
                 return pools, fallbacks, day_geo_regions
 
             _zone_pools, _zone_fallbacks, _day_geo_regions = _build_zone_pools(all_pois_dict, num_days)
-            if _zone_pools is None and is_cluster:
+            # FIX #208: cluster trips use hub-city day pools (base city first), not A/B/C
+            # zone slicing — Karkonosze zones mixed all towns and expanded too early.
+            if is_cluster:
                 from app.domain.planner.city_copy import build_cluster_hub_day_pools
                 _zone_pools, _zone_fallbacks = build_cluster_hub_day_pools(
                     all_pois_dict, num_days, cities_to_load,
+                    base_city=_requested_city,
                 )
                 _day_geo_regions = [None] * num_days
-                print(f"[FIX #201] Cluster hub day pools enabled ({num_days} days)")
+                print(f"[FIX #208] Cluster hub pools override zones (base={_requested_city})")
             _day_geo_regions = _day_geo_regions or []
             # FIX #179: block Zone C POIs on early days (pool + engine filter).
             _zones_with_c = 'C' in sorted(set(

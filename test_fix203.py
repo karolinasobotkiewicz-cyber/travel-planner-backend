@@ -81,6 +81,12 @@ COVERAGE_CASES = [
     ("Wrocław", "Hala Targowa", "local_food_experience", True),
     ("Poznań", "Pręgierz", "history_mystery", True),  # still history, not relaxation
     ("Poznań", "Pręgierz", "nature_landscape", False),
+    # FIX #208: Karkonosze — nature coverage precision + relax.
+    ("Karpacz", "Karkonoskie Tajemnice", "nature_landscape", False),
+    ("Karpacz", "Aquapark Sandra", "nature_landscape", False),
+    ("Karpacz", "Aquapark Sandra", "relaxation", True),
+    ("Jelenia Góra", "Termy Cieplickie", "relaxation", True),
+    ("Karpacz", "Anomalii Grawitacyjnej", "nature_landscape", False),
 ]
 
 _pool_cache = {}
@@ -125,6 +131,10 @@ def check_micro_poi():
         ("Wrocław", "Most Grunwaldzki", True, False),
         ("Wrocław", "Bastion", True, False),
         ("Wrocław", "Wyspa Słodowa", True, False),
+        # FIX #208: Karkonosze micro-POI
+        ("Karpacz", "Anomalii Grawitacyjnej", True, False),
+        ("Jelenia Góra", "Rynek Jeleniogórski", True, False),
+        ("Jelenia Góra", "Ratuszowy", True, False),
     ]
     for city, frag, expect_quick, expect_core in cases:
         match = next(
