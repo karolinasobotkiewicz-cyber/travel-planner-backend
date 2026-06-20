@@ -132,6 +132,8 @@ _STRONG_BY_PREF: Dict[str, frozenset] = {
         "military_secret", "military_heritage", "naval_history", "maritime_history",
         "dark_history", "hidden_history", "ww2_site", "war_history",
         "storytelling_spot", "guided_tours_recommended", "flagship_museum",
+        "historical_exhibits", "local_legends", "historic_building",
+        "regional_heritage", "mountain_culture",
     }),
     # Parks, gardens, spas, thermal & wellness. Broadened heavily (FIX #203)
     # because "relaxation = false despite spa/park plan" was reported everywhere.

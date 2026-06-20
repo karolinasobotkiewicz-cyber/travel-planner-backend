@@ -16,6 +16,11 @@ from app.domain.scoring.family_fit import (
     is_child_oriented_attraction,
     should_exclude_by_target_group,
 )
+from app.domain.scoring.friends_profile import apply_friends_profile_scoring
+from app.domain.scoring.cluster_scoring import (
+    apply_cluster_scoring_weights,
+    effective_travel_minutes,
+)
 from app.domain.scoring.intensity_scoring import should_exclude_by_intensity, calculate_intensity_score
 from app.domain.scoring.preferences import calculate_preference_score, calculate_priority_bonus
 from app.domain.scoring.travel_style import calculate_travel_style_score
@@ -1008,6 +1013,42 @@ def is_park_or_green_space_poi(poi: dict) -> bool:
     return any(m in name for m in _PARK_NAME_MARKERS)
 
 
+def is_relax_gap_fill_poi(poi: dict) -> bool:
+    """FIX #211: spa/park/pijalnia/basen candidates for relaxation gap-fill."""
+    if is_termy_spa(poi) or is_park_or_green_space_poi(poi):
+        return True
+    tags = {str(t).lower() for t in (poi.get("tags") or []) if t}
+    _relax = {
+        "relaxation", "spa", "wellness", "pump_room", "thermal_baths",
+        "spa_park", "health_resort", "mineral_springs", "swimming_pool",
+        "quiet_relax_spot", "relax_walk", "green_relaxation",
+    }
+    if tags & _relax:
+        return True
+    name = str(poi.get("name", "")).lower()
+    return any(k in name for k in ("pijalnia", "basen", "term", "spa ", " wellness"))
+
+
+def is_easy_family_nature_poi(poi: dict) -> bool:
+    """FIX #211: krótka natura dla rodzin (wodospad/jezioro/punkt widokowy, nie szlak)."""
+    if str(poi.get("type", "")).lower() == "trail":
+        return False
+    dur = int(poi.get("time_min") or poi.get("duration_min") or 60)
+    if dur > 90:
+        return False
+    tags = {str(t).lower() for t in (poi.get("tags") or [])}
+    _nature = {
+        "waterfall", "waterfalls", "waterfall_spot", "easy_access_nature",
+        "scenic_viewpoint", "nature_photo_spot", "lake", "green_space",
+        "nature_reserve", "botanical_garden", "family_forest_walk",
+        "quiet_nature_walks", "nature_immersion",
+    }
+    if tags & _nature:
+        return True
+    name = str(poi.get("name", "")).lower()
+    return any(k in name for k in ("wodospad", "jezioro", "punkt widok", "rezerwat"))
+
+
 def is_evening_only_poi(poi: dict) -> bool:
     """FIX #197: POI that must not be scheduled before dusk (e.g. Galeria Neonów)."""
     tod = str(poi.get("recommended_time_of_day") or poi.get("best_time") or "").lower()
@@ -1329,7 +1370,8 @@ def travel_time_minutes(a, b, context):
         cluster_type = context.get("signals", {}).get("cluster_type", "standalone_city")
         speed_kmh = CLUSTER_ROAD_SPEEDS_KMH.get(cluster_type, 45.0)
         drive_time = (distance_km / speed_kmh) * 60 + 5
-        return max(int(drive_time), 10)
+        raw = max(int(drive_time), 10)
+        return effective_travel_minutes(raw, context, from_poi=a, to_poi=b)
 
 
 def get_transport_mode(a, b):
@@ -2294,6 +2336,22 @@ def score_poi(
                 print(f"    [FIX #161 KIDS BOOST] {poi_name_safe}: +{_f161_boost:.1f} "
                       f"(family_kids explicitly wants kids_attractions)")
 
+        # FIX #211: family_kids + nature_landscape — łatwa natura zamiast sal zabaw.
+        if "nature_landscape" in user.get("preferences", []):
+            if is_easy_family_nature_poi(p):
+                _f211_boost = 45.0
+                score += _f211_boost
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [FIX #211 FAMILY NATURE] {poi_name_safe}: +{_f211_boost:.1f}")
+            elif (
+                is_child_oriented_attraction(p)
+                and "kids_attractions" not in user.get("preferences", [])
+            ):
+                _f211_pen = -35.0
+                score += _f211_pen
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [FIX #211 FAMILY NATURE] {poi_name_safe}: {_f211_pen:.1f} (playground over nature)")
+
     # FIX #173 (06.06.2026 - CLIENT FEEDBACK): museum_heritage under-delivered.
     # Users pick museum_heritage but long mountain trips end up with 0 museums (test-08).
     # Give genuine museum/heritage POIs a strong targeted boost; escalate when the trip
@@ -2858,7 +2916,18 @@ def score_poi(
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             convenience_reason = "low crowd" if crowd_level <= 2 else "indoor space"
             print(f"    [CONVENIENCE BOOST] {poi_name_safe}: +{convenience_boost:.1f} (city tourism + {convenience_reason}, convenience_bonus={convenience_multiplier})")
-    
+
+    # FIX #212: cluster scoring weights (Phase 7) — Trójmiasto / Kotlina / Karkonosze.
+    score = apply_cluster_scoring_weights(
+        score,
+        p,
+        user,
+        context or {},
+        scoring_weights,
+        tag_bonus=tag_bonus,
+        poi_matches_preferences=poi_matches_preferences,
+    )
+
     # FIX #16 (24.02.2026 - TEST-06 COMPREHENSIVE FIX): Explicit Termy boost for relaxation preference
     # CRITICAL: Termy are premium relaxation experiences that should DOMINATE when user wants relaxation.
     # Problem: TEST-06 (relaxation preference + relax style) got 0% Termy, 75% museums (6/8 POI museums, 0 Termy).
@@ -2915,28 +2984,22 @@ def score_poi(
             score += extra_penalty
             print(f"    [KIDS PENALTY] {poi_name_safe}: {extra_penalty:.1f} (cultural/relaxation preference conflicts with kids POI)")
 
-    # FIX #206 (18.06.2026): Friends profile + active/adventure — reward group fun, demote micro-POI.
-    _tg206 = str(user.get("target_group", "")).lower()
-    _prefs206 = user.get("preferences", [])
-    _name206 = str(p.get("name", "")).lower()
-    _tags206 = set(str(t).lower() for t in (p.get("tags") or []))
-    _wants_active206 = (
-        "active_sport" in _prefs206 or "adventure" in _prefs206
-        or user.get("travel_style") == "adventure"
+    # FIX #212: Friends as dedicated ranking profile (replaces partial FIX #206 block).
+    score = apply_friends_profile_scoring(
+        p,
+        user,
+        context or {},
+        score,
+        poi_matches_preferences=poi_matches_preferences,
+        is_quick_stop_poi=is_quick_stop_poi,
+        is_museum_heritage_poi=is_museum_heritage_poi,
+        is_heritage_culture_site_poi=is_heritage_culture_site_poi,
     )
-    if _tg206 == "friends" and _wants_active206:
-        _friends_fun_tags = {
-            "interactive_game_arena", "group_fun_activity", "digital_floor_games",
-            "trampoline_park", "virtual_reality_cinema", "forest_rope_courses",
-            "outdoor_adventure", "escape_room", "group_activity", "active_entertainment",
-        }
-        _friends_fun_names = ("pixel", "trampolin", "park linowy", "gojump", "goair", "vr", "labirynt", "escape")
-        if _friends_fun_tags & _tags206 or any(n in _name206 for n in _friends_fun_names):
-            score += 45.0
-        elif is_quick_stop_poi(p):
-            score -= 35.0
 
     # FIX #210: nature/relax without museum pref — demote heritage/museum filler.
+    _prefs206 = user.get("preferences", [])
+    _name206 = str(p.get("name", "")).lower()
+    _tags206 = {str(t).lower() for t in (p.get("tags") or []) if t}
     _no_museum_pref210 = "museum_heritage" not in _prefs206 and "history_mystery" not in _prefs206
     if _no_museum_pref210 and (
         "nature_landscape" in _prefs206[:3] or "relaxation" in _prefs206[:3]

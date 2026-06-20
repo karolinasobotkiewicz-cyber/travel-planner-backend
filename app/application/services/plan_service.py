@@ -336,10 +336,11 @@ class PlanService:
 
         afternoon_slack = max(total_ft, gap_to_dinner)
         from app.domain.planner.city_copy import is_city_tourism_trip
-        # FIX #198: city 2–3 day trips — top-up przy ≥60 min (było 90)
+        # FIX #198: city / long trips — top-up przy ≥60 min (było 90)
         _topup_min = 60 if (
             is_city_tourism_trip(context)
             or context.get("multi_city_density_mode")
+            or context.get("num_days", 1) >= 5
         ) else 90
         if afternoon_slack < _topup_min:
             return items
@@ -616,7 +617,7 @@ class PlanService:
                 and _coverage_candidate_ok(p)
                 and (
                     is_underground_poi(p) if pref == "underground"
-                    else poi_matches_user_preference(p, pref)
+                    else _poi_covers_pref_report(p, pref)
                 )
             ]
             if pref == "underground":
@@ -990,7 +991,12 @@ class PlanService:
                         "cluster_type": _kc["type"].value,
                         "cluster_name": _kc["name"],
                     }
-                    print(f"[FIX #209] Kotlina signal: cluster_type={_kc['type'].value}")
+                    # FIX #212: wire cluster scoring_weights for soft-cluster members too.
+                    context["scoring_weights"] = _kc["scoring_weights"]
+                    print(
+                        f"[FIX #212] Cluster weights for {_requested_city}: "
+                        f"{_kc['scoring_weights']}"
+                    )
         context["cluster_cities"] = (
             cities_to_load if is_cluster
             else context.get("cluster_cities") or []
@@ -1630,9 +1636,16 @@ class PlanService:
                 all_pois_lookup=all_pois_dict,
             )
 
-            # FIX #195/#198: replace mega afternoon free_time with light POI attempts.
-            _f195_max = 3 if day_context.get("multi_city_density_mode") else 2
-            _f195_ft_thresh = 60 if day_context.get("multi_city_density_mode") else 90
+            # FIX #195/#198/#211: replace mega afternoon free_time with light POI attempts.
+            _num_days_211 = day_context.get("num_days", 1)
+            _f195_max = 3 if (
+                day_context.get("multi_city_density_mode") or _num_days_211 >= 5
+            ) else 2
+            _f195_ft_thresh = 60 if (
+                day_context.get("multi_city_density_mode")
+                or _num_days_211 >= 5
+                or _is_urban_trip(day_context)
+            ) else 90
             for _f195_i in range(_f195_max):
                 _ft_big = sum(
                     int(getattr(it, "duration_min", 0) or 0)
@@ -3250,6 +3263,7 @@ class PlanService:
             calculate_poi_cost_for_group,
             is_evening_only_poi,
             is_park_or_green_space_poi,
+            is_relax_gap_fill_poi,
             is_scenic_experience_poi,
             poi_geo_region_key,
             should_block_far_excursion_after_trail,
@@ -3710,6 +3724,20 @@ class PlanService:
                             # Shorter = better (fits in gaps)
                             # Closer = better (less travel)
                             score = 100 - travel * 0.5 - poi_duration * 0.2
+                            # FIX #211: preference-aware gap-fill — spa/park/nature zamiast free_time
+                            from app.domain.scoring.preference_coverage import (
+                                poi_covers_preference_report,
+                            )
+                            _prefs_gf211 = user.get("preferences") or []
+                            if "relaxation" in _prefs_gf211 and (
+                                is_relax_gap_fill_poi(poi)
+                                or poi_covers_preference_report(poi, "relaxation")
+                            ):
+                                score += 45.0
+                            if "nature_landscape" in _prefs_gf211 and poi_covers_preference_report(
+                                poi, "nature_landscape"
+                            ):
+                                score += 35.0
                             if _f187_last_day_ps and poi_geo_region_key(poi) == context.get("day_geo_region"):
                                 score += 80.0
                             
