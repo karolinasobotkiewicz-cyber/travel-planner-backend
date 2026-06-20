@@ -117,20 +117,21 @@ _STRONG_BY_PREF: Dict[str, frozenset] = {
         "medieval_structure", "medieval_tower", "medieval_defensive_tower",
         "medieval_cellars", "medieval_fortress_ruins", "folklore",
         "ancient_legend_site", "legend_place", "legend_story",
-        "literary_legend_trail", "frankenstein_story_route", "regional_heritage",
-        "themed_museum", "archaeological_exhibits", "city_history", "fortress",
-        "fortress_complex", "mountain_fortress_complex", "mountain_fort_ruins",
+        "literary_legend_trail", "frankenstein_story_route",
+        "archaeological_exhibits", "fortress", "fortress_complex",
+        "mountain_fortress_complex", "mountain_fort_ruins",
         "fortifications", "old_fortifications", "city_fortifications",
         "baroque_fortifications", "baroque_defensive_system", "defensive_architecture",
         "historic_defense_site", "fort", "folklore_museum", "ww2_history",
         "schindler_factory", "polish_history", "modern_polish_history",
-        "royal_castle_complex", "medieval_market_history", "early_polish_history",
-        "historic_jewish_district", "historic_island", "cathedral_area",
-        "gothic_cathedral", "historic_cathedral", "historic_ruins", "ruins_remains",
+        "royal_castle_complex", "early_polish_history",
+        "historic_jewish_district", "historic_ruins", "ruins_remains",
+        "historic_island", "cathedral_area",
         "historic_tower", "historic_tunnel_route",
-        "knights_history", "aristocratic_history", "regional_history",
+        "knights_history", "aristocratic_history",
         "military_secret", "military_heritage", "naval_history", "maritime_history",
         "dark_history", "hidden_history", "ww2_site", "war_history",
+        "storytelling_spot", "guided_tours_recommended", "flagship_museum",
     }),
     # Parks, gardens, spas, thermal & wellness. Broadened heavily (FIX #203)
     # because "relaxation = false despite spa/park plan" was reported everywhere.
@@ -433,6 +434,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
     "museum_heritage": (
         "spodek", "pomnik syreny", "park sensoryczny", "wieża ratuszowa",
         "fontanna neptuna", "dlugi targ", "długi targ",
+        # FIX #210: spa-resort building is not a museum
+        "dom zdrojowy", "zdrojowy",
     ),
     "nature_landscape": (
         "spodek", "rynek", "dlugi targ", "długi targ", "fontanna neptuna",
@@ -440,9 +443,13 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "ulica", "plac ", "pomnik", "kładka", "most ", "marina", "sky tower",
         "neon side", "fort ", "góra gradowa", "ambersky", "amber sky",
         "stare miasto", "norblin", "wilanów", "taras widokowy",
+        # FIX #210: open-air theatre / show venue is not nature
+        "opera leśna", "opera lesna",
         # FIX #208: Karkonosze — shows/aquapark are not nature coverage.
         "karkonoskie tajemnice", "tajemnice", "aquapark", "sandera", "anomalii",
         "grawitacyjnej", "iluzja",
+        # FIX #209: underground mine ≠ nature (Kopalnia Złota).
+        "kopalnia złota", "kopalnia zlota", "złoty stok", "zloty stok",
     ),
     "local_food_experience": (
         "wyspa słodowa", "plac europejski", "deptak", "rynek",
@@ -476,6 +483,11 @@ _NATURE_COVERAGE_TAG_DENY = frozenset({
     "mountain_folklore", "lazy_river", "multimedia_exhibition", "interactive_exhibition",
     "legend_story", "aquapark", "indoor_attraction", "curiosity_spot", "optical_illusion",
     "gravity_anomaly", "fun_photo_spot",
+    # FIX #209
+    "underground_waterfall", "gold_mine_tunnels", "historic_gold_mining",
+    "interactive_mining_tour",
+    # FIX #210: theatre / show venues
+    "forest_setting", "live_shows", "event_theme_park",
 })
 
 
@@ -519,7 +531,14 @@ def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
                 return True
             return _keyword_hit(pref, tags)
         if pref == "history_mystery":
-            if tags & strong and not (tags & _WEAK_HERITAGE_ONLY and not (tags & strong)):
+            _hit = tags & strong
+            if _hit:
+                # Churches/places with only weak heritage tags are not history sites.
+                if _hit <= _WEAK_HERITAGE_ONLY or (
+                    _hit <= (_WEAK_HERITAGE_ONLY | {"regional_heritage", "gothic_church_landmark"})
+                    and not (_hit & {"dark_history", "hidden_history", "old_fortifications", "fortress", "fort", "ww2_history", "ww2_site", "war_history", "historic_island"})
+                ):
+                    return _keyword_hit(pref, tags)
                 return True
             return _keyword_hit(pref, tags)
         if tags & strong:

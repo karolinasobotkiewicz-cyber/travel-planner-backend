@@ -87,6 +87,19 @@ COVERAGE_CASES = [
     ("Karpacz", "Aquapark Sandra", "relaxation", True),
     ("Jelenia Góra", "Termy Cieplickie", "relaxation", True),
     ("Karpacz", "Anomalii Grawitacyjnej", "nature_landscape", False),
+    # FIX #209: Kotlina Kłodzka
+    ("Kłodzko", "Kopalnia Złota", "nature_landscape", False),
+    ("Kłodzko", "Sery Lutomierskie", "local_food_experience", True),
+    ("Kłodzko", "Złoty Pstrąg", "local_food_experience", True),
+    ("Kudowa-Zdrój", "Błędne Skały", "nature_landscape", True),
+    # FIX #210: Trójmiasto — museum vs history tier + classification.
+    ("Gdańsk", "Muzeum II Wojny", "museum_heritage", True),
+    ("Gdańsk", "Centrum Solidarności", "museum_heritage", True),
+    ("Gdańsk", "Westerplatte", "history_mystery", True),
+    ("Gdańsk", "Wisłoujście", "history_mystery", True),
+    ("Gdańsk", "Kościół Mariacki", "history_mystery", False),
+    ("Sopot", "Dom Zdrojowy", "museum_heritage", False),
+    ("Sopot", "Opera Leśna", "nature_landscape", False),
 ]
 
 _pool_cache = {}
@@ -135,6 +148,12 @@ def check_micro_poi():
         ("Karpacz", "Anomalii Grawitacyjnej", True, False),
         ("Jelenia Góra", "Rynek Jeleniogórski", True, False),
         ("Jelenia Góra", "Ratuszowy", True, False),
+        # FIX #209: Kotlina micro bridges
+        ("Polanica-Zdrój", "Brama Wodna", True, False),
+        ("Kłodzko", "Chrobrego", True, False),
+        # FIX #210: Gdańsk micro-POI
+        ("Gdańsk", "Żuraw", True, False),
+        ("Gdańsk", "Neptuna", True, False),
     ]
     for city, frag, expect_quick, expect_core in cases:
         match = next(

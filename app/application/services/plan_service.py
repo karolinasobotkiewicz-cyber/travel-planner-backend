@@ -423,6 +423,36 @@ class PlanService:
         print(f"[FIX #197] City cap: trimmed {drop_n} attractions ({len(attr_slots)} → {max_attrs})")
         return out
 
+    def _strip_out_of_season_attractions(
+        self,
+        items: List[Any],
+        trip_date: Any,
+        poi_by_id: Dict[str, Dict[str, Any]],
+    ) -> List[Any]:
+        """FIX #209: safety net — remove attractions outside current season."""
+        from app.domain.filters.seasonality import filter_by_season
+
+        if not trip_date:
+            return items
+        allowed_ids = {
+            p.get("id") for p in filter_by_season(list(poi_by_id.values()), trip_date)
+            if p.get("id")
+        }
+        out: List[Any] = []
+        for it in items:
+            if getattr(it, "type", None) != ItemType.ATTRACTION:
+                out.append(it)
+                continue
+            pid = getattr(it, "poi_id", None)
+            if not pid or pid in allowed_ids:
+                out.append(it)
+            else:
+                print(
+                    f"[FIX #209] Stripped out-of-season attraction: "
+                    f"{getattr(it, 'name', pid)}"
+                )
+        return out
+
     def _day_density_warnings(
         self,
         days: List[DayPlan],
@@ -476,6 +506,7 @@ class PlanService:
             should_block_far_excursion_after_trail,
         )
         from app.domain.scoring.preference_coverage import poi_covers_preference_report
+        from app.domain.planner.city_copy import poi_matches_city_filter
 
         def _poi_covers_pref_report(poi: dict, pref: str) -> bool:
             if pref == "underground":
@@ -636,6 +667,9 @@ class PlanService:
                     if _blocked_after_trail(replacement, day):
                         continue
                     ctx = contexts[di] if di < len(contexts) else {}
+                    _day_hub = ctx.get("day_hub_city")
+                    if _day_hub and not poi_matches_city_filter(replacement, _day_hub):
+                        continue
                     for ii, item in enumerate(day.items):
                         if getattr(item, "type", None) != ItemType.ATTRACTION:
                             continue
@@ -857,6 +891,33 @@ class PlanService:
         elif _requested_city:
             all_pois_dict = filter_pois_by_city(all_pois_dict, _requested_city)
 
+        # FIX #209/#210: thin hub or Trójmiasto member → load full cluster pool.
+        context["soft_cluster"] = False
+        context["kotlina_soft_cluster"] = False
+        if not is_cluster and _requested_city:
+            from app.domain.config import DestinationClusters
+            if DestinationClusters.is_cluster_city(_requested_city):
+                _cc_soft = DestinationClusters.get_cluster(_requested_city)
+                if _cc_soft:
+                    _ctype = getattr(_cc_soft["type"], "value", str(_cc_soft["type"]))
+                    _expand = (
+                        (_ctype == "regional_cluster" and len(all_pois_dict) < 35)
+                        or _ctype == "urban_organism"
+                    )
+                    if _expand:
+                        import os
+                        from app.infrastructure.repositories.load_multi_city import load_multi_city_poi
+                        _mc_path = os.path.join("data", "multi_city_attractions.xlsx")
+                        all_pois_dict = load_multi_city_poi(_mc_path, _cc_soft["cities"])
+                        all_pois_dict = filter_pois_by_cities(all_pois_dict, _cc_soft["cities"])
+                        context["soft_cluster"] = True
+                        context["kotlina_soft_cluster"] = _ctype == "regional_cluster"
+                        context["cluster_cities"] = _cc_soft["cities"]
+                        print(
+                            f"[FIX #210] Soft-cluster ({_ctype}): {len(all_pois_dict)} POIs "
+                            f"from {_cc_soft['cities']} (base={_requested_city})"
+                        )
+
         # FIX #192: Archiwum Planety is not a cave — drop from pool when underground requested.
         if "underground" in (trip_input.preferences or []):
             all_pois_dict = [
@@ -918,7 +979,24 @@ class PlanService:
                 **context.get("signals", {}),
                 "cluster_type": "urban_organism",
             }
-        context["cluster_cities"] = cities_to_load if is_cluster else []
+        # FIX #209: Kotlina member cities (single-city mode) — spa cluster scoring + density.
+        if not is_cluster:
+            from app.domain.config import DestinationClusters
+            if DestinationClusters.is_cluster_city(_requested_city):
+                _kc = DestinationClusters.get_cluster(_requested_city)
+                if _kc:
+                    context["signals"] = {
+                        **context.get("signals", {}),
+                        "cluster_type": _kc["type"].value,
+                        "cluster_name": _kc["name"],
+                    }
+                    print(f"[FIX #209] Kotlina signal: cluster_type={_kc['type'].value}")
+        context["cluster_cities"] = (
+            cities_to_load if is_cluster
+            else context.get("cluster_cities") or []
+        )
+        _hub_cluster_mode = is_cluster or context.get("soft_cluster", False)
+        _hub_cluster_cities = cities_to_load if is_cluster else context.get("cluster_cities") or []
         
         # Fallback: If no data loaded, return empty plan
         if not all_pois_dict:
@@ -1383,10 +1461,11 @@ class PlanService:
             _zone_pools, _zone_fallbacks, _day_geo_regions = _build_zone_pools(all_pois_dict, num_days)
             # FIX #208: cluster trips use hub-city day pools (base city first), not A/B/C
             # zone slicing — Karkonosze zones mixed all towns and expanded too early.
-            if is_cluster:
+            _day_hub_cities: list = []
+            if _hub_cluster_mode:
                 from app.domain.planner.city_copy import build_cluster_hub_day_pools
-                _zone_pools, _zone_fallbacks = build_cluster_hub_day_pools(
-                    all_pois_dict, num_days, cities_to_load,
+                _zone_pools, _zone_fallbacks, _day_hub_cities = build_cluster_hub_day_pools(
+                    all_pois_dict, num_days, _hub_cluster_cities,
                     base_city=_requested_city,
                 )
                 _day_geo_regions = [None] * num_days
@@ -1403,6 +1482,9 @@ class PlanService:
                 _ctx["exclude_zone_c_pois"] = (_ci < _early_cut_ctx)
                 if _ci < len(_day_geo_regions):
                     _ctx["day_geo_region"] = _day_geo_regions[_ci]
+                # FIX #210: lock engine to per-day cluster hub (Trójmiasto day routing).
+                if _hub_cluster_mode and _ci < len(_day_hub_cities):
+                    _ctx["day_hub_city"] = _day_hub_cities[_ci]
             # ================================================================
             # END FIX #113 / #166 / #167
             # ================================================================
@@ -1491,6 +1573,8 @@ class PlanService:
             day_context["day_start"] = day_start
             day_context["day_end"] = day_end
             day_context["num_days"] = num_days
+            if _hub_cluster_mode and day_num < len(_day_hub_cities):
+                day_context["day_hub_city"] = _day_hub_cities[day_num]
             if day_num < len(_engine_reserved_future_by_day):
                 day_context["engine_reserved_future_pois"] = _engine_reserved_future_by_day[day_num]
             
@@ -1535,7 +1619,7 @@ class PlanService:
                 zone_pools=_zone_pools if num_days > 1 else None,
                 zone_fallbacks=_zone_fallbacks if num_days > 1 else None,
                 requested_city=_requested_city,
-                cluster_cities=cities_to_load if is_cluster else None,
+                cluster_cities=_hub_cluster_cities if _hub_cluster_mode else None,
             )
             day_items = self._fill_gaps_in_items(
                 day_items,
@@ -1570,7 +1654,7 @@ class PlanService:
 
             # FIX #192/#194/#200: extra gap-fill — cluster long trips need more passes.
             _f194_gf = day_context.get("multi_city_density_mode", False)
-            _cluster_long = is_cluster and num_days >= 5
+            _cluster_long = _hub_cluster_mode and num_days >= 5
             if num_days >= 4 or _f194_gf or _cluster_long:
                 _gf_passes = 5 if _cluster_long else (4 if _f194_gf else 2)
                 for _gf_pass in range(_gf_passes):
@@ -1591,7 +1675,7 @@ class PlanService:
                         _gf_pool = build_multi_city_gap_fill_pool(
                             _gf_season_pois,
                             requested_city=_requested_city,
-                            cluster_cities=cities_to_load if is_cluster else None,
+                            cluster_cities=_hub_cluster_cities if _hub_cluster_mode else None,
                         )
                     day_items = self._fill_gaps_in_items(
                         day_items,
@@ -1604,6 +1688,9 @@ class PlanService:
             
             # FIX #197: final city-tourism attraction cap (gap-fill / top-up safety net)
             _poi_lookup_cap = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+            day_items = self._strip_out_of_season_attractions(
+                day_items, dates[day_num], _poi_lookup_cap,
+            )
             day_items = self._enforce_city_attraction_cap(
                 day_items, day_context, _poi_lookup_cap, max_attrs=6,
             )
@@ -3440,6 +3527,10 @@ class PlanService:
                                 if not filter_pois_by_cities([poi], _cluster_cities):
                                     continue
                             elif _req_city and not poi_matches_city_filter(poi, _req_city):
+                                continue
+                            # FIX #210: hub-day lock — gap-fill stays in today's cluster hub.
+                            _day_hub = context.get("day_hub_city")
+                            if _day_hub and not poi_matches_city_filter(poi, _day_hub):
                                 continue
 
                             if daily_park_count_gf >= 2 and is_park_or_green_space_poi(poi):

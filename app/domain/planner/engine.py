@@ -874,6 +874,11 @@ _HARD_QUICK_STOP_MARKERS = (
     "pomnik ofiar", "pomnik bamber", "bastion ", "wyspa słodowa",
     # FIX #208: Karkonosze micro-POI
     "anomalii grawitacyjnej", "miejsce anomalii", "plac piastowski",
+    # FIX #209: Kotlina Kłodzka micro bridges/squares
+    "brama wodna", "bolesława chrobrego", "chrobrego", "kamienny most",
+    # FIX #210: Gdańsk — żuraw, bramy (fontanna neptuna already above)
+    "złota brama", "zlota brama", "zuraw", "żuraw", "brama wyżynna", "brama wyzynna",
+    "zielona brama", "ulica mariacka", "wielki młyn", "wielki mlyn",
 )
 
 _QUICK_STOP_NAME_MARKERS = (
@@ -895,6 +900,10 @@ _QUICK_STOP_NAME_MARKERS = (
     "pomnik ofiar", "bastion", "wyspa słodowa",
     # FIX #208: Karkonosze micro-POI
     "anomalii grawitacyjnej", "miejsce anomalii", "plac piastowski",
+    # FIX #209: Kotlina Kłodzka micro bridges/squares
+    "brama wodna", "bolesława chrobrego", "chrobrego", "kamienny most",
+    # FIX #210: Gdańsk
+    "zuraw", "żuraw", "złota brama", "zlota brama", "zielona brama", "ulica mariacka",
 )
 # Bare tag "underground" alone is too broad — Archiwum Planety Ziemia is a museum.
 
@@ -2300,10 +2309,56 @@ def score_poi(
                 _f173_boost += 50.0
             elif _trip_museums < 2 and _cur_day >= 4:
                 _f173_boost += 80.0
-            score += _f173_boost
+            # FIX #209: Kotlina / small pools — stop museum+history stacking after 2 museums.
+            _pool209 = int((context or {}).get("city_pool_size") or 999)
+            if _trip_museums >= 2 and _pool209 < 80:
+                _f173_boost = max(0.0, _f173_boost - 55.0 * (_trip_museums - 1))
+            if _trip_museums >= 3 and is_museum_heritage_poi(p):
+                score -= 70.0
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [FIX #209 MUSEUM REPEAT PENALTY] {poi_name_safe}: -70.0 "
+                      f"(trip_museums={_trip_museums})")
+            elif _f173_boost > 0:
+                score += _f173_boost
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [FIX #173 MUSEUM BOOST] {poi_name_safe}: +{_f173_boost:.1f} "
+                      f"(museum_heritage pref, trip_museums={_trip_museums})")
+
+    # FIX #210: Gdańsk flagship museums — Muzeum II WŚ, ECS, Westerplatte, Wisłoujście.
+    _name210 = str(p.get("name", "")).lower()
+    _flagship_museum = (
+        "muzeum ii wojny", "centrum solidarności", "centrum solidarnosci",
+        "westerplatte", "wisłoujście", "wisloujscie", "twierdza wis",
+    )
+    if any(m in _name210 for m in _flagship_museum):
+        if "museum_heritage" in user.get("preferences", []):
+            score += 90.0
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-            print(f"    [FIX #173 MUSEUM BOOST] {poi_name_safe}: +{_f173_boost:.1f} "
-                  f"(museum_heritage pref, trip_museums={_trip_museums})")
+            print(f"    [FIX #210 FLAGSHIP MUSEUM] {poi_name_safe}: +90.0")
+        if "history_mystery" in user.get("preferences", []):
+            score += 85.0
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [FIX #210 FLAGSHIP HISTORY] {poi_name_safe}: +85.0")
+
+    # FIX #210: history_mystery tier — forts/WW2 vs generic churches/places (urban only).
+    if "history_mystery" in user.get("preferences", []):
+        _hist_strong210 = (
+            "westerplatte", "wisłoujście", "wisloujscie", "twierdza", "fort ",
+            "bunkier", "fortyfik", "obrony wybrzeża", "obrony wybrzeza",
+        )
+        _hist_weak210 = (
+            "kościół", "kosciol", "bazylika", "katedra", "parafia",
+            "plac ", "brama ", "deptak", "pomnik ", "most ",
+        )
+        _urban_hist210 = is_city_tourism_trip(context) or bool(
+            (context.get("is_cluster") or context.get("soft_cluster"))
+            and (context.get("signals") or {}).get("cluster_type") == "urban_organism"
+        )
+        if _urban_hist210 and any(m in _name210 for m in _hist_weak210) and not any(m in _name210 for m in _hist_strong210):
+            if not is_museum_heritage_poi(p) and not is_quick_stop_poi(p):
+                score -= 60.0
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [FIX #210 HISTORY WEAK PENALTY] {poi_name_safe}: -60.0")
 
     # FIX #179 (06.06.2026): Trip preference quota — on 5+ day plans, strongly boost POI
     # matching preferences not yet covered anywhere in the trip (museum, local food, …).
@@ -2670,20 +2725,29 @@ def score_poi(
         # FIX #207/#208: city/mountain cluster adventure without culture prefs.
         _top3_adv = user_preferences[:3]
         _culture_in_top3 = bool({"museum_heritage", "history_mystery"} & set(_top3_adv))
-        _adv_cluster208 = _is_city_206(context) or (
-            context.get("is_cluster")
-            and (context.get("signals") or {}).get("cluster_type") == "radius_based"
+        _adv_cluster208 = (
+            _is_city_206(context)
+            or bool(context.get("soft_cluster"))
+            or (
+                context.get("is_cluster")
+                and (context.get("signals") or {}).get("cluster_type")
+                in ("radius_based", "urban_organism")
+            )
         )
         if _adv_cluster208 and not _culture_in_top3:
-            _heritage_names = ("rynek", "ostrów tumski", "ostrow tumski", "stare miasto", "ratusz")
-            _heritage_tags = {"cathedral_area", "historic_island", "old_town", "heritage_site"}
+            _heritage_names = (
+                "rynek", "ostrów tumski", "ostrow tumski", "stare miasto", "ratusz",
+                "kościół", "kosciol", "bazylika", "katedra", "plac ", "brama ",
+            )
+            _heritage_tags = {"cathedral_area", "historic_island", "old_town", "heritage_site",
+                              "religious_landmark", "historic_market_square"}
             if (
                 any(n in _name_206_adv for n in _heritage_names)
                 or (_heritage_tags & poi_tags and "museum" not in _name_206_adv)
             ) and not (_city_active_tags_adv & poi_tags):
-                score -= 45.0
+                score -= 55.0
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-                print(f"    [FIX #207 ADVENTURE] {poi_name_safe}: -45.0 (adventure without culture prefs)")
+                print(f"    [FIX #210 ADVENTURE] {poi_name_safe}: -55.0 (adventure without culture prefs)")
         
         # FIX #8 (22.02.2026 - UAT Round 3, TEST-03 Issue):
         # CRITICAL: Hard penalty for relaxation/wellness/spa POI for adventure travelers
@@ -2872,6 +2936,15 @@ def score_poi(
         elif is_quick_stop_poi(p):
             score -= 35.0
 
+    # FIX #210: nature/relax without museum pref — demote heritage/museum filler.
+    _no_museum_pref210 = "museum_heritage" not in _prefs206 and "history_mystery" not in _prefs206
+    if _no_museum_pref210 and (
+        "nature_landscape" in _prefs206[:3] or "relaxation" in _prefs206[:3]
+    ):
+        if (is_museum_heritage_poi(p) or is_heritage_culture_site_poi(p)) and not is_park_or_green_space_poi(p):
+            if not is_quick_stop_poi(p):
+                score -= 45.0
+
     # FIX #206: Relaxation/solo/seniors — parks, bulwary, lakes over free_time filler.
     if user.get("travel_style") == "relax" or "relaxation" in _prefs206:
         if not is_quick_stop_poi(p):
@@ -2891,26 +2964,36 @@ def score_poi(
         context.get("is_cluster")
         and (context.get("signals") or {}).get("cluster_type") == "radius_based"
     )
+    _is_spa_cluster209 = bool(
+        context.get("is_cluster")
+        and (context.get("signals") or {}).get("cluster_type") == "regional_cluster"
+    )
 
-    # FIX #208: cluster base city — boost requested town, penalise off-hub on early days.
+    # FIX #208/#210: cluster base city — boost requested town, penalise off-hub on early days.
     _req_city208 = _norm_city_208(context.get("requested_city", ""))
-    if context.get("is_cluster") and _req_city208:
+    _hub_cluster210 = context.get("is_cluster") or context.get("soft_cluster")
+    if _hub_cluster210 and _req_city208:
         _hub208 = _poi_hub_208(p) or _poi_city_208(p)
         _day208 = int(context.get("current_day_num") or 1)
         _nd208 = int(context.get("num_days") or 1)
+        _early_cut = 0.65 if (context.get("signals") or {}).get("cluster_type") == "urban_organism" else 0.55
         if _hub208 == _req_city208:
-            score += 40.0
+            score += 45.0
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-            print(f"    [BASE CITY BOOST] {poi_name_safe}: +40.0 (cluster hub={_req_city208})")
-        elif _day208 <= max(1, int(_nd208 * 0.55)):
-            score -= 35.0
+            print(f"    [BASE CITY BOOST] {poi_name_safe}: +45.0 (cluster hub={_req_city208})")
+        elif _day208 <= max(1, int(_nd208 * _early_cut)):
+            score -= 40.0
 
     _nature_hit207 = {
         "japanese_garden", "botanical_collection", "greenhouse", "botanical_garden",
         "riverside", "river_cruise", "forest", "lake", "waterfall", "city_park",
         "nature", "garden", "arboretum", "meadow", "plant_exhibits", "riverside_island",
     }
-    if (_is_city_207(context) or _is_mtn_cluster208) and "nature_landscape" in _prefs206[:3]:
+    _is_urb_cluster210 = bool(
+        (context.get("is_cluster") or context.get("soft_cluster"))
+        and (context.get("signals") or {}).get("cluster_type") == "urban_organism"
+    )
+    if (_is_city_207(context) or _is_mtn_cluster208 or _is_spa_cluster209 or _is_urb_cluster210) and "nature_landscape" in _prefs206[:3]:
         _tags207 = set(str(t).lower() for t in (p.get("tags") or []))
         if (
             (_nature_hit207 & _tags207)
@@ -2924,7 +3007,7 @@ def score_poi(
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [NATURE BOOST] {poi_name_safe}: +45.0 (nature_landscape in top-3 prefs)")
 
-    if (_is_city_207(context) or _is_mtn_cluster208) and "nature_landscape" in _prefs206[:3] and "museum_heritage" in _prefs206[:3]:
+    if (_is_city_207(context) or _is_mtn_cluster208 or _is_spa_cluster209) and "nature_landscape" in _prefs206[:3] and "museum_heritage" in _prefs206[:3]:
         _museum_only = {
             "themed_museum", "multimedia_exhibition", "interactive_exhibits",
             "local_history", "art_gallery", "museum", "exhibition_space",
@@ -2932,13 +3015,17 @@ def score_poi(
         if _museum_only & _tags206 and not (_nature_hit207 & _tags206):
             score -= 35.0
 
-    if _is_city_207(context) and "local_food_experience" in _prefs206[:3]:
+    if (_is_city_207(context) or _is_spa_cluster209) and "local_food_experience" in _prefs206[:3]:
         _food_tags = {
             "local_food_experience", "food_hall", "local_food", "craft_beer", "brewery",
             "beer_tasting", "culinary_experience", "regional_products", "food_market",
             "street_food", "gastronomy", "tasting", "restaurant",
+            "cheese", "fishery", "craft_food", "regional_cuisine", "fresh_fish",
         }
-        _food_names = ("hala targowa", "browar", "food hall", "market hall", "pierog", "restauracja")
+        _food_names = (
+            "hala targowa", "browar", "food hall", "market hall", "pierog", "restauracja",
+            "sery", "lutomiersk", "pstrąg", "pstrag", "oscypek", "bacówka", "bacowka",
+        )
         if (_food_tags & _tags206 or any(n in _name206 for n in _food_names)) and not is_quick_stop_poi(p):
             score += 40.0
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
@@ -2975,6 +3062,17 @@ def score_poi(
             score -= 60.0
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [RELAX LONG PENALTY] {poi_name_safe}: -60.0 (relax + duration {_tmax208}min)")
+
+    # FIX #209: Kotlina Kłodzka — spa/pijalnia/park zdrojowy over free_time filler.
+    if _is_spa_cluster209 and (
+        user.get("travel_style") == "relax" or "relaxation" in _prefs206
+    ):
+        _spa209_tags = {"relaxation", "spa", "termy", "wellness", "thermal_pools", "zdroj"}
+        _spa209_names = ("pijalnia", "park zdrojowy", "zdroj", "term", "aquapark", "park wodny")
+        if _spa209_tags & _tags206 or any(n in _name206 for n in _spa209_names):
+            score += 50.0
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [SPA RELAX BOOST] {poi_name_safe}: +50.0 (Kotlina relax POI)")
 
     # FIX #6 (02.02.2026): Priority_level bonus (core: +25, secondary: +10, optional: 0)
     score += calculate_priority_bonus(p, user)
@@ -4073,6 +4171,19 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     current_date = context.get("date")
     if current_date:
         pois = filter_by_season(pois, current_date)
+        # FIX #209: sparse-mode gap-fill merges unfiltered fallback_pois — season-filter both pools.
+        if fallback_pois is not None:
+            fallback_pois = filter_by_season(fallback_pois, current_date)
+
+    # FIX #210: cluster hub-day lock — engine candidates only from today's hub city.
+    _day_hub_city = context.get("day_hub_city")
+    if _day_hub_city:
+        from app.domain.planner.city_copy import poi_matches_city_filter
+        pois = [p for p in pois if poi_matches_city_filter(p, _day_hub_city)]
+        if fallback_pois is not None:
+            fallback_pois = [
+                p for p in fallback_pois if poi_matches_city_filter(p, _day_hub_city)
+            ]
 
     # FIX #122 (30.05.2026): Evening scarcity detection
     # Count how many POI in the (post-seasonal-filter) pool include "evening" in their

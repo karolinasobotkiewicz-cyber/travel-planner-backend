@@ -533,6 +533,8 @@ def normalize_poi(p, index):
         ),
         "season_fit": normalize_seasonality(
             p.get("Seasonality of attractions")
+            or p.get("season")
+            or p.get("seasonality")
         ),
         "activity_style": activity_style,
         "parking_walk_min": int(

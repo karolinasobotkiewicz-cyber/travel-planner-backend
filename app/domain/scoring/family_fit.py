@@ -151,6 +151,20 @@ def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
         print(f"[DEBUG TARGET #{check_id}] -> ALLOW (target_groups contains 'all')")
         return False
 
+    # FIX #209 (20.06.2026): family_kids — spa/small towns tag POI as
+    # couples/friends/seniors; families should still visit parks, museums, nature.
+    if user_group == "family_kids":
+        _fk_open = {"family_kids", "family", "families", "friends", "groups", "all"}
+        if tg & _fk_open:
+            print(f"[DEBUG TARGET #{check_id}] -> ALLOW (family_kids + open group {tg & _fk_open})")
+            return False
+        if tg == {"seniors"} or tg <= {"seniors", "solo"}:
+            print(f"[DEBUG TARGET #{check_id}] -> EXCLUDE (seniors-only POI for family_kids)")
+            return True
+        if "couples" in tg or "friends" in tg:
+            print(f"[DEBUG TARGET #{check_id}] -> ALLOW (family_kids + general POI {tg})")
+            return False
+
     # Jeśli user_group NIE jest w target_groups POI -> EXCLUDE
     if user_group not in tg:
         print(f"[DEBUG TARGET #{check_id}] -> EXCLUDE (user_group={user_group} NOT IN target_groups={tg})")

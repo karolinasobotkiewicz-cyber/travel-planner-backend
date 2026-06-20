@@ -2084,6 +2084,9 @@ USER_PREFERENCES_TO_TAGS = {
             "tourist_promenade",
             "urban_life",
             "winter_tradition",
+            # FIX #209: Kotlina Kłodzka culinary POIs (Sery Lutomierskie, Złoty Pstrąg)
+            "cheese", "cheese_tasting", "craft_food", "fishery", "fresh_fish",
+            "fishing", "fish_farm", "regional_products", "culinary_experience",
         ],
         "tag_bonus": 25,
     },

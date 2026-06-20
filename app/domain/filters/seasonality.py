@@ -61,6 +61,13 @@ def filter_by_season(pois, current_date):
     filtered_pois = []
 
     for poi in pois:
+        # FIX #209: summer-only attractions mis-tagged all-season in Excel (Góralka).
+        _pname = str(poi.get("name") or "").lower()
+        if current_season == "winter" and any(
+            m in _pname for m in ("letni tor", "letni ", "saneczkowy", "góralka")
+        ):
+            continue
+
         # FIX #163 (06.06.2026 - CLIENT FEEDBACK JSON2): use the authoritative normalized
         # `season_fit` dict ({"winter":1,"spring":0,...}). The old code read poi["seasonality"],
         # but normalize_poi() drops that key and only keeps season_fit — so the filter was a

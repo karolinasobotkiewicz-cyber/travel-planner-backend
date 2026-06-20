@@ -99,10 +99,17 @@ def multi_city_density_mode(
     context: Optional[Dict[str, Any]] = None,
     city_pool_size: int = 0,
 ) -> bool:
-    """FIX #194: looser fill gates for single-city trips with a modest POI pool."""
-    if not context or context.get("is_zakopane_trip") or context.get("is_cluster"):
+    """FIX #194/#209: looser fill gates for modest POI pools and spa clusters."""
+    if not context or context.get("is_zakopane_trip"):
         return False
     pool = city_pool_size or int(context.get("city_pool_size") or 0)
+    # FIX #209: Kotlina Kłodzka (Kudowa/Polanica/Kłodzko) — aggressive gap-fill.
+    if (context.get("signals") or {}).get("cluster_type") == "regional_cluster":
+        return True
+    if pool < 30:
+        return True
+    if context.get("is_cluster"):
+        return False
     return 0 < pool < 85
 
 
@@ -241,7 +248,7 @@ def build_cluster_hub_day_pools(
     num_days: int,
     cluster_cities: Optional[List[str]] = None,
     base_city: str = "",
-) -> tuple[List[List[Dict[str, Any]]], List[List[Dict[str, Any]]]]:
+) -> tuple[List[List[Dict[str, Any]]], List[List[Dict[str, Any]]], List[str]]:
     """FIX #201/#208: one hub city per day for clusters (Trójmiasto, Karkonosze…).
 
     FIX #208: when ``base_city`` is set (user's requested town), that hub gets the
@@ -257,7 +264,15 @@ def build_cluster_hub_day_pools(
         hubs.setdefault(h, []).append(p)
     if not hubs:
         full = list(all_pois)
-        return [full] * num_days, [full] * num_days
+        return [full] * num_days, [full] * num_days, [base_city or ""] * num_days
+
+    def _hub_label(norm_h: str) -> str:
+        if base_norm and norm_h == base_norm and base_city:
+            return base_city
+        for c in cluster_cities or []:
+            if normalize_city_name(c) == norm_h:
+                return c
+        return norm_h
 
     base_norm = normalize_city_name(base_city) if base_city else ""
 
@@ -279,7 +294,11 @@ def build_cluster_hub_day_pools(
 
     if base_norm and base_norm in hub_order and num_days > len(hub_order):
         other_hubs = [h for h in hub_order if h != base_norm]
-        base_days = max(1, round(num_days * 0.55))
+        _largest = max(len(hubs[h]) for h in hub_order) if hub_order else 0
+        _base_size = len(hubs.get(base_norm, []))
+        # FIX #210: smaller base hub (Gdynia/Sopot vs Gdańsk) → more days at base.
+        _base_pct = 0.65 if _base_size < _largest else 0.55
+        base_days = max(1, round(num_days * _base_pct))
         day_hub_seq = [base_norm] * base_days
         for i in range(num_days - base_days):
             day_hub_seq.append(other_hubs[i % len(other_hubs)] if other_hubs else base_norm)
@@ -293,7 +312,9 @@ def build_cluster_hub_day_pools(
         extra = num_days - len(hub_order)
         total = sum(len(hubs[h]) for h in hub_order) or 1
         if base_norm and base_norm in hub_order:
-            base_share = max(1, round(extra * 0.55))
+            _largest2 = max(len(hubs[h]) for h in hub_order) if hub_order else 0
+            _base_pct2 = 0.65 if len(hubs.get(base_norm, [])) < _largest2 else 0.55
+            base_share = max(1, round(extra * _base_pct2))
             hub_days[base_norm] += base_share
             extra -= base_share
             others = [h for h in hub_order if h != base_norm]
@@ -323,11 +344,13 @@ def build_cluster_hub_day_pools(
 
     pools: List[List[Dict[str, Any]]] = []
     fallbacks: List[List[Dict[str, Any]]] = []
+    day_hub_cities: List[str] = []
     for d in range(num_days):
         h = day_hub_seq[d]
         pool = list(hubs.get(h, []))
         pools.append(pool)
         fallbacks.append(list(pool))
-        label = base_city if h == base_norm else h
+        label = _hub_label(h)
+        day_hub_cities.append(label)
         print(f"[FIX #201/#208] Cluster day {d + 1} → hub '{label}' ({len(pool)} POI)")
-    return pools, fallbacks
+    return pools, fallbacks, day_hub_cities
