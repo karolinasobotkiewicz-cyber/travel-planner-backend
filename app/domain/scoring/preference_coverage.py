@@ -339,7 +339,7 @@ _KEYWORDS_BY_PREF: Dict[str, tuple] = {
     "water_attractions": (
         "water", "aqua", "pool", "swim", "beach", "marina", "kayak", "raft", "sail",
         "boat", "wave", "_slide", "thermal", "lagoon", "seaside", "yacht", "harbour",
-        "harbor", "river_cruise", "waterfall", "lake", "river_view",
+        "harbor", "river_cruise", "waterfall", "lake", "river_view", "bulwar", "riverside",
     ),
     "relaxation": (
         "relax", "spa", "therm", "wellness", "sauna", "jacuzzi", "massage", "zdroj",

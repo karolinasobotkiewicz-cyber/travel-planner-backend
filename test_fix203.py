@@ -23,7 +23,7 @@ from app.domain.models.trip_input import (
 from app.infrastructure.repositories.poi_repository import POIRepository
 from app.infrastructure.repositories.load_multi_city import load_multi_city_poi
 from app.domain.scoring.preference_coverage import poi_covers_preference_report
-from app.domain.planner.engine import time_to_minutes
+from app.domain.planner.engine import time_to_minutes, is_quick_stop_poi, is_core_poi
 
 MC = os.path.join("data", "multi_city_attractions.xlsx")
 
@@ -72,6 +72,9 @@ COVERAGE_CASES = [
     ("Kraków", "Park Linowy", "active_sport", True),
     # FIX #205 precision: market square / old town are NOT history_mystery.
     ("Kraków", "Stare Miasto", "history_mystery", False),
+    # FIX #206: bulwar water coverage
+    ("Warszawa", "Bulwary Wiślane", "water_attractions", True),
+    ("Warszawa", "Bulwary Wiślane", "relaxation", True),
 ]
 
 _pool_cache = {}
@@ -96,6 +99,35 @@ def check_coverage():
         got = poi_covers_preference_report(match, pref)
         if got != expected:
             fails.append(f"{city}/{frag} [{pref}]: got {got}, expected {expected}")
+    return fails
+
+
+def check_micro_poi():
+    """FIX #206: monuments/bridges must be quick-stop, never core."""
+    fails = []
+    cases = [
+        ("Kraków", "Smoka Wawelskiego", True, False),
+        ("Kraków", "Matejki", True, False),
+        ("Kraków", "Bernatka", True, False),
+        ("Warszawa", "Świętokrzyski", True, False),
+        ("Warszawa", "Syreny", True, False),
+        ("Kraków", "Rynek Główny", False, None),  # iconic square — not hard micro
+    ]
+    for city, frag, expect_quick, expect_core in cases:
+        match = next(
+            (p for p in _pois(city) if frag.lower() in str(p.get("name", "")).lower()),
+            None,
+        )
+        if match is None:
+            fails.append(f"{city}/{frag}: POI not found for micro check")
+            continue
+        got_quick = is_quick_stop_poi(match)
+        if got_quick != expect_quick:
+            fails.append(f"{city}/{frag}: quick_stop={got_quick}, expected {expect_quick}")
+        if expect_core is not None:
+            got_core = is_core_poi(match)
+            if got_core != expect_core:
+                fails.append(f"{city}/{frag}: core={got_core}, expected {expect_core}")
     return fails
 
 
@@ -159,8 +191,10 @@ def test_fix203_regression_guard():
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         cov_fails = check_coverage()
+        micro_fails = check_micro_poi()
         tl_fails = check_cluster_and_timeline(svc)
     assert not cov_fails, "coverage regressions:\n" + "\n".join(cov_fails)
+    assert not micro_fails, "micro-POI regressions:\n" + "\n".join(micro_fails)
     assert not tl_fails, "cluster/timeline regressions:\n" + "\n".join(tl_fails)
 
 
@@ -174,6 +208,7 @@ def main():
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         cov_fails = check_coverage()
+        micro_fails = check_micro_poi()
         tl_fails = check_cluster_and_timeline(svc)
 
     ok = True
@@ -184,6 +219,13 @@ def main():
             print(f"    - {f}")
     else:
         print(f"  PASS coverage ({len(COVERAGE_CASES)} cases)")
+    if micro_fails:
+        ok = False
+        print(f"  FAIL micro-POI ({len(micro_fails)}):")
+        for f in micro_fails:
+            print(f"    - {f}")
+    else:
+        print("  PASS micro-POI (quick-stop + no core)")
     if tl_fails:
         ok = False
         print(f"  FAIL cluster/timeline ({len(tl_fails)}):")

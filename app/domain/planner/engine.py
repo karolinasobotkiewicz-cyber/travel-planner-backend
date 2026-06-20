@@ -113,7 +113,11 @@ def is_core_poi(poi):
     Core POI have priority_level = 12 (highest priority) or "core" (string).
     CLIENT REQUIREMENT (08.02.2026): Used for core POI rotation logic.
     FIX #75: Support string "core" from multi_city_attractions.xlsx loader.
+    FIX #206 (18.06.2026): micro photo-stops (Pomnik Smoka, Most, Plac Matejki…)
+    must never be core anchors even when Excel priority_level=12 / must_see=10.
     """
+    if is_quick_stop_poi(poi):
+        return False
     pl = poi.get("priority_level", 0)
     if isinstance(pl, str):
         return pl.strip().lower() == "core"
@@ -857,7 +861,15 @@ _WATER_ATTRACTION_TAGS = frozenset({
     "thermal_baths", "termy", "lake", "river_cruise", "beach", "marina",
     "water_wellness", "rafting", "kayak",
 })
-_WATER_NAME_MARKERS = ("wodospad", "aquapark", "term", "jezioro", "kąpiel")
+_WATER_NAME_MARKERS = ("wodospad", "aquapark", "term", "jezioro", "kąpiel", "bulwar")
+
+# FIX #206: always quick-stop — never exempted by high must_see (Pomnik Smoka=10).
+_HARD_QUICK_STOP_MARKERS = (
+    "pomnik ", "pomnik smoka", "most ", "kładka", "brama ", "plac jana", "plac bohater",
+    "plac europejski", "plac ratuszowy", "getta", "syrenka", "syreny",
+    "grób nieznanego", "taras widokowy", "fontanna neptuna", "skwer ",
+    "kościół św.", "koci św.", "most świętokrzyski",
+)
 
 _QUICK_STOP_NAME_MARKERS = (
     "pomnik bamber", "brama chlebnicka", "brama wyżynna", "fontanna neptuna",
@@ -870,13 +882,18 @@ _QUICK_STOP_NAME_MARKERS = (
     # in Kraków and Molo/Bulwar (client wants those) are unaffected.
     "plac ratuszowy", "rynek ", "pomnik ", "syrenka", "syreny", "most ",
     "kładka", "plac europejski", "taras widokowy",
+    # FIX #206 (18.06.2026): Kraków/Warszawa micro-POI still ranking as core.
+    "plac jana", "plac bohater", "brama floria", "kościół św.", "koci św.",
+    "grób nieznanego", "pałac prezydencki",
 )
 # Bare tag "underground" alone is too broad — Archiwum Planety Ziemia is a museum.
 
 
 def is_quick_stop_poi(poi: dict) -> bool:
-    """FIX #201: short photo-stop POIs should not get must_see/core badges."""
+    """FIX #201/#206: short photo-stop POIs should not get must_see/core badges."""
     name = str(poi.get("name", "")).lower()
+    if any(m in name for m in _HARD_QUICK_STOP_MARKERS):
+        return True
     ms = poi.get("must_see") or poi.get("must_see_score")
     try:
         if ms is not None and float(ms) >= 9:
@@ -2171,13 +2188,10 @@ def score_poi(
         score += iconic_extra
 
     # FIX #204 (16.06.2026): demote low-value "micro-POIs" as MAIN day anchors.
-    # Client across many cities: squares / monuments / footbridges / promenades
-    # were being chosen instead of top attractions. is_quick_stop_poi() already
-    # exempts genuine icons (Excel must_see >= 9), so this only hits low-value
-    # photo-stops. Penalty is moderate so they can still serve as short fillers
-    # via gap-fill, but lose to real attractions in the main argmax.
-    if is_quick_stop_poi(p) and must_see_value < 7:
-        score -= 35.0
+    # FIX #206 (18.06.2026): stronger penalty; applies even when must_see>=7 (Pomnik Smoka=10).
+    if is_quick_stop_poi(p):
+        _qs_pen = 85.0 if must_see_value >= 8 else 60.0
+        score -= _qs_pen
 
     # FIX #197: Be Happy Museum and similar selfie-museums — lower when not must-see icon
     _pname197 = str(p.get("name", "")).lower()
@@ -2606,7 +2620,12 @@ def score_poi(
         # Issue: Friends+adventure (test-03) gets museums/galleries instead of escape rooms, kulig
         # These are indoor group activities that don't require outdoor prefs but ARE adventure-appropriate
         _group_activity_tags = {"escape_room", "kulig", "group_activity", "winter_sports",
-                                 "active_entertainment", "team_activity", "horror_attraction"}
+                                 "active_entertainment", "team_activity", "horror_attraction",
+                                 # FIX #206: urban group fun (Pixel XL, trampoliny, park linowy)
+                                 "interactive_game_arena", "group_fun_activity", "digital_floor_games",
+                                 "forest_rope_courses", "outdoor_adventure", "trampoline_park",
+                                 "virtual_reality_cinema", "immersive_movie_adventure",
+                                 "climbing_challenges", "obstacle_course"}
         if _group_activity_tags & poi_tags:
             _ga_target = user.get("target_group", "")
             if _ga_target in ("friends", "solo", "couples"):
@@ -2615,9 +2634,28 @@ def score_poi(
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                 print(f"    [GROUP ACTIVITY BOOST] {poi_name_safe}: +{_ga_boost:.1f} (adventure + group activity tags + {_ga_target})")
 
-        else:
-            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
-            print(f"    [ADVENTURE BOOST] {poi_name_safe}: skipped active/mountain boost (no outdoor preferences)")
+        # FIX #206: city tourism + active_sport/adventure — boost urban active POIs
+        # (Pixel XL, park linowy, trampoliny) even without mountain_trails prefs.
+        from app.domain.planner.city_copy import is_city_tourism_trip as _is_city_206
+        if _is_city_206(context) and (
+            "active_sport" in user_preferences or "adventure" in user_preferences
+        ):
+            _name_206 = str(p.get("name", "")).lower()
+            _city_active_tags = {
+                "interactive_game_arena", "group_fun_activity", "digital_floor_games",
+                "forest_rope_courses", "outdoor_adventure", "trampoline_park",
+                "virtual_reality_cinema", "immersive_movie_adventure", "climbing_challenges",
+                "active_sport", "sports", "adventure_playground", "paintball", "laser_tag",
+            }
+            _city_active_names = (
+                "pixel", "trampolin", "park linowy", "gojump", "goair", "vr", "labirynt",
+                "escape", "paintball", "laser", "linowa", "adrena",
+            )
+            if _city_active_tags & poi_tags or any(n in _name_206 for n in _city_active_names):
+                _ca_boost = 50.0
+                score += _ca_boost
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [URBAN ACTIVE BOOST] {poi_name_safe}: +{_ca_boost:.1f} (city + active_sport/adventure)")
         
         # FIX #8 (22.02.2026 - UAT Round 3, TEST-03 Issue):
         # CRITICAL: Hard penalty for relaxation/wellness/spa POI for adventure travelers
@@ -2784,7 +2822,36 @@ def score_poi(
             extra_penalty = -40.0  # Total -120 penalty for strong mismatch
             score += extra_penalty
             print(f"    [KIDS PENALTY] {poi_name_safe}: {extra_penalty:.1f} (cultural/relaxation preference conflicts with kids POI)")
-    
+
+    # FIX #206 (18.06.2026): Friends profile + active/adventure — reward group fun, demote micro-POI.
+    _tg206 = str(user.get("target_group", "")).lower()
+    _prefs206 = user.get("preferences", [])
+    _name206 = str(p.get("name", "")).lower()
+    _tags206 = set(str(t).lower() for t in (p.get("tags") or []))
+    _wants_active206 = (
+        "active_sport" in _prefs206 or "adventure" in _prefs206
+        or user.get("travel_style") == "adventure"
+    )
+    if _tg206 == "friends" and _wants_active206:
+        _friends_fun_tags = {
+            "interactive_game_arena", "group_fun_activity", "digital_floor_games",
+            "trampoline_park", "virtual_reality_cinema", "forest_rope_courses",
+            "outdoor_adventure", "escape_room", "group_activity", "active_entertainment",
+        }
+        _friends_fun_names = ("pixel", "trampolin", "park linowy", "gojump", "goair", "vr", "labirynt", "escape")
+        if _friends_fun_tags & _tags206 or any(n in _name206 for n in _friends_fun_names):
+            score += 45.0
+        elif is_quick_stop_poi(p):
+            score -= 35.0
+
+    # FIX #206: Relaxation/solo/seniors — parks, bulwary, lakes over free_time filler.
+    if user.get("travel_style") == "relax" or "relaxation" in _prefs206:
+        if not is_quick_stop_poi(p):
+            if is_park_or_green_space_poi(p) or "bulwar" in _name206 or "zakrz" in _name206:
+                score += 50.0
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [RELAX GREEN BOOST] {poi_name_safe}: +50.0 (relax + park/bulwar/lake)")
+
     # FIX #6 (02.02.2026): Priority_level bonus (core: +25, secondary: +10, optional: 0)
     score += calculate_priority_bonus(p, user)
     
@@ -7166,14 +7233,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     if total_minutes > 0:
         free_time_pct = (free_time_minutes / total_minutes) * 100
         
-        if free_time_pct > 50 or attraction_count_final == 0:
-            print(f"\n[EMPTY DAY WARNING] Day is sparse or empty:")
-            print(f"  - Free time: {free_time_minutes}/{total_minutes} min ({free_time_pct:.1f}%)")
-            print(f"  - Attractions: {attraction_count_final}")
-            print(f"  - Suggestion: Relax filters (target_group, intensity, budget, distance)")
-            if warnings_out is not None:  # FIX #130
-                warnings_out.append({"type": "sparse_day", "severity": "warning",
-                    "message": f"Day is sparse: {attraction_count_final} attractions, {free_time_pct:.0f}% free time. Consider relaxing filters."})
+        if free_time_pct > 55 or attraction_count_final == 0:
+            # FIX #206: do not flag sparse_day when day already has 4+ real attractions
+            if attraction_count_final >= 4 and free_time_pct <= 65:
+                pass
+            else:
+                print(f"\n[EMPTY DAY WARNING] Day is sparse or empty:")
+                print(f"  - Free time: {free_time_minutes}/{total_minutes} min ({free_time_pct:.1f}%)")
+                print(f"  - Attractions: {attraction_count_final}")
+                print(f"  - Suggestion: Relax filters (target_group, intensity, budget, distance)")
+                if warnings_out is not None:  # FIX #130
+                    warnings_out.append({"type": "sparse_day", "severity": "warning",
+                        "message": f"Day is sparse: {attraction_count_final} attractions, {free_time_pct:.0f}% free time. Consider relaxing filters."})
     
     # BUGFIX (19.02.2026 - UAT Round 2, Issue #5): Validate preference coverage
     # Check if day includes attractions matching top 3 user preferences

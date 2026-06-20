@@ -3951,27 +3951,23 @@ class PlanService:
                         
                         print(f"[GAP FILLING] ✓ Added end-of-day dinner_break: {dinner_start}-{dinner_end} ({dinner_duration} min)")
                         
-                        # FIX #30 (18.05.2026): Fill ALL remaining time after dinner to day_end
-                        # Each free_time block is capped at 60 min per client requirement (Problem #7),
-                        # but we now add MULTIPLE blocks to fully cover the gap to day_end.
+                        # FIX #30 (18.05.2026): Fill remaining time after dinner to day_end
+                        # FIX #206 (18.06.2026): ONE post-dinner free_time block (max 45 min).
+                        # The while-loop created 3h+ free_time (client: 188–234 min) by stacking
+                        # multiple 60-min blocks; gap-fill should try POIs first instead.
                         remaining_gap = gap_to_end - dinner_duration
-                        current_ft_start = time_to_minutes(dinner_end)
-                        ft_block_num = 0
-                        while remaining_gap > 15:
-                            ft_block_num += 1
-                            ft_block_duration = min(remaining_gap, 60)  # Keep ≤60 min per block
+                        if remaining_gap > 15:
+                            ft_block_duration = min(remaining_gap, 45)
+                            current_ft_start = time_to_minutes(dinner_end)
                             ft_block_end_min = current_ft_start + ft_block_duration
                             ft_block_start_str = minutes_to_time(current_ft_start)
                             ft_block_end_str = minutes_to_time(ft_block_end_min)
-                            
-                            ft_label = "Wieczór: spacer, zakupy, relaks w hotelu" if ft_block_num == 1 else "Czas wolny wieczorny"
-                            # FIX #78 (27.05.2026): Add suggestions for post-dinner free_time blocks
+
+                            ft_label = "Wieczór: spacer, zakupy, relaks w hotelu"
                             _FT78_SETS_PD = [
                                 ["Spacer po centrum", "Kawa/herbata w kawiarni", "Czas na zdjęcia i relaks"],
                                 ["Odpoczynek na ławce", "Zwiedzanie na własną rękę", "Zakupy pamiątek"],
                                 ["Lody lub deser w kawiarni", "Zdjęcia panoramiczne", "Krótki spacer na świeżym powietrzu"],
-                                ["Wizyta w lokalnym sklepiku", "Relaks przy kawie lub herbacie", "Spacer po okolicy"],
-                                ["Fotografia podróżnicza", "Widokówki i pamiątki dla bliskich", "Chwila wytchnienia"],
                             ]
                             _ft78pd_sugg = _FT78_SETS_PD[(current_ft_start // 30) % len(_FT78_SETS_PD)]
                             free_time_item = FreeTimeItem(
@@ -3981,17 +3977,16 @@ class PlanService:
                                 duration_min=ft_block_duration,
                                 label=ft_label,
                                 suggestions=_ft78pd_sugg[:3],
-                                is_technical_buffer=(ft_block_duration < 5)  # FIX #39
+                                is_technical_buffer=(ft_block_duration < 5),
                             )
-                            
+
                             if result[-1].dict()['type'] == 'day_end':
                                 result.insert(-1, free_time_item)
                             else:
                                 result.append(free_time_item)
-                            
-                            print(f"[GAP FILLING] Added post-dinner free_time block #{ft_block_num}: {ft_block_start_str}-{ft_block_end_str} ({ft_block_duration} min)")
-                            current_ft_start = ft_block_end_min
-                            remaining_gap -= ft_block_duration
+
+                            print(f"[GAP FILLING] Added post-dinner free_time (single block): "
+                                  f"{ft_block_start_str}-{ft_block_end_str} ({ft_block_duration} min)")
                     else:
                         # Add free_time as usual
                         print(f"[GAP FILLING] Adding end-of-day free_time: {gap_to_end} min gap before day_end ({last_end_str} -> {day_end_str})")
