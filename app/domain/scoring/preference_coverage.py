@@ -383,13 +383,21 @@ _KEYWORDS_BY_PREF: Dict[str, tuple] = {
 }
 
 
+def _kw_matches_tag(kw: str, tag: str) -> bool:
+    """FIX #207: short keywords must match whole tag tokens — bare 'spa' must not
+    hit event_space / exhibition_space (client: Hala Stulecia, Muzeum Narodowe)."""
+    if len(kw) <= 3:
+        return kw in tag.split("_")
+    return kw in tag
+
+
 def _keyword_hit(pref: str, tags: Set[str]) -> bool:
     kws = _KEYWORDS_BY_PREF.get(pref)
     if not kws:
         return False
     for t in tags:
         for kw in kws:
-            if kw in t:
+            if _kw_matches_tag(kw, t):
                 return True
     return False
 
@@ -437,7 +445,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "wyspa słodowa", "plac europejski", "deptak", "rynek",
     ),
     "relaxation": (
-        "most tumski", "rynek", "fontanna",
+        "most tumski", "rynek", "fontanna", "hala stulecia", "muzeum narodowe",
+        "pergola przy hali", "hydropolis",
     ),
     "history_mystery": (
         # FIX #204: client (Sopot/Gdańsk) — spa-resort buildings & promenade gates
@@ -528,7 +537,7 @@ def matched_coverage_tags(poi: Dict[str, Any], pref: str) -> list[str]:
             return _hit
         # FIX #205: report which granular tags matched via keyword fallback.
         kws = _KEYWORDS_BY_PREF.get(pref) or ()
-        return sorted(t for t in tags if any(kw in t for kw in kws))
+        return sorted(t for t in tags if any(_kw_matches_tag(kw, t) for kw in kws))
     from app.domain.scoring.tag_preferences import USER_PREFERENCES_TO_TAGS
 
     cfg = USER_PREFERENCES_TO_TAGS.get(pref)

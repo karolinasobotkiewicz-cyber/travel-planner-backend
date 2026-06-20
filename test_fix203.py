@@ -75,6 +75,12 @@ COVERAGE_CASES = [
     # FIX #206: bulwar water coverage
     ("Warszawa", "Bulwary Wiślane", "water_attractions", True),
     ("Warszawa", "Bulwary Wiślane", "relaxation", True),
+    # FIX #207 (19.06.2026): Wrocław/Poznań — relaxation false positives + micro-POI.
+    ("Wrocław", "Hala Stulecia", "relaxation", False),
+    ("Wrocław", "Muzeum Narodowe", "relaxation", False),
+    ("Wrocław", "Hala Targowa", "local_food_experience", True),
+    ("Poznań", "Pręgierz", "history_mystery", True),  # still history, not relaxation
+    ("Poznań", "Pręgierz", "nature_landscape", False),
 ]
 
 _pool_cache = {}
@@ -112,6 +118,13 @@ def check_micro_poi():
         ("Warszawa", "Świętokrzyski", True, False),
         ("Warszawa", "Syreny", True, False),
         ("Kraków", "Rynek Główny", False, None),  # iconic square — not hard micro
+        # FIX #207: Poznań/Wrocław micro monuments
+        ("Poznań", "Pręgierz", True, False),
+        ("Poznań", "Domy Kupieckie", True, False),
+        ("Poznań", "Okrąglak", True, False),
+        ("Wrocław", "Most Grunwaldzki", True, False),
+        ("Wrocław", "Bastion", True, False),
+        ("Wrocław", "Wyspa Słodowa", True, False),
     ]
     for city, frag, expect_quick, expect_core in cases:
         match = next(

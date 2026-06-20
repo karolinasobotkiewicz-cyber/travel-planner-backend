@@ -869,6 +869,9 @@ _HARD_QUICK_STOP_MARKERS = (
     "plac europejski", "plac ratuszowy", "getta", "syrenka", "syreny",
     "grób nieznanego", "taras widokowy", "fontanna neptuna", "skwer ",
     "kościół św.", "koci św.", "most świętokrzyski",
+    # FIX #207 (19.06.2026): Poznań/Wrocław micro-POI still core (Pręgierz, Okrąglak…)
+    "pręgierz", "pregierz", "domy kupieckie", "okrąglak", "okraglak", "plac wolności",
+    "pomnik ofiar", "pomnik bamber", "bastion ", "wyspa słodowa",
 )
 
 _QUICK_STOP_NAME_MARKERS = (
@@ -884,7 +887,10 @@ _QUICK_STOP_NAME_MARKERS = (
     "kładka", "plac europejski", "taras widokowy",
     # FIX #206 (18.06.2026): Kraków/Warszawa micro-POI still ranking as core.
     "plac jana", "plac bohater", "brama floria", "kościół św.", "koci św.",
-    "grób nieznanego", "pałac prezydencki",
+    "grób nieznanego",     "pałac prezydencki",
+    # FIX #207: Poznań/Wrocław
+    "pręgierz", "pregierz", "domy kupieckie", "okrąglak", "plac wolności",
+    "pomnik ofiar", "bastion", "wyspa słodowa",
 )
 # Bare tag "underground" alone is too broad — Archiwum Planety Ziemia is a museum.
 
@@ -2637,25 +2643,39 @@ def score_poi(
         # FIX #206: city tourism + active_sport/adventure — boost urban active POIs
         # (Pixel XL, park linowy, trampoliny) even without mountain_trails prefs.
         from app.domain.planner.city_copy import is_city_tourism_trip as _is_city_206
+        _name_206_adv = str(p.get("name", "")).lower()
+        _city_active_tags_adv = {
+            "interactive_game_arena", "group_fun_activity", "digital_floor_games",
+            "forest_rope_courses", "outdoor_adventure", "trampoline_park",
+            "virtual_reality_cinema", "immersive_movie_adventure", "climbing_challenges",
+            "active_sport", "sports", "adventure_playground", "paintball", "laser_tag",
+        }
         if _is_city_206(context) and (
             "active_sport" in user_preferences or "adventure" in user_preferences
         ):
-            _name_206 = str(p.get("name", "")).lower()
-            _city_active_tags = {
-                "interactive_game_arena", "group_fun_activity", "digital_floor_games",
-                "forest_rope_courses", "outdoor_adventure", "trampoline_park",
-                "virtual_reality_cinema", "immersive_movie_adventure", "climbing_challenges",
-                "active_sport", "sports", "adventure_playground", "paintball", "laser_tag",
-            }
             _city_active_names = (
                 "pixel", "trampolin", "park linowy", "gojump", "goair", "vr", "labirynt",
                 "escape", "paintball", "laser", "linowa", "adrena",
             )
-            if _city_active_tags & poi_tags or any(n in _name_206 for n in _city_active_names):
+            if _city_active_tags_adv & poi_tags or any(n in _name_206_adv for n in _city_active_names):
                 _ca_boost = 50.0
                 score += _ca_boost
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                 print(f"    [URBAN ACTIVE BOOST] {poi_name_safe}: +{_ca_boost:.1f} (city + active_sport/adventure)")
+
+        # FIX #207: city adventure without culture prefs — deprioritize iconic heritage fillers.
+        _top3_adv = user_preferences[:3]
+        _culture_in_top3 = bool({"museum_heritage", "history_mystery"} & set(_top3_adv))
+        if _is_city_206(context) and not _culture_in_top3:
+            _heritage_names = ("rynek", "ostrów tumski", "ostrow tumski", "stare miasto", "ratusz")
+            _heritage_tags = {"cathedral_area", "historic_island", "old_town", "heritage_site"}
+            if (
+                any(n in _name_206_adv for n in _heritage_names)
+                or (_heritage_tags & poi_tags and "museum" not in _name_206_adv)
+            ) and not (_city_active_tags_adv & poi_tags):
+                score -= 45.0
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [FIX #207 ADVENTURE] {poi_name_safe}: -45.0 (adventure without culture prefs)")
         
         # FIX #8 (22.02.2026 - UAT Round 3, TEST-03 Issue):
         # CRITICAL: Hard penalty for relaxation/wellness/spa POI for adventure travelers
@@ -2851,6 +2871,44 @@ def score_poi(
                 score += 50.0
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                 print(f"    [RELAX GREEN BOOST] {poi_name_safe}: +50.0 (relax + park/bulwar/lake)")
+
+    # FIX #207 (19.06.2026): city-tourism only — Wrocław/Poznań nature/food balance.
+    from app.domain.planner.city_copy import is_city_tourism_trip as _is_city_207
+    _nature_hit207 = {
+        "japanese_garden", "botanical_collection", "greenhouse", "botanical_garden",
+        "riverside", "river_cruise", "forest", "lake", "waterfall", "city_park",
+        "nature", "garden", "arboretum", "meadow", "plant_exhibits", "riverside_island",
+    }
+    if _is_city_207(context) and "nature_landscape" in _prefs206[:3]:
+        _tags207 = set(str(t).lower() for t in (p.get("tags") or []))
+        if (
+            (_nature_hit207 & _tags207)
+            or is_park_or_green_space_poi(p)
+            or any(x in _name206 for x in ("ogród", "ogrod ", "rejs", "wodospad", "japoński", "botaniczny"))
+        ) and not is_quick_stop_poi(p):
+            score += 45.0
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [NATURE BOOST] {poi_name_safe}: +45.0 (nature_landscape in top-3 prefs)")
+
+    if _is_city_207(context) and "nature_landscape" in _prefs206[:3] and "museum_heritage" in _prefs206[:3]:
+        _museum_only = {
+            "themed_museum", "multimedia_exhibition", "interactive_exhibits",
+            "local_history", "art_gallery", "museum", "exhibition_space",
+        }
+        if _museum_only & _tags206 and not (_nature_hit207 & _tags206):
+            score -= 35.0
+
+    if _is_city_207(context) and "local_food_experience" in _prefs206[:3]:
+        _food_tags = {
+            "local_food_experience", "food_hall", "local_food", "craft_beer", "brewery",
+            "beer_tasting", "culinary_experience", "regional_products", "food_market",
+            "street_food", "gastronomy", "tasting", "restaurant",
+        }
+        _food_names = ("hala targowa", "browar", "food hall", "market hall", "pierog", "restauracja")
+        if (_food_tags & _tags206 or any(n in _name206 for n in _food_names)) and not is_quick_stop_poi(p):
+            score += 40.0
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [LOCAL FOOD BOOST] {poi_name_safe}: +40.0 (local_food in top-3 prefs)")
 
     # FIX #6 (02.02.2026): Priority_level bonus (core: +25, secondary: +10, optional: 0)
     score += calculate_priority_bonus(p, user)
