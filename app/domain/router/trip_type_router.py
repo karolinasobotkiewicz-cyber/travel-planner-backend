@@ -149,6 +149,33 @@ class TripTypeRouter:
                 f"'{loc_safe}' → activating CLUSTER mode."
             )
 
+        # FIX #214 (23.06.2026): Karkonosze member city without is_cluster still needs
+        # TrailDB + cluster scoring (client: zero trails on Karpacz/Szklarska/JG tests).
+        if not is_cluster and DestinationClusters.is_cluster_city(location):
+            _k214 = DestinationClusters.get_cluster(location)
+            if _k214 and _k214.get("region_type") == "mountain":
+                _loc214 = str(location).encode("ascii", "ignore").decode("ascii")
+                print(f"[ROUTER] FIX #214: Karkonosze member '{_loc214}' → MIXED + trails ON")
+                return {
+                    "trip_type": TripType.MIXED,
+                    "use_trails": True,
+                    "use_pois": True,
+                    "use_restaurants": True,
+                    "primary_source": "trails",
+                    "region": "Karkonosze",
+                    "cities": _k214["cities"],
+                    "cluster_config": _k214,
+                    "scoring_weights": _k214["scoring_weights"],
+                    "confidence": 0.95,
+                    "signals": {
+                        "cluster_type": _k214["type"].value,
+                        "cluster_name": _k214["name"],
+                        "cluster_cities": _k214["cities"],
+                        "mountain_score": 3.0,
+                        "city_score": 0.0,
+                    },
+                }
+
         # ================================================================
         # PHASE 7: CLUSTER DETECTION (Priority over single-city logic)
         # ================================================================

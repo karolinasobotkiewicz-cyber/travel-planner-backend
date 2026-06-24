@@ -815,9 +815,13 @@ class PlanService:
                 trail_repo = TrailRepository()
                 
                 if is_cluster:
-                    # PHASE 7: Load trails from all cluster cities
+                    # PHASE 7: Load trails once per region (not per city — FIX #214 dedupe).
+                    _trail_regions_loaded: set = set()
                     for city in cities_to_load:
                         region_name = self._normalize_region_for_trails(city)
+                        if region_name in _trail_regions_loaded:
+                            continue
+                        _trail_regions_loaded.add(region_name)
                         trails_db = trail_repo.get_by_region(region_name)
                         trails_dict = [trail_repo.to_dict(trail) for trail in trails_db]
                         
@@ -829,16 +833,20 @@ class PlanService:
                                 trail["time_min"] = trail["duration_min"]
                             if "duration_max" in trail:
                                 trail["time_max"] = trail["duration_max"]
-                            # FIX #25 (17.05.2026): Add city field for trail items (was empty in output)
                             if not trail.get("city"):
                                 trail["city"] = city
-                            # FIX #27 (17.05.2026): Add tags to trails so adventure/preference scoring works
-                            # trail_repository.to_dict() has no 'tags' → adventure boost/penalty never applied
+                            if not trail.get("hub_city"):
+                                trail["hub_city"] = city
                             if not trail.get("tags"):
-                                trail["tags"] = ["hiking", "mountain_trails", "active_sport", "outdoor", "alpine_activities"]
-                        
+                                trail["tags"] = [
+                                    "hiking", "mountain_trails", "active_sport",
+                                    "outdoor", "alpine_activities", "nature_landscape",
+                                ]
                         all_pois_dict.extend(trails_dict)
-                        print(f"[ROUTER] Loaded {len(trails_dict)} trails from TrailDB (city: {city}, region: {region_name})")
+                        print(
+                            f"[ROUTER] Loaded {len(trails_dict)} trails from TrailDB "
+                            f"(region: {region_name}, anchor city: {city})"
+                        )
                 else:
                     # Single-city mode
                     trails_db = trail_repo.get_by_region(router_config["region"])
@@ -915,6 +923,7 @@ class PlanService:
                     _expand = (
                         (_ctype == "regional_cluster" and len(all_pois_dict) < 35)
                         or _ctype == "urban_organism"
+                        or _ctype == "radius_based"  # FIX #214: Karkonosze hub pools
                     )
                     if _expand:
                         import os
@@ -925,6 +934,35 @@ class PlanService:
                         context["soft_cluster"] = True
                         context["kotlina_soft_cluster"] = _ctype == "regional_cluster"
                         context["cluster_cities"] = _cc_soft["cities"]
+                        # FIX #214: load Karkonosze trails for soft-cluster single-city requests.
+                        if _cc_soft.get("region_type") == "mountain" and router_config.get("use_trails"):
+                            if not any(str(p.get("type", "")).lower() == "trail" for p in all_pois_dict):
+                                try:
+                                    _tr = TrailRepository()
+                                    _reg = self._normalize_region_for_trails(_requested_city)
+                                    _tdb = _tr.get_by_region(_reg)
+                                    for _t in _tdb:
+                                        _td = _tr.to_dict(_t)
+                                        if "duration_min" in _td:
+                                            _td["time_min"] = _td["duration_min"]
+                                        if "duration_max" in _td:
+                                            _td["time_max"] = _td["duration_max"]
+                                        if not _td.get("city"):
+                                            _td["city"] = _requested_city
+                                        if not _td.get("hub_city"):
+                                            _td["hub_city"] = _requested_city
+                                        if not _td.get("tags"):
+                                            _td["tags"] = [
+                                                "hiking", "mountain_trails", "active_sport",
+                                                "outdoor", "alpine_activities", "nature_landscape",
+                                            ]
+                                        all_pois_dict.append(_td)
+                                    print(f"[FIX #214] Soft-cluster trails: {len(_tdb)} from {_reg}")
+                                except Exception as _te:
+                                    print(f"[FIX #214] WARNING: trail load failed: {_te}")
+                        if _cc_soft.get("scoring_weights"):
+                            context.setdefault("signals", {})["cluster_type"] = _ctype
+                            router_config["scoring_weights"] = _cc_soft["scoring_weights"]
                         print(
                             f"[FIX #210] Soft-cluster ({_ctype}): {len(all_pois_dict)} POIs "
                             f"from {_cc_soft['cities']} (base={_requested_city})"

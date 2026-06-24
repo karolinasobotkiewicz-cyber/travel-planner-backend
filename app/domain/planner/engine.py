@@ -885,6 +885,9 @@ _HARD_QUICK_STOP_MARKERS = (
     "pomnik ofiar", "pomnik bamber", "bastion ", "wyspa słodowa",
     # FIX #208: Karkonosze micro-POI
     "anomalii grawitacyjnej", "miejsce anomalii", "plac piastowski",
+    # FIX #214: over-promoted Karkonosze micro-POI
+    "wzgórze kościuszki", "wzgórze kosciuszki", "deptak w karpaczu", "deptak karpacz",
+    "centrum - deptak", "centrum deptak",
     # FIX #209: Kotlina Kłodzka micro bridges/squares
     "brama wodna", "bolesława chrobrego", "chrobrego", "kamienny most",
     # FIX #210: Gdańsk — żuraw, bramy (fontanna neptuna already above)
@@ -911,6 +914,9 @@ _QUICK_STOP_NAME_MARKERS = (
     "pomnik ofiar", "bastion", "wyspa słodowa",
     # FIX #208: Karkonosze micro-POI
     "anomalii grawitacyjnej", "miejsce anomalii", "plac piastowski",
+    # FIX #214: over-promoted Karkonosze micro-POI
+    "wzgórze kościuszki", "wzgórze kosciuszki", "deptak w karpaczu", "deptak karpacz",
+    "centrum - deptak", "centrum deptak",
     # FIX #209: Kotlina Kłodzka micro bridges/squares
     "brama wodna", "bolesława chrobrego", "chrobrego", "kamienny most",
     # FIX #210: Gdańsk
@@ -1699,9 +1705,13 @@ _ICONIC_MOUNTAIN_TRAILS = (
 def _is_culture_led_trip(user_preferences: list) -> bool:
     """True when culture/history/underground prefs lead and mountain_trails/hiking are not top-2."""
     top2 = user_preferences[:2]
+    top3 = user_preferences[:3]
+    # FIX #214: active_sport / mountain_trails in top-3 → trails win over museums.
+    if {"mountain_trails", "hiking", "active_sport"} & set(top3):
+        return False
     if "mountain_trails" in top2 or "hiking" in top2:
         return False
-    return bool(_CULTURE_LED_PREFS & set(user_preferences[:3]))
+    return bool(_CULTURE_LED_PREFS & set(top3))
 
 
 _TRAIL_FAR_EXCURSION_MIN = 180  # FIX #187: 3h+ hike → no Zone C / Pieniny same day
@@ -1785,13 +1795,17 @@ def should_exclude_trail_for_user(
     if p.get("type") != "trail":
         return False
     user_prefs = user.get("preferences", [])
-    strong_hiking = {"mountain_trails", "hiking", "active_sport"}
+    travel_style = user.get("travel_style", "")
+    strong_hiking = {"mountain_trails", "hiking", "active_sport", "nature_landscape"}
     if not (
         strong_hiking & set(user_prefs)
+        or travel_style == "adventure"
         or user.get("target_group") == "adventure_seekers"
     ):
         return True
-    if start_time_min is not None and start_time_min >= 600:
+    _dur = safe_int(p.get("time_max") or p.get("duration_max"), 180)
+    # FIX #214: short trails OK after 10:00; block only long hikes starting late.
+    if start_time_min is not None and start_time_min >= 600 and _dur > 150:
         return True
     if _is_culture_led_trip(user_prefs):
         return True
@@ -2848,6 +2862,18 @@ def score_poi(
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                 print(f"    [GROUP ACTIVITY BOOST] {poi_name_safe}: +{_ga_boost:.1f} (adventure + group activity tags + {_ga_target})")
 
+        # FIX #214: adventure + active_sport/mountain_trails in top-2 — penalise passive museums.
+        _adv_museum_tags = {
+            "museums", "museum_heritage", "culture", "themed_museum", "regional_heritage",
+            "multimedia_exhibition", "interactive_exhibits", "interactive_exhibit",
+            "local_history", "art_gallery", "ethnographic_museum", "intimate_small_museum",
+        }
+        if user_has_outdoor_prefs and _adv_museum_tags & poi_tags and str(p.get("type", "")).lower() != "trail":
+            _adv_museum_pen = score * 0.45
+            score -= _adv_museum_pen
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [ADVENTURE MUSEUM PENALTY] {poi_name_safe}: -{_adv_museum_pen:.1f} (outdoor-led adventure)")
+
         # FIX #206: city tourism + active_sport/adventure — boost urban active POIs
         # (Pixel XL, park linowy, trampoliny) even without mountain_trails prefs.
         from app.domain.planner.city_copy import is_city_tourism_trip as _is_city_206
@@ -2945,7 +2971,10 @@ def score_poi(
 
         # FIX #184: adventure + history/underground/museum prefs — penalise iconic trails,
         # boost matching culture POI so Morskie Oko / Szymoszkowa don't beat jaskinie/muzea.
-        if _culture_led_184:
+        # FIX #214: skip when user wants active sport / trails (Karkonosze adventure tests).
+        if _culture_led_184 and not (
+            {"active_sport", "mountain_trails", "hiking"} & set(user_preferences[:3])
+        ):
             _pname_l = str(p.get("name", "")).lower()
             _ptype_l = str(p.get("type", "")).lower()
             _trail_like = (
@@ -2977,8 +3006,13 @@ def score_poi(
     _top3_cult = user_preferences[:3]
     _suppress_cultural = (
         travel_style == "adventure"
-        and "active_sport" in user_preferences
-        and not ({"museum_heritage", "history_mystery"} & set(_top3_cult))
+        and (
+            {"active_sport", "mountain_trails", "hiking"} & set(_top3_cult[:2])
+            or (
+                "active_sport" in user_preferences
+                and not ({"museum_heritage", "history_mystery"} & set(_top3_cult))
+            )
+        )
     )
     if cultural_multiplier > 1.0 and not _suppress_cultural:
         cultural_tags = {"museums", "museum_heritage", "culture", "history", "historical_sites", 
@@ -3194,19 +3228,38 @@ def score_poi(
     if _is_mtn_cluster208:
         if user.get("travel_style") == "relax" or "relaxation" in _prefs206:
             _relax_mtn_tags = {"relaxation", "spa", "termy", "wellness", "thermal_pools", "aquapark", "aqua_park"}
-            _relax_mtn_names = ("aquapark", "sandera", "term", "cieplick", "wellness", "spa")
+            _relax_mtn_names = ("aquapark", "sandera", "term", "cieplick", "wellness", "spa", "park zdroj")
             if _relax_mtn_tags & _tags206 or any(n in _name206 for n in _relax_mtn_names):
                 score += 55.0
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                 print(f"    [MTN RELAX BOOST] {poi_name_safe}: +55.0 (Karkonosze relax POI)")
-        if "active_sport" in _prefs206[:3]:
+            # FIX #214: ski arena / zakręt / deptak are NOT relaxation.
+            if any(n in _name206 for n in ("szrenica", "szrenic", "zakręt", "zakret", "deptak", "kościuszki", "kosciuszki")):
+                score -= 50.0
+        if "active_sport" in _prefs206[:3] or travel_style == "adventure":
             _active_mtn = {
                 "rope_park", "forest_rope_courses", "climbing", "ski", "bike", "cycling",
                 "adventure_park", "obstacle_course", "zipline", "via_ferrata", "sled",
                 "active_sport", "sports", "outdoor_adventure",
             }
             if _active_mtn & _tags206 or str(p.get("type", "")).lower() == "trail":
-                score += 45.0
+                score += 70.0 if str(p.get("type", "")).lower() == "trail" else 45.0
+        if "nature_landscape" in _prefs206[:3]:
+            _mtn_nature_names = (
+                "wodospad", "szklark", "kamieńczyk", "kamieneczyk", "krucze ska",
+                "dziki wodospad", "śnieżk", "sniezk", "szlak", "karkonosk",
+            )
+            if any(n in _name206 for n in _mtn_nature_names) or str(p.get("type", "")).lower() == "trail":
+                score += 60.0
+            if any(n in _name206 for n in ("orlinek", "pstrąg", "pstrag", "muzeum ziemi")):
+                score -= 45.0
+        if "kids_attractions" in _prefs206[:3] or user.get("target_group") == "family_kids":
+            _mtn_kids_names = (
+                "tajemnice", "park bajek", "western city", "kolorowa", "leśna huta",
+                "lesna huta", "dinopark", "bajek", "western",
+            )
+            if any(n in _name206 for n in _mtn_kids_names):
+                score += 55.0
         if "family_kids" in _prefs206[:3] and "nature_landscape" in _prefs206[:3]:
             if "kids_attractions" in _tags206 and not (_nature_hit207 & _tags206):
                 score -= 30.0

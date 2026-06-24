@@ -458,6 +458,9 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         # FIX #208: Karkonosze — shows/aquapark are not nature coverage.
         "karkonoskie tajemnice", "tajemnice", "aquapark", "sandera", "anomalii",
         "grawitacyjnej", "iluzja",
+        # FIX #214: weak Karkonosze POI miscredited as nature.
+        "orlinek", "muzeum ziemi", "pstrąg", "pstrag", "wzgórze kościuszki", "wzgórze kosciuszki",
+        "deptak", "centrum - deptak",
         # FIX #209: underground mine ≠ nature (Kopalnia Złota).
         "kopalnia złota", "kopalnia zlota", "złoty stok", "zloty stok",
     ),
@@ -467,6 +470,10 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
     "relaxation": (
         "most tumski", "rynek", "fontanna", "hala stulecia", "muzeum narodowe",
         "pergola przy hali", "hydropolis",
+        # FIX #214: Karkonosze — ski/deptak/mines are not relaxation.
+        "szrenica", "szrenic", "ski arena", "zakręt", "zakret", "deptak",
+        "wzgórze kościuszki", "wzgórze kosciuszki",
+        "kopalnia", "uranu", "arado",
     ),
     "history_mystery": (
         # FIX #204: client (Sopot/Gdańsk) — spa-resort buildings & promenade gates
@@ -488,6 +495,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "browar", "wedel", "czekolad", "pijalnia", "muzeum", "lotnictwa",
         "łazienki", "lazienki", "planty", "koryto warty", "mariacki",
         "katedra", "parafia",
+        # FIX #214: industrial heritage ≠ water.
+        "huta julia", "kopalnia", "sztolni", "sztolnia",
     ),
     # FIX #204: Katowice marked urban recreation parks as mountain trails.
     "mountain_trails": (

@@ -106,6 +106,10 @@ def multi_city_density_mode(
     # FIX #209: Kotlina Kłodzka (Kudowa/Polanica/Kłodzko) — aggressive gap-fill.
     if (context.get("signals") or {}).get("cluster_type") == "regional_cluster":
         return True
+    if (context.get("signals") or {}).get("cluster_type") == "radius_based":
+        return True
+    if context.get("soft_cluster"):
+        return True
     if pool < 30:
         return True
     if context.get("is_cluster"):
@@ -266,6 +270,8 @@ def build_cluster_hub_day_pools(
         full = list(all_pois)
         return [full] * num_days, [full] * num_days, [base_city or ""] * num_days
 
+    base_norm = normalize_city_name(base_city) if base_city else ""
+
     def _hub_label(norm_h: str) -> str:
         if base_norm and norm_h == base_norm and base_city:
             return base_city
@@ -274,7 +280,29 @@ def build_cluster_hub_day_pools(
                 return c
         return norm_h
 
-    base_norm = normalize_city_name(base_city) if base_city else ""
+    # FIX #214: short Karkonosze trips — stay in requested town (2/3 days minimum).
+    if base_norm and base_norm in hubs and num_days <= 4:
+        other_hubs = [h for h in hubs if h != base_norm]
+        if num_days <= 3:
+            base_days = num_days if not other_hubs else max(num_days - 1, 2)
+        else:
+            base_days = max(num_days - 1, round(num_days * 0.75))
+        base_days = min(base_days, num_days)
+        day_hub_seq = [base_norm] * base_days
+        for i in range(num_days - base_days):
+            day_hub_seq.append(other_hubs[i % len(other_hubs)] if other_hubs else base_norm)
+        day_hub_seq = day_hub_seq[:num_days]
+        pools: List[List[Dict[str, Any]]] = []
+        fallbacks: List[List[Dict[str, Any]]] = []
+        day_hub_cities: List[str] = []
+        for d in range(num_days):
+            h = day_hub_seq[d]
+            pool = list(hubs.get(h, []))
+            pools.append(pool)
+            fallbacks.append(list(pool))
+            day_hub_cities.append(_hub_label(h))
+            print(f"[FIX #214] Cluster day {d + 1} → hub '{day_hub_cities[-1]}' ({len(pool)} POI)")
+        return pools, fallbacks, day_hub_cities
 
     if cluster_cities:
         hub_order = []
