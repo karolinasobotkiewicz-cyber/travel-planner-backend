@@ -59,11 +59,13 @@ _STRONG_BY_PREF: Dict[str, frozenset] = {
         "colorful_lakes",
         "rock_formations", "sandstone_rock_formations", "dramatic_rock_landscape",
         "balancing_rock", "geological_phenomenon", "stone_geological_trail",
+        "historic_viewpoint_mound",
         "sandstone_corridors", "labyrinth_rock_formations", "geology",
         "karst_cave_system", "karst_cave", "underground_nature", "cave",
         "botanical_garden", "arboretum", "botanical_tree_collection",
         "botanical_collection", "greenhouse", "plant_exhibits", "plant_collection",
-        "palm_house", "japanese_garden", "city_park",
+        "palm_house", "japanese_garden",
+        # FIX #213: city_park alone (Planty) is NOT adequate nature coverage.
         "coastal_landscape", "coastal_views", "coastal_walks", "cliff_views",
         "dramatic_cliff_views", "sea_views", "seaside_views", "sea_panorama",
         "dunes", "cliffs",
@@ -340,9 +342,10 @@ _KEYWORDS_BY_PREF: Dict[str, tuple] = {
         "island_park", "riverside_park", "rock_formation",
     ),
     "water_attractions": (
-        "water", "aqua", "pool", "swim", "beach", "marina", "kayak", "raft", "sail",
-        "boat", "wave", "_slide", "thermal", "lagoon", "seaside", "yacht", "harbour",
-        "harbor", "river_cruise", "waterfall", "lake", "river_view", "bulwar", "riverside",
+        "aquapark", "aqua_park", "water_park", "waterfall", "river_cruise", "kayak",
+        "raft", "swimming", "marina", "yacht", "thermal_pool", "lazy_river",
+        "water_slide", "waterslide", "multimedia_fountain", "fountain_show",
+        # FIX #213: bare "water"/"pool"/"bulwar" matched museums, parks, breweries.
     ),
     "relaxation": (
         "relax", "spa", "therm", "wellness", "sauna", "jacuzzi", "massage", "zdroj",
@@ -355,8 +358,9 @@ _KEYWORDS_BY_PREF: Dict[str, tuple] = {
         "climb", "rope", "zipline", "zip_line", "via_ferrata", "kayak", "raft",
         "canoe", "bike", "cycl", "ski", "snowboard", "sled", "toboggan", "bobsled",
         "trampoline", "paintball", "kart", "obstacle", "ninja", "quad", "atv",
-        "surf", "_sup", "watersport", "fitness", "adventure", "adrenalin", "hiking",
+        "surf", "_sup", "watersport", "fitness", "adrenalin", "hiking",
         "trekking", "climbing", "horse_rid", "golf",
+        # FIX #213: bare "adventure" matched breweries / food POIs.
     ),
     "kids_attractions": (
         "kids", "children", "child_", "playground", "petting", "zoo", "animal",
@@ -438,6 +442,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "fontanna neptuna", "dlugi targ", "długi targ",
         # FIX #210: spa-resort building is not a museum
         "dom zdrojowy", "zdrojowy",
+        # FIX #213: cathedrals/churches → history_mystery, not museum.
+        "katedra", "archikatedra", "bazylika", "parafia",
     ),
     "nature_landscape": (
         "spodek", "rynek", "dlugi targ", "długi targ", "fontanna neptuna",
@@ -445,6 +451,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "ulica", "plac ", "pomnik", "kładka", "most ", "marina", "sky tower",
         "neon side", "fort ", "góra gradowa", "ambersky", "amber sky",
         "stare miasto", "norblin", "wilanów", "taras widokowy",
+        # FIX #213: weak urban green / butterfly museum / Ojców rock ≠ nature coverage.
+        "planty", "maczuga", "motyl", "motyla", "lotnictwa", "muzeum lotnictwa",
         # FIX #210: open-air theatre / show venue is not nature
         "opera leśna", "opera lesna",
         # FIX #208: Karkonosze — shows/aquapark are not nature coverage.
@@ -472,6 +480,14 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
     ),
     "active_sport": (
         "zoo", "ogród zoologiczny", "rynek", "muzeum",
+        # FIX #213: food / brewery / chocolate ≠ sport.
+        "browar", "wedel", "czekolad", "pijalnia", "port warta", "stary port",
+        "lotnictwa", "planty", "katedra", "parafia", "pręgierz", "pregierz",
+    ),
+    "water_attractions": (
+        "browar", "wedel", "czekolad", "pijalnia", "muzeum", "lotnictwa",
+        "łazienki", "lazienki", "planty", "koryto warty", "mariacki",
+        "katedra", "parafia",
     ),
     # FIX #204: Katowice marked urban recreation parks as mountain trails.
     "mountain_trails": (
@@ -581,3 +597,72 @@ def matched_coverage_tags(poi: Dict[str, Any], pref: str) -> list[str]:
     deny = _COVERAGE_DENY.get(pref, frozenset())
     allowed = {str(t).lower() for t in cfg.get("tags", [])} - set(deny)
     return sorted(tags & allowed)
+
+
+# FIX #213 (23.06.2026): Trip coverage must reflect REAL preference fulfilment.
+# Client: Planty / Maczuga / one museum counted as full nature/relax/sport coverage.
+_WEAK_NATURE_COVERAGE_TAGS = frozenset({
+    "city_park", "historic_city_park", "green_city_walk", "scenic_stroll",
+    "panoramic_city_views", "patriotic_monument", "historic_viewpoint_mound",
+    "riverside_walk", "city_views", "leisure_space", "urban_life",
+})
+
+_STRONG_NATURE_NAME_MARKERS = (
+    "kopiec", "zakrzówek", "zakrzowek", "rezerwat", "park narodowy", "wodospad",
+    "szlak", "las ", "dolina", "jezioro", "skarpa", "oława", "olawa",
+    "bulwar", "botaniczny", "ogrod botaniczny", "łazienki", "lazienki",
+)
+
+_STRONG_RELAX_NAME_MARKERS = (
+    "spa", "termy", "wellness", "bulwar", "ogrod", "ogród", "park ", "łazienki",
+    "lazienki", "zdroj", "sanatorium", "promenada",
+    # FIX #213: mountain relax walks (Zakopane) still count as relaxation.
+    "morskie oko", "polana", "rowień", "rowien", "dolina", "gubałów", "gubalow",
+)
+
+
+def is_strong_nature_coverage_poi(poi: Dict[str, Any]) -> bool:
+    """True when POI is a genuine nature/green visit (not urban stroll / monument)."""
+    if _name_denied(poi, "nature_landscape"):
+        return False
+    name = (poi.get("name") or poi.get("Name") or "").lower()
+    if any(m in name for m in _STRONG_NATURE_NAME_MARKERS):
+        return True
+    tags = excel_tags(poi) - _NATURE_COVERAGE_TAG_DENY
+    strong = _STRONG_BY_PREF.get("nature_landscape", frozenset()) - _WEAK_NATURE_COVERAGE_TAGS
+    return bool(tags & strong)
+
+
+def is_strong_relaxation_coverage_poi(poi: Dict[str, Any]) -> bool:
+    if _name_denied(poi, "relaxation"):
+        return False
+    name = (poi.get("name") or poi.get("Name") or "").lower()
+    if any(m in name for m in _STRONG_RELAX_NAME_MARKERS):
+        return True
+    tags = excel_tags(poi)
+    weak_only = tags <= (_WEAK_NATURE_COVERAGE_TAGS | {"park", "park_walk", "recreation"})
+    if weak_only:
+        return False
+    return bool(tags & _STRONG_BY_PREF.get("relaxation", frozenset()))
+
+
+def preference_coverage_adequate(pref: str, matching_pois: list) -> bool:
+    """Whether scheduled POIs adequately cover a user preference."""
+    if not matching_pois:
+        return False
+    if pref == "nature_landscape":
+        strong = [p for p in matching_pois if is_strong_nature_coverage_poi(p)]
+        return len(strong) >= 2 or (
+            len(strong) == 1 and len(matching_pois) >= 2
+            and all(is_strong_nature_coverage_poi(p) for p in matching_pois)
+        )
+    if pref == "relaxation":
+        strong = [p for p in matching_pois if is_strong_relaxation_coverage_poi(p)]
+        return len(strong) >= 2 or any(
+            "spa" in (p.get("name") or "").lower()
+            or "termy" in (p.get("name") or "").lower()
+            for p in matching_pois
+        )
+    if pref in ("active_sport", "water_attractions", "kids_attractions"):
+        return len(matching_pois) >= 1
+    return len(matching_pois) >= 1

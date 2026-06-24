@@ -214,12 +214,20 @@ class PlanService:
     ) -> Dict[str, Any]:
         """FIX #179: Trip-level report — which user preferences were actually scheduled."""
         from app.domain.planner.engine import is_underground_poi, is_water_attraction_poi
-        from app.domain.scoring.preference_coverage import poi_covers_preference_report
+        from app.domain.scoring.preference_coverage import (
+            poi_covers_preference_report,
+            preference_coverage_adequate,
+        )
 
         def _poi_covers_pref(poi: dict, pref: str) -> bool:
             if pref == "underground":
                 return is_underground_poi(poi)
             if pref == "water_attractions":
+                if any(
+                    x in (poi.get("name") or "").lower()
+                    for x in ("browar", "wedel", "czekolad", "lotnictwa", "łazienki", "lazienki")
+                ):
+                    return False
                 return is_water_attraction_poi(poi) or poi_covers_preference_report(poi, pref)
             return poi_covers_preference_report(poi, pref)
 
@@ -229,6 +237,7 @@ class PlanService:
             hit_days: List[int] = []
             poi_count = 0
             sample_pois: List[str] = []
+            matched_poi_dicts: List[Dict[str, Any]] = []
             for day in days:
                 day_hit = False
                 for item in day.items:
@@ -242,13 +251,15 @@ class PlanService:
                     }
                     if _poi_covers_pref(poi, pref):
                         poi_count += 1
+                        matched_poi_dicts.append(poi)
                         if not day_hit:
                             hit_days.append(day.day)
                             day_hit = True
                         if len(sample_pois) < 3 and getattr(item, "name", ""):
                             sample_pois.append(item.name)
+            adequate = preference_coverage_adequate(pref, matched_poi_dicts)
             coverage[pref] = {
-                "covered": poi_count > 0,
+                "covered": adequate,
                 "days": hit_days,
                 "poi_count": poi_count,
                 "sample_pois": sample_pois,
@@ -1229,10 +1240,13 @@ class PlanService:
             # ================================================================
 
             # Create contexts list (one per day)
+            context["city_centroid"] = _geo_centroid(all_pois_dict)
+            context["base_city"] = trip_input.location.city
             contexts = []
             for day_num in range(num_days):
                 day_context = context.copy()
                 day_context["date"] = dates[day_num]
+                day_context["_target_group_filter"] = user.get("target_group")
                 contexts.append(day_context)
 
             # ================================================================
@@ -1299,8 +1313,10 @@ class PlanService:
                 _center = _geo_centroid(all_pois)
                 # Sub-cluster each zone; order sub-clusters near→far from the city centre.
                 zone_subclusters = {}
+                _zone_a_link = 5.0 if num_days >= 4 else 13.0  # FIX #213: tighter centre clustering
                 for z in zones_present:
-                    subs = _geo_subcluster(zone_buckets[z], link_km=13.0, min_size=3)
+                    _lk = _zone_a_link if z == "A" else 13.0
+                    subs = _geo_subcluster(zone_buckets[z], link_km=_lk, min_size=3)
                     if _center is not None:
                         subs.sort(key=lambda c: (_geo_km(_geo_centroid(c), _center)
                                                  if _geo_centroid(c) else 9999))

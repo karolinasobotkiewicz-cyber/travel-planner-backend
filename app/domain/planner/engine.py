@@ -703,6 +703,11 @@ MIN_TRANSFER_MIN = 5
 # FIX #98 (28.05.2026): Walking vs car threshold for haversine auto-detection
 # Distances below this are treated as walkable (no need to drive 300m)
 WALK_THRESHOLD_KM = 1.2
+# FIX #213: city tourism — longer walk threshold, slower walk speed (realistic centre hops).
+CITY_TOURISM_WALK_THRESHOLD_KM = 3.5
+CITY_TOURISM_WALK_SPEED_KMH = 4.5
+# POIs farther than this from city centroid are day-trip only (Zone C / late days).
+CITY_FAR_POI_KM = 28.0
 
 # FIX #131 (XX.06.2026): Lower walk threshold for mountain/trail POIs.
 # Mountain terrain is steep — 0.8 km GPS distance can mean a significant uphill climb.
@@ -866,7 +871,8 @@ _WATER_ATTRACTION_TAGS = frozenset({
     "thermal_baths", "termy", "lake", "river_cruise", "beach", "marina",
     "water_wellness", "rafting", "kayak",
 })
-_WATER_NAME_MARKERS = ("wodospad", "aquapark", "term", "jezioro", "kąpiel", "bulwar")
+_WATER_NAME_MARKERS = ("wodospad", "aquapark", "term", "jezioro", "kąpiel")
+# FIX #213: removed bare "bulwar" — riverside walks are relaxation, not water_attractions.
 
 # FIX #206: always quick-stop — never exempted by high must_see (Pomnik Smoka=10).
 _HARD_QUICK_STOP_MARKERS = (
@@ -930,6 +936,13 @@ def is_quick_stop_poi(poi: dict) -> bool:
 def is_water_attraction_poi(p: dict) -> bool:
     """FIX #201: waterfalls, aquaparks, termy for water_attractions coverage."""
     name = str(p.get("name", "")).lower()
+    # FIX #213: deny museums, breweries, parks miscredited as water.
+    if any(m in name for m in (
+        "muzeum", "browar", "wedel", "czekolad", "pijalnia", "lotnictwa",
+        "łazienki królewskie", "lazienki krolewskie", "planty", "katedra",
+        "koryto warty", "mariacki",
+    )):
+        return False
     if any(m in name for m in _WATER_NAME_MARKERS):
         return True
     tags = set(str(t).lower() for t in (p.get("tags") or []))
@@ -1359,11 +1372,15 @@ def travel_time_minutes(a, b, context):
         return 10  # fallback – no GPS coords
 
     distance_km = haversine_distance(lat1, lng1, lat2, lng2)
-    _walk_thresh = _walk_threshold(a, b)  # FIX #131: mountain-aware threshold
+    from app.domain.planner.city_copy import is_city_tourism_trip
+    _city_trip = is_city_tourism_trip(context)
+    _walk_thresh = (
+        CITY_TOURISM_WALK_THRESHOLD_KM if _city_trip else _walk_threshold(a, b)
+    )
 
     if distance_km < _walk_thresh:
-        # Walking: 5 km/h, no parking overhead, minimum 5 min
-        walk_time = (distance_km / 5.0) * 60
+        _walk_speed = CITY_TOURISM_WALK_SPEED_KMH if _city_trip else 5.0
+        walk_time = (distance_km / _walk_speed) * 60
         return max(int(walk_time), 5)
     else:
         # FIX #111: Car speed depends on cluster type (road conditions vary per region)
@@ -1497,11 +1514,21 @@ def poi_repeat_cluster_key(name: str) -> str:
         return "cluster_skywalk"
     if "kasprowy" in n:
         return "cluster_kasprowy"
+    # FIX #213: Kraków old-town spread across days — group core landmarks.
+    if any(k in n for k in (
+        "wawel", "rynek główny", "rynek glowny", "sukiennice", "mariacki",
+        "floriańska", "florianska", "barbakan", "planty", "kazimierz",
+        "podziemia rynku", "ulica grodzka",
+    )):
+        return "cluster_krakow_core"
+    if "ostrów tumski" in n or "ostrow tumski" in n:
+        return "cluster_wroclaw_tumski"
     return n
 
 
 _HIGH_REPEAT_CLUSTERS = frozenset({
     "cluster_krupowki", "cluster_gubalowka", "cluster_skywalk", "cluster_kasprowy",
+    "cluster_krakow_core", "cluster_wroclaw_tumski",
 })
 
 # FIX #181 (06.06.2026 - ETAP A): Far excursion regions — one thematic region visit per trip.
@@ -1599,6 +1626,36 @@ def should_skip_poi_candidate(p: dict, context: dict | None) -> bool:
         return True
     if context and context.get("exclude_zone_c_pois") and str(p.get("zone", "")).strip() == "C":
         return True
+    # FIX #213: far POIs (>28 km from city centre) only on late / Zone C days.
+    if context and context.get("multi_city_density_mode"):
+        _centroid = context.get("city_centroid")
+        _pll = None
+        try:
+            _la, _ln = float(p.get("lat")), float(p.get("lng"))
+            if _la and _ln:
+                _pll = (_la, _ln)
+        except (TypeError, ValueError):
+            pass
+        if _centroid and _pll:
+            _dist = haversine_distance(_centroid[0], _centroid[1], _pll[0], _pll[1])
+            _zone = str(p.get("zone", "")).strip().upper()
+            if _dist > CITY_FAR_POI_KM and context.get("exclude_zone_c_pois"):
+                return True
+            if _dist > CITY_FAR_POI_KM * 1.5 and _zone != "C":
+                return True
+    # FIX #213: kids-only venues (Guliwer) blocked for couples/friends/solo.
+    _tg = (context or {}).get("_target_group_filter") or (context or {}).get("target_group")
+    if _tg and _tg in ("couples", "friends", "solo", "seniors"):
+        _poi_tg = p.get("target_groups") or []
+        if isinstance(_poi_tg, str):
+            _poi_tg = [x.strip() for x in _poi_tg.split(",")]
+        _poi_tg_set = {str(x).lower() for x in _poi_tg if x}
+        if _poi_tg_set == {"family_kids"} or (
+            "family_kids" in _poi_tg_set and len(_poi_tg_set) == 1
+        ):
+            _nm = str(p.get("name", "")).lower()
+            if any(k in _nm for k in ("guliwer", "bawialnia", "bawialni")):
+                return True
     return False
 
 
@@ -2236,6 +2293,10 @@ def score_poi(
     else:
         # Reduced bonus when: user has preferences but POI doesn't match
         must_see_boost = must_see_value * 1.0 * must_see_multiplier  # 1.0 → 1.5 for city_tourism
+        # FIX #213: city tourism — must_see even weaker when prefs don't match.
+        from app.domain.planner.city_copy import is_city_tourism_trip as _is_city_ms213
+        if _is_city_ms213(context):
+            must_see_boost *= 0.5
         score += must_see_boost
         if must_see_value > 5:  # Log for high must_see POI
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
@@ -2313,6 +2374,36 @@ def score_poi(
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [FAMILY_KIDS BOOST] {poi_name_safe}: +{_fam_boost:.1f} (family-friendly tags: {_fam_boost_tags})")
 
+    # FIX #213 (23.06.2026): City tourism — real nature/relax POIs over Planty/maczuga;
+    # family icons (Hydropolis, Kolejkowo); penalise weak nature credit.
+    from app.domain.planner.city_copy import is_city_tourism_trip as _is_city_213
+    _prefs213 = user.get("preferences", [])
+    _pname213 = str(p.get("name", "")).lower()
+    if _is_city_213(context):
+        _CITY_NATURE_BOOST_NAMES = (
+            "kopiec", "zakrzówek", "zakrzowek", "bulwar", "botaniczn", "łazienki",
+            "lazienki", "ogrod saski", "park skarysz", "park miejski", "rezerwat",
+            "wodospad", "szczytnicki", "szczytnick",
+        )
+        _CITY_FAMILY_ICON_NAMES = ("hydropolis", "kolejkowo", "kolejko", "miniatur", " zoo ")
+        if "nature_landscape" in _prefs213 and any(n in _pname213 for n in _CITY_NATURE_BOOST_NAMES):
+            score += 55.0
+        if "relaxation" in _prefs213 and any(n in _pname213 for n in ("bulwar", "łazienki", "lazienki", "spa", "ogrod")):
+            score += 45.0
+        if any(n in _pname213 for n in ("planty", "maczuga")) and (
+            "nature_landscape" in _prefs213 or "relaxation" in _prefs213
+        ):
+            score -= 40.0
+        if _target_group_73 == "family_kids" or "kids_attractions" in _prefs213:
+            if any(n in _pname213 for n in _CITY_FAMILY_ICON_NAMES):
+                score += 65.0
+
+        # FIX #213: adventure + active_sport — penalise food/brewery POIs hard.
+        if travel_style == "adventure" and "active_sport" in _prefs213:
+            if any(n in _pname213 for n in ("browar", "wedel", "czekolad", "pijalnia")):
+                score -= 80.0
+
+    if _target_group_73 == "family_kids":
         # FIX #161 (05.06.2026 - CLIENT FEEDBACK): family_kids under-uses kids_attractions.
         # When the family explicitly asked for kids_attractions, genuine kids attractions
         # (Mini Zoo, Papugarnia, Iluzja Park, playgrounds, aquarium, ...) were losing to
@@ -2846,7 +2937,8 @@ def score_poi(
         # FIX #154: Skip museum penalty if user explicitly wants museum_heritage or the POI
         # matches any user preference — preferences are the primary signal, travel_style is secondary.
         if museum_tags & poi_tags and not poi_matches_preferences:
-            penalty = score * 0.55  # FIX #31 (18.05.2026): 55% penalty (was 35% - still too many museums in adventure plans)
+            _mus_pen_rate = 0.70 if "active_sport" in user_preferences[:3] else 0.55
+            penalty = score * _mus_pen_rate
             score -= penalty
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [ADVENTURE PENALTY] {poi_name_safe}: -{penalty:.1f} (adventure style prefers active over culture)")
@@ -2880,16 +2972,20 @@ def score_poi(
                         break
     
     # ETAP 3 PHASE 5 (27.04.2026): CULTURAL BONUS for city tourism
-    # City tourism trips boost museums, cultural sites, historical attractions
-    # Router calculates cultural_bonus=1.5 for city_tourism trip type
+    # FIX #213: suppress when adventure + active_sport without museum in top-3.
     cultural_multiplier = scoring_weights.get("cultural_bonus", 1.0)
-    if cultural_multiplier > 1.0:
+    _top3_cult = user_preferences[:3]
+    _suppress_cultural = (
+        travel_style == "adventure"
+        and "active_sport" in user_preferences
+        and not ({"museum_heritage", "history_mystery"} & set(_top3_cult))
+    )
+    if cultural_multiplier > 1.0 and not _suppress_cultural:
         cultural_tags = {"museums", "museum_heritage", "culture", "history", "historical_sites", 
                         "cultural_attractions", "art", "architecture"}
         poi_tags = set(p.get("tags", []))
         if cultural_tags & poi_tags:
-            # Apply cultural boost (multiplicative on current score)
-            cultural_boost = score * (cultural_multiplier - 1.0)  # 50% boost for city_tourism
+            cultural_boost = score * (cultural_multiplier - 1.0)
             score += cultural_boost
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [CULTURAL BOOST] {poi_name_safe}: +{cultural_boost:.1f} (city tourism + cultural tags, cultural_bonus={cultural_multiplier})")
@@ -4051,10 +4147,16 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
             or (_f160_nd >= 5 and _f160_free > 60 and _f160_attr < 4)
             or (_f160_nd >= 5 and _f160_free > 150)
             or (_f160_mc and _f160_attr < 3 and _f160_free > 60)
+            # FIX #213: last 2 days of long city trips — never leave empty/sparse.
+            or (_f160_mc and day_num >= _f160_nd - 2 and _f160_attr < 3)
         )
         _f160_retry_pool = (
             pois
-            if (_f160_nd >= 5 and _f160_free > 90) or (_f160_mc and _f160_underfilled)
+            if (
+                (_f160_nd >= 5 and _f160_free > 90)
+                or (_f160_mc and _f160_underfilled)
+                or (_f160_mc and day_num >= _f160_nd - 2)
+            )
             else _fallback_for_day
         )
         if (
