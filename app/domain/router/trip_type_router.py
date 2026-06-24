@@ -151,6 +151,7 @@ class TripTypeRouter:
 
         # FIX #214 (23.06.2026): Karkonosze member city without is_cluster still needs
         # TrailDB + cluster scoring (client: zero trails on Karpacz/Szklarska/JG tests).
+        # FIX #215 (23.06.2026): Kotlina Kłodzka — same pattern (spa cluster pool + scoring).
         if not is_cluster and DestinationClusters.is_cluster_city(location):
             _k214 = DestinationClusters.get_cluster(location)
             if _k214 and _k214.get("region_type") == "mountain":
@@ -173,6 +174,28 @@ class TripTypeRouter:
                         "cluster_cities": _k214["cities"],
                         "mountain_score": 3.0,
                         "city_score": 0.0,
+                    },
+                }
+            if _k214 and _k214.get("region_type") == "spa_region":
+                _loc215 = str(location).encode("ascii", "ignore").decode("ascii")
+                print(f"[ROUTER] FIX #215: Kotlina member '{_loc215}' → CLUSTER pool + spa scoring")
+                return {
+                    "trip_type": TripType.CLUSTER,
+                    "use_trails": False,
+                    "use_pois": True,
+                    "use_restaurants": True,
+                    "primary_source": "pois",
+                    "region": "Kotlina Kłodzka",
+                    "cities": _k214["cities"],
+                    "cluster_config": _k214,
+                    "scoring_weights": _k214["scoring_weights"],
+                    "confidence": 0.95,
+                    "signals": {
+                        "cluster_type": _k214["type"].value,
+                        "cluster_name": _k214["name"],
+                        "cluster_cities": _k214["cities"],
+                        "mountain_score": 1.0,
+                        "city_score": 0.5,
                     },
                 }
 

@@ -3154,11 +3154,11 @@ def score_poi(
         poi_hub_norm as _poi_hub_208,
     )
     _is_mtn_cluster208 = bool(
-        context.get("is_cluster")
+        (context.get("is_cluster") or context.get("soft_cluster"))
         and (context.get("signals") or {}).get("cluster_type") == "radius_based"
     )
     _is_spa_cluster209 = bool(
-        context.get("is_cluster")
+        (context.get("is_cluster") or context.get("soft_cluster"))
         and (context.get("signals") or {}).get("cluster_type") == "regional_cluster"
     )
 
@@ -3285,6 +3285,64 @@ def score_poi(
             score += 50.0
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [SPA RELAX BOOST] {poi_name_safe}: +50.0 (Kotlina relax POI)")
+
+    # FIX #215: Kotlina Kłodzka — iconic nature/museum/family POI over weak fillers.
+    if _is_spa_cluster209:
+        if "nature_landscape" in _prefs206[:3]:
+            _kotlina_nature_names = (
+                "szczeliniec", "błędne ska", "bledne ska", "skalne grzyby", "radkowsk",
+                "białe ska", "biale ska", "wodospad wilcz", "torfowisko", "rezerwat",
+                "table_mountains", "sandstone",
+            )
+            _kotlina_nature_tags = {
+                "table_mountains_peak", "table_mountains_trail", "table_mountains_nature",
+                "table_mountains_views", "labyrinth_rock_formations", "sandstone_corridors",
+                "dramatic_rock_landscape", "mountain_waterfall", "nature_reserve",
+                "iconic_hiking_destination", "sandstone_rock_formations",
+            }
+            if _kotlina_nature_tags & _tags206 or any(n in _name206 for n in _kotlina_nature_names):
+                score += 70.0
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"    [KOTLINA NATURE BOOST] {poi_name_safe}: +70.0")
+            _weak_kotlina_nature = (
+                "ekocentrum", "muzeum minerał", "muzeum mineral", "park szach",
+                "punkt widokowy na polanic", "rynek w lądk", "rynek w ladek",
+                "zagroda pasternak", "twierdza srebrna",
+            )
+            if any(n in _name206 for n in _weak_kotlina_nature):
+                score -= 50.0
+        if "museum_heritage" in _prefs206[:3]:
+            _kotlina_museum_names = (
+                "twierdza kłodz", "twierdza klodz", "kaplica czaszek", "jaskinia niedźwied",
+                "muzeum papier", "muzeum zabawek", "muzeum ziemi kłodz", "open_air",
+                "etnograficz", "kopalnia złota", "kopalnia zlota", "podziemna trasa",
+            )
+            if any(n in _name206 for n in _kotlina_museum_names):
+                score += 65.0
+        if "kids_attractions" in _prefs206[:3] or user.get("target_group") == "family_kids":
+            _kotlina_kids = (
+                "ogród bajek", "ogrod bajek", "muzeum zabawek", "minieuroland",
+                "park wodny", "capitalna zabaw", "park trampolin", "hoppark",
+                "park linowy kudowa", "park linowy",
+            )
+            if any(n in _name206 for n in _kotlina_kids):
+                score += 55.0
+            if any(n in _name206 for n in ("kaplica czaszek", "rynek w lądk", "rynek w ladek")):
+                score -= 55.0
+        if "active_sport" in _prefs206[:3] or travel_style == "adventure":
+            _kotlina_active = (
+                "park linowy", "trampolin", "spływ", "rafting", "tor saneczk",
+                "leśny park przygody", "skalisko", "góralka",
+            )
+            if any(n in _name206 for n in _kotlina_active):
+                score += 50.0
+            if "manufaktura" in _name206 and "szk" in _name206:
+                score -= 55.0
+            _adv_museum_tags_k = {
+                "museums", "museum_heritage", "themed_museum", "multimedia_exhibition",
+            }
+            if _adv_museum_tags_k & poi_tags and str(p.get("type", "")).lower() != "trail":
+                score -= score * 0.4
 
     # FIX #6 (02.02.2026): Priority_level bonus (core: +25, secondary: +10, optional: 0)
     score += calculate_priority_bonus(p, user)

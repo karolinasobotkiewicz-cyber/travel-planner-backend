@@ -921,7 +921,7 @@ class PlanService:
                 if _cc_soft:
                     _ctype = getattr(_cc_soft["type"], "value", str(_cc_soft["type"]))
                     _expand = (
-                        (_ctype == "regional_cluster" and len(all_pois_dict) < 35)
+                        _ctype == "regional_cluster"  # FIX #215: always full Kotlina (hub rows inflate count)
                         or _ctype == "urban_organism"
                         or _ctype == "radius_based"  # FIX #214: Karkonosze hub pools
                     )

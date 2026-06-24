@@ -280,7 +280,7 @@ def build_cluster_hub_day_pools(
                 return c
         return norm_h
 
-    # FIX #214: short Karkonosze trips — stay in requested town (2/3 days minimum).
+    # FIX #214/#215: short cluster trips — stay in requested town (2/3 days minimum).
     if base_norm and base_norm in hubs and num_days <= 4:
         other_hubs = [h for h in hubs if h != base_norm]
         if num_days <= 3:

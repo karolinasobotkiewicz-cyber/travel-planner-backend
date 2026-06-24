@@ -218,6 +218,8 @@ _STRONG_BY_PREF: Dict[str, frozenset] = {
         "soft_play_area", "soft_play_structures", "dinosaur_park", "fun_park",
         "event_theme_park", "laser_tag_arena", "animals", "aquatic_animals",
         "birds_only", "rabbit_feeding", "close_contact", "water_playground",
+        # FIX #215: Kotlina Muzeum Zabawek
+        "historic_toy_collection", "vintage_toys_exhibition", "nostalgic_family_museum",
     }),
     "attractions_for_kids": frozenset(),  # filled below (alias of kids_attractions)
     "family_favorite": frozenset(),       # filled below (alias of kids_attractions)
@@ -461,6 +463,9 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         # FIX #214: weak Karkonosze POI miscredited as nature.
         "orlinek", "muzeum ziemi", "pstrąg", "pstrag", "wzgórze kościuszki", "wzgórze kosciuszki",
         "deptak", "centrum - deptak",
+        # FIX #215: Kotlina — weak urban/spa POI ≠ nature coverage.
+        "park szach", "ekocentrum", "muzeum minerał", "muzeum mineral", "punkt widokowy na polanic",
+        "rynek w lądk", "rynek w ladek", "zagroda pasternak", "twierdza srebrna", "zalew radkowski",
         # FIX #209: underground mine ≠ nature (Kopalnia Złota).
         "kopalnia złota", "kopalnia zlota", "złoty stok", "zloty stok",
     ),
@@ -484,12 +489,16 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
     ),
     "kids_attractions": (
         "podziemia rynku",
+        # FIX #215: Kotlina — ossuary / market squares are not kids coverage.
+        "kaplica czaszek", "rynek w lądk", "rynek w ladek", "pijalnia wód", "pijalnia wod",
     ),
     "active_sport": (
         "zoo", "ogród zoologiczny", "rynek", "muzeum",
         # FIX #213: food / brewery / chocolate ≠ sport.
         "browar", "wedel", "czekolad", "pijalnia", "port warta", "stary port",
         "lotnictwa", "planty", "katedra", "parafia", "pręgierz", "pregierz",
+        # FIX #215: glass workshop ≠ active sport.
+        "manufaktura", "szkła", "szkla", "punkt widokowy",
     ),
     "water_attractions": (
         "browar", "wedel", "czekolad", "pijalnia", "muzeum", "lotnictwa",
@@ -497,6 +506,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "katedra", "parafia",
         # FIX #214: industrial heritage ≠ water.
         "huta julia", "kopalnia", "sztolni", "sztolnia",
+        # FIX #215: Kotlina — lake/reservoir not water park in winter.
+        "zalew radkowski",
     ),
     # FIX #204: Katowice marked urban recreation parks as mountain trails.
     "mountain_trails": (
