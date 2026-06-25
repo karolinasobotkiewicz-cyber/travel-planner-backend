@@ -13,6 +13,12 @@ from app.domain.models.plan import (
 from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
 from app.domain.planner.engine import travel_time_minutes, is_open
 from app.domain.planner import similarity
+from app.application.services.edit_helpers import (
+    poi_id_of,
+    find_poi_by_id,
+    attraction_item_to_poi_dict,
+    build_replacement_attraction_dict,
+)
 
 
 class PlanEditor:
@@ -129,20 +135,12 @@ class PlanEditor:
         context: Dict[str, Any],
         user: Dict[str, Any],
         strategy: str = "SMART_REPLACE"
-    ) -> DayPlan:
+    ) -> tuple[DayPlan, bool]:
         """
         Replace item with similar POI (SMART_REPLACE).
         
-        Args:
-            day_plan: DayPlan to edit
-            item_id: ID of item to replace (poi_id for attractions)
-            all_pois: List of all available POIs
-            context: Context dict
-            user: User preferences dict
-            strategy: Replacement strategy ("SMART_REPLACE" only for now)
-            
         Returns:
-            Updated DayPlan with item replaced, times recalculated
+            Tuple of (updated DayPlan, changed flag). changed=False when no replacement occurred.
             
         SMART_REPLACE Logic:
         1. Find item to replace
@@ -167,12 +165,30 @@ class PlanEditor:
                 break
         
         if item_index is None or target_item is None:
-            return day_plan
-        
-        # Get target POI data
-        target_poi = self._find_poi_by_id(item_id, all_pois)
+            return day_plan, False
+
+        target_poi = find_poi_by_id(item_id, all_pois)
+        if not target_poi and target_item.get("type") == "attraction":
+            target_poi = {
+                "id": target_item.get("poi_id"),
+                "ID": target_item.get("poi_id"),
+                "name": target_item.get("name"),
+                "Name": target_item.get("name"),
+                "description_short": target_item.get("description_short", ""),
+                "Description_short": target_item.get("description_short", ""),
+                "lat": target_item.get("lat"),
+                "lng": target_item.get("lng"),
+                "Lat": target_item.get("lat"),
+                "Lng": target_item.get("lng"),
+                "address": target_item.get("address", ""),
+                "Address": target_item.get("address", ""),
+                "city": target_item.get("city", ""),
+                "time_min": target_item.get("duration_min", 60),
+                "tags": target_item.get("tags", []),
+            }
+
         if not target_poi:
-            return day_plan
+            return day_plan, False
         
         # Get used POI IDs (to avoid duplicates)
         used_poi_ids = {
@@ -192,28 +208,13 @@ class PlanEditor:
         )
         
         if not similar_poi:
-            # No similar POI found, return unmodified
-            return day_plan
-        
-        # Replace item with new POI (keep timing for now, reflow will adjust)
-        new_item = {
-            "type": "attraction",
-            "poi_id": similar_poi.get("ID"),
-            "name": similar_poi.get("Name", ""),
-            "start_time": target_item.get("start_time"),
-            "end_time": target_item.get("end_time"),
-            "duration_min": similar_poi.get("time_min", target_item.get("duration_min")),
-            "description_short": similar_poi.get("Description_short", ""),
-            "lat": similar_poi.get("Lat", 0.0),
-            "lng": similar_poi.get("Lng", 0.0),
-            "address": similar_poi.get("Address", ""),
-            "cost_estimate": target_item.get("cost_estimate", 0),
-            "ticket_info": target_item.get("ticket_info", {}),
-            "parking": target_item.get("parking", {}),
-            "pro_tip": similar_poi.get("Pro_tip"),
-            "why_selected": target_item.get("why_selected", []),
-            "quality_badges": target_item.get("quality_badges", [])
-        }
+            return day_plan, False
+
+        new_poi_id = poi_id_of(similar_poi)
+        if not new_poi_id or new_poi_id == item_id:
+            return day_plan, False
+
+        new_item = build_replacement_attraction_dict(similar_poi, target_item)
         
         items[item_index] = new_item
         
@@ -221,8 +222,8 @@ class PlanEditor:
         items = self._recalculate_times(items, context)
         
         # Reconstruct DayPlan
-        return self._reconstruct_day_plan(day_plan.day, items, day_plan.quality_badges)
-    
+        return self._reconstruct_day_plan(day_plan.day, items, day_plan.quality_badges), True
+
     def regenerate_time_range(
         self,
         day_plan: DayPlan,
@@ -454,7 +455,7 @@ class PlanEditor:
             best_travel = 0
             
             for poi in all_pois:
-                poi_id = poi.get("ID")
+                poi_id = poi_id_of(poi)
                 
                 # Skip used POIs
                 if poi_id in used_poi_ids:
@@ -531,8 +532,8 @@ class PlanEditor:
                 # Add POI
                 poi_item = {
                     "type": "attraction",
-                    "poi_id": best_poi.get("ID"),
-                    "name": best_poi.get("Name", ""),
+                    "poi_id": poi_id_of(best_poi),
+                    "name": best_poi.get("name") or best_poi.get("Name", ""),
                     "start_time": minutes_to_time(current_time),
                     "end_time": minutes_to_time(current_time + best_duration),
                     "duration_min": best_duration,
@@ -558,7 +559,7 @@ class PlanEditor:
                 items.append(poi_item)
                 current_time += best_duration
                 last_poi = poi_item
-                used_poi_ids.add(best_poi.get("ID"))
+                used_poi_ids.add(poi_id_of(best_poi))
             else:
                 # No POI found, break
                 break
@@ -726,7 +727,7 @@ class PlanEditor:
         best_score = -999
         
         for poi in all_pois:
-            poi_id = poi.get("ID", "")
+            poi_id = poi_id_of(poi)
             
             # Skip if used or avoided
             if poi_id in used_poi_ids:
@@ -756,8 +757,8 @@ class PlanEditor:
             # Create attraction item
             new_item = {
                 "type": "attraction",
-                "poi_id": best_poi.get("ID"),
-                "name": best_poi.get("Name", ""),
+                "poi_id": poi_id_of(best_poi),
+                "name": best_poi.get("name") or best_poi.get("Name", ""),
                 "start_time": gap_start,
                 "end_time": minutes_to_time(gap_start_min + best_poi.get("time_min", 60)),
                 "duration_min": best_poi.get("time_min", 60),
@@ -934,8 +935,10 @@ class PlanEditor:
         from app.domain.models.plan import (
             DayStartItem, DayEndItem, ParkingItem, TransitItem,
             AttractionItem, LunchBreakItem, FreeTimeItem,
+            DinnerBreakItem, RestaurantSuggestion,
             TransitMode, ParkingType, TicketInfo, ParkingInfo
         )
+        from app.infrastructure.storage import build_poi_image_url, build_restaurant_image_url
         
         # Convert dicts to proper model instances
         plan_items = []
@@ -990,6 +993,9 @@ class PlanEditor:
                     lat=item.get("lat", 0.0),
                     lng=item.get("lng", 0.0),
                     address=item.get("address", ""),
+                    city=item.get("city", ""),
+                    image_key=item.get("image_key"),
+                    image_url=build_poi_image_url(item.get("image_key") or ""),
                     cost_estimate=item.get("cost_estimate", 0),
                     ticket_info=TicketInfo(
                         ticket_normal=ticket_info_dict.get("ticket_normal", 0),
@@ -1006,12 +1012,76 @@ class PlanEditor:
                 ))
             
             elif item_type == "lunch_break":
+                raw_suggestions = item.get("suggestions", [])
+                meal_suggestions = []
+                for s in raw_suggestions:
+                    if isinstance(s, dict):
+                        ikey = s.get("image_key")
+                        meal_suggestions.append(RestaurantSuggestion(
+                            id=str(s.get("id", "")),
+                            name=s.get("name", ""),
+                            address=s.get("address", ""),
+                            lat=float(s.get("lat") or 0),
+                            lng=float(s.get("lng") or 0),
+                            cuisine_type=s.get("cuisine_type", ""),
+                            meal_type=s.get("meal_type", "lunch"),
+                            image_key=ikey,
+                            image_url=build_restaurant_image_url(ikey or ""),
+                            price_level=int(s.get("price_level") or 2),
+                            avg_meal_cost=s.get("avg_meal_cost"),
+                            city=s.get("city", ""),
+                        ))
+                    elif isinstance(s, str) and s:
+                        meal_suggestions.append(RestaurantSuggestion(
+                            id=f"generic_lunch_{len(meal_suggestions)}",
+                            name=s,
+                            lat=0.0,
+                            lng=0.0,
+                            meal_type="lunch",
+                        ))
                 plan_items.append(LunchBreakItem(
                     start_time=item.get("start_time"),
                     end_time=item.get("end_time"),
                     duration_min=item.get("duration_min", 0),
                     label=item.get("label", "Lunch / przerwa regeneracyjna"),
-                    suggestions=item.get("suggestions", [])
+                    suggestions=meal_suggestions,
+                    location_context=item.get("location_context"),
+                ))
+
+            elif item_type == "dinner_break":
+                raw_suggestions = item.get("suggestions", [])
+                meal_suggestions = []
+                for s in raw_suggestions:
+                    if isinstance(s, dict):
+                        ikey = s.get("image_key")
+                        meal_suggestions.append(RestaurantSuggestion(
+                            id=str(s.get("id", "")),
+                            name=s.get("name", ""),
+                            address=s.get("address", ""),
+                            lat=float(s.get("lat") or 0),
+                            lng=float(s.get("lng") or 0),
+                            cuisine_type=s.get("cuisine_type", ""),
+                            meal_type=s.get("meal_type", "dinner"),
+                            image_key=ikey,
+                            image_url=build_restaurant_image_url(ikey or ""),
+                            price_level=int(s.get("price_level") or 2),
+                            avg_meal_cost=s.get("avg_meal_cost"),
+                            city=s.get("city", ""),
+                        ))
+                    elif isinstance(s, str) and s:
+                        meal_suggestions.append(RestaurantSuggestion(
+                            id=f"generic_dinner_{len(meal_suggestions)}",
+                            name=s,
+                            lat=0.0,
+                            lng=0.0,
+                            meal_type="dinner",
+                        ))
+                plan_items.append(DinnerBreakItem(
+                    start_time=item.get("start_time"),
+                    end_time=item.get("end_time"),
+                    duration_min=item.get("duration_min", 0),
+                    label=item.get("label", "Kolacja / regionalne smaki"),
+                    suggestions=meal_suggestions,
                 ))
             
             elif item_type == "free_time":

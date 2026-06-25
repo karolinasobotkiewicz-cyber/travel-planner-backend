@@ -16,6 +16,16 @@ Scoring weights:
 
 from typing import Dict, Any, List, Set, Optional
 
+from app.application.services.edit_helpers import poi_id_of
+
+
+def _poi_field(poi: Dict[str, Any], *keys: str, default: Any = "") -> Any:
+    for key in keys:
+        val = poi.get(key)
+        if val is not None and str(val).strip() not in ("", "nan"):
+            return val
+    return default
+
 
 def find_similar_poi(
     removed_poi: Dict[str, Any],
@@ -46,12 +56,16 @@ def find_similar_poi(
         - Duration (15%): Similar visit duration
         - Vibes (10%): activity_style match
     """
-    # Extract target POI attributes (use capital Excel field names)
-    target_category = str(removed_poi.get("Type of attraction", "")).lower()
-    target_groups_str = str(removed_poi.get("Target group", "")).lower()
-    target_intensity = removed_poi.get("fizyczna_intensywnosc", "").lower()
-    target_duration = removed_poi.get("time_min", 60)
-    target_vibes = str(removed_poi.get("Activity_style", "")).lower()
+    target_id = poi_id_of(removed_poi)
+    target_category = str(_poi_field(removed_poi, "Type of attraction", "type_of_attraction", "category")).lower()
+    target_groups_raw = _poi_field(removed_poi, "Target group", "target_groups", default=[])
+    if isinstance(target_groups_raw, list):
+        target_groups_str = ",".join(str(g) for g in target_groups_raw).lower()
+    else:
+        target_groups_str = str(target_groups_raw).lower()
+    target_intensity = str(_poi_field(removed_poi, "fizyczna_intensywnosc", "intensity", "intensity_level")).lower()
+    target_duration = _poi_field(removed_poi, "time_min", "duration_min", default=60)
+    target_vibes = str(_poi_field(removed_poi, "Activity_style", "activity_style", "subcategory")).lower()
     
     # Parse target time for time_of_day preferences
     time_of_day = _get_time_of_day(target_time) if target_time else None
@@ -60,21 +74,23 @@ def find_similar_poi(
     best_score = -999
     
     for poi in candidates:
-        poi_id = poi.get("ID", "")
-        
+        poi_id = poi_id_of(poi)
+        if not poi_id:
+            continue
+
         # Skip if already used
         if poi_id in used_poi_ids:
             continue
-        
+
         # Skip if same as target
-        if poi_id == removed_poi.get("ID"):
+        if poi_id == target_id:
             continue
         
         # Calculate similarity score
         score = 0
         
         # 1. CATEGORY MATCH (30%) - Most important for semantic similarity
-        poi_category = str(poi.get("Type of attraction", "")).lower()
+        poi_category = str(_poi_field(poi, "Type of attraction", "type_of_attraction", "category")).lower()
         if poi_category and target_category:
             category_score = _calculate_category_similarity(
                 target_category, poi_category
@@ -82,7 +98,11 @@ def find_similar_poi(
             score += 30 * category_score
         
         # 2. TARGET GROUP MATCH (25%)
-        poi_groups_str = str(poi.get("Target group", "")).lower()
+        poi_groups_raw = _poi_field(poi, "Target group", "target_groups", default=[])
+        if isinstance(poi_groups_raw, list):
+            poi_groups_str = ",".join(str(g) for g in poi_groups_raw).lower()
+        else:
+            poi_groups_str = str(poi_groups_raw).lower()
         if poi_groups_str and target_groups_str:
             target_groups = set(target_groups_str.split(","))
             poi_groups = set(poi_groups_str.split(","))
@@ -91,7 +111,7 @@ def find_similar_poi(
                 score += 25 * (overlap / max(len(target_groups), 1))
         
         # 3. INTENSITY MATCH (20%) with time_of_day boost
-        poi_intensity = poi.get("fizyczna_intensywnosc", "").lower()
+        poi_intensity = str(_poi_field(poi, "fizyczna_intensywnosc", "intensity", "intensity_level")).lower()
         if poi_intensity and target_intensity:
             if poi_intensity == target_intensity:
                 intensity_score = 1.0
@@ -110,7 +130,7 @@ def find_similar_poi(
             score += 20 * intensity_score
         
         # 4. DURATION MATCH (15%)
-        poi_duration = poi.get("time_min", 60)
+        poi_duration = _poi_field(poi, "time_min", "duration_min", default=60)
         duration_diff = abs(poi_duration - target_duration)
         if duration_diff <= 15:  # Within 15 min
             score += 15
@@ -120,7 +140,7 @@ def find_similar_poi(
             score += 5
         
         # 5. VIBES MATCH (10%) - activity_style
-        poi_vibes = str(poi.get("Activity_style", "")).lower()
+        poi_vibes = str(_poi_field(poi, "Activity_style", "activity_style", "subcategory")).lower()
         if poi_vibes and target_vibes:
             vibes_score = _calculate_vibes_similarity(target_vibes, poi_vibes)
             score += 10 * vibes_score

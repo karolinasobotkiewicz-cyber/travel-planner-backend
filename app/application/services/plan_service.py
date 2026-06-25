@@ -123,6 +123,7 @@ from app.domain.models.plan import (
     LunchBreakItem,
     DinnerBreakItem,
     FreeTimeItem,
+    RestaurantSuggestion,
     TicketInfo,
     ParkingInfo,
     ItemType,
@@ -133,7 +134,7 @@ from app.application.services.trip_mapper import trip_input_to_engine_params
 from app.domain.planner.engine import build_day, plan_multiple_days, travel_time_minutes, is_open, haversine_distance, get_transport_mode
 from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
 from app.infrastructure.repositories import POIRepository, TrailRepository, RestaurantRepository  # ETAP 3 Phase 2
-from app.infrastructure.storage import build_poi_image_url  # 11.03.2026 - Supabase Storage
+from app.infrastructure.storage import build_poi_image_url, build_restaurant_image_url  # 11.03.2026 - Supabase Storage
 from app.domain.router import detect_trip_type, TripType  # ETAP 3 Phase 2
 
 # ETAP 2 Day 5: Quality + Explainability
@@ -193,6 +194,40 @@ def _generate_day_title(day_items: list, day_num: int) -> str:
 # Detects overlaps: parking↔attraction, lunch↔attraction, free_time↔attraction
 # Client feedback: ALL 10 tests had parking overlaps, walk_time ignored
 from app.domain.validators import validate_and_heal_timeline
+
+
+def _restaurant_dict_to_suggestion(r: Dict[str, Any], meal_type: str) -> RestaurantSuggestion:
+    """Convert engine/RestaurantDB dict to API RestaurantSuggestion (FIX #218)."""
+    if isinstance(r, str):
+        return RestaurantSuggestion(
+            id=f"generic_{meal_type}_{hash(r) & 0xFFFF}",
+            name=r,
+            lat=0.0,
+            lng=0.0,
+            meal_type=meal_type,
+        )
+    image_key = r.get("image_key") or None
+    avg_cost = r.get("avg_meal_cost")
+    return RestaurantSuggestion(
+        id=str(r.get("id", "")),
+        name=r.get("name", ""),
+        address=r.get("address", "") or "",
+        lat=float(r.get("lat") or 0),
+        lng=float(r.get("lng") or 0),
+        cuisine_type=r.get("cuisine_type", "") or "",
+        meal_type=r.get("meal_type", meal_type) or meal_type,
+        image_key=image_key,
+        image_url=build_restaurant_image_url(image_key or ""),
+        price_level=int(r.get("price_level") or 2),
+        avg_meal_cost=int(avg_cost) if avg_cost is not None else None,
+        city=r.get("city", "") or "",
+    )
+
+
+def _parse_meal_suggestions(raw: List[Any], meal_type: str) -> List[RestaurantSuggestion]:
+    if not raw:
+        return []
+    return [_restaurant_dict_to_suggestion(item, meal_type) for item in raw]
 
 
 class PlanService:
@@ -2430,11 +2465,14 @@ class PlanService:
                     start_time=lunch_start,  # FIX #23: Use engine's start_time (don't move backward!)
                     end_time=lunch_end,
                     duration_min=lunch_duration,
-                    suggestions=item.get("suggestions", [
-                        "Restauracja w centrum",
-                        "Food court",
-                        "Piknik w parku"
-                    ])
+                    suggestions=_parse_meal_suggestions(
+                        item.get("suggestions", []),
+                        "lunch",
+                    ) or [
+                        _restaurant_dict_to_suggestion(n, "lunch")
+                        for n in ["Restauracja w centrum", "Food court", "Piknik w parku"]
+                    ],
+                    location_context=item.get("location_context"),
                 )
                 items.append(lunch_item)
                 lunch_added = True
@@ -2446,9 +2484,13 @@ class PlanService:
                     start_time=item.get("start_time", "18:00"),
                     end_time=item.get("end_time", "19:30"),
                     duration_min=item.get("duration_min", 90),
-                    suggestions=item.get("suggestions", dinner_suggestions(
-                        context.get("is_zakopane_trip", False)
-                    ))
+                    suggestions=_parse_meal_suggestions(
+                        item.get("suggestions", []),
+                        "dinner",
+                    ) or [
+                        _restaurant_dict_to_suggestion(n, "dinner")
+                        for n in dinner_suggestions(context.get("is_zakopane_trip", False))
+                    ],
                 )
                 items.append(dinner_item)
             
@@ -2785,10 +2827,9 @@ class PlanService:
                 end_time="13:30",
                 duration_min=90,  # 1h 30min
                 suggestions=[
-                    "Restauracja lokalna",
-                    "Bistro",
-                    "Lunch na wynos"
-                ]
+                    _restaurant_dict_to_suggestion(n, "lunch")
+                    for n in ["Restauracja lokalna", "Bistro", "Lunch na wynos"]
+                ],
             )
             # Wstaw lunch między items (ideally między atrakcjami)
             # TODO: lepsze pozycjonowanie - wstaw przed item który zaczyna się po 12:00
@@ -4110,14 +4151,17 @@ class PlanService:
                         dinner_end = minutes_to_time(last_end_min + dinner_duration)
                         
                         from app.domain.planner.city_copy import dinner_suggestions
-                        suggestions = dinner_suggestions(context.get("is_zakopane_trip", False))
+                        suggestions = [
+                            _restaurant_dict_to_suggestion(n, "dinner")
+                            for n in dinner_suggestions(context.get("is_zakopane_trip", False))
+                        ]
                         
                         dinner_item = DinnerBreakItem(
                             type=ItemType.DINNER_BREAK,
                             start_time=dinner_start,
                             end_time=dinner_end,
                             duration_min=dinner_duration,
-                            suggestions=suggestions
+                            suggestions=suggestions,
                         )
                         
                         # Insert before DAY_END

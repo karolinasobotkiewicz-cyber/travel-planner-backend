@@ -557,6 +557,7 @@ def normalize_poi(p, index):
         "ticket_reduced": int(_safe_float(p.get("ticket_reduced"), 0)),
         "free_entry": free_entry,  # Derived from Price field
         "pro_tip": _safe_str(p.get("Pro_tip")),
+        "image_key": _safe_str(p.get("image_key")),
         # Add parking info for parking items
         "parking_name": _safe_str(p.get("parking_name")),
         "parking_address": _safe_str(p.get("parking_address")),

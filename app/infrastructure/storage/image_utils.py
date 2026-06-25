@@ -4,6 +4,7 @@ Image URL utilities for Supabase Storage.
 Konwencja (11.03.2026 - confirmed by klientka):
 - Bucket `destinations` - zdjęcia miast
 - Bucket `poi` - zdjęcia atrakcji
+- Bucket `restaurants` - zdjęcia restauracji
 - Format: WebP (.webp)
 - Naming: zgodne z image_key (np. poi_morskie_oko.webp)
 """
@@ -71,3 +72,10 @@ def build_destination_image_url(image_key: str) -> Optional[str]:
         Pełny URL do obrazka destination lub None jeśli image_key pusty
     """
     return build_image_url('destinations', image_key)
+
+
+def build_restaurant_image_url(image_key: str) -> Optional[str]:
+    """
+    Helper dla restaurant images - używa bucketu 'restaurants'.
+    """
+    return build_image_url('restaurants', image_key)

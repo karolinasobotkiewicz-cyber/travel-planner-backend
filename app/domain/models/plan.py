@@ -220,10 +220,30 @@ class AttractionItem(BaseModel):
     )
 
 
+class RestaurantSuggestion(BaseModel):
+    """
+    Pełny obiekt restauracji w lunch/dinner break (FIX #218).
+    suggestions[0] = rekomendacja główna, reszta = alternatywy.
+    """
+
+    id: str = Field(..., description="UUID restauracji z RestaurantDB")
+    name: str = Field(..., description="Nazwa restauracji")
+    address: str = Field(default="", description="Adres")
+    lat: float = Field(..., description="Szerokość geograficzna")
+    lng: float = Field(..., description="Długość geograficzna")
+    cuisine_type: str = Field(default="", description="Typ kuchni")
+    meal_type: str = Field(default="", description="lunch lub dinner")
+    image_key: str | None = Field(default=None, description="Klucz obrazka w Supabase")
+    image_url: str | None = Field(default=None, description="Pełny URL obrazka")
+    price_level: int = Field(default=2, ge=1, le=4, description="Poziom cen 1-4")
+    avg_meal_cost: int | None = Field(default=None, ge=0, description="Średni koszt posiłku PLN")
+    city: str = Field(default="", description="Miasto restauracji")
+
+
 class LunchBreakItem(BaseModel):
     """
     Przerwa na lunch - ZAWSZE 12:00-13:30.
-    Backend generuje suggestions (ETAP 1: generyczne).
+    Backend generuje suggestions jako pełne obiekty restauracji (FIX #218).
     """
 
     type: Literal[ItemType.LUNCH_BREAK] = ItemType.LUNCH_BREAK
@@ -233,9 +253,9 @@ class LunchBreakItem(BaseModel):
     label: str = Field(
         default="Lunch / przerwa regeneracyjna", description="Etykieta"
     )
-    suggestions: List[str] = Field(
+    suggestions: List[RestaurantSuggestion] = Field(
         default_factory=list,
-        description="Backend generuje (ETAP 1: statyczne teksty)",
+        description="Rekomendowane restauracje (pełne obiekty); [0]=główna, reszta=alternatywy",
     )
     location_context: Optional[str] = Field(
         default="centrum",
@@ -246,7 +266,7 @@ class LunchBreakItem(BaseModel):
 class DinnerBreakItem(BaseModel):
     """
     Przerwa na kolację - 18:00-19:30 (jeśli jest czas w dniu).
-    Backend generuje suggestions z naciskiem na regionalne jedzenie.
+    Backend generuje suggestions jako pełne obiekty restauracji (FIX #218).
     """
 
     type: Literal[ItemType.DINNER_BREAK] = ItemType.DINNER_BREAK
@@ -256,9 +276,9 @@ class DinnerBreakItem(BaseModel):
     label: str = Field(
         default="Kolacja / regionalne smaki", description="Etykieta"
     )
-    suggestions: List[str] = Field(
+    suggestions: List[RestaurantSuggestion] = Field(
         default_factory=list,
-        description="Backend generuje (ETAP 1: statyczne teksty)",
+        description="Rekomendowane restauracje (pełne obiekty); [0]=główna, reszta=alternatywy",
     )
 
 

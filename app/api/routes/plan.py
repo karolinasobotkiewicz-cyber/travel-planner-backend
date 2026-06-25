@@ -25,6 +25,7 @@ from app.api.dependencies import (
 from app.infrastructure.database.models import User
 from app.application.services.plan_service import PlanService
 from app.application.services.plan_editor import PlanEditor
+from app.application.services.edit_helpers import load_pois_for_plan
 
 
 router = APIRouter()
@@ -476,26 +477,23 @@ def remove_item_from_day(
             )
         
         day_plan = plan.days[day_number - 1]
-        
-        # Get all POIs for gap filling
-        all_pois = poi_repo.get_all()
-        all_pois_dicts = [poi.model_dump(by_alias=True) for poi in all_pois]
-        
-        # Create context for editing
+
+        all_pois_dicts = load_pois_for_plan(plan, poi_repo.excel_path)
+
         context = {
-            "season": "winter",  # TODO: extract from plan or use current date
+            "season": "summer",
             "weather": "sunny",
-            "transport": "car"
+            "transport": "car",
+            "has_car": True,
         }
-        
-        # Create user preferences (from plan metadata or defaults)
+
         user = {
             "group_type": "couples",
             "budget_level": 2,
-            "preferences": ["hiking"]
+            "preferences": [],
+            "target_group": "couples",
         }
-        
-        # Apply edit
+
         updated_day = editor.remove_item(
             day_plan=day_plan,
             item_id=request.item_id,
@@ -609,27 +607,24 @@ def replace_item_in_day(
             )
         
         day_plan = plan.days[day_number - 1]
-        
-        # Get all POIs for replacement
-        all_pois = poi_repo.get_all()
-        all_pois_dicts = [poi.model_dump(by_alias=True) for poi in all_pois]
-        
-        # Create context for editing
+
+        all_pois_dicts = load_pois_for_plan(plan, poi_repo.excel_path)
+
         context = {
-            "season": "winter",
-            "weather": "sunny",
-            "transport": "car"
+            "season": request.preferences.get("season", "summer"),
+            "weather": request.preferences.get("weather", "sunny"),
+            "transport": request.preferences.get("transport", "car"),
+            "has_car": request.preferences.get("transport", "car") == "car",
         }
-        
-        # Create user preferences
+
         user = {
-            "group_type": "couples",
-            "budget_level": 2,
-            "preferences": ["hiking"]
+            "group_type": request.preferences.get("group_type", "couples"),
+            "budget_level": request.preferences.get("budget_level", 2),
+            "preferences": request.preferences.get("preferences", []),
+            "target_group": request.preferences.get("group_type", "couples"),
         }
-        
-        # Apply edit
-        updated_day = editor.replace_item(
+
+        updated_day, changed = editor.replace_item(
             day_plan=day_plan,
             item_id=request.item_id,
             all_pois=all_pois_dicts,
@@ -637,7 +632,16 @@ def replace_item_in_day(
             user=user,
             strategy=request.strategy
         )
-        
+
+        if not changed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Could not replace item {request.item_id}: "
+                    "no suitable alternative found or item not found in day plan."
+                ),
+            )
+
         # Update plan with edited day
         plan.days[day_number - 1] = updated_day
         

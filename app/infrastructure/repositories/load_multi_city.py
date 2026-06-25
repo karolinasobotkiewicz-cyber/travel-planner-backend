@@ -278,7 +278,8 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             "parking_cost": float(row.get('Parking_Cost', 0.0)) if pd.notna(row.get('Parking_Cost')) else None,
             "public_transport": _parse_bool(row.get('Public_Transport', True)),
             
-            # Photos & media
+            # Photos & media (11.03.2026 - Supabase Storage)
+            "image_key": _safe_str(row.get('image_key')),
             "photo_url": _safe_str(row.get('Photo_URL')),
             "website": _safe_str(row.get('Website')),
             

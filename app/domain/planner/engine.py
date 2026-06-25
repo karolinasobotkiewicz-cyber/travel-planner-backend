@@ -4889,14 +4889,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     
                     # Take top 3 nearest restaurants
                     if lunch_restaurants:
-                        lunch_suggestions = [r["name"] for r in lunch_restaurants[:3]]
-                        print(f"[LUNCH] Intelligent suggestions: {lunch_suggestions}")
+                        lunch_suggestions = [{**r} for r in lunch_restaurants[:3]]
+                        for s in lunch_suggestions:
+                            s.pop("_distance", None)
+                        print(f"[LUNCH] Intelligent suggestions: {[s.get('name') for s in lunch_suggestions]}")
                     else:
                         # No lunch restaurants available, try any restaurants
                         any_restaurants = [r for r in restaurants_available if r.get("name")]
                         if any_restaurants:
-                            lunch_suggestions = [r["name"] for r in any_restaurants[:3]]
-                            print(f"[LUNCH] Fallback suggestions (no lunch-specific): {lunch_suggestions}")
+                            lunch_suggestions = [{**r} for r in any_restaurants[:3]]
+                            for s in lunch_suggestions:
+                                s.pop("_distance", None)
+                            print(f"[LUNCH] Fallback suggestions (no lunch-specific): {[s.get('name') for s in lunch_suggestions]}")
                 
                 # FIX #Problem9 DEBUG: Log lunch insertion with group_type
                 group_type_debug = user.get("target_group")
@@ -5095,14 +5099,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     
                     # Take top 3 nearest/best restaurants
                     if dinner_restaurants:
-                        dinner_suggestions = [r["name"] for r in dinner_restaurants[:3]]
-                        print(f"[DINNER] Intelligent suggestions: {dinner_suggestions}")
+                        dinner_suggestions = [{**r} for r in dinner_restaurants[:3]]
+                        for s in dinner_suggestions:
+                            s.pop("_distance", None)
+                        print(f"[DINNER] Intelligent suggestions: {[s.get('name') for s in dinner_suggestions]}")
                     else:
                         # No dinner restaurants available, try any restaurants
                         any_restaurants = [r for r in restaurants_available if r.get("name")]
                         if any_restaurants:
-                            dinner_suggestions = [r["name"] for r in any_restaurants[:3]]
-                            print(f"[DINNER] Fallback suggestions (no dinner-specific): {dinner_suggestions}")
+                            dinner_suggestions = [{**r} for r in any_restaurants[:3]]
+                            for s in dinner_suggestions:
+                                s.pop("_distance", None)
+                            print(f"[DINNER] Fallback suggestions (no dinner-specific): {[s.get('name') for s in dinner_suggestions]}")
                 
                 plan.append(
                     {
@@ -6714,7 +6722,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                                 lunch_restaurants = _nearby_lunch141b
                         
                         if lunch_restaurants:
-                            lunch_suggestions = [r["name"] for r in lunch_restaurants[:3]]
+                            lunch_suggestions = [{**r} for r in lunch_restaurants[:3]]
+                            for s in lunch_suggestions:
+                                s.pop("_distance", None)
                 
                 plan.append({
                     "type": "lunch_break",
