@@ -153,6 +153,8 @@ TAG_ALIASES: dict[str, list[str]] = {
     "historic_site":           ["historic_site", "historical_site", "heritage_site", "museum_heritage"],
     "walking":                 ["walking", "scenic_walk", "city_walk"],
     "family_attraction":       ["family_attraction", "attractions_for_kids"],
+    # FIX #217 (23.06.2026): bare "industrial" in Excel (Śląsk, kopalnie) — not nature.
+    "industrial":              ["industrial", "industrial_heritage", "museum_heritage"],
 }
 
 

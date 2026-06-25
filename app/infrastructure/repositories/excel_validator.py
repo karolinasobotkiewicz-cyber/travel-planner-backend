@@ -195,6 +195,7 @@ _KNOWN_TAGS: set = {
     # FIX #216: Polanica/Kotlina plain Excel tags
     "outdoor_activity", "easy_nature", "scenic_spot", "scenic_route",
     "promenade", "rock_formation", "historic_site",
+    "industrial",
 }
 
 _KNOWN_TOD_EN = {"morning", "midday", "afternoon", "evening", "night", "any", ""}

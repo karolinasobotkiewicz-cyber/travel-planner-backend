@@ -1386,6 +1386,8 @@ USER_PREFERENCES_TO_TAGS = {
             "winter_tradition",
             # FIX #216: Kotlina plain Excel tags
             "historic_site",
+            # FIX #217: bare industrial (Muzeum Śląskie, Nikiszowiec, kopalnie)
+            "industrial",
         ],
         "tag_bonus": 25,
     },

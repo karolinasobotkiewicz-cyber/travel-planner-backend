@@ -46,9 +46,20 @@ def test_excel_no_unknown_tag_warnings():
     assert not bad, "\n".join(bad)
 
 
+def test_industrial_registered():
+    assert "industrial" in get_all_registered_tags()
+    mapped = apply_tag_mapping(["industrial"])
+    low = {t.lower() for t in mapped}
+    assert "industrial_heritage" in low
+    poi = {"tags": ["industrial"], "type": "poi"}
+    bonus = calculate_tag_preference_score(poi, ["museum_heritage"])
+    assert bonus > 0
+
+
 if __name__ == "__main__":
     test_tags_registered()
     test_tag_mapping_enriches()
     test_scoring_bonus_nature()
     test_excel_no_unknown_tag_warnings()
-    print("FIX #216: 4/4 tests passed")
+    test_industrial_registered()
+    print("FIX #216: 5/5 tests passed")
