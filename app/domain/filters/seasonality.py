@@ -64,7 +64,11 @@ def filter_by_season(pois, current_date):
         # FIX #209: summer-only attractions mis-tagged all-season in Excel (Góralka).
         _pname = str(poi.get("name") or "").lower()
         if current_season == "winter" and any(
-            m in _pname for m in ("letni tor", "letni ", "saneczkowy", "góralka")
+            m in _pname for m in (
+                "letni tor", "letni ", "saneczkowy", "góralka",
+                # FIX #219: summer-only fountain shows / kayaking.
+                "fontann", "multimedialny park", "kajak", "kajaki",
+            )
         ):
             continue
 

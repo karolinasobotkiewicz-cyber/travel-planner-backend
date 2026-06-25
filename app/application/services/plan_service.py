@@ -256,7 +256,7 @@ class PlanService:
 
         def _poi_covers_pref(poi: dict, pref: str) -> bool:
             if pref == "underground":
-                return is_underground_poi(poi)
+                return is_underground_poi(poi) or poi_covers_preference_report(poi, pref)
             if pref == "water_attractions":
                 if any(
                     x in (poi.get("name") or "").lower()
@@ -267,6 +267,11 @@ class PlanService:
             return poi_covers_preference_report(poi, pref)
 
         poi_by_id = {p.get("id"): p for p in poi_pool if p.get("id")}
+        poi_by_name: Dict[str, Dict[str, Any]] = {}
+        for p in poi_pool:
+            _n = (p.get("name") or p.get("Name") or "").strip().lower()
+            if _n:
+                poi_by_name[_n] = p
         coverage: Dict[str, Any] = {}
         for pref in user_prefs:
             hit_days: List[int] = []
@@ -279,11 +284,16 @@ class PlanService:
                     if getattr(item, "type", None) != ItemType.ATTRACTION:
                         continue
                     pid = getattr(item, "poi_id", "")
-                    poi = poi_by_id.get(pid) or {
-                        "name": getattr(item, "name", ""),
-                        "tags": [],
-                        "type": "poi",
-                    }
+                    poi = poi_by_id.get(pid)
+                    if not poi or not (poi.get("tags") or poi.get("tags_excel")):
+                        _iname = (getattr(item, "name", "") or "").strip().lower()
+                        poi = poi_by_name.get(_iname) or poi
+                    if not poi:
+                        poi = {
+                            "name": getattr(item, "name", ""),
+                            "tags": [],
+                            "type": "poi",
+                        }
                     if _poi_covers_pref(poi, pref):
                         poi_count += 1
                         matched_poi_dicts.append(poi)
@@ -320,6 +330,7 @@ class PlanService:
         user: Dict[str, Any],
         global_used: set,
         all_pois_lookup: List[Dict[str, Any]] | None = None,
+        cross_day_reuse: bool = False,
     ) -> List[Any]:
         """FIX #195: usuń wielki popołudniowy free_time i spróbuj lekkich POI."""
         from app.domain.planner.engine import should_afternoon_topup_before_free_time
@@ -426,6 +437,7 @@ class PlanService:
             )
             out = self._fill_gaps_in_items(
                 out, pool, ctx, user, global_used, all_pois_lookup=lookup,
+                cross_day_reuse=cross_day_reuse,
             )
             new_attrs = sum(
                 1 for it in out if getattr(it, "type", None) == ItemType.ATTRACTION
@@ -2080,6 +2092,47 @@ class PlanService:
             day_items = self._update_transit_destinations(day_items, _poi_coord_map)
             day_items = self._validate_transit_endpoints(day_items)
 
+            # FIX #219: backfill sparse last days on long city trips (POI pool exhausted).
+            from app.domain.planner.city_copy import is_city_tourism_trip as _is_city_219
+            _attr219 = sum(
+                1 for it in day_items
+                if getattr(it, "type", None) == ItemType.ATTRACTION
+            )
+            if (
+                num_days >= 6
+                and (day_num + 1) >= num_days - 1
+                and _attr219 < 3
+                and _is_city_219(day_context)
+            ):
+                day_items = self._fill_gaps_in_items(
+                    day_items,
+                    _day_gf_pool,
+                    day_context,
+                    user,
+                    global_used_pois,
+                    all_pois_lookup=all_pois_dict,
+                    cross_day_reuse=True,
+                )
+                day_items = self._afternoon_topup_items(
+                    day_items,
+                    _gf_season_pois,
+                    day_context,
+                    user,
+                    global_used_pois,
+                    all_pois_lookup=all_pois_dict,
+                    cross_day_reuse=True,
+                )
+                day_items = self._sort_items_by_time(day_items)
+                day_items, _ = validate_and_heal_timeline(
+                    day_items, day_number=day_num + 1, raise_on_failure=False,
+                )
+                day_items = self._update_transit_destinations(day_items, _poi_coord_map)
+                day_items = self._validate_transit_endpoints(day_items)
+                day_items = self._consolidate_consecutive_free_time_blocks(
+                    day_items,
+                    is_zakopane=day_context.get("is_zakopane_trip", False),
+                )
+
             # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
             # This ensures day_end is always the last item in timeline
             # Previous bug: day_end was added in _convert_engine_result_to_items,
@@ -2192,14 +2245,42 @@ class PlanService:
                 "severity": "info",
             })
 
-        # Travel style informational warning
+        # Travel style informational warning — only when plan actually skews active (FIX #219)
         travel_style = user.get("travel_style", "")
         if travel_style == "adventure":
-            plan_warnings.append({
-                "type": "adventure_profile_info",
-                "message": "Profil adventure: plan skupia się na aktywnych atrakcjach (górskie szlaki, sporty). Muzea i atrakcje pasywne są ograniczone do minimum.",
-                "severity": "info",
-            })
+            _active_n = 0
+            _passive_n = 0
+            _lookup219 = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+            from app.domain.planner.engine import is_museum_heritage_poi
+            from app.domain.scoring.preference_coverage import poi_covers_preference_report
+            for _dy in days:
+                for _it in _dy.items:
+                    if getattr(_it, "type", None) != ItemType.ATTRACTION:
+                        continue
+                    _pp = _lookup219.get(getattr(_it, "poi_id", ""), {"name": getattr(_it, "name", ""), "tags": []})
+                    if poi_covers_preference_report(_pp, "active_sport") or _pp.get("type") == "trail":
+                        _active_n += 1
+                    elif is_museum_heritage_poi(_pp):
+                        _passive_n += 1
+            if _active_n > _passive_n:
+                plan_warnings.append({
+                    "type": "adventure_profile_info",
+                    "message": (
+                        "Profil adventure: plan zawiera głównie aktywne atrakcje "
+                        "(sport, linowe parki, kopalnie, szlaki)."
+                    ),
+                    "severity": "info",
+                })
+            elif _active_n == 0 and _passive_n > 0:
+                plan_warnings.append({
+                    "type": "adventure_profile_info",
+                    "message": (
+                        "Profil adventure: w bazie jest mało aktywnych atrakcji dla tego miasta — "
+                        "plan opiera się głównie na muzeach i zwiedzaniu. Rozważ tagi active_sport "
+                        "lub rozszerzenie bazy POI."
+                    ),
+                    "severity": "info",
+                })
 
         # FIX #186 (A1/A2): Guarantee min. 1 POI per active preference + uncovered warnings.
         _ctx_list = contexts if num_days > 1 else [context]
@@ -2275,6 +2356,21 @@ class PlanService:
         preference_coverage = self._compute_preference_coverage(
             days, user.get("preferences", []), all_pois_dict
         )
+
+        # FIX #219: drop stale sparse_day from engine (emitted before gap-fill)
+        _final_attr_by_day = {
+            dp.day: sum(
+                1 for it in dp.items if getattr(it, "type", None) == ItemType.ATTRACTION
+            )
+            for dp in days
+        }
+        plan_warnings = [
+            w for w in plan_warnings
+            if not (
+                w.get("type") == "sparse_day"
+                and _final_attr_by_day.get(w.get("day"), 0) >= 3
+            )
+        ]
 
         if context.get("multi_city_density_mode"):
             for _dw in self._day_density_warnings(days, day_start, day_end):
@@ -3324,6 +3420,7 @@ class PlanService:
         user: Dict[str, Any],
         global_used: set = None,
         all_pois_lookup: List[Dict[str, Any]] | None = None,
+        cross_day_reuse: bool = False,
     ) -> List[Any]:
         """
         Fill gaps >15 min between items with POI or free_time.
@@ -3396,20 +3493,24 @@ class PlanService:
         _f195_pass = context.get("afternoon_topup_pass", False)
         
         result = []
-        
-        # ETAP 2 - DAY 3 (15.02.2026): Initialize from global_used for cross-day tracking
-        used_poi_ids = set(global_used) if global_used is not None else set()
-        
-        attraction_count = 0  # Count attractions to enforce limit
-        daily_scenic_count = 0  # FIX #190: cap scenic experiences in plan_service gap fill
-        daily_park_count_gf = 0  # FIX #197
-        
+
         _today_poi_ids = {
             getattr(it, "poi_id", None)
             for it in items
             if getattr(it, "type", None) == ItemType.ATTRACTION
             and getattr(it, "poi_id", None)
         }
+
+        # ETAP 2 - DAY 3 (15.02.2026): Initialize from global_used for cross-day tracking
+        # FIX #219: on late sparse days allow POI reuse from earlier trip days.
+        if cross_day_reuse:
+            used_poi_ids = set(_today_poi_ids)
+        else:
+            used_poi_ids = set(global_used) if global_used is not None else set()
+        
+        attraction_count = 0  # Count attractions to enforce limit
+        daily_scenic_count = 0  # FIX #190: cap scenic experiences in plan_service gap fill
+        daily_park_count_gf = 0  # FIX #197
 
         # Collect POIs already used in plan and count attractions
         for item in items:
@@ -4993,6 +5094,9 @@ class PlanService:
         if _mode_was_walk and _mode_now_car and new_dur > cur_dur:
             final_dur = new_dur
             target_start = cur_end - final_dur
+            if prev_end is not None:
+                target_start = max(target_start, prev_end)
+                final_dur = cur_end - target_start
         else:
             target_start = cur_end - new_dur
             if prev_end is not None:

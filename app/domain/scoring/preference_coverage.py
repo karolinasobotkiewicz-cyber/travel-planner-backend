@@ -452,7 +452,7 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "plac zdrojowy", "deptak", "monte cassino", "wieża ratuszowa", "most tumski",
         "ulica", "plac ", "pomnik", "kładka", "most ", "marina", "sky tower",
         "neon side", "fort ", "góra gradowa", "ambersky", "amber sky",
-        "stare miasto", "norblin", "wilanów", "taras widokowy",
+        "stare miasto", "norblin", "taras widokowy",
         # FIX #213: weak urban green / butterfly museum / Ojców rock ≠ nature coverage.
         "planty", "maczuga", "motyl", "motyla", "lotnictwa", "muzeum lotnictwa",
         # FIX #210: open-air theatre / show venue is not nature
@@ -468,6 +468,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "rynek w lądk", "rynek w ladek", "zagroda pasternak", "twierdza srebrna", "zalew radkowski",
         # FIX #209: underground mine ≠ nature (Kopalnia Złota).
         "kopalnia złota", "kopalnia zlota", "złoty stok", "zloty stok",
+        # FIX #219: cemeteries are not nature coverage.
+        "cmentarz", "powązk", "powazk",
     ),
     "local_food_experience": (
         "wyspa słodowa", "plac europejski", "deptak", "rynek",
@@ -479,6 +481,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "szrenica", "szrenic", "ski arena", "zakręt", "zakret", "deptak",
         "wzgórze kościuszki", "wzgórze kosciuszki",
         "kopalnia", "uranu", "arado",
+        # FIX #219: cemeteries are not relaxation.
+        "cmentarz", "powązk", "powazk",
     ),
     "history_mystery": (
         # FIX #204: client (Sopot/Gdańsk) — spa-resort buildings & promenade gates
@@ -486,6 +490,9 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "fontanna neptuna", "brama krowia", "pomnik smoka", "kładka",
         "błędne skały", "plac ", "dom zdrojowy", "zdrojowy", "deptak",
         "molo", "promenada", "rynek", "stare miasto",
+        # FIX #219: Warsaw/Kraków miscredits.
+        "ogrody zamku", "browary warszawskie", "browar warszaw",
+        "krzysztofory", "pałac krzysztofory", "palac krzysztofory",
     ),
     "kids_attractions": (
         "podziemia rynku",
@@ -631,6 +638,7 @@ _STRONG_NATURE_NAME_MARKERS = (
     "kopiec", "zakrzówek", "zakrzowek", "rezerwat", "park narodowy", "wodospad",
     "szlak", "las ", "dolina", "jezioro", "skarpa", "oława", "olawa",
     "bulwar", "botaniczny", "ogrod botaniczny", "łazienki", "lazienki",
+    "wilanów", "wilanow", "arboretum",
 )
 
 _STRONG_RELAX_NAME_MARKERS = (
@@ -672,13 +680,10 @@ def preference_coverage_adequate(pref: str, matching_pois: list) -> bool:
         return False
     if pref == "nature_landscape":
         strong = [p for p in matching_pois if is_strong_nature_coverage_poi(p)]
-        return len(strong) >= 2 or (
-            len(strong) == 1 and len(matching_pois) >= 2
-            and all(is_strong_nature_coverage_poi(p) for p in matching_pois)
-        )
+        return len(strong) >= 1
     if pref == "relaxation":
         strong = [p for p in matching_pois if is_strong_relaxation_coverage_poi(p)]
-        return len(strong) >= 2 or any(
+        return len(strong) >= 1 or any(
             "spa" in (p.get("name") or "").lower()
             or "termy" in (p.get("name") or "").lower()
             for p in matching_pois

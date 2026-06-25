@@ -862,7 +862,7 @@ _UNDERGROUND_POI_TAGS = frozenset({
     "gold_mine", "salt_mine", "underground_trail", "mining_museum",
 })
 _UNDERGROUND_NAME_MARKERS = (
-    "jaskin", "podziemn", "kopalni", "sztolnia", "niedźwied", "niedzwied",
+    "jaskin", "podziemn", "podziemia", "kopalni", "sztolnia", "niedźwied", "niedzwied",
     "podziemna trasa",
 )
 
@@ -2464,6 +2464,8 @@ def score_poi(
     if "museum_heritage" in user.get("preferences", []):
         if is_museum_heritage_poi(p) or tag_bonus > 0:
             _f173_boost = 100.0
+            if "museum_heritage" in user.get("preferences", [])[:3]:
+                _f173_boost += 35.0
             _trip_museums = (context or {}).get("trip_museum_count", 0)
             _cur_day = (context or {}).get("current_day_num", 1)
             if _trip_museums == 0 and _cur_day >= 2:
@@ -2869,7 +2871,7 @@ def score_poi(
             "local_history", "art_gallery", "ethnographic_museum", "intimate_small_museum",
         }
         if user_has_outdoor_prefs and _adv_museum_tags & poi_tags and str(p.get("type", "")).lower() != "trail":
-            _adv_museum_pen = score * 0.45
+            _adv_museum_pen = score * (0.60 if "active_sport" in user_preferences[:3] else 0.45)
             score -= _adv_museum_pen
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [ADVENTURE MUSEUM PENALTY] {poi_name_safe}: -{_adv_museum_pen:.1f} (outdoor-led adventure)")
@@ -2890,9 +2892,10 @@ def score_poi(
             _city_active_names = (
                 "pixel", "trampolin", "park linowy", "gojump", "goair", "vr", "labirynt",
                 "escape", "paintball", "laser", "linowa", "adrena",
+                "guido", "sztolnia", "carboneum", "kopalnia guido", "królowa luiza",
             )
             if _city_active_tags_adv & poi_tags or any(n in _name_206_adv for n in _city_active_names):
-                _ca_boost = 50.0
+                _ca_boost = 65.0 if "active_sport" in user_preferences[:3] else 50.0
                 score += _ca_boost
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                 print(f"    [URBAN ACTIVE BOOST] {poi_name_safe}: +{_ca_boost:.1f} (city + active_sport/adventure)")
@@ -3199,6 +3202,35 @@ def score_poi(
             score += 45.0
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [NATURE BOOST] {poi_name_safe}: +45.0 (nature_landscape in top-3 prefs)")
+
+    # FIX #219: penalise repeated urban parks when nature is a top preference.
+    _trip_parks219 = int((context or {}).get("trip_park_count") or 0)
+    if (
+        (_is_city_207(context) or _is_mtn_cluster208 or _is_spa_cluster209 or _is_urb_cluster210)
+        and "nature_landscape" in _prefs206[:3]
+        and is_park_or_green_space_poi(p)
+        and _trip_parks219 >= 2
+        and not any(x in _name206 for x in ("botaniczny", "arboretum", "rezerwat", "narodowy", "kopiec"))
+    ):
+        _park_pen219 = min(55.0, 25.0 * (_trip_parks219 - 1))
+        score -= _park_pen219
+        poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+        print(f"    [FIX #219 PARK REPEAT] {poi_name_safe}: -{_park_pen219:.1f} (trip_parks={_trip_parks219})")
+
+    # FIX #219: relaxation in top-3 — prefer genuine relax venues over free_time filler.
+    if (_is_city_207(context) or _is_spa_cluster209) and "relaxation" in _prefs206[:3]:
+        _relax219_names = (
+            "spa", "termy", "wellness", "palmiarnia", "zdroj", "sanatorium",
+            "bulwar", "promenada", "łazienki", "lazienki",
+        )
+        _relax219_tags = {"relaxation", "spa", "wellness", "thermal_baths", "green_recreation"}
+        if (
+            any(n in _name206 for n in _relax219_names)
+            or (_relax219_tags & _tags206)
+        ) and not is_quick_stop_poi(p):
+            score += 45.0
+            poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+            print(f"    [FIX #219 RELAX BOOST] {poi_name_safe}: +45.0 (relaxation in top-3)")
 
     if (_is_city_207(context) or _is_mtn_cluster208 or _is_spa_cluster209) and "nature_landscape" in _prefs206[:3] and "museum_heritage" in _prefs206[:3]:
         _museum_only = {
@@ -4134,6 +4166,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
     # FIX #181 (06.06.2026 - ETAP A): Far region tracking (Pieniny / Spisz / Słowacja).
     global_geo_region_use_count: dict = {}  # region_key -> times visited in trip
     global_museum_count = 0  # museums scheduled so far (for FIX #173 escalation)
+    global_park_count = 0  # FIX #219: urban parks scheduled (nature diversity)
 
     # FIX #179 (06.06.2026): Trip-level preference coverage for quota boosts.
     global_trip_covered_prefs: set = set()
@@ -4182,6 +4215,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         context["global_cluster_use_count"] = global_cluster_use_count
         context["global_geo_region_use_count"] = global_geo_region_use_count
         context["trip_museum_count"] = global_museum_count
+        context["trip_park_count"] = global_park_count
         _all_user_prefs = user.get("preferences", [])
         context["trip_uncovered_preferences"] = set(_all_user_prefs) - global_trip_covered_prefs
         _day_warnings: list = []  # FIX #130: collect per-day engine warnings
@@ -4208,6 +4242,20 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
             for _pid in _reopen:
                 global_used_pois.discard(_pid)
             print(f"[FIX #194] Day {day_num + 1}: sliding dedup reopened {len(_reopen)} POIs")
+        # FIX #219: last 2 days of long city trips — reopen older POIs when pool exhausted.
+        if (
+            context.get("multi_city_density_mode")
+            and num_days >= 6
+            and day_num >= num_days - 2
+            and daily_used_sets
+        ):
+            _reopen219 = set()
+            for _prev in daily_used_sets[:max(0, day_num - 3)]:
+                _reopen219.update(_prev)
+            for _pid in _reopen219:
+                global_used_pois.discard(_pid)
+            if _reopen219:
+                print(f"[FIX #219] Day {day_num + 1}: reopened {len(_reopen219)} POIs for late-trip fill")
         _global_used_for_day = global_used_pois
 
         day_plan = build_day(
@@ -4394,6 +4442,8 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
             if item.get("type") == "attraction" and item.get("poi"):
                 if is_museum_heritage_poi(item["poi"]):
                     global_museum_count += 1
+                if is_park_or_green_space_poi(item["poi"]):
+                    global_park_count += 1
         # FIX #179: Update trip-level covered preferences from today's attractions.
         for item in day_plan:
             if item.get("type") == "attraction" and item.get("poi"):
