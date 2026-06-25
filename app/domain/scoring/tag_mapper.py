@@ -143,6 +143,16 @@ TAG_ALIASES: dict[str, list[str]] = {
     "rope-park":               ["rope_park"],
     "circus-heritage":         ["cultural_heritage", "folklore"],
     "playgrounds":             ["playground"],
+    # FIX #216 (23.06.2026): Polanica/Kotlina plain Excel tags → engine vocabulary
+    "outdoor_activity":        ["outdoor_activity", "active_sport", "nature_landscape"],
+    "easy_nature":             ["easy_nature", "easy_access_nature", "nature_landscape", "forest_walk"],
+    "scenic_spot":             ["scenic_spot", "scenic_photo_spot", "scenic_viewpoint"],
+    "scenic_route":            ["scenic_route", "scenic_walk", "panoramic_route"],
+    "promenade":               ["promenade", "tourist_promenade", "relaxation", "city_walk"],
+    "rock_formation":          ["rock_formation", "rock_formations"],
+    "historic_site":           ["historic_site", "historical_site", "heritage_site", "museum_heritage"],
+    "walking":                 ["walking", "scenic_walk", "city_walk"],
+    "family_attraction":       ["family_attraction", "attractions_for_kids"],
 }
 
 

@@ -482,6 +482,8 @@ USER_PREFERENCES_TO_TAGS = {
             # FIX #124 round2: Remaining tags
             "friends_activity",
             "sports_history_exhibition",
+            # FIX #216: Polanica/Kotlina Excel tags
+            "outdoor_activity",
         ],
         "tag_bonus": 25,
     },
@@ -1382,6 +1384,8 @@ USER_PREFERENCES_TO_TAGS = {
             "vehicle_collection",
             "water_show",
             "winter_tradition",
+            # FIX #216: Kotlina plain Excel tags
+            "historic_site",
         ],
         "tag_bonus": 25,
     },
@@ -2144,6 +2148,8 @@ USER_PREFERENCES_TO_TAGS = {
             "seaside_views",
             "seniors",
             "tourist_promenade",
+            # FIX #216: Polanica promenades
+            "promenade",
         ],
         "tag_bonus": 25,
     },
@@ -2282,6 +2288,7 @@ USER_PREFERENCES_TO_TAGS = {
             "unesco_city_center",
             "unesco_site",
             "unesco_world_heritage",
+            "historic_site",
         ],
         "tag_bonus": 25,
     },
@@ -2820,6 +2827,11 @@ USER_PREFERENCES_TO_TAGS = {
             "urban_life",
             "urban_space",
             "water_show",
+            # FIX #216: Polanica/Kotlina plain Excel tags
+            "easy_nature",
+            "scenic_spot",
+            "scenic_route",
+            "rock_formation",
         ],
         "tag_bonus": 25,
     },

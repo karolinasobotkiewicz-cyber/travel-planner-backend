@@ -192,6 +192,9 @@ _KNOWN_TAGS: set = {
     "scenic_viewpoint",
     # FIX #115: misc high-frequency tags from multi_city data
     "archaeological_site",
+    # FIX #216: Polanica/Kotlina plain Excel tags
+    "outdoor_activity", "easy_nature", "scenic_spot", "scenic_route",
+    "promenade", "rock_formation", "historic_site",
 }
 
 _KNOWN_TOD_EN = {"morning", "midday", "afternoon", "evening", "night", "any", ""}
