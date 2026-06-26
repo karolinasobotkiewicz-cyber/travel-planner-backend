@@ -31,6 +31,8 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "grób nieznanego", "grob nieznanego", "changing of the guard",
         "pałac prezydencki", "palac prezydencki",
         "kościół św. anny", "kosciol sw. anny", "sw. anny",
+        "parafia rzymskokatolicka", "parafia pw.",
+        "kościół św. michała", "kosciol sw. michala", "św. michała", "sw. michala",
         "nowa huta", "centrum historii zajezdnia", "zajezdnia",
     ),
     "solo": ("pixel xl", "pixel"),

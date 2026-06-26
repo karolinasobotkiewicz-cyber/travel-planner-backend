@@ -477,6 +477,9 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
     "relaxation": (
         "most tumski", "rynek", "fontanna", "hala stulecia", "muzeum narodowe",
         "pergola przy hali", "hydropolis",
+        # FIX #221: palace museums outside city are not relaxation (Rogalin miscredit).
+        "rogalin", "pałac w rogalin", "palac w rogalin", "muzeum pałac w rogalin",
+        "muzeum palac w rogalin",
         # FIX #214: Karkonosze — ski/deptak/mines are not relaxation.
         "szrenica", "szrenic", "ski arena", "zakręt", "zakret", "deptak",
         "wzgórze kościuszki", "wzgórze kosciuszki",

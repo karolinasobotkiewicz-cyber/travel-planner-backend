@@ -34,18 +34,24 @@ def should_supplement(
     attraction_count: int,
     free_time_min: int,
     *,
-    day_num: int,
-    num_days: int,
+    day_num: int = 1,
+    num_days: int = 1,
+    duplication_gap: bool = False,
 ) -> bool:
+    """
+    FIX #221: Overpass supplement ONLY when gap-fill exhausted the Excel pool.
+    Triggers: empty/sparse day after fill, large free_time blocks, dedup exhaustion.
+    No proactive supplement on merely sparse pre-check days (regression vs FIX #220).
+    """
     if not settings.ors_poi_supplement_enabled or not settings.ors_enabled:
         return False
-    if attraction_count == 0:
+    if duplication_gap:
         return True
-    if num_days >= 6 and day_num >= num_days - 1 and attraction_count < 3:
+    if attraction_count == 0 and free_time_min >= 90:
         return True
-    if attraction_count < 2 and free_time_min > 90:
+    if free_time_min >= 180:
         return True
-    if free_time_min > 150 and attraction_count < 4:
+    if free_time_min >= 120 and attraction_count < 4:
         return True
     return False
 

@@ -880,6 +880,8 @@ _HARD_QUICK_STOP_MARKERS = (
     "plac europejski", "plac ratuszowy", "getta", "syrenka", "syreny",
     "grób nieznanego", "taras widokowy", "fontanna neptuna", "skwer ",
     "kościół św.", "koci św.", "most świętokrzyski",
+    "parafia rzymskokatolicka", "parafia pw.", "św. michała", "sw. michala",
+    "kościół św. michała", "kosciol sw. michala",
     # FIX #207 (19.06.2026): Poznań/Wrocław micro-POI still core (Pręgierz, Okrąglak…)
     "pręgierz", "pregierz", "domy kupieckie", "okrąglak", "okraglak", "plac wolności",
     "pomnik ofiar", "pomnik bamber", "bastion ", "wyspa słodowa",
@@ -1528,13 +1530,33 @@ def poi_repeat_cluster_key(name: str) -> str:
         return "cluster_krakow_core"
     if "ostrów tumski" in n or "ostrow tumski" in n:
         return "cluster_wroclaw_tumski"
+    # FIX #221: Warsaw 7-day repeats — cluster iconic POIs for trip-wide dedup.
+    if any(k in n for k in ("pałac kultury", "palac kultury", "pkin")):
+        return "cluster_warsaw_pkin"
+    if "wilanów" in n or "wilanow" in n:
+        return "cluster_warsaw_wilanow"
+    if any(k in n for k in ("muzeum polskiej wódki", "muzeum polskiej wodki", "wódki", "wodki")):
+        return "cluster_warsaw_wodka"
+    if "taras św. anny" in n or "taras sw. anny" in n:
+        return "cluster_warsaw_taras"
+    if "muzeum sztuki nowoczesnej" in n or " msen " in f" {n} ":
+        return "cluster_warsaw_msn"
     return n
 
 
 _HIGH_REPEAT_CLUSTERS = frozenset({
     "cluster_krupowki", "cluster_gubalowka", "cluster_skywalk", "cluster_kasprowy",
     "cluster_krakow_core", "cluster_wroclaw_tumski",
+    "cluster_warsaw_pkin", "cluster_warsaw_wilanow", "cluster_warsaw_wodka",
+    "cluster_warsaw_taras", "cluster_warsaw_msn",
 })
+
+# FIX #221: niche / filler museums — rank below city icons in long urban trips.
+_NICHE_MUSEUM_NAME_MARKERS = (
+    "muzeum geologiczne", "be happy museum", "be happy", "lustrzany labirynt",
+    "muzeum obwarzanka", "muzeum obwarzank", "woskownia", "museum of illusions",
+    "iluzja park", "muzeum iluzji",
+)
 
 # FIX #181 (06.06.2026 - ETAP A): Far excursion regions — one thematic region visit per trip.
 _FAR_GEO_REGIONS = frozenset({
@@ -1851,6 +1873,16 @@ def poi_matches_user_preference(p: dict, pref: str) -> bool:
         if tm in poi_types:
             return True
     return False
+
+
+def bump_day_preference_counts(poi: dict, context: dict, user: dict) -> None:
+    """FIX #221: track per-day preference hits for within-day balancing."""
+    if not context:
+        return
+    counts = context.setdefault("day_preference_counts", {})
+    for pref in user.get("preferences", []):
+        if poi_matches_user_preference(poi, pref):
+            counts[pref] = counts.get(pref, 0) + 1
 
 
 def _deterministic_pick_scored(candidates: list) -> dict:
@@ -3967,6 +3999,72 @@ def score_poi(
             print(f"    [FIX #172 CLUSTER PENALTY] {poi_name_safe}: {_cluster_penalty:.1f} "
                   f"(cluster={_cluster_key}, last_day={_last_cluster_day}, days_since={_days_since})")
 
+    # FIX #221 (20.06.2026): client feedback — free time, pref balance, micro-POI rank.
+    from app.domain.planner.city_copy import is_city_tourism_trip as _is_city_221
+    _name221 = str(p.get("name", "")).lower()
+    _prefs221 = user.get("preferences", [])
+    _dpc221 = (context or {}).get("day_preference_counts") or {}
+    _day221 = (context or {}).get("current_day_num", 1)
+    _tg221 = user.get("target_group", "")
+
+    if is_quick_stop_poi(p) and _is_city_221(context):
+        score -= 35.0
+        if _day221 <= 2:
+            score -= 25.0
+
+    if _is_city_221(context) and any(m in _name221 for m in _NICHE_MUSEUM_NAME_MARKERS):
+        score -= 50.0
+        if _day221 <= 3:
+            score -= 40.0
+
+    if _is_city_221(context) and _day221 == 1 and is_quick_stop_poi(p):
+        score -= 80.0
+
+    # Per-day preference balance (museum vs nature vs kids vs relaxation).
+    if len(_prefs221) >= 2:
+        if "nature_landscape" in _prefs221 and "museum_heritage" in _prefs221:
+            if poi_matches_user_preference(p, "nature_landscape") and _dpc221.get("nature_landscape", 0) >= 2 and _dpc221.get("museum_heritage", 0) == 0:
+                score -= 55.0
+            if poi_matches_user_preference(p, "museum_heritage") and _dpc221.get("museum_heritage", 0) == 0:
+                score += 35.0
+        if "nature_landscape" in _prefs221 and "relaxation" in _prefs221:
+            if poi_matches_user_preference(p, "nature_landscape") and _dpc221.get("nature_landscape", 0) >= 2 and _dpc221.get("relaxation", 0) == 0:
+                score -= 45.0
+        if "kids_attractions" in _prefs221 and "nature_landscape" in _prefs221:
+            if is_kids_focused_poi(p) and _dpc221.get("kids_attractions", 0) >= 2 and _dpc221.get("nature_landscape", 0) == 0:
+                score -= 50.0
+            if poi_matches_user_preference(p, "nature_landscape") and _dpc221.get("kids_attractions", 0) >= 2 and _dpc221.get("nature_landscape", 0) == 0:
+                score += 40.0
+
+    if _tg221 == "seniors" and "museum_heritage" in _prefs221 and "nature_landscape" in _prefs221:
+        if poi_matches_user_preference(p, "nature_landscape") and _dpc221.get("nature_landscape", 0) >= 1 and _dpc221.get("museum_heritage", 0) == 0:
+            score -= 60.0
+        if poi_matches_user_preference(p, "museum_heritage") and _dpc221.get("museum_heritage", 0) == 0:
+            score += 45.0
+
+    if _tg221 == "family_kids" and _day221 == 1:
+        if is_kids_focused_poi(p) or is_child_oriented_attraction(p):
+            score += 55.0
+        elif is_museum_heritage_poi(p):
+            score -= 40.0
+
+    # Friends + adventure without outdoor prefs — boost urban active POIs harder.
+    if travel_style == "adventure" and _tg221 == "friends" and _is_city_221(context):
+        _outdoor221 = {"hiking", "outdoor", "nature", "mountain_trails", "trekking", "active_sport", "climbing"}
+        if not (_outdoor221 & set(_prefs221)):
+            _adv221_tags = {
+                "escape_room", "group_activity", "active_entertainment", "trampoline_park",
+                "interactive_game_arena", "group_fun_activity", "laser_tag", "paintball",
+                "virtual_reality_cinema", "climbing_challenges", "obstacle_course",
+            }
+            if _adv221_tags & poi_tags or any(k in _name221 for k in ("escape", "trampolin", "pixel", "vr ", "paintball", "laser")):
+                score += 75.0
+
+    # Park repetition — penalise another generic park when day already has one.
+    _park221 = {"city_park", "park", "green_space", "park_walk", "park_complex"}
+    if _park221 & poi_tags and _dpc221.get("nature_landscape", 0) >= 1 and "museum_heritage" in _prefs221 and _dpc221.get("museum_heritage", 0) == 0:
+        score -= 40.0
+
     return score
 
 
@@ -4208,6 +4306,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         # BUGFIX (27.04.2026 - CLIENT FEEDBACK Bug #5): Pass trail tracking dict
         # FIX #89 (28.05.2026): Inject global_type_tracking into context so score_poi can penalise repetition.
         context["global_type_tracking"] = global_type_tracking
+        context["day_preference_counts"] = {}
         context["current_day_num"] = day_num + 1  # 1-based day number (used for variety penalty threshold)
         context["num_days"] = num_days  # FIX D: total trip length (for late-trip pool-exhaustion softening)
         context["global_cluster_last_day"] = global_cluster_last_day
@@ -4241,11 +4340,13 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
             for _pid in _reopen:
                 global_used_pois.discard(_pid)
             print(f"[FIX #194] Day {day_num + 1}: sliding dedup reopened {len(_reopen)} POIs")
-        # FIX #219: last 2 days of long city trips — reopen older POIs when pool exhausted.
+        # FIX #219: last 2 days — reopen ONLY for small pools (large cities must not repeat PKiN/Wilanów).
+        _pool219 = int(context.get("city_pool_size") or 0)
         if (
             context.get("multi_city_density_mode")
             and num_days >= 6
             and day_num >= num_days - 2
+            and _pool219 < 45
             and daily_used_sets
         ):
             _reopen219 = set()
@@ -4683,8 +4784,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     # +1 soft/hard but capped at 8/9 to avoid scheduling impossibility.
     travel_style = user.get("travel_style", "")
     if travel_style == "relax":
-        limits["soft"] = max(2, limits["soft"] - 1)  # Prevent going below 2
-        limits["hard"] = max(3, limits["hard"] - 2)  # FIX #74: -2 hard (was -1); min 3 to avoid empty days
+        if is_city_tourism_trip(context):
+            # FIX #221: relax ≠ huge free_time blocks; allow more real POIs in cities.
+            limits["soft"] = max(3, limits["soft"] - 1)
+            limits["hard"] = max(4, limits["hard"] - 1)
+        else:
+            limits["soft"] = max(2, limits["soft"] - 1)
+            limits["hard"] = max(3, limits["hard"] - 2)
         print(f"[LIMITS] Travel style 'relax' modifier applied: soft={limits['soft']}, hard={limits['hard']}")
     elif travel_style == "adventure":
         limits["soft"] = min(8, limits["soft"] + 1)  # Cap at 8 (9 POI/day too dense)
@@ -4694,9 +4800,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     # FIX #197: city tourism — max ~6 attractions/day (client: 7-8 too intensive)
     from app.domain.planner.city_copy import is_city_tourism_trip
     if is_city_tourism_trip(context):
-        limits["soft"] = min(limits["soft"], 5)
-        limits["hard"] = min(limits["hard"], 6)
-        print(f"[FIX #197] City tourism cap: soft={limits['soft']}, hard={limits['hard']}")
+        _nd197 = context.get("num_days", 1)
+        if _nd197 >= 5:
+            limits["soft"] = min(limits["soft"], 6)
+            limits["hard"] = min(limits["hard"], 7)
+        else:
+            limits["soft"] = min(limits["soft"], 5)
+            limits["hard"] = min(limits["hard"], 6)
+        print(f"[FIX #197/#221] City tourism cap: soft={limits['soft']}, hard={limits['hard']}")
 
     # FIX #123 (30.05.2026): Solo progressive daily limits — fewer POIs as trip continues
     # FIX #192: skip on 5+ day balanced trips (caused sparse afternoons with huge free_time).
@@ -4754,6 +4865,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         print(f"[BUDGET] No daily_limit set - budget tracking disabled")
 
     while now < end:
+        context["remaining_day_minutes"] = end - now
         # FEEDBACK KLIENTKI (03.02.2026): Enforce core_min POI
         # If we're in second half of day and no core POI yet, boost core POI heavily
         half_day = (end + time_to_minutes(start_time_str)) // 2
@@ -5689,8 +5801,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # FIX #7 (02.02.2026): Soft limit penalty
             # After soft limit, heavily penalize additional attractions
             if attraction_count >= limits["soft"]:
-                score -= 50  # Strong penalty to discourage exceeding soft limit
-                print(f"[LIMITS] Soft limit penalty: {attraction_count}/{limits['soft']} attractions, -50 score")
+                _rem221 = (context or {}).get("remaining_day_minutes", 0)
+                _soft_pen = 20 if _rem221 > 120 else 50
+                score -= _soft_pen
+                print(f"[LIMITS] Soft limit penalty: {attraction_count}/{limits['soft']} attractions, -{_soft_pen} score")
             
             # FIX #5 (UAT Round 3 - 19.02.2026): PREFERENCE COVERAGE BOOST
             # Client feedback: "Część atrakcji jest zoo/rozrywka mimo prefs museum_heritage + cultural"
@@ -6581,6 +6695,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         else:
             consecutive_short_count = 0  # reset on any non-short POI
         used.add(poi_id(best))
+        bump_day_preference_counts(best, context, user)
         
         # ETAP 2 - DAY 3 (15.02.2026): Update global_used for cross-day tracking
         if global_used is not None:
@@ -7656,6 +7771,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 
                 now += soft_duration
                 used.add(poi_id(soft_best))
+                bump_day_preference_counts(soft_best, context, user)
                 if global_used is not None:
                     global_used.add(poi_id(soft_best))
                 # FIX #163: remember if a trail was just added (enforce max 1 trail/day).

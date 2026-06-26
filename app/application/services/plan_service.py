@@ -167,7 +167,28 @@ def _is_urban_trip(context: Dict[str, Any]) -> bool:
     return rt in ("city", "urban") or is_city_tourism_trip(context)
 
 
-def _generate_day_title(day_items: list, day_num: int) -> str:
+def _day_afternoon_free_time_min(items: list) -> int:
+    """Sum free_time minutes before 16:00 (client: mega afternoon blocks)."""
+    total = 0
+    for it in items:
+        if getattr(it, "type", None) != ItemType.FREE_TIME:
+            continue
+        st = getattr(it, "start_time", None)
+        if st and time_to_minutes(st) < 960:
+            total += int(getattr(it, "duration_min", 0) or 0)
+    return total
+
+
+def _max_merged_free_time_cap(context: Dict[str, Any]) -> int:
+    """FIX #221: cap merged free_time — 90 min cities, 180 default, 300 Zakopane."""
+    if context.get("is_zakopane_trip"):
+        return 300
+    if _is_urban_trip(context):
+        return 90
+    return 180
+
+
+def _generate_day_title(day_items: list, day_num: int, *, excursion_hint: bool = False) -> str:
     """Generate a short descriptive title for a day based on its attractions.
 
     Rules:
@@ -186,8 +207,12 @@ def _generate_day_title(day_items: list, day_num: int) -> str:
     if len(names) == 1:
         return names[0]
     if len(names) == 2:
-        return f"{names[0]} i {names[1]}"
-    return f"{names[0]}, {names[1]} i więcej"
+        base = f"{names[0]} i {names[1]}"
+    else:
+        base = f"{names[0]}, {names[1]} i więcej"
+    if excursion_hint:
+        return f"{base} — propozycja wycieczki poza miasto"
+    return base
 
 # UAT Round 3 - FIX #1 (20.02.2026): Timeline Integrity Validator
 # Validates all items form non-overlapping sequential timeline
@@ -1773,32 +1798,7 @@ class PlanService:
                 requested_city=_requested_city,
                 cluster_cities=_hub_cluster_cities if _hub_cluster_mode else None,
             )
-            # FIX #220: Overpass supplement — Excel first, map only when day is sparse
-            try:
-                from app.infrastructure.routing.poi_supplement import (
-                    should_supplement,
-                    supplement_external_pois,
-                )
-                _pre_attrs = sum(
-                    1 for it in engine_result if it.get("type") == "attraction"
-                )
-                if should_supplement(
-                    _pre_attrs, 0,
-                    day_num=day_num + 1, num_days=num_days,
-                ):
-                    _ext_pois = supplement_external_pois(
-                        all_pois_dict,
-                        _requested_city,
-                        user.get("preferences", []),
-                    )
-                    if _ext_pois:
-                        _day_gf_pool = list(_day_gf_pool) + _ext_pois
-                        print(
-                            f"[FIX #220] Day {day_num + 1}: +{len(_ext_pois)} "
-                            f"Overpass POIs for gap-fill"
-                        )
-            except Exception as _sup_exc:
-                print(f"[FIX #220] POI supplement skipped: {_sup_exc}")
+            # FIX #220/#221: Overpass supplement AFTER gap-fill — only when free_time remains large.
             day_items = self._fill_gaps_in_items(
                 day_items,
                 _day_gf_pool,
@@ -1808,24 +1808,24 @@ class PlanService:
                 all_pois_lookup=all_pois_dict,
             )
 
-            # FIX #195/#198/#211: replace mega afternoon free_time with light POI attempts.
+            # FIX #195/#198/#211/#221: replace mega afternoon free_time with light POI attempts.
             _num_days_211 = day_context.get("num_days", 1)
-            _f195_max = 3 if (
-                day_context.get("multi_city_density_mode") or _num_days_211 >= 5
-            ) else 2
-            _f195_ft_thresh = 60 if (
-                day_context.get("multi_city_density_mode")
-                or _num_days_211 >= 5
-                or _is_urban_trip(day_context)
-            ) else 90
+            _urban221 = _is_urban_trip(day_context)
+            _f195_max = 5 if (
+                _urban221 and _num_days_211 >= 5
+            ) else (
+                3 if (
+                    day_context.get("multi_city_density_mode") or _num_days_211 >= 5
+                ) else 2
+            )
+            _f195_ft_thresh = 45 if _urban221 else (
+                60 if (
+                    day_context.get("multi_city_density_mode")
+                    or _num_days_211 >= 5
+                ) else 90
+            )
             for _f195_i in range(_f195_max):
-                _ft_big = sum(
-                    int(getattr(it, "duration_min", 0) or 0)
-                    for it in day_items
-                    if getattr(it, "type", None) == ItemType.FREE_TIME
-                    and getattr(it, "start_time", None)
-                    and time_to_minutes(it.start_time) < 960
-                )
+                _ft_big = _day_afternoon_free_time_min(day_items)
                 if _ft_big < _f195_ft_thresh:
                     break
                 day_items = self._afternoon_topup_items(
@@ -1852,7 +1852,7 @@ class PlanService:
                         1 for it in day_items
                         if getattr(it, "type", None) == ItemType.ATTRACTION
                     )
-                    if _ft_before <= 90 and (not _f194_gf or _attr_n >= 3):
+                    if _ft_before <= 60 and (not _f194_gf or _attr_n >= 4):
                         break
                     _gf_pool = _gf_season_pois
                     if _f194_gf:
@@ -1870,8 +1870,55 @@ class PlanService:
                         global_used_pois,
                         all_pois_lookup=all_pois_dict,
                     )
-            
-            # FIX #197: final city-tourism attraction cap (gap-fill / top-up safety net)
+
+            # FIX #221: Overpass only when Excel gap-fill left large free_time.
+            try:
+                from app.infrastructure.routing.poi_supplement import (
+                    should_supplement,
+                    supplement_external_pois,
+                )
+                _ft221 = sum(
+                    int(getattr(it, "duration_min", 0) or 0)
+                    for it in day_items
+                    if getattr(it, "type", None) == ItemType.FREE_TIME
+                )
+                _attr221 = sum(
+                    1 for it in day_items
+                    if getattr(it, "type", None) == ItemType.ATTRACTION
+                )
+                if should_supplement(
+                    _attr221, _ft221,
+                    day_num=day_num + 1, num_days=num_days,
+                ):
+                    _ext_pois = supplement_external_pois(
+                        all_pois_dict,
+                        _requested_city,
+                        user.get("preferences", []),
+                    )
+                    if _ext_pois:
+                        _sup_pool = list(_day_gf_pool) + _ext_pois
+                        day_items = self._fill_gaps_in_items(
+                            day_items,
+                            _sup_pool,
+                            day_context,
+                            user,
+                            global_used_pois,
+                            all_pois_lookup=all_pois_dict,
+                        )
+                        day_items = self._afternoon_topup_items(
+                            day_items,
+                            _sup_pool,
+                            day_context,
+                            user,
+                            global_used_pois,
+                            all_pois_lookup=all_pois_dict,
+                        )
+                        print(
+                            f"[FIX #221] Day {day_num + 1}: Overpass +{len(_ext_pois)} "
+                            f"POIs after ft={_ft221}min"
+                        )
+            except Exception as _sup_exc:
+                print(f"[FIX #221] POI supplement skipped: {_sup_exc}")
             _poi_lookup_cap = {p.get("id"): p for p in all_pois_dict if p.get("id")}
             day_items = self._strip_out_of_season_attractions(
                 day_items, dates[day_num], _poi_lookup_cap,
@@ -2053,6 +2100,7 @@ class PlanService:
             day_items = self._consolidate_consecutive_free_time_blocks(
                 day_items,
                 is_zakopane=day_context.get("is_zakopane_trip", False),
+                max_merged_min=_max_merged_free_time_cap(day_context),
             )
 
             # FIX #195: consolidation can re-merge afternoon chunks — one more top-up pass.
@@ -2172,10 +2220,16 @@ class PlanService:
                 1 for it in day_items
                 if getattr(it, "type", None) == ItemType.ATTRACTION
             )
+            _ft219 = sum(
+                int(getattr(it, "duration_min", 0) or 0)
+                for it in day_items
+                if getattr(it, "type", None) == ItemType.FREE_TIME
+            )
             if (
                 num_days >= 6
                 and (day_num + 1) >= num_days - 1
-                and _attr219 < 3
+                and _attr219 < 2
+                and _ft219 >= 180
                 and _is_city_219(day_context)
             ):
                 day_items = self._fill_gaps_in_items(
@@ -2205,6 +2259,7 @@ class PlanService:
                 day_items = self._consolidate_consecutive_free_time_blocks(
                     day_items,
                     is_zakopane=day_context.get("is_zakopane_trip", False),
+                    max_merged_min=_max_merged_free_time_cap(day_context),
                 )
 
             # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
@@ -2213,9 +2268,27 @@ class PlanService:
             # but gap filling could insert items after it
             day_items.append(DayEndItem(time=day_end))
             
+            _excursion_day = (
+                num_days >= 6
+                and (day_num + 1) == 5
+                and _is_urban_trip(day_context)
+            )
+            if _excursion_day:
+                plan_warnings.append({
+                    "type": "day_excursion_suggestion",
+                    "day": 5,
+                    "message": (
+                        f"Dzień 5 — propozycja wycieczki poza {_requested_city or 'miasto'} "
+                        f"(okoliczne atrakcje poza centrum miasta)."
+                    ),
+                    "severity": "info",
+                })
+
             day_plan = DayPlan(
                 day=day_num + 1,
-                title=_generate_day_title(day_items, day_num + 1),
+                title=_generate_day_title(
+                    day_items, day_num + 1, excursion_hint=_excursion_day,
+                ),
                 items=day_items,  # Use healed items with no overlaps + day_end at end
                 quality_badges=day_quality_badges  # ETAP 2 Day 5
             )
@@ -4685,6 +4758,7 @@ class PlanService:
 
     def _consolidate_consecutive_free_time_blocks(
         self, items: List[Any], *, is_zakopane: bool = False,
+        max_merged_min: int = 180,
     ) -> List[Any]:
         """
         FIX #18 (03.05.2026 - CLIENT FEEDBACK MAY 3): Consolidate consecutive free_time blocks.
@@ -4743,7 +4817,7 @@ class PlanService:
             # Engine/gap_filler never creates blocks >60 min; consolidation must respect same limit.
             # FIX #86 (28.05.2026): Raised cap to 180 min — engine now creates large afternoon/evening
             # blocks directly (FIX #86), so consolidation should merge them up to 3h.
-            MAX_MERGED_FREE_TIME = 300  # FIX #193: merge 4-5h runs into one sensible block
+            MAX_MERGED_FREE_TIME = max_merged_min
             
             while j < len(items):
                 next_item = items[j]
@@ -4804,15 +4878,19 @@ class PlanService:
         # FIX #18 generic-label rule leaves 3 short evening blocks in a row; this pass collapses them.
         consolidated = self._aggressive_merge_free_time_runs(
             consolidated, is_zakopane=is_zakopane,
+            max_merged_min=max_merged_min,
         )
 
         return consolidated
 
     def _aggressive_merge_free_time_runs(
         self, items: List[Any], *, is_zakopane: bool = False,
+        max_merged_min: int = 180,
     ) -> List[Any]:
-        """FIX #174: Collapse 3+ consecutive free_time blocks, or 2+ evening blocks (>=17:00)."""
+        """FIX #174/#221: Collapse consecutive free_time; respect max block cap."""
         if not items:
+            return items
+        if max_merged_min <= 90:
             return items
 
         merged_items: List[Any] = []

@@ -41,11 +41,16 @@ def test_dedup_excel_wins():
 
 
 def test_should_supplement_sparse_day():
-    assert should_supplement(0, 0, day_num=7, num_days=7) is False
     with patch("app.infrastructure.routing.poi_supplement.settings") as mock_s:
+        mock_s.ors_poi_supplement_enabled = False
+        mock_s.ors_enabled = False
+        assert should_supplement(0, 0, day_num=7, num_days=7) is False
         mock_s.ors_poi_supplement_enabled = True
         mock_s.ors_enabled = True
-        assert should_supplement(0, 0, day_num=7, num_days=7) is True
+        # FIX #221: no proactive supplement on empty day without free_time signal
+        assert should_supplement(0, 0, day_num=7, num_days=7) is False
+        assert should_supplement(0, 120, day_num=7, num_days=7) is True
+        assert should_supplement(3, 150, day_num=3, num_days=5) is True
         assert should_supplement(4, 30, day_num=3, num_days=5) is False
 
 
@@ -53,7 +58,10 @@ def test_get_travel_route_uses_haversine_when_ors_off():
     clear_route_session()
     a = {"lat": 50.06, "lng": 19.94, "name": "Rynek"}
     b = {"lat": 50.07, "lng": 19.95, "name": "Wawel"}
-    with patch("app.infrastructure.routing.provider.settings") as mock_s:
+    mock_client = MagicMock()
+    mock_client.enabled.return_value = False
+    with patch("app.infrastructure.routing.provider.settings") as mock_s, \
+         patch("app.infrastructure.routing.provider.get_ors_client", return_value=mock_client):
         mock_s.ors_enabled = False
         mock_s.ors_routing_enabled = True
         mock_s.ors_api_key = ""
