@@ -26,7 +26,17 @@ class Settings(BaseSettings):
     # =========================
 
     openweather_api_key: str = ""
-    # W przyszłości: google_maps_api_key, etc.
+    # OpenRouteService (FIX #220)
+    ors_api_key: str = ""
+    ors_enabled: bool = False
+    ors_routing_enabled: bool = True
+    ors_matrix_enabled: bool = True
+    ors_poi_supplement_enabled: bool = False
+    ors_cache_ttl_days: int = 60
+    ors_daily_budget_directions: int = 1500
+    ors_daily_budget_matrix: int = 120
+    ors_matrix_max_locations: int = 8
+    ors_overpass_radius_m: int = 2500
 
     # =========================
     # SUPABASE AUTH (ETAP 2)

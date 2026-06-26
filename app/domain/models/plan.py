@@ -158,6 +158,22 @@ class TransitItem(BaseModel):
     mode: TransitMode = Field(..., description="walk/car/public_transport")
     from_location: str = Field(..., alias="from", description="Skąd")
     to_location: str = Field(..., alias="to", description="Dokąd")
+    # FIX #220: ORS routing geometry for Leaflet map (optional)
+    geometry: Optional[List[List[float]]] = Field(
+        default=None,
+        description="Route polyline GeoJSON order [lng, lat]",
+    )
+    geometry_latlng: Optional[List[List[float]]] = Field(
+        default=None,
+        description="Route polyline for Leaflet [lat, lng]",
+    )
+    distance_km: Optional[float] = Field(
+        default=None, description="Route distance in km",
+    )
+    routing_source: Optional[str] = Field(
+        default=None,
+        description="ors | cache | haversine",
+    )
 
     class Config:
         populate_by_name = True

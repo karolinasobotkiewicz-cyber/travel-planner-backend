@@ -241,6 +241,37 @@ class PlanService:
     def __init__(self, poi_repository: POIRepository):
         self.poi_repo = poi_repository
 
+    @staticmethod
+    def _attach_route_metadata(transit_item, from_poi: dict, to_poi: dict, context: dict):
+        """FIX #220: attach ORS geometry/distance to transit (no-op when ORS off)."""
+        try:
+            from app.infrastructure.config.settings import settings
+            if not (settings.ors_enabled and settings.ors_api_key):
+                return transit_item
+            from app.infrastructure.routing import get_travel_route
+            route = get_travel_route(from_poi, to_poi, context)
+            extras = route.to_transit_extras()
+            return transit_item.model_copy(update=extras)
+        except Exception:
+            return transit_item
+
+    def _enrich_transits_with_routing(
+        self,
+        items: List[Any],
+        poi_coords: Dict[str, dict],
+        context: dict,
+    ) -> List[Any]:
+        """Apply route geometry to all transit legs with known endpoints."""
+        out = []
+        for it in items:
+            if getattr(it, "type", None) == ItemType.TRANSIT:
+                fp = poi_coords.get(getattr(it, "from_location", "") or "")
+                tp = poi_coords.get(getattr(it, "to_location", "") or "")
+                if fp and tp:
+                    it = self._attach_route_metadata(it, fp, tp, context)
+            out.append(it)
+        return out
+
     def _compute_preference_coverage(
         self,
         days: List[DayPlan],
@@ -821,7 +852,14 @@ class PlanService:
         day_start = params["day_start"]
         day_end = params["day_end"]
 
-        # FIX #156 (04.06.2026): Flag Zakopane-only trips so the engine's ZAKOPANE-hardcoded
+        # FIX #220: fresh ORS session cache per plan request
+        try:
+            from app.infrastructure.routing import clear_route_session
+            clear_route_session()
+        except Exception:
+            pass
+
+        # FIX #156 (04.06.2026): Flag Zakopane-only trips
         # return-to-centrum block (FIX #129) runs only here, consistent with FIX #37/#69.
         _requested_city = trip_input.location.city or ""
         context["is_zakopane_trip"] = _requested_city.lower() in ("zakopane",)
@@ -1684,7 +1722,14 @@ class PlanService:
                 day_context["day_hub_city"] = _day_hub_cities[day_num]
             if day_num < len(_engine_reserved_future_by_day):
                 day_context["engine_reserved_future_pois"] = _engine_reserved_future_by_day[day_num]
-            
+
+            # FIX #220: optimize attraction order (ORS Matrix / haversine TSP)
+            try:
+                from app.infrastructure.routing.day_optimizer import optimize_day_attraction_order
+                engine_result = optimize_day_attraction_order(engine_result, day_context)
+            except Exception as _opt_exc:
+                print(f"[FIX #220] Day order optimize skipped: {_opt_exc}")
+
             # Konwersja engine result → PlanResponse items
             day_items = self._convert_engine_result_to_items(
                 engine_result,
@@ -1728,6 +1773,32 @@ class PlanService:
                 requested_city=_requested_city,
                 cluster_cities=_hub_cluster_cities if _hub_cluster_mode else None,
             )
+            # FIX #220: Overpass supplement — Excel first, map only when day is sparse
+            try:
+                from app.infrastructure.routing.poi_supplement import (
+                    should_supplement,
+                    supplement_external_pois,
+                )
+                _pre_attrs = sum(
+                    1 for it in engine_result if it.get("type") == "attraction"
+                )
+                if should_supplement(
+                    _pre_attrs, 0,
+                    day_num=day_num + 1, num_days=num_days,
+                ):
+                    _ext_pois = supplement_external_pois(
+                        all_pois_dict,
+                        _requested_city,
+                        user.get("preferences", []),
+                    )
+                    if _ext_pois:
+                        _day_gf_pool = list(_day_gf_pool) + _ext_pois
+                        print(
+                            f"[FIX #220] Day {day_num + 1}: +{len(_ext_pois)} "
+                            f"Overpass POIs for gap-fill"
+                        )
+            except Exception as _sup_exc:
+                print(f"[FIX #220] POI supplement skipped: {_sup_exc}")
             day_items = self._fill_gaps_in_items(
                 day_items,
                 _day_gf_pool,
@@ -2091,6 +2162,9 @@ class PlanService:
             day_items = self._remove_timeline_overlaps(day_items, day_num + 1)
             day_items = self._update_transit_destinations(day_items, _poi_coord_map)
             day_items = self._validate_transit_endpoints(day_items)
+            day_items = self._enrich_transits_with_routing(
+                day_items, _poi_coord_map, day_context,
+            )
 
             # FIX #219: backfill sparse last days on long city trips (POI pool exhausted).
             from app.domain.planner.city_copy import is_city_tourism_trip as _is_city_219
@@ -3936,6 +4010,9 @@ class PlanService:
                                 score += 35.0
                             if _f187_last_day_ps and poi_geo_region_key(poi) == context.get("day_geo_region"):
                                 score += 80.0
+                            # FIX #220: Excel POI always preferred over Overpass supplement
+                            if str(poi.get("source", "")).startswith("external"):
+                                score -= 45.0
                             
                             # CLIENT FEEDBACK (30.01.2026): BOOST soft POI score for gaps >20 min
                             if prefer_soft_poi and is_soft_poi:
@@ -5112,6 +5189,15 @@ class PlanService:
             print(f"[FIX #168] Recomputed transit {_safe} -> {_safe2}: "
                   f"{cur_dur}min {cur_mode} → {final_dur}min {new_mode} "
                   f"(modelled {new_dur}min)")
+        # FIX #220: attach ORS polyline (uses session cache — no extra API call)
+        try:
+            enriched = self._attach_route_metadata(item, from_poi, to_poi, ctx)
+            for _rf in ("geometry", "geometry_latlng", "distance_km", "routing_source"):
+                _rv = getattr(enriched, _rf, None)
+                if _rv is not None:
+                    setattr(item, _rf, _rv)
+        except Exception:
+            pass
 
     def _collapse_duplicate_transits(self, items: List[Any]) -> List[Any]:
         """

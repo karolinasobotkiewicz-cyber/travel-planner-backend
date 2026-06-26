@@ -1353,16 +1353,7 @@ def travel_time_minutes(a, b, context):
     """Calculate travel time between two POIs.
 
     FIX #98 (28.05.2026): Auto-selects walking or car mode based on GPS distance.
-    - distance < WALK_THRESHOLD_KM  → walking  (~5 km/h, no parking, min 5 min)
-    - distance >= WALK_THRESHOLD_KM → car      (cluster-aware speed + 5 min parking, min 10 min)
-
-    FIX #111 (06.06.2026): Cluster-aware road speed for car travel.
-    Speed is selected based on cluster_type from context["signals"]:
-    - urban_organism (Trójmiasto): 60 km/h — urban expressways / SKM corridor
-    - regional_cluster (Kotlina):  50 km/h — regional roads, moderate terrain
-    - radius_based (Karkonosze):   40 km/h — narrow mountain roads
-    - standalone_city (Zakopane):  45 km/h — mountain city roads (unchanged)
-    Return type stays int (minutes) – fully backward compatible.
+    FIX #220: When ORS enabled, uses OpenRouteService Directions + cache; haversine fallback.
     """
     if not a or not b:
         return 0
@@ -1370,6 +1361,14 @@ def travel_time_minutes(a, b, context):
     has_car = context.get("has_car", True)
     if not has_car:
         return 0
+
+    try:
+        from app.infrastructure.config.settings import settings
+        if settings.ors_enabled and settings.ors_routing_enabled and settings.ors_api_key:
+            from app.infrastructure.routing import get_travel_minutes
+            return get_travel_minutes(a, b, context)
+    except Exception:
+        pass
 
     lat1, lng1 = a.get("lat"), a.get("lng")
     lat2, lng2 = b.get("lat"), b.get("lng")
