@@ -74,6 +74,32 @@ class TestRogalinRelaxationDeny:
         assert poi_covers_preference_report(poi, "relaxation") is True
 
 
+class TestRelaxStyleBuildDay:
+    def test_build_day_relax_no_name_error(self):
+        from app.domain.planner.engine import build_day
+        user = {
+            "target_group": "couples",
+            "travel_style": "relax",
+            "preferences": ["relaxation", "museum_heritage"],
+        }
+        ctx = {
+            "num_days": 3,
+            "current_day_num": 1,
+            "trip_type": "city_tourism",
+            "region_type": "city",
+            "multi_city_density_mode": True,
+            "city_pool_size": 80,
+        }
+        pois = [{
+            "id": "p1", "name": "Test Museum", "lat": 52.4, "lng": 16.9,
+            "tags": ["museum_heritage", "themed_museum"],
+            "type": "museum", "time_min": 60, "must_see": 8,
+            "target_groups": ["couples", "seniors", "solo"],
+        }]
+        plan = build_day(pois, user, ctx, global_used=set())
+        assert isinstance(plan, list)
+
+
 class TestMergedFreeTimeCap:
     def test_urban_cap_90(self):
         from app.application.services.plan_service import _max_merged_free_time_cap

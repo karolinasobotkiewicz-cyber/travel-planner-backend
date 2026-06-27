@@ -4777,6 +4777,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         "core_max": 2,
     })
     
+    # FIX #197/#221: import before travel_style branch (relax used is_city_tourism_trip).
+    from app.domain.planner.city_copy import is_city_tourism_trip
+
     # FIX #Problem12 (15.05.2026 - CLIENT FEEDBACK Round 2): Travel style modifier
     # Problem: Relax style should reduce POI count further
     # Solution: relax=-1 soft, -2 hard (FIX #74: more aggressive than original -1/-1)
@@ -4798,7 +4801,6 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         print(f"[LIMITS] Travel style 'adventure' modifier applied: soft={limits['soft']}, hard={limits['hard']}")
 
     # FIX #197: city tourism — max ~6 attractions/day (client: 7-8 too intensive)
-    from app.domain.planner.city_copy import is_city_tourism_trip
     if is_city_tourism_trip(context):
         _nd197 = context.get("num_days", 1)
         if _nd197 >= 5:
