@@ -1,4 +1,15 @@
-# FIX #221 — feedback klientki (20.06.2026)
+## Hotfix (27.06.2026) — 500 Internal Server Error
+
+**Przyczyna:** W FIX #221 w `build_day()` wywoływano `is_city_tourism_trip()` w gałęzi `travel_style == "relax"` **przed** importem tej funkcji → `NameError` → HTTP 500.
+
+**Dotknięte:** wyłącznie requesty z `"travel_style": "relax"`.  
+**Nie dotknięte:** `balanced`, `adventure` (zwracały 200).
+
+**Commit naprawy:** `3b1b21b` — import `is_city_tourism_trip` przeniesiony przed blok travel_style.
+
+**Po pushu:** poczekać na redeploy Render (~3–10 min), potem retestować JSON-y z `relax`.
+
+---
 
 Testy: Poznań, Kraków, Katowice, Warszawa po FIX #219/#220.
 
