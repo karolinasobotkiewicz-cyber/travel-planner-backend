@@ -446,6 +446,9 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "dom zdrojowy", "zdrojowy",
         # FIX #213: cathedrals/churches → history_mystery, not museum.
         "katedra", "archikatedra", "bazylika", "parafia",
+        # FIX #222: chocolate / weak urban POI ≠ museum.
+        "wedel", "czekolad", "pijalnia czekolady", "plac wolności", "plac wolnosci",
+        "rynek jeżycki", "rynek jezycki", "pomnik bamberki", "domy kupieckie",
     ),
     "nature_landscape": (
         "spodek", "rynek", "dlugi targ", "długi targ", "fontanna neptuna",
@@ -470,9 +473,16 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "kopalnia złota", "kopalnia zlota", "złoty stok", "zloty stok",
         # FIX #219: cemeteries are not nature coverage.
         "cmentarz", "powązk", "powazk",
+        # FIX #222: miscredits across cities.
+        "muzeum geologicz", "podziemia rynku", "kopalnia wieliczka", "fabryka schindler",
+        "fabryka wódki", "fabryka wodki", "rogalowe muzeum", "muzeum obwarzank",
+        "lustrzany labirynt", "be happy museum", "kopiec powstania",
     ),
     "local_food_experience": (
         "wyspa słodowa", "plac europejski", "deptak", "rynek",
+        # FIX #222
+        "fabryka wódki", "fabryka wodki", "rogalowe muzeum", "kopiec powstania",
+        "muzeum śląskie", "muzeum slaskie",
     ),
     "relaxation": (
         "most tumski", "rynek", "fontanna", "hala stulecia", "muzeum narodowe",
@@ -486,6 +496,10 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "kopalnia", "uranu", "arado",
         # FIX #219: cemeteries are not relaxation.
         "cmentarz", "powązk", "powazk",
+        # FIX #222: underground / industrial / miscredits.
+        "podziemia rynku", "kopalnia wieliczka", "fabryka schindler",
+        "fabryka wódki", "fabryka wodki", "kopiec powstania",
+        "muzeum śląskie", "muzeum slaskie",
     ),
     "history_mystery": (
         # FIX #204: client (Sopot/Gdańsk) — spa-resort buildings & promenade gates
@@ -518,6 +532,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "huta julia", "kopalnia", "sztolni", "sztolnia",
         # FIX #215: Kotlina — lake/reservoir not water park in winter.
         "zalew radkowski",
+        # FIX #222
+        "fabryka wódki", "fabryka wodki", "kopiec powstania", "muzeum śląskie", "muzeum slaskie",
     ),
     # FIX #204: Katowice marked urban recreation parks as mountain trails.
     "mountain_trails": (

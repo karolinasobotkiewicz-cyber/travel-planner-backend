@@ -68,6 +68,8 @@ def filter_by_season(pois, current_date):
                 "letni tor", "letni ", "saneczkowy", "góralka",
                 # FIX #219: summer-only fountain shows / kayaking.
                 "fontann", "multimedialny park", "kajak", "kajaki",
+                # FIX #222: pontoon / river rides closed in winter.
+                "ponton", "spływ", "splyw", "złotniki", "zlotniki", "flisack",
             )
         ):
             continue

@@ -179,12 +179,31 @@ def _day_afternoon_free_time_min(items: list) -> int:
     return total
 
 
+def _strip_leading_free_time(items: list) -> list:
+    """FIX #222: remove morning free_time blocks before the first attraction."""
+    if not items:
+        return items
+    first_attr = next(
+        (i for i, it in enumerate(items)
+         if getattr(it, "type", None) == ItemType.ATTRACTION),
+        None,
+    )
+    if first_attr is None:
+        return items
+    out = []
+    for i, it in enumerate(items):
+        if i < first_attr and getattr(it, "type", None) == ItemType.FREE_TIME:
+            continue
+        out.append(it)
+    return out
+
+
 def _max_merged_free_time_cap(context: Dict[str, Any]) -> int:
     """FIX #221: cap merged free_time — 90 min cities, 180 default, 300 Zakopane."""
     if context.get("is_zakopane_trip"):
         return 300
     if _is_urban_trip(context):
-        return 90
+        return 60
     return 180
 
 
@@ -2102,6 +2121,7 @@ class PlanService:
                 is_zakopane=day_context.get("is_zakopane_trip", False),
                 max_merged_min=_max_merged_free_time_cap(day_context),
             )
+            day_items = _strip_leading_free_time(day_items)
 
             # FIX #195: consolidation can re-merge afternoon chunks — one more top-up pass.
             day_items = self._afternoon_topup_items(
@@ -2261,6 +2281,7 @@ class PlanService:
                     is_zakopane=day_context.get("is_zakopane_trip", False),
                     max_merged_min=_max_merged_free_time_cap(day_context),
                 )
+                day_items = _strip_leading_free_time(day_items)
 
             # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
             # This ensures day_end is always the last item in timeline
@@ -3959,6 +3980,18 @@ class PlanService:
                             if should_exclude_by_intensity(poi, user):
                                 continue  # EXCLUDE - intensity conflict
 
+                            # FIX #222: budget hard filter in gap-fill (Bungee > daily_limit).
+                            from app.domain.planner.engine import calculate_poi_cost_for_group
+                            _dl222 = user.get("daily_limit")
+                            if _dl222 is None:
+                                _bd = user.get("budget") or {}
+                                if isinstance(_bd, dict):
+                                    _dl222 = _bd.get("daily_limit")
+                            if _dl222:
+                                _pcost = calculate_poi_cost_for_group(poi, user)
+                                if _pcost > float(_dl222):
+                                    continue
+
                             # FIX #196: couples — nie wpychaj typowo dziecięcych atrakcji w gap-fill.
                             if (
                                 str(user.get("target_group", "")).lower() == "couples"
@@ -4249,11 +4282,9 @@ class PlanService:
                         # Client quote: "plan zaczyna się od odpoczynku" looks weird
                         is_day_start_gap = (item_type == 'day_start')
                         
-                        # FIX #106 (28.05.2026): Skip short free_time at day start (<60min)
-                        # A <60min gap right after day_start = "plan starts with rest" — confusing UX.
-                        # Engine picks first POI shortly after start; this tiny free_time is noise.
-                        if is_day_start_gap and gap_duration < 60:
-                            print(f"[FIX #106] Skip day-start free_time ({gap_duration}min < 60min) — too short, skipping")
+                        # FIX #106/#222: Never insert free_time right after day_start — gap-fill POI instead.
+                        if is_day_start_gap:
+                            print(f"[FIX #222] Skip day-start free_time ({gap_duration}min) — use POI gap-fill")
                             continue
                         
                         # FIX #78 (27.05.2026): Context-aware labels based on time of day and duration

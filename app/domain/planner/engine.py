@@ -690,7 +690,7 @@ DAY_END = "19:00"
 
 LUNCH_TARGET = "13:00"
 LUNCH_EARLIEST = "12:00"
-LUNCH_LATEST = "14:30"
+LUNCH_LATEST = "14:00"  # FIX #222: client — lunch too often after 14:30
 LUNCH_DURATION_MIN = 40
 
 DINNER_TARGET = "19:00"
@@ -895,6 +895,16 @@ _HARD_QUICK_STOP_MARKERS = (
     # FIX #210: Gdańsk — żuraw, bramy (fontanna neptuna already above)
     "złota brama", "zlota brama", "zuraw", "żuraw", "brama wyżynna", "brama wyzynna",
     "zielona brama", "ulica mariacka", "wielki młyn", "wielki mlyn",
+    # FIX #222 (28.06.2026): micro-POI over-ranked vs city icons.
+    "grabowy labirynt", "city golf", "dworzec świebodzki", "dworzec swiebodzki",
+    "most grunwaldzki", "hala targowa", "browar stu mostów", "browar stu mostow",
+    "kładka bernatka", "kladka bernatka", "kościół św. wojciecha", "sw. wojciecha",
+    "neon side", "galeria neon", "bastion sakwowy", "rynek jeżycki", "rynek jezycki",
+    "pomnik bamberki", "jeziorko czerniakowskie", "browary warszawskie",
+    "plac europejski", "muzeum fabryki norblina", "norblin",
+    "nikiszowiec", "spodek", "browar mariacki", "hala stulecia",
+    "domy kupieckie", "pomnik ofiar czerwca", "holiday park",
+    "laser tag", "city golf",
 )
 
 _QUICK_STOP_NAME_MARKERS = (
@@ -1541,6 +1551,12 @@ def poi_repeat_cluster_key(name: str) -> str:
         return "cluster_warsaw_taras"
     if "muzeum sztuki nowoczesnej" in n or " msen " in f" {n} ":
         return "cluster_warsaw_msn"
+    # FIX #222: Wrocław Szczytnicki — botanic → pergola → japanese → hala stulecia.
+    if any(k in n for k in (
+        "ogród botaniczny", "ogrod botaniczny", "pergola", "ogród japoński",
+        "ogrod japonski", "japoński", "hala stulecia",
+    )):
+        return "cluster_wroclaw_szczytnicki"
     return n
 
 
@@ -1548,14 +1564,24 @@ _HIGH_REPEAT_CLUSTERS = frozenset({
     "cluster_krupowki", "cluster_gubalowka", "cluster_skywalk", "cluster_kasprowy",
     "cluster_krakow_core", "cluster_wroclaw_tumski",
     "cluster_warsaw_pkin", "cluster_warsaw_wilanow", "cluster_warsaw_wodka",
-    "cluster_warsaw_taras", "cluster_warsaw_msn",
+    "cluster_warsaw_taras", "cluster_warsaw_msn", "cluster_wroclaw_szczytnicki",
 })
 
 # FIX #221: niche / filler museums — rank below city icons in long urban trips.
 _NICHE_MUSEUM_NAME_MARKERS = (
     "muzeum geologiczne", "be happy museum", "be happy", "lustrzany labirynt",
     "muzeum obwarzanka", "muzeum obwarzank", "woskownia", "museum of illusions",
-    "iluzja park", "muzeum iluzji",
+    "iluzja park", "muzeum iluzji", "rogalowe muzeum", "muzeum fabryki norblina",
+    "norblin", "muzeum powstania", "czartoryskich",
+)
+
+# FIX #222: flagship city icons — boost early + when cultural/museum profile.
+_CITY_FLAGSHIP_NAME_MARKERS = (
+    "wawel", "rynek główny", "rynek glowny", "sukiennice", "mariacki", "wieża ratuszowa",
+    "łazienki królewskie", "lazienki krolewskie", "pałac kultury", "palac kultury",
+    "polin", "muzeum historii", "hydropolis", "centrum historii zajezdnia", "kolejkowo",
+    "centrum nauki", "hala stulecia", "ogród botaniczny", "ogrod botaniczny",
+    "muzeum narodowe", "zamek królewski", "zamek krolewski",
 )
 
 # FIX #181 (06.06.2026 - ETAP A): Far excursion regions — one thematic region visit per trip.
@@ -1876,13 +1902,38 @@ def poi_matches_user_preference(p: dict, pref: str) -> bool:
 
 
 def bump_day_preference_counts(poi: dict, context: dict, user: dict) -> None:
-    """FIX #221: track per-day preference hits for within-day balancing."""
+    """FIX #221/#222: track per-day preference hits for within-day + trip balancing."""
     if not context:
         return
     counts = context.setdefault("day_preference_counts", {})
+    from app.domain.scoring.preference_coverage import poi_covers_preference_report
     for pref in user.get("preferences", []):
-        if poi_matches_user_preference(poi, pref):
+        if poi_covers_preference_report(poi, pref):
             counts[pref] = counts.get(pref, 0) + 1
+
+
+def compute_prefs_needed_today(user: dict, context: dict) -> set:
+    """FIX #222: prefs that should still be hit on the current day (spread across trip)."""
+    prefs = user.get("preferences") or []
+    if not prefs:
+        return set()
+    day = int(context.get("current_day_num") or 1)
+    num_days = int(context.get("num_days") or 1)
+    if num_days <= 1:
+        return set()
+    day_counts = context.get("day_preference_counts") or {}
+    trip_days = context.get("trip_pref_days") or {}
+    needed = set()
+    for pref in prefs:
+        if day_counts.get(pref, 0) > 0:
+            continue
+        days_hit = trip_days.get(pref, set())
+        if day == 1:
+            needed.add(pref)
+        elif day not in days_hit or (day - 1) not in days_hit:
+            # Mix prefs every day — not only day 1 (client FIX #222).
+            needed.add(pref)
+    return needed
 
 
 def _deterministic_pick_scored(candidates: list) -> dict:
@@ -2160,11 +2211,13 @@ def choose_duration(p, now, end, lunch_done, user=None):
     # Safeguard: Even if Excel has low time_min, enforce type-specific minimums
     # to prevent unreasonably short visits (e.g., museum with 5 min)
     MIN_DURATION_BY_TYPE = {
-        "museum": 30,
-        "gallery": 20,
-        "church": 15,
-        "viewpoint": 15,
+        "museum": 45,
+        "gallery": 35,
+        "church": 30,
+        "viewpoint": 25,
         "trail": 60,
+        "park": 40,
+        "landmark": 45,
     }
     
     # Identify POI type category from "type" field or name keywords
@@ -2183,6 +2236,10 @@ def choose_duration(p, now, end, lunch_done, user=None):
         type_min_duration = MIN_DURATION_BY_TYPE["viewpoint"]
     elif "trail" in poi_type_str or "szlak" in poi_name:
         type_min_duration = MIN_DURATION_BY_TYPE["trail"]
+    elif any(k in poi_name for k in ("park", "ogród", "ogrod", "bulwar", "kopiec", "dolina")):
+        type_min_duration = MIN_DURATION_BY_TYPE["park"]
+    elif any(k in poi_name for k in ("rynek", "łazienki", "lazienki", "wawel", "sukiennice", "zamek")):
+        type_min_duration = MIN_DURATION_BY_TYPE["landmark"]
     
     # Use the HIGHER of: POI's time_min OR type-based minimum
     # This ensures Excel data can set higher requirements, but types enforce floor
@@ -2248,12 +2305,16 @@ def choose_duration(p, now, end, lunch_done, user=None):
         # max_before_lunch is already calculated above
         # Cap duration only if we have positive time before lunch
         if max_before_lunch > 0:
-            return min(preferred_duration, end - now, max_before_lunch)
+            dur = min(preferred_duration, end - now, max_before_lunch)
         else:
             # This shouldn't happen (POI would be blocked above), but safety check
             return 0
     else:
-        return min(preferred_duration, end - now)
+        dur = min(preferred_duration, end - now)
+    # FIX #222: never schedule sub-20-min visits for real attractions.
+    if not is_trail_poi and not is_quick_stop_poi(p):
+        dur = max(dur, effective_min, 25)
+    return dur
 
 
 # =========================
@@ -4065,6 +4126,60 @@ def score_poi(
     if _park221 & poi_tags and _dpc221.get("nature_landscape", 0) >= 1 and "museum_heritage" in _prefs221 and _dpc221.get("museum_heritage", 0) == 0:
         score -= 40.0
 
+    # FIX #222 (28.06.2026): spread preferences across whole trip — not only day 1.
+    from app.domain.scoring.preference_coverage import poi_covers_preference_report as _covers222
+    _needed222 = compute_prefs_needed_today(user, context or {})
+    _num_days222 = int((context or {}).get("num_days") or 1)
+    _matches_any_pref = any(_covers222(p, pr) for pr in _prefs221) if _prefs221 else False
+    if _needed222:
+        for _np in _needed222:
+            if _covers222(p, _np):
+                _spread_boost = 95.0 + min(_day221, 5) * 12.0
+                if _np in _prefs221[:2]:
+                    _spread_boost += 35.0
+                score += _spread_boost
+        if not _matches_any_pref and _num_days222 >= 2:
+            score -= 85.0
+    # Generic filler POI when user still needs core prefs today.
+    if _needed222 and not _matches_any_pref and is_quick_stop_poi(p):
+        score -= 60.0
+
+    # Flagship icons for cultural / museum trips.
+    _ts222 = user.get("travel_style", "")
+    if _is_city_221(context) and any(m in _name221 for m in _CITY_FLAGSHIP_NAME_MARKERS):
+        if "museum_heritage" in _prefs221 or _ts222 == "cultural":
+            score += 85.0 if _day221 <= 3 else 55.0
+
+    # Wrocław Szczytnicki cluster — keep botanic/pergola/japanese/hala together.
+    _ck222 = poi_repeat_cluster_key(p.get("name", ""))
+    if _ck222 == "cluster_wroclaw_szczytnicki":
+        _clus_use = (context or {}).get("global_cluster_use_count") or {}
+        if _clus_use.get(_ck222, 0) >= 1:
+            score += 70.0
+
+    # Zoo over-used for non-family cultural profiles.
+    if (
+        "zoo" in _name221
+        and _tg221 not in ("family_kids",)
+        and "kids_attractions" not in _prefs221
+        and {"museum_heritage", "history_mystery", "cultural_experience"} & set(_prefs221)
+    ):
+        score -= 90.0
+
+    # Relaxation must not dominate when other prefs still needed today.
+    if travel_style == "relax" and _needed222 - {"relaxation"}:
+        _relax_tags222 = {"relaxation", "spa", "termy", "wellness", "city_park"}
+        if _relax_tags222 & poi_tags and not any(_covers222(p, pr) for pr in _needed222 - {"relaxation"}):
+            score -= 50.0
+
+    # Laser tag — deny very young children (client: 5-year-old).
+    _child_age = user.get("children_age") or user.get("group", {}).get("children_age")
+    try:
+        if _child_age is not None and int(_child_age) <= 6 and "laser tag" in _name221:
+            score -= 200.0
+    except (TypeError, ValueError):
+        pass
+
     return score
 
 
@@ -4267,6 +4382,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
 
     # FIX #179 (06.06.2026): Trip-level preference coverage for quota boosts.
     global_trip_covered_prefs: set = set()
+    trip_pref_days: dict = {}  # FIX #222: pref -> {day numbers covered}
 
     # FIX #175 (06.06.2026 - CLIENT FEEDBACK): Trip-wide POI dedup — never reuse the same
     # POI ID in one plan. FIX D sliding window caused day-1/day-7 skeleton duplicates
@@ -4307,6 +4423,8 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         # FIX #89 (28.05.2026): Inject global_type_tracking into context so score_poi can penalise repetition.
         context["global_type_tracking"] = global_type_tracking
         context["day_preference_counts"] = {}
+        context["trip_pref_days"] = trip_pref_days
+        context["prefs_needed_today"] = compute_prefs_needed_today(user, context)
         context["current_day_num"] = day_num + 1  # 1-based day number (used for variety penalty threshold)
         context["num_days"] = num_days  # FIX D: total trip length (for late-trip pool-exhaustion softening)
         context["global_cluster_last_day"] = global_cluster_last_day
@@ -4544,13 +4662,15 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
                     global_museum_count += 1
                 if is_park_or_green_space_poi(item["poi"]):
                     global_park_count += 1
-        # FIX #179: Update trip-level covered preferences from today's attractions.
+        # FIX #179/#222: Update trip-level covered preferences from today's attractions.
+        from app.domain.scoring.preference_coverage import poi_covers_preference_report
         for item in day_plan:
             if item.get("type") == "attraction" and item.get("poi"):
                 _poi_ref = item["poi"]
                 for _pref in _all_user_prefs:
-                    if poi_matches_user_preference(_poi_ref, _pref):
+                    if poi_covers_preference_report(_poi_ref, _pref):
                         global_trip_covered_prefs.add(_pref)
+                        trip_pref_days.setdefault(_pref, set()).add(day_num + 1)
 
         # Count POIs used in this day
         day_poi_count = 0

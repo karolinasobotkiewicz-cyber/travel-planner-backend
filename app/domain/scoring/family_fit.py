@@ -34,6 +34,10 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "parafia rzymskokatolicka", "parafia pw.",
         "kościół św. michała", "kosciol sw. michala", "św. michała", "sw. michala",
         "nowa huta", "centrum historii zajezdnia", "zajezdnia",
+        # FIX #222
+        "bastion sakwowy", "neon side", "most świętokrzyski", "most swietokrzyski",
+        "muzeum powstania warszawskiego", "plac europejski",
+        "muzeum czartoryskich", "laser tag",
     ),
     "solo": ("pixel xl", "pixel"),
     "couples": ("pixel xl", "pixel", "loopy"),
