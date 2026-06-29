@@ -909,6 +909,9 @@ _HARD_QUICK_STOP_MARKERS = (
     # the "most " prefix above). NOTE: "hala stulecia" intentionally removed — it is a
     # must=9 UNESCO flagship + Szczytnicki cluster anchor the client wants kept with the
     # botanic garden cluster, not demoted to a photo-stop.
+    # FIX #224 (29.06.2026): Warszawa — still over-ranked micro/filler POIs.
+    "kopiec powstania", "manufaktura cukierków", "manufaktura cukierkow",
+    "pijalnia wedla", "pijalnia czekolady",
 )
 
 _QUICK_STOP_NAME_MARKERS = (
@@ -4157,10 +4160,19 @@ def score_poi(
         score -= 60.0
 
     # Flagship icons for cultural / museum trips.
+    # FIX #224: client — cultural plans for Warszawa missed Łazienki/POLIN/PKiN/
+    # Muzeum Powstania. Boost flagships harder and also for history_mystery, and add
+    # an extra kick for genuine must_see>=9 icons so they reliably enter the plan.
     _ts222 = user.get("travel_style", "")
     if _is_city_221(context) and any(m in _name221 for m in _CITY_FLAGSHIP_NAME_MARKERS):
-        if "museum_heritage" in _prefs221 or _ts222 == "cultural":
-            score += 85.0 if _day221 <= 3 else 55.0
+        if (
+            "museum_heritage" in _prefs221
+            or "history_mystery" in _prefs221
+            or _ts222 == "cultural"
+        ):
+            score += 130.0 if _day221 <= 3 else 90.0
+            if must_see_value >= 9:
+                score += 40.0
 
     # Wrocław Szczytnicki cluster — keep botanic/pergola/japanese/hala together.
     _ck222 = poi_repeat_cluster_key(p.get("name", ""))

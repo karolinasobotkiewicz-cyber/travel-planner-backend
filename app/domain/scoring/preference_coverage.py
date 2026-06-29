@@ -514,6 +514,15 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         # FIX #219: Warsaw/Kraków miscredits.
         "ogrody zamku", "browary warszawskie", "browar warszaw",
         "krzysztofory", "pałac krzysztofory", "palac krzysztofory",
+        # FIX #224: chocolate/candy & urban lake are not history_mystery.
+        "wedel", "czekolad", "pijalnia", "manufaktura cukier",
+        "jeziorko czerniakowskie", "jeziorko", "zoo", "ogród zoologiczny",
+    ),
+    # FIX #224: underground (caves/mines) — exclude chocolate/lake/zoo/squares.
+    "underground": (
+        "wedel", "czekolad", "pijalnia", "manufaktura cukier",
+        "jeziorko czerniakowskie", "jeziorko", "zoo", "ogród zoologiczny",
+        "rynek", "plac ", "browar", "deptak", "pomnik",
     ),
     "kids_attractions": (
         "podziemia rynku",
@@ -527,6 +536,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "lotnictwa", "planty", "katedra", "parafia", "pręgierz", "pregierz",
         # FIX #215: glass workshop ≠ active sport.
         "manufaktura", "szkła", "szkla", "punkt widokowy",
+        # FIX #224: urban lake/memorial hill ≠ active sport.
+        "jeziorko czerniakowskie", "jeziorko", "kopiec powstania",
     ),
     "water_attractions": (
         "browar", "wedel", "czekolad", "pijalnia", "muzeum", "lotnictwa",

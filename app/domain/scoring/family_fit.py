@@ -39,7 +39,9 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "muzeum powstania warszawskiego", "plac europejski",
         "muzeum czartoryskich", "laser tag",
     ),
-    "solo": ("pixel xl", "pixel"),
+    # FIX #224: client — Centrum Nauki Kopernik (interactive science center for
+    # kids/families) should not appear in a solo plan even though Excel lists "solo".
+    "solo": ("pixel xl", "pixel", "centrum nauki kopernik"),
     "couples": ("pixel xl", "pixel", "loopy"),
 }
 _CHILD_POI_TAGS = frozenset({

@@ -2042,7 +2042,17 @@ class PlanService:
                         # If item starts before day_end, truncate it
                         if item_start_min < day_end_min:
                             new_duration = day_end_min - item_start_min
-                            if new_duration >= 5:  # Keep only if >= 5 min remaining
+                            # FIX #224: per-type minimum. Client saw "kolacja 9 min",
+                            # "Łazienki 14 min", "Muzeum Wojska 5 min" — these are
+                            # day_end truncation stubs. A stub is worse than dropping
+                            # the item (free_time/orphan cleanup handles the gap).
+                            if item_type in ("dinner_break", "lunch_break"):
+                                _trunc_min = 30
+                            elif item_type == "attraction":
+                                _trunc_min = 25
+                            else:
+                                _trunc_min = 5
+                            if new_duration >= _trunc_min:
                                 # Clone item with truncated end_time
                                 truncated_dict = item_dict.copy()
                                 truncated_dict['end_time'] = day_end
