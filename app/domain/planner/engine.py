@@ -1583,22 +1583,38 @@ _NICHE_MUSEUM_NAME_MARKERS = (
 )
 
 # FIX #222: flagship city icons — boost early + when cultural/museum profile.
+# FIX #225: removed "wieża ratuszowa" (client: over-ranked for seniors) and added
+# Planty / Bulwary Wiślane (must-see green icons missing from plans).
 _CITY_FLAGSHIP_NAME_MARKERS = (
-    "wawel", "rynek główny", "rynek glowny", "sukiennice", "mariacki", "wieża ratuszowa",
+    "wawel", "rynek główny", "rynek glowny", "sukiennice", "mariack",
     "łazienki królewskie", "lazienki krolewskie", "pałac kultury", "palac kultury",
     "polin", "muzeum historii", "hydropolis", "centrum historii zajezdnia", "kolejkowo",
     "centrum nauki", "hala stulecia", "ogród botaniczny", "ogrod botaniczny",
     "muzeum narodowe", "zamek królewski", "zamek krolewski",
+    "planty", "bulwary wiślane", "bulwary wislane",
+)
+
+# FIX #225: family-defining icons that must appear in family_kids plans
+# (client: Kraków family plans missed Smok/Wawel/Ogród Doświadczeń/Park Jordana/Zoo).
+_FAMILY_ICON_MARKERS = (
+    "smok wawelski", "wawel", "ogród doświadczeń", "ogrod doswiadczen",
+    "park jordana", "park lotników", "park lotnikow",
+    "ogród zoologiczny", "ogrod zoologiczny", "zoo",
 )
 
 # FIX #181 (06.06.2026 - ETAP A): Far excursion regions — one thematic region visit per trip.
+# FIX #225 (29.06.2026): added Kraków day-trip regions (Ojców NP, Wieliczka) so the
+# planner stops hopping e.g. Wieliczka → Maczuga Herkulesa in one day and instead
+# clusters Ojców / Maczuga / Pieskowa Skała / Jaskinia Ciemna together.
 _FAR_GEO_REGIONS = frozenset({
     "region_pieniny", "region_spisz_bukowina", "region_slowacja",
+    "region_ojcow", "region_wieliczka",
 })
 
 
 def poi_geo_region_key(p: dict) -> str | None:
-    """Geographic region key for Zone C day-trip areas (Pieniny, Spisz, Słowacja)."""
+    """Geographic region key for Zone C day-trip areas (Pieniny, Spisz, Słowacja,
+    plus Kraków excursions: Ojców NP and the Wieliczka/Bochnia salt mines)."""
     name = str(p.get("name", "")).lower()
     city = str(p.get("city", "") or p.get("City", "")).lower()
     blob = f"{name} {city}"
@@ -1617,6 +1633,19 @@ def poi_geo_region_key(p: dict) -> str | None:
         "czerwienne", "małe ciche", "male ciche",
     )):
         return "region_spisz_bukowina"
+    # FIX #225: Ojców National Park cluster (Kraków day-trip).
+    if any(k in blob for k in (
+        "ojców", "ojcow", "maczuga", "piesko", "jaskinia ciemna",
+        "jaskinia łokietka", "jaskinia lokietka", "grodzisko",
+        "prądnik", "pradnik",
+    )):
+        return "region_ojcow"
+    # FIX #225: Wieliczka / Bochnia salt-mine cluster (Kraków day-trip).
+    if any(k in blob for k in (
+        "wieliczka", "wieliczce", "bochnia", "bocheńsk", "bochensk",
+        "kopalnia soli",
+    )):
+        return "region_wieliczka"
     return None
 
 
@@ -4159,12 +4188,18 @@ def score_poi(
     if _needed222 and not _matches_any_pref and is_quick_stop_poi(p):
         score -= 60.0
 
-    # Flagship icons for cultural / museum trips.
+    # Flagship icons.
     # FIX #224: client — cultural plans for Warszawa missed Łazienki/POLIN/PKiN/
-    # Muzeum Powstania. Boost flagships harder and also for history_mystery, and add
-    # an extra kick for genuine must_see>=9 icons so they reliably enter the plan.
+    # Muzeum Powstania. FIX #225: client (Kraków) — Wawel/Rynek/Mariacka/Sukiennice
+    # missing from family/relax/nature plans too. A city's signature landmarks belong
+    # in EVERY plan, so give a UNIVERSAL anchor boost (all profiles), strongest early,
+    # plus the existing extra premium for explicit culture/museum/history trips.
     _ts222 = user.get("travel_style", "")
     if _is_city_221(context) and any(m in _name221 for m in _CITY_FLAGSHIP_NAME_MARKERS):
+        if must_see_value >= 9:
+            score += 95.0 if _day221 <= 3 else 60.0
+        else:
+            score += 45.0 if _day221 <= 3 else 25.0
         if (
             "museum_heritage" in _prefs221
             or "history_mystery" in _prefs221
@@ -4173,6 +4208,15 @@ def score_poi(
             score += 130.0 if _day221 <= 3 else 90.0
             if must_see_value >= 9:
                 score += 40.0
+
+    # FIX #225: family-defining icons (Smok, Wawel, Ogród Doświadczeń, Park Jordana,
+    # Zoo) must reliably enter family_kids plans.
+    if (
+        _is_city_221(context)
+        and user.get("target_group") == "family_kids"
+        and any(m in _name221 for m in _FAMILY_ICON_MARKERS)
+    ):
+        score += 80.0 if _day221 <= 3 else 50.0
 
     # Wrocław Szczytnicki cluster — keep botanic/pergola/japanese/hala together.
     _ck222 = poi_repeat_cluster_key(p.get("name", ""))
@@ -4213,6 +4257,13 @@ def score_poi(
     #    Browar Stu Mostów keeps surfacing as a full program point in every plan.
     if any(m in _name221 for m in _UNIVERSAL_FILLER_NAME_MARKERS):
         score -= 70.0
+
+    # FIX #225: client — Wieża Ratuszowa over-ranked for seniors (tower climb,
+    # narrow stairs). Demote tower-climb POIs for the seniors profile.
+    if user.get("target_group") == "seniors" and any(
+        k in _name221 for k in ("wieża ratuszowa", "wieza ratuszowa")
+    ):
+        score -= 75.0
 
     # 2) Museum dominance for nature/relax-leaning profiles (solo + relax + nature →
     #    too many museums). Cap museums when the user's prefs are nature/relax and the
@@ -4262,6 +4313,11 @@ def score_poi(
 # must_see / popularity but weak as standalone program points).
 _UNIVERSAL_FILLER_NAME_MARKERS = (
     "browar stu mostów", "browar stu mostow",
+    # FIX #225 (29.06.2026): client (Kraków) — secondary POIs over-ranked vs city icons.
+    "muzeum obwarzanka", "muzeum geologiczne", "fabryka wódki", "fabryka wodki",
+    "pałac krzysztofory", "palac krzysztofory", "krzysztofory",
+    "be happy museum", "be happy", "kino 7d", "muzeum żywego motyla",
+    "żywego motyla", "zywego motyla", "kopiec krakusa", "lustrzany labirynt",
 )
 
 

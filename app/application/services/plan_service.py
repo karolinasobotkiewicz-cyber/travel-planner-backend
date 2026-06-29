@@ -3276,6 +3276,50 @@ class PlanService:
         else:
             # POI: Use time_min field from Excel
             visit_min = poi_dict.get("time_min", 60)
+            # FIX #225 (29.06.2026): client (Kraków) — flagship icons shown for only
+            # ~35 min (Rynek/Bazylika Mariacka/Bulwary/Planty) because this builder used
+            # raw Excel time_min and ignored the engine's reserved duration (see FIX #74).
+            # Enforce per-importance floors so major POIs get adequate time AND the
+            # engine's reserved slot is filled instead of leaking into free_time.
+            # Capped at time_max so we never overshoot the engine's reservation.
+            try:
+                from app.domain.planner.engine import (
+                    is_quick_stop_poi as _is_qs225,
+                    safe_float as _sf225,
+                    safe_int as _si225,
+                )
+                if not _is_qs225(poi_dict):
+                    _nm225 = str(poi_dict.get("name", "")).lower()
+                    _ms225 = _sf225(
+                        poi_dict.get("must_see")
+                        or poi_dict.get("must_see_score")
+                        or poi_dict.get("Must see score")
+                    )
+                    _flagship_kw = (
+                        "wawel", "rynek główny", "rynek glowny", "sukiennice",
+                        "mariack", "łazienki", "lazienki", "zamek królewski",
+                        "zamek krolewski", "polin", "pałac kultury", "palac kultury",
+                    )
+                    _floor225 = 30
+                    if any(k in _nm225 for k in _flagship_kw) or _ms225 >= 9:
+                        _floor225 = 60
+                    elif "muzeum" in _nm225 or "museum" in str(
+                        poi_dict.get("type", "")
+                    ).lower():
+                        _floor225 = 45
+                    elif any(
+                        k in _nm225
+                        for k in ("park", "ogród", "ogrod", "bulwar", "planty",
+                                  "kopiec", "dolina")
+                    ):
+                        _floor225 = 45
+                    _tmax225 = _si225(poi_dict.get("time_max"), 0)
+                    if _tmax225 > 0:
+                        _floor225 = min(_floor225, _tmax225)
+                    if visit_min < _floor225:
+                        visit_min = _floor225
+            except Exception:
+                pass
         
         # PHASE 8 FEATURE #4: Apply timing buffers
         popularity = poi_dict.get("popularity", 0.0)

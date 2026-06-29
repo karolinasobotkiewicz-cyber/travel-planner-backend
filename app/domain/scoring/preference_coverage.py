@@ -449,6 +449,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         # FIX #222: chocolate / weak urban POI ≠ museum.
         "wedel", "czekolad", "pijalnia czekolady", "plac wolności", "plac wolnosci",
         "rynek jeżycki", "rynek jezycki", "pomnik bamberki", "domy kupieckie",
+        # FIX #225: mirror maze / photo-installation venues ≠ museum heritage.
+        "lustrzany labirynt", "be happy museum",
     ),
     "nature_landscape": (
         "spodek", "rynek", "dlugi targ", "długi targ", "fontanna neptuna",
@@ -485,6 +487,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "muzeum śląskie", "muzeum slaskie",
         # FIX #223: cathedrals/churches/bridges are not a food experience.
         "katedra", "archikatedra", "bazylika", "parafia", "most ", "kładka", "kladka",
+        # FIX #225: socialist district sightseeing tour is not a food experience.
+        "nowa huta",
     ),
     "relaxation": (
         "most tumski", "rynek", "fontanna", "hala stulecia", "muzeum narodowe",
@@ -504,6 +508,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "muzeum śląskie", "muzeum slaskie",
         # FIX #223: cathedrals/churches are not relaxation.
         "katedra", "archikatedra", "bazylika", "parafia",
+        # FIX #225: Kraków — socialist district tour / mirror maze / palace-park ≠ relax.
+        "nowa huta", "lustrzany labirynt", "park decjusza",
     ),
     "history_mystery": (
         # FIX #204: client (Sopot/Gdańsk) — spa-resort buildings & promenade gates
@@ -517,6 +523,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         # FIX #224: chocolate/candy & urban lake are not history_mystery.
         "wedel", "czekolad", "pijalnia", "manufaktura cukier",
         "jeziorko czerniakowskie", "jeziorko", "zoo", "ogród zoologiczny",
+        # FIX #225: renaissance palace-park stroll ≠ history_mystery.
+        "park decjusza",
     ),
     # FIX #224: underground (caves/mines) — exclude chocolate/lake/zoo/squares.
     "underground": (
@@ -538,6 +546,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "manufaktura", "szkła", "szkla", "punkt widokowy",
         # FIX #224: urban lake/memorial hill ≠ active sport.
         "jeziorko czerniakowskie", "jeziorko", "kopiec powstania",
+        # FIX #225: renaissance palace-park stroll ≠ active sport.
+        "park decjusza",
     ),
     "water_attractions": (
         "browar", "wedel", "czekolad", "pijalnia", "muzeum", "lotnictwa",
@@ -549,6 +559,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "zalew radkowski",
         # FIX #222
         "fabryka wódki", "fabryka wodki", "kopiec powstania", "muzeum śląskie", "muzeum slaskie",
+        # FIX #225: socialist district tour ≠ water attraction.
+        "nowa huta",
     ),
     # FIX #204: Katowice marked urban recreation parks as mountain trails.
     "mountain_trails": (
