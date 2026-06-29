@@ -483,6 +483,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         # FIX #222
         "fabryka wódki", "fabryka wodki", "rogalowe muzeum", "kopiec powstania",
         "muzeum śląskie", "muzeum slaskie",
+        # FIX #223: cathedrals/churches/bridges are not a food experience.
+        "katedra", "archikatedra", "bazylika", "parafia", "most ", "kładka", "kladka",
     ),
     "relaxation": (
         "most tumski", "rynek", "fontanna", "hala stulecia", "muzeum narodowe",
@@ -500,6 +502,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "podziemia rynku", "kopalnia wieliczka", "fabryka schindler",
         "fabryka wódki", "fabryka wodki", "kopiec powstania",
         "muzeum śląskie", "muzeum slaskie",
+        # FIX #223: cathedrals/churches are not relaxation.
+        "katedra", "archikatedra", "bazylika", "parafia",
     ),
     "history_mystery": (
         # FIX #204: client (Sopot/Gdańsk) — spa-resort buildings & promenade gates

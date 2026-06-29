@@ -4757,7 +4757,15 @@ class PlanService:
                     start_min = time_to_minutes(st)
                     end_min = time_to_minutes(en)
                     if end_min > day_end_min:
-                        new_dur = max(day_end_min - start_min, 15)
+                        new_dur = day_end_min - start_min
+                        # FIX #223: client — "kolacja na 8 minut". A sub-30-min dinner
+                        # is worse than none; drop it entirely so the day ends cleanly.
+                        if new_dur < 30:
+                            print(
+                                f"[FIX #223] Day {day_num}: dropped dinner_break "
+                                f"(only {new_dur}min before day_end)"
+                            )
+                            continue
                         new_end = minutes_to_time(start_min + new_dur)
                         try:
                             data = item.model_dump() if hasattr(item, "model_dump") else item.dict()

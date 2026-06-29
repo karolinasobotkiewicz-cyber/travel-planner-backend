@@ -902,9 +902,13 @@ _HARD_QUICK_STOP_MARKERS = (
     "neon side", "galeria neon", "bastion sakwowy", "rynek jeżycki", "rynek jezycki",
     "pomnik bamberki", "jeziorko czerniakowskie", "browary warszawskie",
     "plac europejski", "muzeum fabryki norblina", "norblin",
-    "nikiszowiec", "spodek", "browar mariacki", "hala stulecia",
+    "nikiszowiec", "spodek", "browar mariacki",
     "domy kupieckie", "pomnik ofiar czerwca", "holiday park",
     "laser tag", "city golf",
+    # FIX #223 (29.06.2026): client — Most Tumski still over-ranked (already caught by
+    # the "most " prefix above). NOTE: "hala stulecia" intentionally removed — it is a
+    # must=9 UNESCO flagship + Szczytnicki cluster anchor the client wants kept with the
+    # botanic garden cluster, not demoted to a photo-stop.
 )
 
 _QUICK_STOP_NAME_MARKERS = (
@@ -2390,6 +2394,12 @@ def score_poi(
     must_see_value = safe_float(
         p.get("must_see") or p.get("must_see_score") or p.get("Must see score")
     )
+    # FIX #223 (29.06.2026): client — Browar Stu Mostów (must=8), bridges and other
+    # quick-stop fillers keep winning as full program points thanks to a high Excel
+    # must_see. Cap the must_see VALUE for quick-stops so they lose the iconic boost
+    # and behave like the photo-stops they are (real icons keep must_see>=9 exemption).
+    if is_quick_stop_poi(p) and must_see_value > 4:
+        must_see_value = 4.0
     must_see_multiplier = scoring_weights.get("must_see_bonus", 1.0)
     
     if poi_matches_preferences or not user_preferences:
@@ -4134,12 +4144,14 @@ def score_poi(
     if _needed222:
         for _np in _needed222:
             if _covers222(p, _np):
-                _spread_boost = 95.0 + min(_day221, 5) * 12.0
+                _spread_boost = 110.0 + min(_day221, 5) * 14.0
                 if _np in _prefs221[:2]:
-                    _spread_boost += 35.0
+                    _spread_boost += 40.0
                 score += _spread_boost
+        # FIX #223: off-profile POI while core prefs still unmet today — stronger
+        # demotion so later days keep realising preferences instead of universal POIs.
         if not _matches_any_pref and _num_days222 >= 2:
-            score -= 85.0
+            score -= 110.0 if _is_city_221(context) else 85.0
     # Generic filler POI when user still needs core prefs today.
     if _needed222 and not _matches_any_pref and is_quick_stop_poi(p):
         score -= 60.0
@@ -4158,13 +4170,17 @@ def score_poi(
             score += 70.0
 
     # Zoo over-used for non-family cultural profiles.
+    # FIX #223: client — ZOO appears at underground + history_mystery; add those prefs.
     if (
-        "zoo" in _name221
+        ("zoo" in _name221 or "ogród zoologiczny" in _name221 or "ogrod zoologiczny" in _name221)
         and _tg221 not in ("family_kids",)
         and "kids_attractions" not in _prefs221
-        and {"museum_heritage", "history_mystery", "cultural_experience"} & set(_prefs221)
+        and {
+            "museum_heritage", "history_mystery", "cultural_experience",
+            "underground",
+        } & set(_prefs221)
     ):
-        score -= 90.0
+        score -= 110.0
 
     # Relaxation must not dominate when other prefs still needed today.
     if travel_style == "relax" and _needed222 - {"relaxation"}:
@@ -4180,7 +4196,61 @@ def score_poi(
     except (TypeError, ValueError):
         pass
 
+    # ── FIX #223 (29.06.2026): client feedback round 2 (Wrocław) ──────────────
+    # 1) Persistent "universal filler" POIs — extra demotion regardless of profile.
+    #    Browar Stu Mostów keeps surfacing as a full program point in every plan.
+    if any(m in _name221 for m in _UNIVERSAL_FILLER_NAME_MARKERS):
+        score -= 70.0
+
+    # 2) Museum dominance for nature/relax-leaning profiles (solo + relax + nature →
+    #    too many museums). Cap museums when the user's prefs are nature/relax and the
+    #    day/trip already has museum coverage.
+    _nat_relax_focus = (
+        bool({"nature_landscape", "relaxation"} & set(_prefs221))
+        and not ({"museum_heritage", "history_mystery", "underground"} & set(_prefs221))
+    )
+    if (_nat_relax_focus or travel_style == "relax") and is_museum_heritage_poi(p):
+        _day_mus223 = _dpc221.get("museum_heritage", 0)
+        _trip_mus223 = int((context or {}).get("trip_museum_count", 0) or 0)
+        if _day_mus223 >= 1:
+            score -= 80.0
+        elif _trip_mus223 >= 2:
+            score -= 45.0
+
+    # 3) relax style must not collapse into Free Time — actively reward real
+    #    relaxation/nature POIs so the day fills with parks/spas instead of gaps.
+    if travel_style == "relax":
+        _relax_pos = {
+            "relaxation", "spa", "termy", "wellness", "city_park", "green_space",
+            "park", "park_walk", "park_complex", "botanical_garden", "japanese_garden",
+            "nature_landscape", "garden",
+        }
+        if _relax_pos & poi_tags:
+            score += 55.0
+
+    # 4) Expensive single activity dominating the daily budget (client: Bungee for
+    #    active_sport blows the daily limit). Group cost can pass the hard cap yet eat
+    #    almost the entire budget — demote non-flagship POIs above 55% of the limit.
+    if daily_limit is not None and daily_limit > 0:
+        try:
+            _cost223 = calculate_poi_cost_for_group(p, user)
+            if (
+                _cost223 > 0.55 * float(daily_limit)
+                and must_see_value < 8
+                and not is_heavy_sightseeing_poi(p)
+            ):
+                score -= 120.0
+        except Exception:
+            pass
+
     return score
+
+
+# FIX #223: POIs the client repeatedly flags as universal plan filler (high Excel
+# must_see / popularity but weak as standalone program points).
+_UNIVERSAL_FILLER_NAME_MARKERS = (
+    "browar stu mostów", "browar stu mostow",
+)
 
 
 # =========================
