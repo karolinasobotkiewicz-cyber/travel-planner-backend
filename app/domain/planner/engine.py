@@ -4238,6 +4238,38 @@ def score_poi(
     ):
         score -= 110.0
 
+    # ── FIX #226 (29.06.2026): client feedback (Katowice) ────────────────────
+    # Churches surface everywhere and even open the day. Demote churches/chapels
+    # unless the trip is explicitly history/heritage-oriented (real flagship
+    # cathedrals with must_see>=9 like Mariacka/Wawelska stay exempt).
+    _culture_led_225 = bool(
+        {"museum_heritage", "history_mystery"} & set(_prefs221)
+    ) or _ts222 == "cultural"
+    _is_church_225 = any(
+        k in _name221
+        for k in ("kościół", "kosciol", "koci ", "parafia", "cerkiew", "kaplica")
+    ) or ("bazylika" in _name221 and must_see_value < 9)
+    if _is_church_225 and must_see_value < 9 and not _culture_led_225:
+        score -= 60.0
+
+    # Museums over-represented for non-museum profiles (active_sport/adventure get
+    # "lots of museums"). Demote museums when museum_heritage isn't a preference and
+    # the style isn't cultural; stronger if the day already has a museum.
+    if (
+        is_museum_heritage_poi(p)
+        and "museum_heritage" not in _prefs221
+        and "history_mystery" not in _prefs221
+        and _ts222 != "cultural"
+    ):
+        score -= 45.0
+        if _dpc221.get("museum_heritage", 0) >= 1:
+            score -= 50.0
+
+    # Spodek / Planetarium / Pixel XL flagged as over-ranked filler (esp. for
+    # underground + history_mystery + museum_heritage).
+    if any(k in _name221 for k in ("spodek", "planetarium", "pixel xl", "pixel")):
+        score -= 55.0
+
     # Relaxation must not dominate when other prefs still needed today.
     if travel_style == "relax" and _needed222 - {"relaxation"}:
         _relax_tags222 = {"relaxation", "spa", "termy", "wellness", "city_park"}

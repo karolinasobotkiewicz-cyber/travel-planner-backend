@@ -2726,7 +2726,15 @@ class PlanService:
                 # 4. LUNCH_BREAK (4.12) - z engine
                 lunch_start = item.get("start_time", "12:00")
                 lunch_end = item.get("end_time", "13:30")
-                lunch_duration = item.get("duration_min", 90)
+                lunch_duration = item.get("duration_min", 60)
+                # FIX #226: client (Katowice) — "lunch trwa 90 min często". A 90-min
+                # lunch eats the day; cap at 60 min and recompute the end time.
+                if lunch_duration > 60:
+                    from app.domain.planner.time_utils import (
+                        time_to_minutes as _ttm225, minutes_to_time as _mtt225,
+                    )
+                    lunch_duration = 60
+                    lunch_end = _mtt225(_ttm225(lunch_start) + lunch_duration)
                 
                 # FIX #23 (03.05.2026 - CLIENT FEEDBACK Round 2 - Problem #1 - Timeline Overlap):
                 # ROOT CAUSE: PHASE 8 FEATURE #4 moved lunch start_time BACKWARD by 10 min, creating overlaps
@@ -3098,8 +3106,8 @@ class PlanService:
             lunch_item = LunchBreakItem(
                 type=ItemType.LUNCH_BREAK,
                 start_time="12:00",
-                end_time="13:30",
-                duration_min=90,  # 1h 30min
+                end_time="13:00",
+                duration_min=60,  # FIX #226: 60 min (was 90 — client: lunch too long)
                 suggestions=[
                     _restaurant_dict_to_suggestion(n, "lunch")
                     for n in ["Restauracja lokalna", "Bistro", "Lunch na wynos"]
@@ -3312,6 +3320,14 @@ class PlanService:
                         for k in ("park", "ogród", "ogrod", "bulwar", "planty",
                                   "kopiec", "dolina")
                     ):
+                        _floor225 = 45
+                    elif any(
+                        k in _nm225
+                        for k in ("rynek", "stare miasto", "starówka", "starowka",
+                                  "zamek", "dzielnica")
+                    ):
+                        # FIX #226: squares / old-town / castle grounds (e.g. Rynek
+                        # w Katowicach was 35 min) — give a meaningful stroll.
                         _floor225 = 45
                     _tmax225 = _si225(poi_dict.get("time_max"), 0)
                     if _tmax225 > 0:

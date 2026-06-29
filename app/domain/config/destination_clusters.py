@@ -157,6 +157,48 @@ class DestinationClusters:
     }
     
     # ================================================================
+    # CLUSTER 4: GÓRNOŚLĄSKO-ZAGŁĘBIOWSKA METROPOLIA / GZM (Urban Organism)
+    # ================================================================
+    # FIX #226 (29.06.2026): client — Katowice plans had empty/short days (day 3
+    # with no attractions, days ending at 12:00). Root cause: only 21 Katowice POIs
+    # in the Excel, no cluster expansion. Katowice is the hub of the GZM conurbation
+    # (Gliwice/Zabrze/Chorzów/Tychy), all linked by dense public transport — treat
+    # them as ONE destination so multi-day trips have a sufficient POI pool (~50).
+    GZM = {
+        "id": "gzm",
+        "name": "Górny Śląsk",
+        "display_name": "Górny Śląsk (Katowice+Gliwice+Zabrze+Chorzów+Tychy)",
+        "type": ClusterType.URBAN_ORGANISM,
+        "cities": ["Katowice", "Gliwice", "Zabrze", "Chorzów", "Tychy"],
+
+        "total_attractions": 50,  # Katowice 21, Gliwice 14, Zabrze 9, Chorzów 5, Tychy 1
+        "total_restaurants": 0,
+
+        "max_distance_km": 30,
+        "primary_city": "Katowice",
+        "region_type": "urban",
+
+        "unified_destination": True,
+        "transit_between_cities": "public_transport",
+        "typical_days": [1, 2, 3, 4],
+
+        "scoring_weights": {
+            "location_diversity": 1.2,
+            "transit_penalty": 0.8,
+            "urban_accessibility": 1.1,
+        },
+
+        "tags": ["urban", "industrial_heritage", "culture", "post_industrial", "history"],
+        "recommended_preferences": ["culture", "history", "architecture", "active_sport"],
+
+        "description": "Górnośląsko-Zagłębiowska Metropolia (GZM) to konurbacja miast "
+                      "Górnego Śląska z Katowicami jako centrum (Gliwice, Zabrze, Chorzów, "
+                      "Tychy). Miasta są ściśle połączone komunikacją miejską i tworzą jedną "
+                      "destynację turystyczną — dziedzictwo poprzemysłowe, Nikiszowiec, "
+                      "Spodek, Szlak Zabytków Techniki, parki i kultura.",
+    }
+
+    # ================================================================
     # CLUSTER REGISTRY
     # ================================================================
     ALL_CLUSTERS = {
@@ -166,6 +208,9 @@ class DestinationClusters:
         "Kłodzko+Polanica+Kudowa": KOTLINA_KLODZKA,  # Alias
         "Karkonosze": KARKONOSZE,
         "Karpacz+Jelenia Góra+Szklarska": KARKONOSZE,  # Alias
+        "Górny Śląsk": GZM,
+        "GZM": GZM,  # Alias
+        "Katowice+Gliwice+Zabrze+Chorzów+Tychy": GZM,  # Alias
     }
     
     # ================================================================
@@ -186,6 +231,13 @@ class DestinationClusters:
         "Karpacz": "karkonosze",
         "Jelenia Góra": "karkonosze",
         "Szklarska Poręba": "karkonosze",
+
+        # FIX #226: GZM (Górny Śląsk) — Katowice is the hub.
+        "Katowice": "gzm",
+        "Gliwice": "gzm",
+        "Zabrze": "gzm",
+        "Chorzów": "gzm",
+        "Tychy": "gzm",
     }
     
     @classmethod
@@ -214,7 +266,7 @@ class DestinationClusters:
         if cluster_name_or_city in cls.CITY_TO_CLUSTER:
             cluster_id = cls.CITY_TO_CLUSTER[cluster_name_or_city]
             # Find cluster by ID
-            for cluster in [cls.TROJMIASTO, cls.KOTLINA_KLODZKA, cls.KARKONOSZE]:
+            for cluster in [cls.TROJMIASTO, cls.KOTLINA_KLODZKA, cls.KARKONOSZE, cls.GZM]:
                 if cluster["id"] == cluster_id:
                     return cluster
         
@@ -269,7 +321,7 @@ class DestinationClusters:
             >>> DestinationClusters.get_all_cluster_names()
             ['Trójmiasto', 'Kotlina Kłodzka', 'Karkonosze']
         """
-        return ["Trójmiasto", "Kotlina Kłodzka", "Karkonosze"]
+        return ["Trójmiasto", "Kotlina Kłodzka", "Karkonosze", "Górny Śląsk"]
     
     @classmethod
     def get_cluster_summary(cls) -> Dict[str, Any]:
