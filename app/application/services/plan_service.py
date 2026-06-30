@@ -2761,11 +2761,21 @@ class PlanService:
             
             elif item_type == "dinner_break":
                 from app.domain.planner.city_copy import dinner_suggestions
+                _dinner_start = item.get("start_time", "18:00")
+                _dinner_end = item.get("end_time", "19:30")
+                _dinner_dur = item.get("duration_min", 60)
+                # FIX #227: client (Poznań) — "kolacja trwa 90 minut". Cap at 60.
+                if _dinner_dur > 60:
+                    from app.domain.planner.time_utils import (
+                        time_to_minutes as _ttm227, minutes_to_time as _mtt227,
+                    )
+                    _dinner_dur = 60
+                    _dinner_end = _mtt227(_ttm227(_dinner_start) + _dinner_dur)
                 dinner_item = DinnerBreakItem(
                     type=ItemType.DINNER_BREAK,
-                    start_time=item.get("start_time", "18:00"),
-                    end_time=item.get("end_time", "19:30"),
-                    duration_min=item.get("duration_min", 90),
+                    start_time=_dinner_start,
+                    end_time=_dinner_end,
+                    duration_min=_dinner_dur,
                     suggestions=_parse_meal_suggestions(
                         item.get("suggestions", []),
                         "dinner",

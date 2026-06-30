@@ -912,6 +912,8 @@ _HARD_QUICK_STOP_MARKERS = (
     # FIX #224 (29.06.2026): Warszawa — still over-ranked micro/filler POIs.
     "kopiec powstania", "manufaktura cukierków", "manufaktura cukierkow",
     "pijalnia wedla", "pijalnia czekolady",
+    # FIX #227 (30.06.2026): Poznań — still over-ranked micro POIs.
+    "makiety dawnego poznania", "makiety dawnego", "pixel xl",
 )
 
 _QUICK_STOP_NAME_MARKERS = (
@@ -1600,6 +1602,9 @@ _FAMILY_ICON_MARKERS = (
     "smok wawelski", "wawel", "ogród doświadczeń", "ogrod doswiadczen",
     "park jordana", "park lotników", "park lotnikow",
     "ogród zoologiczny", "ogrod zoologiczny", "zoo",
+    # FIX #227 (30.06.2026): Poznań family icons under-used by family_kids plans.
+    "brama poznania", "rogalowe muzeum", "termy maltańskie", "termy maltanskie",
+    "nowe zoo", "stare zoo",
 )
 
 # FIX #181 (06.06.2026 - ETAP A): Far excursion regions — one thematic region visit per trip.
@@ -4276,10 +4281,13 @@ def score_poi(
         if _relax_tags222 & poi_tags and not any(_covers222(p, pr) for pr in _needed222 - {"relaxation"}):
             score -= 50.0
 
-    # Laser tag — deny very young children (client: 5-year-old).
+    # Laser tag / escape room — deny very young children (client: 5-year-old).
+    # FIX #227: client (Poznań) — Escape Room must not appear for a 5-year-old.
     _child_age = user.get("children_age") or user.get("group", {}).get("children_age")
     try:
-        if _child_age is not None and int(_child_age) <= 6 and "laser tag" in _name221:
+        if _child_age is not None and int(_child_age) <= 6 and any(
+            k in _name221 for k in ("laser tag", "escape room", "escape ")
+        ):
             score -= 200.0
     except (TypeError, ValueError):
         pass
@@ -4350,6 +4358,9 @@ _UNIVERSAL_FILLER_NAME_MARKERS = (
     "pałac krzysztofory", "palac krzysztofory", "krzysztofory",
     "be happy museum", "be happy", "kino 7d", "muzeum żywego motyla",
     "żywego motyla", "zywego motyla", "kopiec krakusa", "lustrzany labirynt",
+    # FIX #227 (30.06.2026): client (Poznań) — over-ranked filler.
+    "pomnik bamberki", "makiety dawnego poznania", "makiety dawnego",
+    "rynek jeżycki", "rynek jezycki", "okrąglak", "okraglak",
 )
 
 
@@ -4770,6 +4781,73 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
                     global_termy_tracking["count"] += _f160_termy_added
                 if global_trail_tracking is not None:
                     global_trail_tracking["count"] += _f160_trail_added
+
+        # FIX #227 (30.06.2026): single-city trips never hit the FIX #160 retry (it is
+        # gated on zone pools), so trip-wide dedup could leave a late day empty/sparse
+        # (client: Poznań "ostatni dzień bez żadnej atrakcji"). If a single-city day is
+        # still empty/very sparse, retry once allowing REUSE of POIs not used in the
+        # last 2 days — a repeated highlight is far better than an empty day.
+        if pois_per_day is None and len(pois) > 6:
+            _f227_attr, _f227_free = _f160_fill_metric(day_plan)
+            if _f227_attr < 3:
+                _f227_added = set(_global_used_for_day) - set(_global_used_before_day)
+                _f227_recent = set(_f227_added)
+                for _ds in daily_used_sets[-2:]:
+                    _f227_recent |= _ds
+                if len(_f227_recent) < len(_global_used_for_day):
+                    print(f"[FIX #227] Day {day_num + 1}: single-city sparse "
+                          f"({_f227_attr} attractions) → retry allowing reuse of older POIs")
+                    _f227_termy = sum(
+                        1 for _it in day_plan if _it.get("type") == "attraction"
+                        and is_termy_spa(_it.get("poi") or {}))
+                    _f227_trail = sum(
+                        1 for _it in day_plan if _it.get("type") == "attraction"
+                        and (_it.get("poi") or {}).get("type") == "trail")
+                    for _pid in _f227_added:
+                        _global_used_for_day.discard(_pid)
+                    if global_termy_tracking is not None:
+                        global_termy_tracking["count"] -= _f227_termy
+                    if global_trail_tracking is not None:
+                        global_trail_tracking["count"] -= _f227_trail
+                    _f227_gu_snap = set(_global_used_for_day)
+                    _f227_tc_snap = (global_termy_tracking["count"]
+                                     if global_termy_tracking is not None else None)
+                    _f227_trc_snap = (global_trail_tracking["count"]
+                                      if global_trail_tracking is not None else None)
+                    _f227_warn: list = []
+                    _f227_retry = build_day(
+                        pois=pois, user=user, context=context,
+                        day_start=day_start, day_end=day_end,
+                        global_used=set(_f227_recent),  # allow reuse of older POIs
+                        global_termy_tracking=global_termy_tracking,
+                        global_trail_tracking=global_trail_tracking,
+                        warnings_out=_f227_warn, fallback_pois=pois,
+                    )
+                    _f227_rattr, _f227_rfree = _f160_fill_metric(_f227_retry)
+                    if _f227_rattr > _f227_attr:
+                        print(f"[FIX #227] Day {day_num + 1}: adopted reuse plan "
+                              f"({_f227_rattr} attractions, was {_f227_attr})")
+                        day_plan = _f227_retry
+                        _day_warnings = _f227_warn
+                        _global_used_for_day.clear()
+                        _global_used_for_day |= _f227_gu_snap
+                        for _it in _f227_retry:
+                            if _it.get("type") == "attraction" and _it.get("poi"):
+                                _pid227 = poi_id(_it["poi"])
+                                if _pid227:
+                                    _global_used_for_day.add(_pid227)
+                    else:
+                        _global_used_for_day.clear()
+                        _global_used_for_day |= _f227_gu_snap
+                        if global_termy_tracking is not None:
+                            global_termy_tracking["count"] = _f227_tc_snap
+                        if global_trail_tracking is not None:
+                            global_trail_tracking["count"] = _f227_trc_snap
+                        _global_used_for_day |= _f227_added
+                        if global_termy_tracking is not None:
+                            global_termy_tracking["count"] += _f227_termy
+                        if global_trail_tracking is not None:
+                            global_trail_tracking["count"] += _f227_trail
 
         # Capture POIs added by build_day this day (global_used_pois updated in-place).
         _day_pois_used = _global_used_for_day - _global_used_before_day

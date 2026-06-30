@@ -38,6 +38,9 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "bastion sakwowy", "neon side", "most świętokrzyski", "most swietokrzyski",
         "muzeum powstania warszawskiego", "plac europejski",
         "muzeum czartoryskich", "laser tag",
+        # FIX #227 (30.06.2026): Poznań — cathedral / merchant houses / escape room
+        # are not family_kids attractions.
+        "bazylika archikatedralna", "archikatedr", "domy kupieckie", "escape room",
     ),
     # FIX #224: client — Centrum Nauki Kopernik (interactive science center for
     # kids/families) should not appear in a solo plan even though Excel lists "solo".

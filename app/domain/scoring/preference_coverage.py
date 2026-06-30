@@ -451,6 +451,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "rynek jeżycki", "rynek jezycki", "pomnik bamberki", "domy kupieckie",
         # FIX #225: mirror maze / photo-installation venues ≠ museum heritage.
         "lustrzany labirynt", "be happy museum",
+        # FIX #227: arcade / VR / escape room are not museum heritage.
+        "pixel", "escape room", "kino 7d", "cybermagia",
     ),
     "nature_landscape": (
         "spodek", "rynek", "dlugi targ", "długi targ", "fontanna neptuna",
@@ -525,12 +527,16 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "jeziorko czerniakowskie", "jeziorko", "zoo", "ogród zoologiczny",
         # FIX #225: renaissance palace-park stroll ≠ history_mystery.
         "park decjusza",
+        # FIX #227: arcade / VR / escape room are not history_mystery.
+        "pixel", "kino 7d", "cybermagia",
     ),
     # FIX #224: underground (caves/mines) — exclude chocolate/lake/zoo/squares.
     "underground": (
         "wedel", "czekolad", "pijalnia", "manufaktura cukier",
         "jeziorko czerniakowskie", "jeziorko", "zoo", "ogród zoologiczny",
         "rynek", "plac ", "browar", "deptak", "pomnik",
+        # FIX #227: arcade / VR / escape room are not underground.
+        "pixel", "escape room", "kino 7d", "cybermagia",
     ),
     "kids_attractions": (
         "podziemia rynku",
