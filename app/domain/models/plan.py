@@ -356,6 +356,16 @@ class DayPlan(BaseModel):
     """Plan dla pojedynczego dnia."""
 
     day: int = Field(..., ge=1, description="Numer dnia (1-indexed)")
+    # FIX (01.07.2026 - front feedback): front potrzebuje daty i dnia tygodnia
+    # dla każdego dnia. Liczymy z start_date + (day-1).
+    date: Optional[str] = Field(
+        default=None,
+        description="Data tego dnia w formacie YYYY-MM-DD (start_date + numer dnia)",
+    )
+    weekday: Optional[str] = Field(
+        default=None,
+        description="Dzień tygodnia po polsku (np. 'poniedziałek')",
+    )
     title: Optional[str] = Field(
         default=None,
         description="Krótki tytuł dnia generowany na podstawie głównych atrakcji (np. 'Morskie Oko i Rysy')",
@@ -415,6 +425,35 @@ class PlanResponse(BaseModel):
 
     plan_id: str = Field(..., description="Unikalny ID planu")
     version: int = Field(default=1, description="Wersja planu")
+
+    # FIX (01.07.2026 - front feedback): plan musi nieść kontekst wycieczki,
+    # żeby front mógł wyświetlić miasto, daty i nazwę bez zgadywania.
+    city: Optional[str] = Field(
+        default=None, description="Miasto/kierunek wycieczki (np. 'Wrocław')"
+    )
+    region_type: Optional[str] = Field(
+        default=None, description="Typ regionu: mountain, sea, city, spa_region"
+    )
+    group_type: Optional[str] = Field(
+        default=None, description="Typ grupy (couples, family_kids, ...)"
+    )
+    start_date: Optional[str] = Field(
+        default=None, description="Data rozpoczęcia wycieczki YYYY-MM-DD"
+    )
+    days_count: Optional[int] = Field(
+        default=None, description="Liczba dni wycieczki"
+    )
+    title: Optional[str] = Field(
+        default=None, description="Czytelna nazwa planu (np. 'Wrocław — 3 dni')"
+    )
+    paid: Optional[bool] = Field(
+        default=None, description="Czy plan został opłacony"
+    )
+    payment_status: Optional[str] = Field(
+        default=None,
+        description="Status płatności: paid | unpaid | pending",
+    )
+
     days: List[DayPlan] = Field(
         default_factory=list, description="Lista dni z items"
     )

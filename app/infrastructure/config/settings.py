@@ -64,6 +64,21 @@ class Settings(BaseSettings):
     # Na razie in-memory, ETAP 2: PostgreSQL
 
     # =========================
+    # PLAN ACCESS CONTROL (01.07.2026 - front feedback)
+    # =========================
+
+    # Gdy True: GET /plan/{id} blokuje nieopłacone plany dla osób innych niż
+    # właściciel (paywall). Zwraca 402 Payment Required. Domyślnie ON — to
+    # bezpośrednio zamyka lukę zgłoszoną przez frontowca (podgląd nieopłaconego
+    # planu przez zmianę URL). Właściciel (auth/guest) zawsze widzi swój plan.
+    enforce_plan_payment: bool = True
+
+    # Gdy True: plany przypisane do konta (user_id) wymagają zalogowania jako
+    # właściciel (401/403 dla obcych). Domyślnie OFF, bo wymaga, aby front
+    # wysyłał token przy GET /plan/{id}. Włącz po stronie env, gdy front gotowy.
+    enforce_assigned_plan_auth: bool = False
+
+    # =========================
     # CORS
     # =========================
 

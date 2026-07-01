@@ -32,11 +32,13 @@ class PlanRepositoryInMemory(IPlanRepository):
     def __init__(self):
         self._storage: Dict[str, Dict[str, Any]] = {}
 
-    def save(self, plan: PlanResponse) -> str:
+    def save(self, plan: PlanResponse, user_id: Optional[Any] = None, guest_id: Optional[str] = None, trip_input: Optional[Any] = None) -> str:
         """
         Zapisuje plan i zwraca plan_id.
         
         ETAP 2: INSERT INTO plans lub UPDATE if exists.
+        Extra kwargs (user_id/guest_id/trip_input) are accepted for interface
+        parity with the PostgreSQL repository (ignored here).
         """
         plan_id = plan.plan_id
         now = datetime.utcnow().isoformat()

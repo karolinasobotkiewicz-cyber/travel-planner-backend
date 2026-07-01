@@ -27,25 +27,57 @@ def build_image_url(bucket: str, image_key: str) -> Optional[str]:
         >>> build_image_url('poi', 'poi_morskie_oko')
         'https://usztzcigcnsyyatguxay.supabase.co/storage/v1/object/public/poi/poi_morskie_oko.webp'
     """
-    # Jeśli brak image_key - zwróć None (graceful handling)
-    if not image_key or image_key == "":
+    # Graceful handling: brak image_key / None / pandas NaN / "nan" / "null".
+    # FIX (01.07.2026 - front feedback): image_key bywa float NaN z Excela albo
+    # napisem "NaN" — dawało to błędny URL ".../NaN.webp". Normalizujemy wejście.
+    if image_key is None:
         return None
-    
+    key = str(image_key).strip()
+    if not key or key.lower() in ("nan", "none", "null"):
+        return None
+
     # Jeśli brak Supabase URL w config - zwróć None (fallback)
     if not settings.supabase_url:
-        print(f"WARNING: SUPABASE_URL not configured, cannot build image URL for {image_key}")
+        print(f"WARNING: SUPABASE_URL not configured, cannot build image URL for {key}")
         return None
-    
-    # Dodaj .webp extension jeśli nie ma
-    if not image_key.endswith('.webp'):
-        image_key_with_ext = f"{image_key}.webp"
-    else:
-        image_key_with_ext = image_key
-    
+
+    # FIX (01.07.2026 - front feedback): image_key w bazie bywa z rozszerzeniem
+    # (np. "destination_wroclaw.jpg"), a w Supabase pliki są w .webp. Poprzednio
+    # doklejaliśmy ".webp" na ślepo → "destination_wroclaw.jpg.webp" (404).
+    # Zdejmujemy dowolne znane rozszerzenie obrazka i dopiero doklejamy .webp.
+    lower_key = key.lower()
+    for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif", ".bmp"):
+        if lower_key.endswith(ext):
+            key = key[: -len(ext)]
+            break
+
     # Buduj URL: {supabase_url}/storage/v1/object/public/{bucket}/{image_key}.webp
-    image_url = f"{settings.supabase_url}/storage/v1/object/public/{bucket}/{image_key_with_ext}"
-    
+    image_url = (
+        f"{settings.supabase_url}/storage/v1/object/public/"
+        f"{bucket}/{key}.webp"
+    )
+
     return image_url
+
+
+def normalize_image_key(image_key) -> Optional[str]:
+    """
+    Zwraca czysty image_key (bez rozszerzenia), spójny z image_url.
+
+    Obsługuje None / pandas NaN / "NaN" / puste → None, oraz zdejmuje
+    znane rozszerzenia obrazków. Dzięki temu API zwraca image_key i
+    image_url wskazujące na ten sam plik .webp w Supabase.
+    """
+    if image_key is None:
+        return None
+    key = str(image_key).strip()
+    if not key or key.lower() in ("nan", "none", "null"):
+        return None
+    lower_key = key.lower()
+    for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif", ".bmp"):
+        if lower_key.endswith(ext):
+            return key[: -len(ext)]
+    return key
 
 
 def build_poi_image_url(image_key: str) -> Optional[str]:

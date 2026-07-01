@@ -2,6 +2,7 @@
 Plan endpoints - preview, status, get plan.
 """
 from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi.responses import Response
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 import uuid
@@ -20,8 +21,11 @@ from app.api.dependencies import (
     get_plan_editor,
     get_current_user,  # ETAP 2: Required auth for protected endpoints
     get_owner_id,  # ETAP 2: Guest support (auth OR guest)
+    get_optional_owner,  # 01.07.2026: optional owner for read endpoints
     OwnerIdentity  # ETAP 2: Owner identity wrapper
 )
+from app.infrastructure.config.settings import settings
+from app.infrastructure.pdf import build_plan_pdf
 from app.infrastructure.database.models import User
 from app.application.services.plan_service import PlanService
 from app.application.services.plan_editor import PlanEditor
@@ -118,7 +122,14 @@ def preview_plan(
     plan = plan_service.generate_plan(trip_input)
     
     # Zapisz w repository z user_id OR guest_id
-    plan_repo.save(plan, user_id=owner.user_id, guest_id=owner.guest_id)
+    # FIX (01.07.2026): przekaż trip_input, aby zapisać miasto/grupę/budżet/daty
+    # (wcześniej plan zapisywał się jako "Unknown").
+    plan_repo.save(
+        plan,
+        user_id=owner.user_id,
+        guest_id=owner.guest_id,
+        trip_input=trip_input,
+    )
     
     # ETAP 2: Auto-save version #1
     try:
@@ -182,10 +193,19 @@ async def get_my_plans(
             # Get metadata for each plan
             metadata = plan_repo.get_metadata(plan.plan_id)
             if metadata:
+                _city = metadata.get("city") or metadata.get("location") or "Unknown"
                 plans_response.append({
                     "plan_id": plan.plan_id,
-                    "location": metadata.get("location", "Unknown"),
+                    "location": _city,
+                    "city": _city,
+                    # FIX (01.07.2026): czytelna nazwa planu zamiast "Unknown"
+                    "title": metadata.get("title") or _city,
+                    "region_type": metadata.get("region_type"),
+                    "group_type": metadata.get("group_type"),
+                    "start_date": metadata.get("start_date"),
                     "days_count": metadata.get("days_count", len(plan.days)),
+                    "paid": metadata.get("paid", False),
+                    "payment_status": metadata.get("payment_status", "unpaid"),
                     "created_at": metadata.get("created_at"),
                     "updated_at": metadata.get("updated_at"),
                     "version": plan.version
@@ -210,12 +230,13 @@ def get_plan_status(
 ):
     """
     Sprawdza status planu (polling endpoint).
-    
-    Statusy:
-    - pending: plan w trakcie generowania
-    - ready: plan gotowy
-    - failed: blad generowania
-    - payment_required: wymaga platnosci (ETAP 2)
+
+    Zwraca m.in.:
+    - status: status generowania planu (ready/pending/failed)
+    - paid (bool) + payment_status ("paid"/"unpaid"): status płatności
+      (01.07.2026 - front feedback: front potrzebuje wiedzieć czy opłacony)
+    - is_assigned (bool): czy plan jest przypisany do konta użytkownika
+    - city / title / start_date / days_count: kontekst wycieczki
     """
     metadata = plan_repo.get_metadata(plan_id)
     
@@ -228,28 +249,114 @@ def get_plan_status(
     return metadata
 
 
+def _owner_matches(owner: Optional[OwnerIdentity], owner_ids: Optional[Dict[str, Any]]) -> bool:
+    """Czy żądający jest właścicielem planu (auth user lub guest)."""
+    if not owner or not owner_ids:
+        return False
+    if owner.user_id and owner_ids.get("user_id") and str(owner.user_id) == str(owner_ids["user_id"]):
+        return True
+    if owner.guest_id and owner_ids.get("guest_id") and owner.guest_id == owner_ids["guest_id"]:
+        return True
+    return False
+
+
+def _enforce_plan_access(plan_id: str, plan_repo: PlanRepository, owner: Optional[OwnerIdentity]) -> None:
+    """
+    Kontrola dostępu do planu (01.07.2026 - front feedback).
+
+    - Właściciel (auth/guest) zawsze ma dostęp.
+    - Plan przypisany do konta: gdy enforce_assigned_plan_auth=True, wymaga
+      zalogowania jako właściciel (obcy → 403).
+    - Plan nieopłacony: gdy enforce_plan_payment=True, obcy → 402 (paywall).
+    - Plan opłacony (gość/nieprzypisany): dostępny po UID (zachowanie legacy).
+    """
+    owner_ids = plan_repo.get_owner_ids(plan_id) if hasattr(plan_repo, "get_owner_ids") else None
+    if _owner_matches(owner, owner_ids):
+        return  # właściciel — pełny dostęp
+
+    assigned_to_account = bool(owner_ids and owner_ids.get("user_id"))
+    if assigned_to_account and settings.enforce_assigned_plan_auth:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Ten plan jest przypisany do konta. Zaloguj się jako właściciel, aby go zobaczyć.",
+        )
+
+    paid = plan_repo.is_plan_paid(plan_id) if hasattr(plan_repo, "is_plan_paid") else True
+    if not paid and settings.enforce_plan_payment:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Plan nie został opłacony. Dokończ płatność, aby zobaczyć pełny plan.",
+        )
+
+
 @router.get("/{plan_id}", response_model=PlanResponse)
 def get_full_plan(
     plan_id: str,
-    plan_repo: PlanRepository = Depends(get_plan_repository)
+    plan_repo: PlanRepository = Depends(get_plan_repository),
+    owner: Optional[OwnerIdentity] = Depends(get_optional_owner),
 ):
     """
     Zwraca pelny wygenerowany plan.
-    
-    ETAP 1: Bez walidacji platnosci.
-    ETAP 2: Tylko po oplaceniu.
+
+    01.07.2026: Kontrola dostępu (paywall + opcjonalna autentykacja dla planów
+    przypisanych do konta). Właściciel zawsze ma dostęp. Zwraca też pola
+    city / start_date / title / paid, aby front mógł wyświetlić plan.
     """
     plan = plan_repo.get_by_id(plan_id)
-    
+
     if plan is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Plan {plan_id} not found"
         )
-    
-    # TODO: sprawdzic czy oplacony (ETAP 2)
-    
+
+    _enforce_plan_access(plan_id, plan_repo, owner)
+
     return plan
+
+
+@router.get("/{plan_id}/pdf")
+def download_plan_pdf(
+    plan_id: str,
+    plan_repo: PlanRepository = Depends(get_plan_repository),
+    owner: Optional[OwnerIdentity] = Depends(get_optional_owner),
+):
+    """
+    Generuje i zwraca plan jako plik PDF (01.07.2026 - front feedback).
+
+    Ta sama kontrola dostępu co GET /{plan_id}. Zwraca application/pdf jako
+    załącznik (Content-Disposition: attachment).
+    """
+    plan = plan_repo.get_by_id(plan_id)
+    if plan is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Plan {plan_id} not found"
+        )
+
+    _enforce_plan_access(plan_id, plan_repo, owner)
+
+    try:
+        pdf_bytes = build_plan_pdf(plan)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate PDF: {str(e)}",
+        )
+
+    city = (getattr(plan, "city", None) or "plan").lower()
+    # bezpieczna nazwa pliku (ASCII)
+    import re
+    safe_city = re.sub(r"[^a-z0-9]+", "-", city).strip("-") or "plan"
+    filename = f"plan-{safe_city}-{plan_id[:8]}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
 
 
 # ============================================================================

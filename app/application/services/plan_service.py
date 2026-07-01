@@ -4,7 +4,7 @@ Plan Service - generowanie planów podróży.
 """
 import uuid
 import math
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 
 # ============================================================================
@@ -272,6 +272,66 @@ def _parse_meal_suggestions(raw: List[Any], meal_type: str) -> List[RestaurantSu
     if not raw:
         return []
     return [_restaurant_dict_to_suggestion(item, meal_type) for item in raw]
+
+
+# FIX (01.07.2026 - front feedback): plan musi zwracać miasto, daty i nazwę.
+_PL_WEEKDAYS = [
+    "poniedziałek", "wtorek", "środa", "czwartek",
+    "piątek", "sobota", "niedziela",
+]
+
+
+def _trip_context_fields(trip_input: "TripInput") -> Dict[str, Any]:
+    """Buduje pola kontekstu wycieczki dla PlanResponse (miasto, daty, nazwa)."""
+    city = ""
+    region_type = None
+    group_type = None
+    start_date_str = None
+    days_count = None
+    try:
+        city = (trip_input.location.city or "").strip()
+        region_type = trip_input.location.region_type
+        group_type = trip_input.group.type
+        days_count = trip_input.trip_length.days
+        _sd = trip_input.trip_length.start_date
+        start_date_str = _sd.isoformat() if _sd else None
+    except Exception:
+        pass
+    if days_count:
+        title = f"{city or 'Wycieczka'} — {days_count} " + (
+            "dzień" if days_count == 1 else "dni"
+        )
+    else:
+        title = city or "Wycieczka"
+    return {
+        "city": city or None,
+        "region_type": region_type,
+        "group_type": group_type,
+        "start_date": start_date_str,
+        "days_count": days_count,
+        "title": title,
+    }
+
+
+def _apply_day_dates(days: List["DayPlan"], start_date_str: Optional[str]) -> None:
+    """Ustawia date + weekday dla każdego dnia na podstawie start_date (in-place)."""
+    if not start_date_str:
+        return
+    try:
+        from datetime import date as _date, timedelta as _td
+        base = _date.fromisoformat(start_date_str)
+    except Exception:
+        return
+    for d in days:
+        try:
+            day_num = getattr(d, "day", None)
+            if not day_num:
+                continue
+            day_date = base + _td(days=day_num - 1)
+            d.date = day_date.isoformat()
+            d.weekday = _PL_WEEKDAYS[day_date.weekday()]
+        except Exception:
+            continue
 
 
 class PlanService:
@@ -1188,7 +1248,8 @@ class PlanService:
             return PlanResponse(
                 plan_id=str(uuid.uuid4()),
                 version=1,
-                days=[]
+                days=[],
+                **_trip_context_fields(trip_input),
             )
         
         print(f"[ROUTER] TOTAL attractions/trails loaded: {len(all_pois_dict)}\n")
@@ -2571,12 +2632,16 @@ class PlanService:
                 ):
                     plan_warnings.append(_w)
 
+        _ctx_fields = _trip_context_fields(trip_input)
+        _apply_day_dates(days, _ctx_fields.get("start_date"))
+
         return PlanResponse(
             plan_id=plan_id,
             version=1,
             days=days,
             warnings=plan_warnings,  # FIX #Problem7: Include preference validation warnings
             preference_coverage=preference_coverage,  # FIX #179
+            **_ctx_fields,
         )
 
     def _convert_engine_result_to_items(

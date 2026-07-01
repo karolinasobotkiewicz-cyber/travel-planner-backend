@@ -7,7 +7,10 @@ from typing import List
 
 from app.infrastructure.repositories import DestinationsRepository
 from app.api.dependencies import get_destinations_repository
-from app.infrastructure.storage import build_destination_image_url
+from app.infrastructure.storage import (
+    build_destination_image_url,
+    normalize_image_key,
+)
 
 router = APIRouter()
 
@@ -15,7 +18,12 @@ router = APIRouter()
 def _infer_region_type(region: str) -> str:
     """Infer region_type from region name (ETAP 1 helper)."""
     region_lower = region.lower()
-    if "tatry" in region_lower or "góry" in region_lower:
+    if (
+        "tatry" in region_lower
+        or "góry" in region_lower
+        or "karkonosze" in region_lower
+        or "kłodzka" in region_lower
+    ):
         return "mountain"
     elif "pomorze" in region_lower or "bałtyk" in region_lower:
         return "sea"
@@ -28,8 +36,12 @@ class DestinationItem(BaseModel):
     destination_id: str
     name: str
     country: str
-    region_type: str  # mountain, sea, city
-    image_key: str  # relatywna sciezka do obrazka (np. "destination_zakopane")
+    region_type: str  # mountain, sea, city, spa_region
+    # api_city: dokładna wartość, którą front wysyła w location.city do /plan/preview
+    # (01.07.2026 - front feedback: front potrzebuje jasnej wartości do API)
+    api_city: str
+    is_cluster: bool = False
+    image_key: str | None  # klucz obrazka bez rozszerzenia (np. "destination_zakopane")
     image_url: str | None  # pelny URL do obrazka w Supabase Storage (11.03.2026)
     description_short: str
 
@@ -59,14 +71,22 @@ def get_home_content(
     # Map JSON structure to DestinationItem
     destinations = []
     for dest in destinations_raw:
-        image_key = dest.get("image_key", "")
+        raw_key = dest.get("image_key", "")
+        # region_type: użyj jawnego z JSON, w innym wypadku wywnioskuj z regionu
+        region_type = dest.get("region_type") or _infer_region_type(
+            dest.get("region", "")
+        )
+        # api_city: dokładna wartość do wysłania w location.city (fallback: name)
+        api_city = dest.get("api_city") or dest.get("name")
         destinations.append({
             "destination_id": dest.get("id"),  # JSON ma "id", API zwraca "destination_id"
             "name": dest.get("name"),
             "country": "Poland",  # ETAP 1: hardcoded
-            "region_type": _infer_region_type(dest.get("region", "")),
-            "image_key": image_key,
-            "image_url": build_destination_image_url(image_key),  # 11.03.2026: Supabase Storage
+            "region_type": region_type,
+            "api_city": api_city,
+            "is_cluster": bool(dest.get("is_cluster", False)),
+            "image_key": normalize_image_key(raw_key),
+            "image_url": build_destination_image_url(raw_key),  # 11.03.2026: Supabase Storage
             "description_short": dest.get("description_short", "")
         })
     
@@ -141,11 +161,14 @@ def get_home_content(
             },
         ]
         
-        # Add image_url to fallback destinations
+        # Add image_url + api_city to fallback destinations
         destinations = []
         for dest in fallback_destinations:
             dest_with_url = dest.copy()
+            dest_with_url["api_city"] = dest.get("name")
+            dest_with_url["is_cluster"] = False
             dest_with_url["image_url"] = build_destination_image_url(dest["image_key"])
+            dest_with_url["image_key"] = normalize_image_key(dest["image_key"])
             destinations.append(dest_with_url)
     
     return HomeContentResponse(

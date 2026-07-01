@@ -4,121 +4,196 @@
       "id": "zakopane",
       "name": "Zakopane",
       "region": "Tatry",
+      "region_type": "mountain",
+      "api_city": "Zakopane",
+      "is_cluster": false,
       "description_short": "Stolica Tatr - góry, kultura góralska, Krupówki",
-      "image_key": "destination_zakopane.jpg",
+      "image_key": "destination_zakopane",
       "typical_duration_days": 3,
       "best_season": ["winter", "summer"],
-      "highlights": [
-        "Gubałówka",
-        "Krupówki",
-        "Morskie Oko",
-        "Termy"
-      ]
+      "highlights": ["Gubałówka", "Krupówki", "Morskie Oko", "Termy"]
     },
     {
       "id": "krakow",
       "name": "Kraków",
       "region": "Małopolska",
+      "region_type": "city",
+      "api_city": "Kraków",
+      "is_cluster": false,
       "description_short": "Królewskie miasto - Wawel, Rynek, Kazimierz",
-      "image_key": "destination_krakow.jpg",
+      "image_key": "destination_krakow",
       "typical_duration_days": 2,
       "best_season": ["spring", "summer", "autumn"],
-      "highlights": [
-        "Wawel",
-        "Rynek Główny",
-        "Kazimierz",
-        "Sukiennice"
-      ]
+      "highlights": ["Wawel", "Rynek Główny", "Kazimierz", "Sukiennice"]
     },
     {
       "id": "gdansk",
       "name": "Gdańsk",
       "region": "Pomorze",
+      "region_type": "sea",
+      "api_city": "Gdańsk",
+      "is_cluster": false,
       "description_short": "Bursztynowe miasto nad Bałtykiem",
-      "image_key": "destination_gdansk.jpg",
+      "image_key": "destination_gdansk",
       "typical_duration_days": 2,
       "best_season": ["summer"],
-      "highlights": [
-        "Długi Targ",
-        "Żuraw",
-        "Plaża w Sopocie",
-        "Molo"
-      ]
+      "highlights": ["Długi Targ", "Żuraw", "Molo", "Starówka"]
     },
     {
-      "id": "warszawa",
-      "name": "Warszawa",
-      "region": "Mazowsze",
-      "description_short": "Stolica Polski - historia, nowoczesność, kultura",
-      "image_key": "destination_warszawa.jpg",
+      "id": "gdynia",
+      "name": "Gdynia",
+      "region": "Pomorze",
+      "region_type": "sea",
+      "api_city": "Gdynia",
+      "is_cluster": false,
+      "description_short": "Modernistyczne miasto portowe nad Bałtykiem",
+      "image_key": "destination_gdynia",
       "typical_duration_days": 2,
-      "best_season": ["spring", "summer", "autumn"],
-      "highlights": [
-        "Stare Miasto",
-        "Pałac Kultury",
-        "Łazienki",
-        "Wilanów"
-      ]
+      "best_season": ["summer"],
+      "highlights": ["Skwer Kościuszki", "Dar Pomorza", "Bulwar Nadmorski", "Kamienna Góra"]
+    },
+    {
+      "id": "sopot",
+      "name": "Sopot",
+      "region": "Pomorze",
+      "region_type": "sea",
+      "api_city": "Sopot",
+      "is_cluster": false,
+      "description_short": "Kurort nad morzem z najdłuższym molo w Europie",
+      "image_key": "destination_sopot",
+      "typical_duration_days": 1,
+      "best_season": ["summer"],
+      "highlights": ["Molo", "Monte Cassino", "Krzywy Domek", "Plaża"]
     },
     {
       "id": "wroclaw",
       "name": "Wrocław",
       "region": "Dolny Śląsk",
+      "region_type": "city",
+      "api_city": "Wrocław",
+      "is_cluster": false,
       "description_short": "Miasto krasnali i mostów nad Odrą",
-      "image_key": "destination_wroclaw.jpg",
+      "image_key": "destination_wroclaw",
       "typical_duration_days": 2,
       "best_season": ["spring", "summer", "autumn"],
-      "highlights": [
-        "Rynek",
-        "Ostrów Tumski",
-        "Krasnale",
-        "Hala Stulecia"
-      ]
+      "highlights": ["Rynek", "Ostrów Tumski", "Krasnale", "Hala Stulecia"]
+    },
+    {
+      "id": "karpacz",
+      "name": "Karpacz",
+      "region": "Karkonosze",
+      "region_type": "mountain",
+      "api_city": "Karpacz",
+      "is_cluster": false,
+      "description_short": "Górski kurort u stóp Śnieżki",
+      "image_key": "destination_karpacz",
+      "typical_duration_days": 2,
+      "best_season": ["winter", "summer"],
+      "highlights": ["Śnieżka", "Świątynia Wang", "Kolorowe Jeziorka", "Dino Park"]
+    },
+    {
+      "id": "jelenia-gora",
+      "name": "Jelenia Góra",
+      "region": "Karkonosze",
+      "region_type": "mountain",
+      "api_city": "Jelenia Góra",
+      "is_cluster": false,
+      "description_short": "Zabytkowe miasto w Kotlinie Jeleniogórskiej",
+      "image_key": "destination_jelenia_gora",
+      "typical_duration_days": 2,
+      "best_season": ["spring", "summer", "autumn"],
+      "highlights": ["Plac Ratuszowy", "Cieplice", "Wzgórze Krzywoustego", "Perła Zachodu"]
+    },
+    {
+      "id": "szklarska-poreba",
+      "name": "Szklarska Poręba",
+      "region": "Karkonosze",
+      "region_type": "mountain",
+      "api_city": "Szklarska Poręba",
+      "is_cluster": false,
+      "description_short": "Górski kurort z wodospadami i szlakami",
+      "image_key": "destination_szklarska_poreba",
+      "typical_duration_days": 2,
+      "best_season": ["winter", "summer"],
+      "highlights": ["Wodospad Kamieńczyka", "Szrenica", "Zakręt Śmierci", "Huta Julia"]
+    },
+    {
+      "id": "polanica-zdroj",
+      "name": "Polanica-Zdrój",
+      "region": "Kotlina Kłodzka",
+      "region_type": "spa_region",
+      "api_city": "Polanica-Zdrój",
+      "is_cluster": false,
+      "description_short": "Uzdrowisko w Kotlinie Kłodzkiej",
+      "image_key": "destination_polanica_zdroj",
+      "typical_duration_days": 2,
+      "best_season": ["spring", "summer", "autumn"],
+      "highlights": ["Park Zdrojowy", "Pijalnia wód", "Deptak", "Teatr Zdrojowy"]
+    },
+    {
+      "id": "kudowa-zdroj",
+      "name": "Kudowa-Zdrój",
+      "region": "Kotlina Kłodzka",
+      "region_type": "spa_region",
+      "api_city": "Kudowa-Zdrój",
+      "is_cluster": false,
+      "description_short": "Uzdrowisko przy granicy z Czechami",
+      "image_key": "destination_kudowa_zdroj",
+      "typical_duration_days": 2,
+      "best_season": ["spring", "summer", "autumn"],
+      "highlights": ["Park Zdrojowy", "Kaplica Czaszek", "Błędne Skały", "Szczeliniec"]
+    },
+    {
+      "id": "klodzko",
+      "name": "Kłodzko",
+      "region": "Kotlina Kłodzka",
+      "region_type": "mountain",
+      "api_city": "Kłodzko",
+      "is_cluster": false,
+      "description_short": "Miasto z twierdzą i podziemną trasą turystyczną",
+      "image_key": "destination_klodzko",
+      "typical_duration_days": 1,
+      "best_season": ["spring", "summer", "autumn"],
+      "highlights": ["Twierdza Kłodzka", "Podziemna Trasa", "Most gotycki", "Stare Miasto"]
     },
     {
       "id": "poznan",
       "name": "Poznań",
       "region": "Wielkopolska",
+      "region_type": "city",
+      "api_city": "Poznań",
+      "is_cluster": false,
       "description_short": "Kolebka państwa polskiego - koziołki na Ratuszu",
-      "image_key": "destination_poznan.jpg",
-      "typical_duration_days": 1,
+      "image_key": "destination_poznan",
+      "typical_duration_days": 2,
       "best_season": ["spring", "summer", "autumn"],
-      "highlights": [
-        "Stary Rynek",
-        "Ostrów Tumski",
-        "Malta",
-        "Cytadela"
-      ]
+      "highlights": ["Stary Rynek", "Ostrów Tumski", "Malta", "Cytadela"]
     },
     {
-      "id": "torun",
-      "name": "Toruń",
-      "region": "Kujawsko-Pomorskie",
-      "description_short": "Gotyckie miasto Kopernika i pierników",
-      "image_key": "destination_torun.jpg",
-      "typical_duration_days": 1,
+      "id": "katowice",
+      "name": "Katowice",
+      "region": "Górny Śląsk",
+      "region_type": "city",
+      "api_city": "Katowice",
+      "is_cluster": false,
+      "description_short": "Stolica Górnego Śląska - Nikiszowiec, Spodek, Strefa Kultury",
+      "image_key": "destination_katowice",
+      "typical_duration_days": 2,
       "best_season": ["spring", "summer", "autumn"],
-      "highlights": [
-        "Ratusz",
-        "Dom Kopernika",
-        "Piernikowe muzeum",
-        "Bulwary Wiślane"
-      ]
+      "highlights": ["Nikiszowiec", "Spodek", "Strefa Kultury", "Muzeum Śląskie"]
     },
     {
-      "id": "lublin",
-      "name": "Lublin",
-      "region": "Lubelskie",
-      "description_short": "Wschodni szlak - Stare Miasto, Zamek, kultura",
-      "image_key": "destination_lublin.jpg",
-      "typical_duration_days": 1,
+      "id": "warszawa",
+      "name": "Warszawa",
+      "region": "Mazowsze",
+      "region_type": "city",
+      "api_city": "Warszawa",
+      "is_cluster": false,
+      "description_short": "Stolica Polski - historia, nowoczesność, kultura",
+      "image_key": "destination_warszawa",
+      "typical_duration_days": 2,
       "best_season": ["spring", "summer", "autumn"],
-      "highlights": [
-        "Brama Grodzka",
-        "Zamek",
-        "Stare Miasto",
-        "Majdanek"
-      ]
+      "highlights": ["Stare Miasto", "Pałac Kultury", "Łazienki", "Wilanów"]
     }
   ]
 }

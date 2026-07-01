@@ -35,3 +35,6 @@ supabase==2.3.4
 stripe==7.10.0
 pyjwt==2.8.0
 python-jose[cryptography]==3.3.0
+
+# PDF generation (01.07.2026 - plan download)
+reportlab==4.1.0

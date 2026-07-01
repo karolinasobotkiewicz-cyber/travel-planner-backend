@@ -256,6 +256,28 @@ class OwnerIdentity:
         return f"<OwnerIdentity guest={self.guest_id}>"
 
 
+async def get_optional_owner(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    guest_id: Optional[str] = Header(None, alias="X-Guest-ID"),
+    db: Session = Depends(get_session)
+) -> Optional[OwnerIdentity]:
+    """
+    Like get_owner_id, but returns None when neither auth nor guest_id given.
+
+    Used for read endpoints (GET /plan/{id}) where we want to identify the
+    owner if possible, but not force authentication. Invalid tokens still
+    raise 401 (handled by get_current_user).
+    """
+    if credentials:
+        user = await get_current_user(credentials, db)
+        return OwnerIdentity(user=user)
+    if guest_id:
+        guest_id = guest_id.strip()
+        if guest_id:
+            return OwnerIdentity(guest_id=guest_id)
+    return None
+
+
 async def get_owner_id(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
     guest_id: Optional[str] = Header(None, alias="X-Guest-ID"),
