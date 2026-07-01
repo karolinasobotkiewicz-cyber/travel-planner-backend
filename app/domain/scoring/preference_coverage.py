@@ -689,13 +689,18 @@ _WEAK_NATURE_COVERAGE_TAGS = frozenset({
 _STRONG_NATURE_NAME_MARKERS = (
     "kopiec", "zakrzówek", "zakrzowek", "rezerwat", "park narodowy", "wodospad",
     "szlak", "las ", "dolina", "jezioro", "skarpa", "oława", "olawa",
-    "bulwar", "botaniczny", "ogrod botaniczny", "łazienki", "lazienki",
+    "bulwar", "botaniczny", "ogrod botaniczny", "ogród botaniczny", "łazienki", "lazienki",
     "wilanów", "wilanow", "arboretum",
+    # FIX #229: Wrocław/Warszawa signature green spots.
+    "wyspa słodowa", "wyspa slodowa", "ogród japoński", "ogrod japonski",
 )
 
 _STRONG_RELAX_NAME_MARKERS = (
     "spa", "termy", "wellness", "bulwar", "ogrod", "ogród", "park ", "łazienki",
     "lazienki", "zdroj", "sanatorium", "promenada",
+    # FIX #229: common city relax venues clients expect to count as covered.
+    "palmiarnia", "park kościuszki", "park kosciuszki", "wyspa słodowa", "wyspa slodowa",
+    "ogród japoński", "ogrod japonski", "fontanna",
     # FIX #213: mountain relax walks (Zakopane) still count as relaxation.
     "morskie oko", "polana", "rowień", "rowien", "dolina", "gubałów", "gubalow",
 )

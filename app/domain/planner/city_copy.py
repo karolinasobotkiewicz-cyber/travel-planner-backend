@@ -138,17 +138,21 @@ def evening_kolacja_label(is_zakopane: bool, duration_min: int) -> str:
 
 
 def evening_relax_label(is_zakopane: bool, now_min: int, *, long_block: bool = False) -> str:
+    # FIX #229 (01.07.2026): "Wieczorny relaks" only from 17:00 — not at 11:00/12:30.
+    _evening_start = 1020  # 17:00
     if is_zakopane:
-        if now_min >= 1080 or long_block:
+        if now_min >= 1080 or (long_block and now_min >= _evening_start):
             return "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja"
-        if now_min >= 900:
-            return "Wieczorny relaks: termy, spacer po Krupówkach lub kolacja"
+        if now_min >= _evening_start:
+            return "Popołudniowy relaks: spacer, kawa, odpoczynek"
     else:
-        if now_min >= 1080 or long_block:
+        if now_min >= 1080 or (long_block and now_min >= _evening_start):
             return "Wieczorny relaks: spacer po centrum lub kolacja"
-        if now_min >= 900:
-            return "Wieczorny relaks: spacer po starówce lub kolacja"
-    return "Czas wolny do końca dnia: kolacja, spacer, zakupy, relaks"
+        if now_min >= _evening_start:
+            return "Popołudniowy relaks: spacer, kawa, odpoczynek"
+    if now_min >= 780:  # 13:00+
+        return "Popołudniowy relaks: spacer, kawa, odpoczynek"
+    return "Przerwa: kawa, krótki spacer, odpoczynek"
 
 
 def end_of_day_evening_copy(is_zakopane: bool, gap_to_end: int) -> tuple[str, List[str]]:

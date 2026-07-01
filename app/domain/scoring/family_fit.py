@@ -25,8 +25,16 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
     "friends": (
         "farma wuja toma", "wuja tom",
         "guliwer", "centrum rozrywki guliwer",
+        # FIX #229: monuments/bridges/places for friends+adventure
+        "pomnik ", "most ", "plac europejski", "plac wolności",
+        "grób nieznanego", "pałac prezydencki", "syrenka", "syreny",
+        "kościół św. wojciecha", "sw. wojciecha",
     ),
-    "seniors": ("kopiec powstania",),
+    "seniors": (
+        "kopiec powstania",
+        # FIX #229: don't open day with micro memorials
+        "grób nieznanego", "pałac prezydencki", "pomnik syren",
+    ),
     "family_kids": (
         "grób nieznanego", "grob nieznanego", "changing of the guard",
         "pałac prezydencki", "palac prezydencki",
@@ -38,14 +46,21 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "bastion sakwowy", "neon side", "most świętokrzyski", "most swietokrzyski",
         "muzeum powstania warszawskiego", "plac europejski",
         "muzeum czartoryskich", "laser tag",
-        # FIX #227 (30.06.2026): Poznań — cathedral / merchant houses / escape room
-        # are not family_kids attractions.
+        # FIX #227 (30.06.2026): Poznań
         "bazylika archikatedralna", "archikatedr", "domy kupieckie", "escape room",
+        # FIX #229: extreme / bridges / micro for families
+        "bungee", "secret room", "the secret room",
+        "most grunwaldzki", "most ", "kładka bernatka", "kladka bernatka",
+        "muzeum pałacu jana", "muzeum ewolucji", "muzeum śląskie",
+        "pałac w wilanowie", "muzeum pałacu",
     ),
-    # FIX #224: client — Centrum Nauki Kopernik (interactive science center for
-    # kids/families) should not appear in a solo plan even though Excel lists "solo".
     "solo": ("pixel xl", "pixel", "centrum nauki kopernik"),
-    "couples": ("pixel xl", "pixel", "loopy"),
+    "couples": (
+        "pixel xl", "pixel", "loopy",
+        # FIX #229: Stacja Grawitacja for cultural+relax couples
+        "stacja grawitacja", "anomalii grawitacyjnej", "miejsce anomalii",
+        "centrum nauki kopernik",
+    ),
 }
 _CHILD_POI_TAGS = frozenset({
     "family_kids", "kids", "zoo", "aquarium", "playground", "theme_park",
@@ -81,6 +96,22 @@ def is_child_oriented_attraction(poi: dict) -> bool:
         return True
 
     return False
+
+
+def restaurant_matches_target_group(restaurant: dict, user: dict) -> bool:
+    """FIX #229: filter lunch/dinner suggestions by restaurant target_group."""
+    user_group = _safe_str(user.get("target_group", ""))
+    if not user_group:
+        return True
+    target_groups = restaurant.get("target_groups") or []
+    if not target_groups:
+        return True
+    if isinstance(target_groups, str):
+        target_groups = [x.strip() for x in target_groups.split(",")]
+    tg = {_safe_str(x) for x in target_groups if x}
+    if not tg:
+        return True
+    return user_group in tg
 
 
 def should_exclude_by_target_group(poi: dict, user: dict) -> bool:

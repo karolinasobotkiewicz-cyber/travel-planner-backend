@@ -12,7 +12,7 @@ def test_perfect_match_adventure():
 
     score = calculate_travel_style_score(poi, user)
 
-    assert score == 6.0  # Perfect match
+    assert score == 18.0  # FIX #229: stronger adventure weight
 
 
 def test_perfect_match_relax():
@@ -22,7 +22,7 @@ def test_perfect_match_relax():
 
     score = calculate_travel_style_score(poi, user)
 
-    assert score == 6.0  # Perfect match
+    assert score == 12.0
 
 
 def test_perfect_match_cultural():
@@ -32,7 +32,7 @@ def test_perfect_match_cultural():
 
     score = calculate_travel_style_score(poi, user)
 
-    assert score == 6.0  # Perfect match
+    assert score == 10.0
 
 
 def test_partial_match_cultural_active():
@@ -42,7 +42,7 @@ def test_partial_match_cultural_active():
 
     score = calculate_travel_style_score(poi, user)
 
-    assert score == 3.0  # Partial match
+    assert score == 5.0
 
 
 def test_balanced_user_always_ok():
@@ -52,7 +52,7 @@ def test_balanced_user_always_ok():
 
     score = calculate_travel_style_score(poi, user)
 
-    assert score == 3.0  # Balanced user OK z wszystkim
+    assert score == 4.0
 
 
 def test_balanced_poi_always_ok():
@@ -62,7 +62,7 @@ def test_balanced_poi_always_ok():
 
     score = calculate_travel_style_score(poi, user)
 
-    assert score == 3.0  # Balanced POI OK z wszystkim
+    assert score == 8.0
 
 
 def test_mismatch():
@@ -75,6 +75,16 @@ def test_mismatch():
     assert score == 0.0  # Mismatch
 
 
+def test_adventure_relax_penalty():
+    """FIX #229: adventure user should penalise passive relax POIs."""
+    user = {"travel_style": "adventure"}
+    poi = {"activity_style": "relax"}
+
+    score = calculate_travel_style_score(poi, user)
+
+    assert score == -8.0
+
+
 def test_user_no_travel_style():
     """Test user bez travel_style - default balanced."""
     user = {}  # Brak travel_style
@@ -82,7 +92,7 @@ def test_user_no_travel_style():
 
     score = calculate_travel_style_score(poi, user)
 
-    assert score == 3.0  # Default balanced → partial match
+    assert score == 4.0
 
 
 def test_poi_no_activity_style():
@@ -92,7 +102,7 @@ def test_poi_no_activity_style():
 
     score = calculate_travel_style_score(poi, user)
 
-    assert score == 3.0  # Default balanced → partial match
+    assert score == 8.0
 
 
 def test_both_balanced():
@@ -102,7 +112,7 @@ def test_both_balanced():
 
     score = calculate_travel_style_score(poi, user)
 
-    assert score == 3.0  # Balanced + balanced = partial
+    assert score == 4.0
 
 
 def test_empty_strings():
@@ -112,7 +122,7 @@ def test_empty_strings():
 
     score = calculate_travel_style_score(poi, user)
 
-    assert score == 3.0  # Empty strings → balanced → partial
+    assert score == 4.0
 
 
 def test_none_values():
@@ -122,4 +132,4 @@ def test_none_values():
 
     score = calculate_travel_style_score(poi, user)
 
-    assert score == 3.0  # None → balanced → partial
+    assert score == 4.0

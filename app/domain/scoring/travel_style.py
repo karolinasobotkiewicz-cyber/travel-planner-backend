@@ -54,19 +54,25 @@ def calculate_travel_style_score(poi: dict, user: dict) -> float:
 
     # Perfect matches
     if user_style == "adventure" and poi_style == "active":
-        return 6.0
+        return 18.0
     if user_style == "relax" and poi_style == "relax":
-        return 6.0
+        return 12.0
     if user_style == "cultural" and poi_style == "balanced":
-        return 6.0
+        return 10.0
+
+    # FIX #229: adventure should still prefer active POIs over passive ones.
+    if user_style == "adventure" and poi_style == "relax":
+        return -8.0
 
     # Partial matches
     if user_style == "cultural" and poi_style == "active":
-        return 3.0
+        return 5.0
+    if user_style == "adventure" and poi_style == "balanced":
+        return 8.0
     if user_style == "balanced":
-        return 3.0  # Balanced user OK z wszystkim
+        return 4.0  # Balanced user OK z wszystkim
     if poi_style == "balanced":
-        return 3.0  # Balanced POI OK z wszystkim
+        return 4.0  # Balanced POI OK z wszystkim
 
     # Mismatch
     return 0.0

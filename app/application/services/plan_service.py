@@ -180,7 +180,7 @@ def _day_afternoon_free_time_min(items: list) -> int:
 
 
 def _strip_leading_free_time(items: list) -> list:
-    """FIX #222: remove morning free_time blocks before the first attraction."""
+    """FIX #222/#229: remove morning free_time before the first attraction."""
     if not items:
         return items
     first_attr = next(
@@ -198,12 +198,63 @@ def _strip_leading_free_time(items: list) -> list:
     return out
 
 
+def _strip_trailing_free_time(items: list, *, max_min: int = 45) -> list:
+    """FIX #229: trim long free_time blocks at end of day (before day_end)."""
+    if not items:
+        return items
+    last_attr = None
+    for i in range(len(items) - 1, -1, -1):
+        if getattr(items[i], "type", None) == ItemType.ATTRACTION:
+            last_attr = i
+            break
+    if last_attr is None:
+        return items
+    out = []
+    for i, it in enumerate(items):
+        if i > last_attr and getattr(it, "type", None) == ItemType.FREE_TIME:
+            dur = int(getattr(it, "duration_min", 0) or 0)
+            if dur > max_min:
+                continue
+        out.append(it)
+    return out
+
+
+def _trim_gap_after_day_start(items: list, *, max_gap_min: int = 20) -> list:
+    """FIX #229: first attraction should follow day_start within max_gap_min."""
+    if not items:
+        return items
+    from app.domain.planner.time_utils import time_to_minutes as _ttm
+    day_start_min = None
+    first_attr_idx = None
+    for i, it in enumerate(items):
+        if getattr(it, "type", None) == ItemType.DAY_START:
+            t = getattr(it, "time", None)
+            if t:
+                day_start_min = _ttm(t)
+        if first_attr_idx is None and getattr(it, "type", None) == ItemType.ATTRACTION:
+            first_attr_idx = i
+    if day_start_min is None or first_attr_idx is None:
+        return items
+    out = []
+    for i, it in enumerate(items):
+        if (
+            i < first_attr_idx
+            and getattr(it, "type", None) == ItemType.FREE_TIME
+            and day_start_min is not None
+        ):
+            st = getattr(it, "start_time", None)
+            if st and _ttm(st) - day_start_min <= max_gap_min:
+                continue
+        out.append(it)
+    return out
+
+
 def _max_merged_free_time_cap(context: Dict[str, Any]) -> int:
-    """FIX #221: cap merged free_time — 90 min cities, 180 default, 300 Zakopane."""
+    """FIX #221/#229: cap merged free_time — 45 min cities, 180 default, 300 Zakopane."""
     if context.get("is_zakopane_trip"):
         return 300
     if _is_urban_trip(context):
-        return 60
+        return 45
     return 180
 
 
@@ -2317,10 +2368,10 @@ class PlanService:
                 if getattr(it, "type", None) == ItemType.FREE_TIME
             )
             if (
-                num_days >= 6
+                num_days >= 5
                 and (day_num + 1) >= num_days - 1
-                and _attr219 < 2
-                and _ft219 >= 180
+                and (_attr219 < 3 or (_attr219 == 0 and (day_num + 1) == num_days))
+                and (_ft219 >= 120 or _attr219 == 0)
                 and _is_city_219(day_context)
             ):
                 day_items = self._fill_gaps_in_items(
@@ -2353,6 +2404,13 @@ class PlanService:
                     max_merged_min=_max_merged_free_time_cap(day_context),
                 )
                 day_items = _strip_leading_free_time(day_items)
+                day_items = _trim_gap_after_day_start(day_items)
+                day_items = _strip_trailing_free_time(day_items)
+
+            # FIX #229: final free_time hygiene for every day (start/end gaps).
+            day_items = _strip_leading_free_time(day_items)
+            day_items = _trim_gap_after_day_start(day_items)
+            day_items = _strip_trailing_free_time(day_items)
 
             # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
             # This ensures day_end is always the last item in timeline
@@ -5223,7 +5281,12 @@ class PlanService:
         # and total time ≥ 60 min, use evening anchor label instead of generic one.
         _merge_start_min = time_to_minutes(start_time) if start_time else 0
         _merge_end_min = time_to_minutes(blocks[-1].end_time) if (blocks and blocks[-1].end_time) else 0
-        _is_evening_merge = _merge_end_min >= time_to_minutes("18:00") and total_duration >= 60
+        # FIX #229: evening labels only when block STARTS at/after 17:00
+        _is_evening_merge = (
+            _merge_start_min >= time_to_minutes("17:00")
+            and _merge_end_min >= time_to_minutes("18:00")
+            and total_duration >= 60
+        )
 
         # Generate smart label based on total duration
         from app.domain.planner.city_copy import evening_relax_label

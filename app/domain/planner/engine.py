@@ -15,6 +15,7 @@ from app.domain.scoring import (
 from app.domain.scoring.family_fit import (
     is_child_oriented_attraction,
     should_exclude_by_target_group,
+    restaurant_matches_target_group,
 )
 from app.domain.scoring.friends_profile import apply_friends_profile_scoring
 from app.domain.scoring.cluster_scoring import (
@@ -332,16 +333,17 @@ def _get_free_time_label(plan, now_min, duration_min, day_end_min, profile=None,
     remaining_to_day_end = day_end_min - now_min
     
     # If free_time ends near day_end (within 60 min) OR fills large end-of-day gap
-    if end_of_free_time >= day_end_min - 60 or (remaining_to_day_end > 90 and now_min >= 840):  # After 14:00
+    # FIX #229: evening copy only from 17:00 — never "Wieczorny relaks" at 11:00.
+    if end_of_free_time >= day_end_min - 60 or (remaining_to_day_end > 90 and now_min >= 1020):
         from app.domain.planner.city_copy import evening_relax_label, evening_kolacja_label
         if now_min >= 1080:
             if is_zakopane:
                 return "Kolacja i Krupówki: restauracja, spacer po Krupówkach, zakupy pamiątek"
             return evening_kolacja_label(False, 60) + ", zakupy pamiątek"
-        elif now_min >= 900:
+        elif now_min >= 1020:
             return evening_relax_label(is_zakopane, now_min)
         else:
-            return "Czas wolny do końca dnia: kolacja, spacer, zakupy, relaks"
+            return "Popołudniowy relaks: spacer, kawa, odpoczynek"
     
     # Context 4: Long gap (>90 min)
     if duration_min > 90:
@@ -688,9 +690,9 @@ def _validate_and_fix_time_continuity(plan, day_end_str):
 DAY_START = "09:00"
 DAY_END = "19:00"
 
-LUNCH_TARGET = "13:00"
-LUNCH_EARLIEST = "12:00"
-LUNCH_LATEST = "14:00"  # FIX #222: client — lunch too often after 14:30
+LUNCH_TARGET = "12:30"  # FIX #229: client — lunch 12:30-14:00 (most profiles)
+LUNCH_EARLIEST = "12:30"
+LUNCH_LATEST = "14:00"
 LUNCH_DURATION_MIN = 40
 
 DINNER_TARGET = "19:00"
@@ -914,6 +916,13 @@ _HARD_QUICK_STOP_MARKERS = (
     "pijalnia wedla", "pijalnia czekolady",
     # FIX #227 (30.06.2026): Poznań — still over-ranked micro POIs.
     "makiety dawnego poznania", "makiety dawnego", "pixel xl",
+    # FIX #229: Wrocław/Katowice/Warszawa/Kraków micro/filler
+    "muzeum motoryzacji wena", "muzeum motoryzacji",
+    "plac wolności", "fort ", "forty ",
+    "panorama racławicka",
+    "muzeum obwarzanka",
+    "cmentarz powązkowski", "cmentarz powazkowski",
+    "manufaktura cukierków", "manufaktura cukierkow",
 )
 
 _QUICK_STOP_NAME_MARKERS = (
@@ -3009,16 +3018,34 @@ def score_poi(
             "multimedia_exhibition", "interactive_exhibits", "interactive_exhibit",
             "local_history", "art_gallery", "ethnographic_museum", "intimate_small_museum",
         }
+        _name_206_adv = str(p.get("name", "")).lower()
         if user_has_outdoor_prefs and _adv_museum_tags & poi_tags and str(p.get("type", "")).lower() != "trail":
             _adv_museum_pen = score * (0.60 if "active_sport" in user_preferences[:3] else 0.45)
             score -= _adv_museum_pen
             poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
             print(f"    [ADVENTURE MUSEUM PENALTY] {poi_name_safe}: -{_adv_museum_pen:.1f} (outdoor-led adventure)")
 
+        # FIX #229: adventure (style or pref) — industrial/underground over generic museums.
+        if travel_style == "adventure" or "adventure" in user_preferences:
+            _industrial_tags229 = {"underground", "industrial_heritage", "mining_heritage", "caves_mines"}
+            _industrial_names229 = ("kopalnia", "sztolnia", "guido", "carboneum", "podziem", "wieliczka")
+            if _industrial_tags229 & poi_tags or any(n in _name_206_adv for n in _industrial_names229):
+                score += 75.0
+            elif _adv_museum_tags & poi_tags and "museum_heritage" not in user_preferences[:2]:
+                score -= 60.0
+
+        # FIX #229: active_sport preference — strongly favour active POIs city-wide.
+        if "active_sport" in user_preferences[:3]:
+            _active_tags229 = {
+                "active_sport", "sports", "climbing", "outdoor_adventure", "trampoline_park",
+                "forest_rope_courses", "obstacle_course", "water_activity", "zipline",
+            }
+            if _active_tags229 & poi_tags or str(p.get("type", "")).lower() in ("trail", "active_sport"):
+                score += 55.0
+
         # FIX #206: city tourism + active_sport/adventure — boost urban active POIs
         # (Pixel XL, park linowy, trampoliny) even without mountain_trails prefs.
         from app.domain.planner.city_copy import is_city_tourism_trip as _is_city_206
-        _name_206_adv = str(p.get("name", "")).lower()
         _city_active_tags_adv = {
             "interactive_game_arena", "group_fun_activity", "digital_floor_games",
             "forest_rope_courses", "outdoor_adventure", "trampoline_park",
@@ -3621,10 +3648,18 @@ def score_poi(
     # FIX #99A: culture streak penalty - group-aware (friends hate consecutive culture more)
     if is_culture(p):
         _target_group_A = str(user.get("target_group", "")).lower()
-        if _target_group_A == "friends" and culture_streak >= 1:
-            score -= 30.0  # friends: strong penalty after 1st consecutive culture POI
+        _user_prefs_cs = user.get("preferences") or []
+        _adv_cs = travel_style == "adventure" or "adventure" in _user_prefs_cs
+        if _adv_cs and culture_streak >= 1:
+            score -= 45.0
+        elif _target_group_A == "friends" and culture_streak >= 1:
+            score -= 35.0  # friends: strong penalty after 1st consecutive culture POI
         elif culture_streak >= 2:
-            score -= 20.0  # universal: penalty after 2 consecutive culture POIs
+            score -= 30.0  # universal: penalty after 2 consecutive culture POIs
+        elif culture_streak >= 1:
+            from app.domain.planner.city_copy import is_city_tourism_trip as _city_cs
+            if _city_cs(context) and "museum_heritage" not in _user_prefs_cs[:2]:
+                score -= 20.0  # FIX #229: limit museum runs in city trips
 
     # FIX #99E: active_streak boost for friends (reward consecutive active/outdoor POIs)
     if active_streak >= 1 and str(user.get("target_group", "")).lower() == "friends":
@@ -4181,14 +4216,14 @@ def score_poi(
     if _needed222:
         for _np in _needed222:
             if _covers222(p, _np):
-                _spread_boost = 110.0 + min(_day221, 5) * 14.0
+                _spread_boost = 130.0 + min(_day221, 5) * 16.0
                 if _np in _prefs221[:2]:
-                    _spread_boost += 40.0
+                    _spread_boost += 45.0
                 score += _spread_boost
         # FIX #223: off-profile POI while core prefs still unmet today — stronger
         # demotion so later days keep realising preferences instead of universal POIs.
         if not _matches_any_pref and _num_days222 >= 2:
-            score -= 110.0 if _is_city_221(context) else 85.0
+            score -= 130.0 if _is_city_221(context) else 100.0
     # Generic filler POI when user still needs core prefs today.
     if _needed222 and not _matches_any_pref and is_quick_stop_poi(p):
         score -= 60.0
@@ -4346,6 +4381,82 @@ def score_poi(
         except Exception:
             pass
 
+    # ── FIX #229 (01.07.2026): client feedback Wrocław/Poznań/Katowice/Kraków/Warszawa ──
+    # Adventure/industrial/underground — stronger trip character (not only outdoor prefs).
+    if travel_style == "adventure" or "adventure" in _prefs221 or "active_sport" in _prefs221:
+        _ind_names229 = (
+            "kopalnia", "sztolnia", "podziem", "guido", "wieliczka", "industrial",
+            "carboneum", "królowa luiza", "schindler", "podziemia",
+        )
+        _ind_tags229 = {"underground", "industrial_heritage", "mining_heritage", "history_mystery"}
+        if any(n in _name221 for n in _ind_names229) or (_ind_tags229 & poi_tags):
+            score += 75.0 if travel_style == "adventure" else 55.0
+
+    # Cultural style — aquapark should not dominate cultural trips.
+    if travel_style == "cultural" and (
+        "aquapark" in _name221 or "aquapark" in poi_tags or "park wodny" in _name221
+    ):
+        score -= 85.0
+
+    # Relax + couples — gardens/bulwars over aquapark-as-relaxation.
+    if travel_style == "relax" and _tg221 == "couples":
+        _garden229 = ("ogród", "ogrod", "bulwar", "park ", "wyspa słodowa", "wyspa slodowa")
+        if any(n in _name221 for n in _garden229) or {"city_park", "botanical_garden", "nature_landscape"} & poi_tags:
+            score += 60.0
+        if ("aquapark" in _name221 or "park wodny" in _name221) and "water_attractions" not in _prefs221:
+            score -= 65.0
+
+    # Relax + water — Panorama Racławicka / Fabryka Schindlera demote.
+    if "relaxation" in _prefs221 and "water_attractions" in _prefs221:
+        if any(n in _name221 for n in ("panorama racławicka", "fabryka schindlera", "plac bohaterów getta")):
+            score -= 70.0
+        if "muzeum polskiej wódki" in _name221 or "muzeum polskiej wodki" in _name221:
+            score -= 60.0
+
+    # Long city stays (5-7d) — boost Wrocław signature secondary icons.
+    if _num_days222 >= 5 and _is_city_221(context):
+        if any(n in _name221 for n in (
+            "hydropolis", "ogród japoński", "ogrod japonski",
+            "fontanna multimedialna", "wyspa słodowa", "wyspa slodowa",
+        )):
+            score += 50.0
+
+    # Pixel XL for underground/history without active_sport (Poznań).
+    if "pixel" in _name221 and {"underground", "history_mystery"} & set(_prefs221):
+        if "active_sport" not in _prefs221:
+            score -= 130.0
+
+    # Friends + adventure — monuments/bridges/places demote harder.
+    if _tg221 == "friends" and (travel_style == "adventure" or "adventure" in _prefs221):
+        if any(n in _name221 for n in (
+            "pomnik ", "most ", "plac ", "grób nieznanego", "pałac prezydencki",
+            "kościół św. wojciecha", "sw. wojciecha",
+        )):
+            score -= 80.0
+
+    # Ojców/Maczuga Herkulesa — boost cluster POIs when planning that area.
+    if any(n in _name221 for n in ("maczuga herkulesa", "pieskowa skała", "jaskinia łokietka", "jaskinia lokietka", "zamek w ojcowie")):
+        score += 55.0
+
+    # Nature+relax — must_see museums (Schindler, Czartoryskich) demote when no museum pref.
+    if _nat_relax_focus and must_see_value >= 7 and is_museum_heritage_poi(p):
+        if "museum_heritage" not in _prefs221 and "history_mystery" not in _prefs221:
+            score -= 90.0
+
+    # Seniors+relax — boost parks/gardens.
+    if _tg221 == "seniors" and ("relaxation" in _prefs221 or travel_style == "relax"):
+        if {"city_park", "botanical_garden", "nature_landscape", "park"} & poi_tags:
+            score += 45.0
+
+    # Katowice churches — extra demote for history_mystery (client: churches over-ranked).
+    if "history_mystery" in _prefs221 and _is_church_225 and must_see_value < 9:
+        score -= 40.0
+
+    # Forts for seniors+relax (Poznań).
+    if _tg221 == "seniors" and ("relaxation" in _prefs221 or travel_style == "relax"):
+        if "fort " in _name221 or _name221.startswith("fort "):
+            score -= 70.0
+
     return score
 
 
@@ -4361,6 +4472,9 @@ _UNIVERSAL_FILLER_NAME_MARKERS = (
     # FIX #227 (30.06.2026): client (Poznań) — over-ranked filler.
     "pomnik bamberki", "makiety dawnego poznania", "makiety dawnego",
     "rynek jeżycki", "rynek jezycki", "okrąglak", "okraglak",
+    # FIX #229
+    "domy kupieckie", "plac wolności", "muzeum motoryzacji wena",
+    "fort ", "forty ", "panorama racławicka",
 )
 
 
@@ -4789,7 +4903,8 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         # last 2 days — a repeated highlight is far better than an empty day.
         if pois_per_day is None and len(pois) > 6:
             _f227_attr, _f227_free = _f160_fill_metric(day_plan)
-            if _f227_attr < 3:
+            _f227_last_day = day_num >= num_days - 1
+            if _f227_attr < 3 or (_f227_last_day and _f227_attr == 0):
                 _f227_added = set(_global_used_for_day) - set(_global_used_before_day)
                 _f227_recent = set(_f227_added)
                 for _ds in daily_used_sets[-2:]:
@@ -5267,23 +5382,23 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             
             # Set lunch timing based on group type
             if group_type == "family_kids":
-                # Families with kids: lunch 12:30-13:30 (preferred 12:30)
-                lunch_earliest = time_to_minutes("12:00")  # Allow from 12:00
-                lunch_target = time_to_minutes("12:30")    # Target 12:30
-                lunch_latest = time_to_minutes("13:30")    # Latest 13:30
+                # FIX #229: families — lunch 12:30-13:30
+                lunch_earliest = time_to_minutes("12:30")
+                lunch_target = time_to_minutes("12:30")
+                lunch_latest = time_to_minutes("13:30")
                 print(f"[LUNCH TIMING] family_kids: target 12:30, latest 13:30")
             elif group_type == "seniors":
-                # Seniors: lunch 12:45-13:30 (preferred 12:45)
-                lunch_earliest = time_to_minutes("12:00")  # Allow from 12:00
-                lunch_target = time_to_minutes("12:45")    # Target 12:45
-                lunch_latest = time_to_minutes("13:30")    # Latest 13:30
-                print(f"[LUNCH TIMING] seniors: target 12:45, latest 13:30")
+                # FIX #229: seniors lunch 12:30-13:30
+                lunch_earliest = time_to_minutes("12:30")
+                lunch_target = time_to_minutes("12:30")
+                lunch_latest = time_to_minutes("13:30")
+                print(f"[LUNCH TIMING] seniors: target 12:30, latest 13:30")
             else:
-                # Default: lunch 13:00-14:30 (preferred 13:00)
-                lunch_earliest = time_to_minutes(LUNCH_EARLIEST)  # 12:00
-                lunch_target = time_to_minutes(LUNCH_TARGET)      # 13:00
-                lunch_latest = time_to_minutes(LUNCH_LATEST)      # 14:30
-                print(f"[LUNCH TIMING] default: target 13:00, latest 14:30")
+                # FIX #229: default lunch 12:30-14:00
+                lunch_earliest = time_to_minutes(LUNCH_EARLIEST)
+                lunch_target = time_to_minutes(LUNCH_TARGET)
+                lunch_latest = time_to_minutes(LUNCH_LATEST)
+                print(f"[LUNCH TIMING] default: target 12:30, latest 14:00")
 
             should_insert_lunch = False
             is_late_lunch = False
@@ -5348,6 +5463,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     lunch_restaurants = [
                         r for r in restaurants_available
                         if "lunch" in (r.get("meal_type") or "").lower()
+                        and restaurant_matches_target_group(r, user)
                     ]
 
                     # FIX #59 (22.05.2026): Cuisine filter for local_food_experience preference
@@ -5587,6 +5703,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     dinner_restaurants = [
                         r for r in restaurants_available
                         if "dinner" in (r.get("meal_type") or "").lower()
+                        and restaurant_matches_target_group(r, user)
                     ]
                     
                     # If we have current location (last attraction), sort by proximity
@@ -5735,7 +5852,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
             # FIX #58 (21.05.2026): Hard cap: max 1 museum per day for adventure profile
             # Issue: Adventure plans fill with museums after trails/active POIs are exhausted
-            if travel_style == "adventure" and daily_museum_count >= 1:
+            _user_prefs_58 = user.get("preferences") or []
+            _adv_museum_cap = travel_style == "adventure" or "adventure" in _user_prefs_58
+            if _adv_museum_cap and daily_museum_count >= 1:
                 _mus_tags_58 = {"themed_museum", "regional_heritage", "museum_heritage", "museums",
                                 "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
                                 "interactive_exhibit", "local_history", "architecture_heritage",
@@ -5781,6 +5900,19 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                     print(f"[MUSEUM CAP] EXCLUDED: {poi_name_safe} - max 2 museums/day for couples (couples_museum_today={couples_museum_today})")
                     continue
+
+            # FIX #229: city trips — max 3 museums/day unless museum_heritage leads the profile.
+            from app.domain.planner.city_copy import is_city_tourism_trip as _city229m
+            _user_prefs229m = user.get("preferences") or []
+            if (
+                _city229m(ctx)
+                and "museum_heritage" not in _user_prefs229m[:2]
+                and daily_museum_count >= 3
+                and (is_museum_heritage_poi(p) or is_culture(p))
+            ):
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[FIX #229] MUSEUM CAP: EXCLUDED {poi_name_safe} ({daily_museum_count}/3 city)")
+                continue
 
             # FIX #125 / #201: toddlers — no long visits; no mountain cable-car trails
             _ca_f125 = user.get("children_age")
@@ -6062,6 +6194,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     continue
 
             travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
+
+            # FIX #229: mid-day city hops — skip POI if drive/transit > ~50 min from last stop.
+            if last_poi and travel > 50:
+                from app.domain.planner.city_copy import is_city_tourism_trip as _city229
+                if _city229(ctx):
+                    _day_attr229 = sum(1 for _it in plan if _it.get("type") == "attraction")
+                    if _day_attr229 >= 1:
+                        continue
             
             # BUGFIX: For first POI with car, add parking (15 min) + walk_time
             if not last_poi and ctx.get("has_car", True):
@@ -7442,19 +7582,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         top_3_prefs = user_prefs[:3]
         
         if top_3_prefs:
-            from app.domain.scoring.tag_preferences import USER_PREFERENCES_TO_TAGS
-            
-            poi_type = best.get("type", "")
-            poi_tags = set(best.get("tags", []))
-            
+            from app.domain.scoring.preference_coverage import poi_covers_preference_report
+
             for pref in top_3_prefs:
                 if pref not in covered_preferences:
-                    pref_config = USER_PREFERENCES_TO_TAGS.get(pref, {})
-                    type_matches = pref_config.get("type_match", [])
-                    tag_matches = set(pref_config.get("tags", []))
-                    
-                    # Check if POI matches this preference
-                    if poi_type in type_matches or poi_tags & tag_matches:
+                    if poi_covers_preference_report(best, pref):
                         covered_preferences.add(pref)
                         print(f"[PREFERENCE COVERAGE] [OK] Covered preference '{pref}' with {poi_name(best)}")
             
