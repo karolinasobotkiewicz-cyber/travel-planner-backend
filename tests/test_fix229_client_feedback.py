@@ -88,8 +88,11 @@ def test_adventure_prefers_mine_over_museum():
 
 def test_palmiarnia_counts_as_relaxation_coverage():
     palmiarnia = {"name": "Palmiarnia Poznań", "tags": ["city_park", "relaxation"]}
+    park = {"name": "Park Cytadela", "tags": ["city_park", "relaxation"]}
     assert is_strong_relaxation_coverage_poi(palmiarnia) is True
-    assert preference_coverage_adequate("relaxation", [palmiarnia]) is True
+    # FIX #230: one relax POI is not adequate trip coverage — need ≥2 strong hits.
+    assert preference_coverage_adequate("relaxation", [palmiarnia]) is False
+    assert preference_coverage_adequate("relaxation", [palmiarnia, park]) is True
 
 
 def _mock_item(item_type, **kwargs):

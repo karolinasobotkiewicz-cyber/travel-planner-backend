@@ -737,10 +737,12 @@ def preference_coverage_adequate(pref: str, matching_pois: list) -> bool:
         return False
     if pref == "nature_landscape":
         strong = [p for p in matching_pois if is_strong_nature_coverage_poi(p)]
-        return len(strong) >= 1
+        return len(strong) >= 2 or (len(strong) >= 1 and len(matching_pois) >= 2)
     if pref == "relaxation":
         strong = [p for p in matching_pois if is_strong_relaxation_coverage_poi(p)]
-        return len(strong) >= 1 or any(
+        return len(strong) >= 2 or (
+            len(strong) >= 1 and len(matching_pois) >= 2
+        ) or any(
             "spa" in (p.get("name") or "").lower()
             or "termy" in (p.get("name") or "").lower()
             for p in matching_pois

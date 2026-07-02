@@ -17,6 +17,11 @@ from app.domain.scoring.family_fit import (
     should_exclude_by_target_group,
     restaurant_matches_target_group,
 )
+from app.domain.scoring.profile_poi_rules import (
+    should_deny_poi_for_profile,
+    profile_poi_score_delta,
+    is_active_city_poi,
+)
 from app.domain.scoring.friends_profile import apply_friends_profile_scoring
 from app.domain.scoring.cluster_scoring import (
     apply_cluster_scoring_weights,
@@ -1975,13 +1980,14 @@ def compute_prefs_needed_today(user: dict, context: dict) -> set:
     trip_days = context.get("trip_pref_days") or {}
     needed = set()
     for pref in prefs:
+        days_hit = trip_days.get(pref, set())
         if day_counts.get(pref, 0) > 0:
             continue
-        days_hit = trip_days.get(pref, set())
         if day == 1:
             needed.add(pref)
-        elif day not in days_hit or (day - 1) not in days_hit:
-            # Mix prefs every day — not only day 1 (client FIX #222).
+        elif pref not in days_hit or len(days_hit) < max(2, num_days // 2):
+            needed.add(pref)
+        elif day not in days_hit and (day - 1) not in days_hit:
             needed.add(pref)
     return needed
 
@@ -2314,7 +2320,7 @@ def choose_duration(p, now, end, lunch_done, user=None):
             lunch_target = time_to_minutes("12:30")
             lunch_latest = time_to_minutes("13:30")
         elif group_type == "seniors":
-            lunch_target = time_to_minutes("12:45")
+            lunch_target = time_to_minutes("12:30")
             lunch_latest = time_to_minutes("13:30")
         else:
             lunch_target = time_to_minutes(LUNCH_TARGET)
@@ -2322,6 +2328,10 @@ def choose_duration(p, now, end, lunch_done, user=None):
     else:
         lunch_target = time_to_minutes(LUNCH_TARGET)
         lunch_latest = time_to_minutes(LUNCH_LATEST)
+
+    # FIX #230: Pixel XL / arcade — minimum visit length (client: 15 min slot).
+    if "pixel" in str(p.get("name", "")).lower():
+        tmin = max(tmin, 45)
 
     # FIX #45 (20.05.2026 - Issue F root fix): Trails span the entire day including lunch.
     # Mountain trails are 90min-13h activities that naturally cross lunch time.
@@ -4185,6 +4195,10 @@ def score_poi(
         if poi_matches_user_preference(p, "museum_heritage") and _dpc221.get("museum_heritage", 0) == 0:
             score += 45.0
 
+    if _tg221 == "family_kids" and "kids_attractions" in _prefs221[:3]:
+        if is_child_oriented_attraction(p) or is_kids_focused_poi(p):
+            score += 45.0
+
     if _tg221 == "family_kids" and _day221 == 1:
         if is_kids_focused_poi(p) or is_child_oriented_attraction(p):
             score += 55.0
@@ -4216,7 +4230,7 @@ def score_poi(
     if _needed222:
         for _np in _needed222:
             if _covers222(p, _np):
-                _spread_boost = 130.0 + min(_day221, 5) * 16.0
+                _spread_boost = 155.0 + min(_day221, 6) * 22.0
                 if _np in _prefs221[:2]:
                     _spread_boost += 45.0
                 score += _spread_boost
@@ -4457,6 +4471,9 @@ def score_poi(
         if "fort " in _name221 or _name221.startswith("fort "):
             score -= 70.0
 
+    # FIX #230 (client feedback round 3): profile-specific deny/demote rules.
+    score += profile_poi_score_delta(p, user, context=context)
+
     return score
 
 
@@ -4682,6 +4699,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
     # FIX #175 (06.06.2026 - CLIENT FEEDBACK): Trip-wide POI dedup — never reuse the same
     # POI ID in one plan. FIX D sliding window caused day-1/day-7 skeleton duplicates
     # (Dolina Chochołowska + Krupówki). Late days rely on Zone C pool instead.
+    global_trip_poi_names: set = set()
     daily_used_sets: list = []  # per-day lists of POI IDs added that day (diagnostics)
 
     for day_num in range(num_days):
@@ -4727,6 +4745,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         context["global_geo_region_use_count"] = global_geo_region_use_count
         context["trip_museum_count"] = global_museum_count
         context["trip_park_count"] = global_park_count
+        context["trip_used_poi_names"] = global_trip_poi_names
         _all_user_prefs = user.get("preferences", [])
         context["trip_uncovered_preferences"] = set(_all_user_prefs) - global_trip_covered_prefs
         _day_warnings: list = []  # FIX #130: collect per-day engine warnings
@@ -4904,7 +4923,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         if pois_per_day is None and len(pois) > 6:
             _f227_attr, _f227_free = _f160_fill_metric(day_plan)
             _f227_last_day = day_num >= num_days - 1
-            if _f227_attr < 3 or (_f227_last_day and _f227_attr == 0):
+            if _f227_attr < 3 or (_f227_last_day and _f227_attr < 2):
                 _f227_added = set(_global_used_for_day) - set(_global_used_before_day)
                 _f227_recent = set(_f227_added)
                 for _ds in daily_used_sets[-2:]:
@@ -5034,6 +5053,9 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
                     if poi_covers_preference_report(_poi_ref, _pref):
                         global_trip_covered_prefs.add(_pref)
                         trip_pref_days.setdefault(_pref, set()).add(day_num + 1)
+                _dn230 = str(_poi_ref.get("name", "")).strip().lower()
+                if _dn230:
+                    global_trip_poi_names.add(_dn230)
 
         # Count POIs used in this day
         day_poi_count = 0
@@ -5402,28 +5424,22 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
             should_insert_lunch = False
             is_late_lunch = False
-            
-            # FIX #14: Change trigger from lunch_earliest (12:00) to lunch_target (13:00)
-            # This ensures lunch happens by 13:00-14:00, not delayed to 15:41
-            # Case 1: We've reached TARGET lunch time (13:00) - force lunch NOW
-            if now >= lunch_target:
+
+            # FIX #230: force lunch as soon as window opens — never defer to 15:00+.
+            if now >= lunch_earliest:
                 should_insert_lunch = True
-                
-                # Case 1a: Already past latest lunch time (14:30) - late lunch!
                 if now > lunch_latest:
                     is_late_lunch = True
-                    print(f"[LUNCH] WARNING: Late lunch scheduled at {minutes_to_time(now)} (should be by {LUNCH_LATEST})")
-                    # FIX #144 (01.06.2026): Pre-build late_lunch warning removed.
-                    # FIX #139 (post-build) generates accurate timing-based warnings from real plan.
+                    print(f"[LUNCH] WARNING: Late lunch at {minutes_to_time(now)} (latest {minutes_to_time(lunch_latest)})")
+            elif now >= lunch_target:
+                should_insert_lunch = True
             
-            # Case 2: We're past earliest (12:00) and approaching target (13:00)
-            # If adding another POI would push lunch past 14:00, insert lunch NOW
-            elif now >= lunch_earliest:
-                # Estimate next POI duration (conservative: 90 min)
+            # Legacy proactive guard: next POI would push lunch past window
+            if not should_insert_lunch and now >= lunch_earliest - 30:
                 estimated_next_poi_duration = 90
-                if now + estimated_next_poi_duration > lunch_latest - 30:  # Would push lunch past 14:00
+                if now + estimated_next_poi_duration > lunch_latest:
                     should_insert_lunch = True
-                    print(f"[LUNCH] PROACTIVE: Inserting lunch at {minutes_to_time(now)} to avoid late lunch (next POI would push past 14:00)")
+                    print(f"[LUNCH] PROACTIVE: Inserting lunch at {minutes_to_time(now)} to avoid late lunch")
             
             if should_insert_lunch:
                 # FIX #180: seniors/family_kids — clamp lunch start to lunch_latest (return
@@ -5914,6 +5930,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 print(f"[FIX #229] MUSEUM CAP: EXCLUDED {poi_name_safe} ({daily_museum_count}/3 city)")
                 continue
 
+            # FIX #230: relax-led city trips — max 1 museum/day unless museum_heritage leads.
+            if (
+                _city229m(ctx)
+                and ("relaxation" in _user_prefs229m[:2] or travel_style == "relax")
+                and "museum_heritage" not in _user_prefs229m[:2]
+                and daily_museum_count >= 1
+                and is_museum_heritage_poi(p)
+            ):
+                continue
+
             # FIX #125 / #201: toddlers — no long visits; no mountain cable-car trails
             _ca_f125 = user.get("children_age")
             if (user.get("target_group") == "family_kids"
@@ -6127,6 +6153,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 poi_name_safe = str(p.get('Name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                 print(f"[FILTER] EXCLUDED by target_group: {poi_name_safe} (poi_id={poi_id(p)}) - user={user.get('target_group')}, poi_groups={p.get('target_groups', [])}, kids_only={p.get('kids_only', False)}")
                 continue  # EXCLUDE - target group mismatch
+            if should_deny_poi_for_profile(p, user):
+                continue
             
             # STEP 2: Intensity hard filter
             if should_exclude_by_intensity(p, user):
@@ -6195,13 +6223,17 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
             travel = travel_time_minutes(last_poi, p, ctx) if last_poi else 0
 
-            # FIX #229: mid-day city hops — skip POI if drive/transit > ~50 min from last stop.
-            if last_poi and travel > 50:
+            # FIX #229/#230: mid-day city hops — skip POI if drive/transit too far from last stop.
+            if last_poi and last_poi.get("lat") and last_poi.get("lng") and p.get("lat") and p.get("lng"):
                 from app.domain.planner.city_copy import is_city_tourism_trip as _city229
                 if _city229(ctx):
                     _day_attr229 = sum(1 for _it in plan if _it.get("type") == "attraction")
                     if _day_attr229 >= 1:
-                        continue
+                        _dist_km = haversine_distance(
+                            last_poi.get("lat"), last_poi.get("lng"), p.get("lat"), p.get("lng"),
+                        )
+                        if travel > 40 or _dist_km > 12.0:
+                            continue
             
             # BUGFIX: For first POI with car, add parking (15 min) + walk_time
             if not last_poi and ctx.get("has_car", True):
@@ -6398,6 +6430,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     
                     if should_exclude_by_target_group(p, user):
                         continue
+                    if should_deny_poi_for_profile(p, user):
+                        continue
                     if should_exclude_by_intensity(p, user):
                         continue
                     
@@ -6546,6 +6580,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         continue
                     
                     if should_exclude_by_target_group(p, user):
+                        continue
+                    if should_deny_poi_for_profile(p, user):
                         continue
                     if should_exclude_by_intensity(p, user):
                         continue
@@ -6785,6 +6821,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         continue  # EXCLUDE - kids POI for adult groups
                     
                     if should_exclude_by_target_group(p, user):
+                        continue
+                    if should_deny_poi_for_profile(p, user):
                         continue  # EXCLUDE - target group mismatch
                     
                     if should_exclude_by_intensity(p, user):
@@ -7266,6 +7304,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         #             distant consecutive attractions (e.g. Gubałówka → Polana Głodówka, 12.48km).
         # Same class of bug as FIX #46 (trail_day_mode) and FIX #15 (termy counter).
         last_poi = best
+        _best_name230 = str(best.get("name", "")).lower()
+        if "maczuga herkulesa" in _best_name230:
+            ctx["ojcow_day_active"] = True
 
         # FIX #14 (29.04.2026 - CLIENT FEEDBACK): CRITICAL LUNCH CHECK AFTER POI
         # Problem: POI duration can push 'now' past lunch_target (e.g., 12:30 + 2.5h = 15:00)
@@ -7292,8 +7333,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 lunch_target = time_to_minutes(LUNCH_TARGET)  # 13:00
                 lunch_latest = time_to_minutes(LUNCH_LATEST)  # 14:30
             
-            # Check if POI pushed us past lunch time
-            if now >= lunch_target:
+            # Check if POI pushed us past lunch time — FIX #230: force from lunch_earliest
+            _post_lunch_earliest = time_to_minutes("12:30")
+            if group_type == "family_kids" or group_type == "seniors":
+                _post_lunch_earliest = time_to_minutes("12:30")
+            else:
+                _post_lunch_earliest = time_to_minutes(LUNCH_EARLIEST)
+            if now >= _post_lunch_earliest:
                 print(f"[LUNCH POST-POI CHECK] POI pushed now to {minutes_to_time(now)} (>= target {lunch_target}) - FORCING lunch NOW")
                 
                 # FIX #129 (XX.06.2026): Generalize FIX #102 — add return transit to city before lunch
@@ -7654,6 +7700,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     
                     # HOTFIX #10.8: Apply hard filters (target_group + intensity) to soft POI selection
                     if should_exclude_by_target_group(p, user):
+                        continue
+                    if should_deny_poi_for_profile(p, user):
                         continue  # EXCLUDE - target group mismatch
                     
                     if should_exclude_by_intensity(p, user):
@@ -8040,6 +8088,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
                 # Apply hard filters
                 if should_exclude_by_target_group(p, user):
+                    continue
+                if should_deny_poi_for_profile(p, user):
                     continue
                 if should_exclude_by_intensity(p, user):
                     continue
@@ -8607,6 +8657,8 @@ def fill_plan_gaps(plan, pois, used_poi_ids, ctx, user):
                     
                     # HOTFIX #10.8: Apply hard filters (target_group + intensity) to soft POI selection
                     if should_exclude_by_target_group(p, user):
+                        continue
+                    if should_deny_poi_for_profile(p, user):
                         continue  # EXCLUDE - target group mismatch
                     
                     if should_exclude_by_intensity(p, user):

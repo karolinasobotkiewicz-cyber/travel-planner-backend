@@ -53,6 +53,8 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "most grunwaldzki", "most ", "kładka bernatka", "kladka bernatka",
         "muzeum pałacu jana", "muzeum ewolucji", "muzeum śląskie",
         "pałac w wilanowie", "muzeum pałacu",
+        "podziemia rynku", "kopiec powstania",
+        "katedra wrocławska", "katedra wroclawska",
     ),
     "solo": ("pixel xl", "pixel", "centrum nauki kopernik"),
     "couples": (

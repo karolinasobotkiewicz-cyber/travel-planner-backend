@@ -198,8 +198,8 @@ def _strip_leading_free_time(items: list) -> list:
     return out
 
 
-def _strip_trailing_free_time(items: list, *, max_min: int = 45) -> list:
-    """FIX #229: trim long free_time blocks at end of day (before day_end)."""
+def _strip_trailing_free_time(items: list, *, max_min: int = 30) -> list:
+    """FIX #229/#230: trim long free_time blocks at end of day (before day_end)."""
     if not items:
         return items
     last_attr = None
@@ -215,6 +215,25 @@ def _strip_trailing_free_time(items: list, *, max_min: int = 45) -> list:
             dur = int(getattr(it, "duration_min", 0) or 0)
             if dur > max_min:
                 continue
+        out.append(it)
+    return out
+
+
+def _trim_long_free_time_blocks(items: list, *, max_min: int = 30) -> list:
+    """FIX #230: cap any single free_time block in the middle/end of day."""
+    if not items:
+        return items
+    from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+    out = []
+    for it in items:
+        if getattr(it, "type", None) == ItemType.FREE_TIME:
+            dur = int(getattr(it, "duration_min", 0) or 0)
+            if dur > max_min:
+                st = getattr(it, "start_time", None)
+                if st and hasattr(it, "end_time"):
+                    end_m = time_to_minutes(st) + max_min
+                    setattr(it, "duration_min", max_min)
+                    setattr(it, "end_time", minutes_to_time(end_m))
         out.append(it)
     return out
 
@@ -250,11 +269,11 @@ def _trim_gap_after_day_start(items: list, *, max_gap_min: int = 20) -> list:
 
 
 def _max_merged_free_time_cap(context: Dict[str, Any]) -> int:
-    """FIX #221/#229: cap merged free_time — 45 min cities, 180 default, 300 Zakopane."""
+    """FIX #221/#229/#230: cap merged free_time — 30 min cities, 180 default, 300 Zakopane."""
     if context.get("is_zakopane_trip"):
         return 300
     if _is_urban_trip(context):
-        return 45
+        return 30
     return 180
 
 
@@ -2368,10 +2387,10 @@ class PlanService:
                 if getattr(it, "type", None) == ItemType.FREE_TIME
             )
             if (
-                num_days >= 5
+                num_days >= 4
                 and (day_num + 1) >= num_days - 1
-                and (_attr219 < 3 or (_attr219 == 0 and (day_num + 1) == num_days))
-                and (_ft219 >= 120 or _attr219 == 0)
+                and (_attr219 < 3 or (_attr219 < 2 and (day_num + 1) == num_days))
+                and (_ft219 >= 60 or _attr219 <= 1)
                 and _is_city_219(day_context)
             ):
                 day_items = self._fill_gaps_in_items(
@@ -2407,10 +2426,11 @@ class PlanService:
                 day_items = _trim_gap_after_day_start(day_items)
                 day_items = _strip_trailing_free_time(day_items)
 
-            # FIX #229: final free_time hygiene for every day (start/end gaps).
+            # FIX #229/#230: final free_time hygiene for every day (start/end gaps).
             day_items = _strip_leading_free_time(day_items)
             day_items = _trim_gap_after_day_start(day_items)
-            day_items = _strip_trailing_free_time(day_items)
+            day_items = _trim_long_free_time_blocks(day_items, max_min=_max_merged_free_time_cap(day_context))
+            day_items = _strip_trailing_free_time(day_items, max_min=_max_merged_free_time_cap(day_context))
 
             # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
             # This ensures day_end is always the last item in timeline
@@ -2549,13 +2569,13 @@ class PlanService:
             _passive_n = 0
             _lookup219 = {p.get("id"): p for p in all_pois_dict if p.get("id")}
             from app.domain.planner.engine import is_museum_heritage_poi
-            from app.domain.scoring.preference_coverage import poi_covers_preference_report
+            from app.domain.scoring.profile_poi_rules import is_active_city_poi
             for _dy in days:
                 for _it in _dy.items:
                     if getattr(_it, "type", None) != ItemType.ATTRACTION:
                         continue
                     _pp = _lookup219.get(getattr(_it, "poi_id", ""), {"name": getattr(_it, "name", ""), "tags": []})
-                    if poi_covers_preference_report(_pp, "active_sport") or _pp.get("type") == "trail":
+                    if is_active_city_poi(_pp):
                         _active_n += 1
                     elif is_museum_heritage_poi(_pp):
                         _passive_n += 1
