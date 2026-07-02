@@ -73,10 +73,10 @@ class Settings(BaseSettings):
     # planu przez zmianę URL). Właściciel (auth/guest) zawsze widzi swój plan.
     enforce_plan_payment: bool = True
 
-    # Gdy True: plany przypisane do konta (user_id) wymagają zalogowania jako
-    # właściciel (401/403 dla obcych). Domyślnie OFF, bo wymaga, aby front
-    # wysyłał token przy GET /plan/{id}. Włącz po stronie env, gdy front gotowy.
-    enforce_assigned_plan_auth: bool = False
+    # Gdy True: plany przypisane do konta (user_id / is_assigned) wymagają zalogowania
+    # jako właściciel (401 dla obcych). Włączone domyślnie — front testuje z tokenem
+    # Bearer przy GET /plan/{id}. Wyłącz env ENFORCE_ASSIGNED_PLAN_AUTH=false jeśli potrzeba.
+    enforce_assigned_plan_auth: bool = True
 
     # =========================
     # CORS

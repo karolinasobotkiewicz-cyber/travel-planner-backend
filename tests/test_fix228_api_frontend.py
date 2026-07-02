@@ -250,3 +250,7 @@ def test_assigned_plan_requires_auth_when_flag_on():
         assert exc.value.status_code == 401
     finally:
         settings.enforce_assigned_plan_auth = prev
+
+
+def test_assigned_plan_auth_enabled_by_default():
+    assert settings.enforce_assigned_plan_auth is True

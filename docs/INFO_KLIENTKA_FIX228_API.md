@@ -54,12 +54,15 @@ Teraz zwraca dodatkowo:
 `X-Guest-ID`) zawsze widzi swój plan. To zamyka lukę „zmiana `/paywal?plan=`
 na `/plan/` pokazuje pełny plan".
 
-## 5. Autentykacja dla planów przypisanych do konta — odpowiedź na pytanie
-Tak, rekomendujemy wymagać logowania dla planów przypisanych do konta.
-Mechanizm jest już w backendzie i włącza się flagą `ENFORCE_ASSIGNED_PLAN_AUTH=true`
-(domyślnie wyłączona, żeby nic nie zepsuć, dopóki front nie wysyła tokenu przy
-`GET /plan/{id}`). Po włączeniu: plan przypisany do konta widzi tylko zalogowany
-właściciel. Front rozpoznaje takie plany po polu `is_assigned`.
+## 5. Autentykacja dla planów przypisanych do konta
+Tak — wymagamy logowania dla planów przypisanych do konta (`is_assigned: true`).
+
+**Flaga włączona (01.07.2026):** `enforce_assigned_plan_auth=true` domyślnie w backendzie.
+Plan przypisany do konta (`user_id`) widzi tylko zalogowany właściciel — obcy dostaje **401**
+bez tokenu Bearer. Front powinien wysyłać `Authorization: Bearer <token>` przy `GET /plan/{id}`
+i `GET /plan/{id}/pdf`. Plany gościa (`is_assigned: false`) działają jak dotychczas (UID / paywall).
+
+Wyłączenie (awaryjnie): env `ENFORCE_ASSIGNED_PLAN_AUTH=false`.
 
 ## 6. Nazwa planu „Unknown"
 Plany zapisują się teraz z prawdziwym miastem, grupą, budżetem i datą startu.
