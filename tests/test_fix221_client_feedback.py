@@ -102,9 +102,9 @@ class TestRelaxStyleBuildDay:
 
 class TestMergedFreeTimeCap:
     def test_urban_cap_90(self):
-        # FIX #222/#229/#230: urban merged free-time cap tightened to 30 min.
+        # FIX #222/#229/#230/#231: urban merged free-time cap tightened to 20 min.
         from app.application.services.plan_service import _max_merged_free_time_cap
-        assert _max_merged_free_time_cap({"region_type": "city"}) == 30
+        assert _max_merged_free_time_cap({"region_type": "city"}) == 20
 
     def test_zakopane_cap_300(self):
         from app.application.services.plan_service import _max_merged_free_time_cap

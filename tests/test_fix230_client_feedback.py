@@ -11,8 +11,8 @@ from app.domain.scoring.profile_poi_rules import (
 )
 
 
-def test_urban_free_time_cap_30_min():
-    assert _max_merged_free_time_cap({"region_type": "city"}) == 30
+def test_urban_free_time_cap_20_min():
+    assert _max_merged_free_time_cap({"region_type": "city"}) == 20
 
 
 def test_zoo_denied_friends_adventure_underground_history():

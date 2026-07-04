@@ -29,6 +29,8 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "pomnik ", "most ", "plac europejski", "plac wolności",
         "grób nieznanego", "pałac prezydencki", "syrenka", "syreny",
         "kościół św. wojciecha", "sw. wojciecha",
+        # FIX #231
+        "be happy museum", "plac bohaterów getta",
     ),
     "seniors": (
         "kopiec powstania",
@@ -55,6 +57,9 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "pałac w wilanowie", "muzeum pałacu",
         "podziemia rynku", "kopiec powstania",
         "katedra wrocławska", "katedra wroclawska",
+        # FIX #231 Kraków
+        "kościół św. wojciecha", "sw. wojciecha", "bazylika mariacka",
+        "park decjusza", "kopiec krakusa", "aula leopoldina",
     ),
     "solo": ("pixel xl", "pixel", "centrum nauki kopernik"),
     "couples": (

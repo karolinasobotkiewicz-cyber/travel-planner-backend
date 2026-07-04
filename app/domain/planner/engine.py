@@ -699,6 +699,8 @@ LUNCH_TARGET = "12:30"  # FIX #229: client — lunch 12:30-14:00 (most profiles)
 LUNCH_EARLIEST = "12:30"
 LUNCH_LATEST = "14:00"
 LUNCH_DURATION_MIN = 40
+# FIX #231: restaurants within 1 km of current position (client: 500-1000 m)
+MEAL_RESTAURANT_MAX_DIST_KM = 1.0
 
 DINNER_TARGET = "19:00"
 DINNER_EARLIEST = "18:00"
@@ -1985,9 +1987,13 @@ def compute_prefs_needed_today(user: dict, context: dict) -> set:
             continue
         if day == 1:
             needed.add(pref)
-        elif pref not in days_hit or len(days_hit) < max(2, num_days // 2):
+        elif pref not in days_hit or len(days_hit) < max(3, (num_days + 1) // 2):
+            needed.add(pref)
+        elif day >= max(2, num_days // 3) and pref not in days_hit:
             needed.add(pref)
         elif day not in days_hit and (day - 1) not in days_hit:
+            needed.add(pref)
+        elif pref in ("relaxation", "nature_landscape", "active_sport") and len(days_hit) < day:
             needed.add(pref)
     return needed
 
@@ -2329,9 +2335,11 @@ def choose_duration(p, now, end, lunch_done, user=None):
         lunch_target = time_to_minutes(LUNCH_TARGET)
         lunch_latest = time_to_minutes(LUNCH_LATEST)
 
-    # FIX #230: Pixel XL / arcade — minimum visit length (client: 15 min slot).
+    # FIX #230/#231: Pixel XL / arcade — minimum visit length (client: 15 min slot).
     if "pixel" in str(p.get("name", "")).lower():
         tmin = max(tmin, 45)
+    if "palmiarnia" in str(p.get("name", "")).lower():
+        tmin = max(tmin, 60)
 
     # FIX #45 (20.05.2026 - Issue F root fix): Trails span the entire day including lunch.
     # Mountain trails are 90min-13h activities that naturally cross lunch time.
@@ -4230,9 +4238,11 @@ def score_poi(
     if _needed222:
         for _np in _needed222:
             if _covers222(p, _np):
-                _spread_boost = 155.0 + min(_day221, 6) * 22.0
+                _spread_boost = 185.0 + min(_day221, 6) * 28.0
                 if _np in _prefs221[:2]:
-                    _spread_boost += 45.0
+                    _spread_boost += 55.0
+                if _np == "active_sport":
+                    _spread_boost += 40.0
                 score += _spread_boost
         # FIX #223: off-profile POI while core prefs still unmet today — stronger
         # demotion so later days keep realising preferences instead of universal POIs.
@@ -5542,7 +5552,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
                             # FIX #141 (31.05.2026): Hard 2km geo filter — only show nearby restaurants.
                             # Prevents "lunch teleport" where suggestions are far from actual position.
-                            _LUNCH_MAX_DIST_KM = 2.0
+                            _LUNCH_MAX_DIST_KM = MEAL_RESTAURANT_MAX_DIST_KM
                             _nearby_lunch141 = [r for r in lunch_restaurants if r.get("_distance", 999.0) <= _LUNCH_MAX_DIST_KM]
                             if _nearby_lunch141:
                                 lunch_restaurants = _nearby_lunch141
@@ -6232,8 +6242,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         _dist_km = haversine_distance(
                             last_poi.get("lat"), last_poi.get("lng"), p.get("lat"), p.get("lng"),
                         )
-                        if travel > 40 or _dist_km > 12.0:
+                        if travel > 35 or _dist_km > 10.0:
                             continue
+                    # FIX #231: skip far hops for short visits (Puszczykowo 16km / 35min)
+                    _poi_dur231 = safe_int(p.get("time_min") or p.get("duration_min"), 60)
+                    if _dist_km > 8.0 and _poi_dur231 < 75:
+                        continue
             
             # BUGFIX: For first POI with car, add parking (15 min) + walk_time
             if not last_poi and ctx.get("has_car", True):
@@ -7231,6 +7245,27 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         # DEBUG #Problem9 (14.05.2026): Track now update to diagnose overlap
         old_now = now
         now += best_duration
+
+        # FIX #231: truncate last attraction if it pushed past lunch window
+        if not lunch_done:
+            _grp231 = user.get("target_group")
+            if _grp231 in ("family_kids", "seniors"):
+                _ll231 = time_to_minutes("13:30")
+            else:
+                _ll231 = time_to_minutes(LUNCH_LATEST)
+            if now > _ll231:
+                for _idx231 in range(len(plan) - 1, -1, -1):
+                    if plan[_idx231].get("type") == "attraction":
+                        _st231 = time_to_minutes(plan[_idx231].get("start_time", "00:00"))
+                        _en231 = min(time_to_minutes(plan[_idx231].get("end_time", "00:00")), _ll231)
+                        if _en231 - _st231 >= 25:
+                            plan[_idx231]["end_time"] = minutes_to_time(_en231)
+                            now = _en231
+                        else:
+                            plan.pop(_idx231)
+                            now = _st231
+                        break
+
         if minutes_to_time(old_now) >= "18:00":
             print(f"[PROBLEM9 DEBUG] EVENING POI: {poi_name(best)}, start={minutes_to_time(old_now)}, duration={best_duration}, new_now={minutes_to_time(now)}, end={minutes_to_time(old_now + best_duration)}")
         energy -= energy_cost(best, best_duration, ctx)
@@ -7330,8 +7365,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 lunch_target = time_to_minutes("12:45")    # Target 12:45
                 lunch_latest = time_to_minutes("13:30")    # Latest 13:30
             else:
-                lunch_target = time_to_minutes(LUNCH_TARGET)  # 13:00
-                lunch_latest = time_to_minutes(LUNCH_LATEST)  # 14:30
+                lunch_target = time_to_minutes(LUNCH_TARGET)  # 12:30
+                lunch_latest = time_to_minutes(LUNCH_LATEST)  # 14:00
             
             # Check if POI pushed us past lunch time — FIX #230: force from lunch_earliest
             _post_lunch_earliest = time_to_minutes("12:30")
@@ -7437,7 +7472,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                                     r["_distance"] = 999.0
                             lunch_restaurants.sort(key=lambda r: r.get("_distance", 999.0))
                             # FIX #141 (31.05.2026): Hard 2km geo filter (post-POI lunch path)
-                            _nearby_lunch141b = [r for r in lunch_restaurants if r.get("_distance", 999.0) <= 2.0]
+                            _nearby_lunch141b = [r for r in lunch_restaurants if r.get("_distance", 999.0) <= MEAL_RESTAURANT_MAX_DIST_KM]
                             if _nearby_lunch141b:
                                 lunch_restaurants = _nearby_lunch141b
                         

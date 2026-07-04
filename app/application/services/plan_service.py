@@ -268,12 +268,48 @@ def _trim_gap_after_day_start(items: list, *, max_gap_min: int = 20) -> list:
     return out
 
 
+def _cap_total_day_free_time(items: list, *, max_total: int = 45) -> list:
+    """FIX #231: limit total free_time minutes per day (client: 80% free_time days)."""
+    ft_indices = [
+        i for i, it in enumerate(items)
+        if getattr(it, "type", None) == ItemType.FREE_TIME
+    ]
+    total = sum(int(getattr(items[i], "duration_min", 0) or 0) for i in ft_indices)
+    if total <= max_total:
+        return items
+    out = list(items)
+    for i in sorted(ft_indices, key=lambda x: int(getattr(items[x], "duration_min", 0) or 0)):
+        if total <= max_total:
+            break
+        dur = int(getattr(out[i], "duration_min", 0) or 0)
+        total -= dur
+        out[i] = None
+    return [it for it in out if it is not None]
+
+
+def _fix_late_lunch(items: list, *, latest_min: int = 840) -> list:
+    """FIX #231: move lunch_break that starts after 14:00 to 12:30."""
+    from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+    out = []
+    for it in items:
+        if getattr(it, "type", None) == ItemType.LUNCH_BREAK:
+            st = getattr(it, "start_time", None)
+            if st and time_to_minutes(st) > latest_min:
+                dur = int(getattr(it, "duration_min", 0) or 40)
+                setattr(it, "start_time", "12:30")
+                setattr(it, "end_time", minutes_to_time(time_to_minutes("12:30") + min(dur, 60)))
+                if hasattr(it, "duration_min"):
+                    setattr(it, "duration_min", min(dur, 60))
+        out.append(it)
+    return out
+
+
 def _max_merged_free_time_cap(context: Dict[str, Any]) -> int:
-    """FIX #221/#229/#230: cap merged free_time — 30 min cities, 180 default, 300 Zakopane."""
+    """FIX #221/#229/#230/#231: cap merged free_time — 20 min cities, 180 default, 300 Zakopane."""
     if context.get("is_zakopane_trip"):
         return 300
     if _is_urban_trip(context):
-        return 30
+        return 20
     return 180
 
 
@@ -2387,10 +2423,13 @@ class PlanService:
                 if getattr(it, "type", None) == ItemType.FREE_TIME
             )
             if (
-                num_days >= 4
-                and (day_num + 1) >= num_days - 1
+                num_days >= 3
+                and (
+                    (day_num + 1) >= num_days - 1
+                    or _attr219 < 2
+                )
                 and (_attr219 < 3 or (_attr219 < 2 and (day_num + 1) == num_days))
-                and (_ft219 >= 60 or _attr219 <= 1)
+                and (_ft219 >= 45 or _attr219 <= 1)
                 and _is_city_219(day_context)
             ):
                 day_items = self._fill_gaps_in_items(
@@ -2426,11 +2465,14 @@ class PlanService:
                 day_items = _trim_gap_after_day_start(day_items)
                 day_items = _strip_trailing_free_time(day_items)
 
-            # FIX #229/#230: final free_time hygiene for every day (start/end gaps).
+            # FIX #229/#230/#231: final free_time hygiene for every day (start/end gaps).
             day_items = _strip_leading_free_time(day_items)
             day_items = _trim_gap_after_day_start(day_items)
             day_items = _trim_long_free_time_blocks(day_items, max_min=_max_merged_free_time_cap(day_context))
             day_items = _strip_trailing_free_time(day_items, max_min=_max_merged_free_time_cap(day_context))
+            if _is_urban_trip(day_context):
+                day_items = _cap_total_day_free_time(day_items, max_total=45)
+            day_items = _fix_late_lunch(day_items)
 
             # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
             # This ensures day_end is always the last item in timeline

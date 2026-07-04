@@ -1,5 +1,5 @@
 # type: ignore
-"""FIX #230 — profile + preference POI deny/demote rules (client feedback round 3)."""
+"""FIX #230/#231 — profile + preference POI deny/demote rules (client feedback)."""
 
 from __future__ import annotations
 
@@ -65,6 +65,25 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
             )):
                 return True
 
+    # FIX #231 — Kraków family_kids
+    if tg == "family_kids":
+        if any(k in name for k in (
+            "kościół św. wojciecha", "sw. wojciecha", "bazylika mariacka",
+            "park decjusza", "kopiec krakusa",
+        )):
+            return True
+        if "aula leopoldina" in name:
+            return True
+
+    # FIX #231 — cultural: Lustrzany Labirynt off
+    if style == "cultural" and "lustrzany labirynt" in name:
+        return True
+
+    # FIX #231 — Katowice family: Kościół św. Anny
+    if tg == "family_kids" and ("św. anny" in name or "sw. anny" in name):
+        if "kościół" in name or "kosciol" in name or "parafia" in name:
+            return True
+
     return False
 
 
@@ -96,10 +115,49 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             delta -= 75.0
 
     # ── Wrocław filler / micro ──
-    if any(k in name for k in ("hala targowa", "most grunwaldzki", "dworzec świebodzki", "dworzec swiebodzki")):
-        delta -= 80.0
+    if any(k in name for k in (
+        "hala targowa", "most grunwaldzki", "dworzec świebodzki", "dworzec swiebodzki",
+        "bastion sakwowy",
+    )):
+        delta -= 95.0
         if day == 1:
-            delta -= 40.0
+            delta -= 50.0
+
+    # FIX #231 Wrocław — City Golf couples+cultural
+    if "city golf" in name and tg == "couples" and style == "cultural":
+        delta -= 80.0
+
+    # FIX #231 Wrocław — seniors+relax green spots
+    if tg == "seniors" and ("relaxation" in prefs or style == "relax"):
+        if any(k in name for k in (
+            "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
+            "ogród japoński", "ogrod japonski",
+        )):
+            delta += 85.0
+
+    # FIX #231 Wrocław — adventure boosts
+    if adv and any(k in name for k in (
+        "centrum historii zajezdnia", "zajezdnia", "hydropolis", "pixel xl", "pixel",
+    )):
+        delta += 75.0
+
+    # FIX #231 Wrocław — nature+relax green
+    if nat_relax and any(k in name for k in (
+        "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
+        "ogród japoński", "ogrod japonski", "zatoka gondoli", "rejs", "odra",
+    )):
+        delta += 80.0
+
+    # FIX #231 Wrocław — family_kids boosts
+    if tg == "family_kids" and any(k in name for k in ("kolejkowo", "hydropolis")):
+        delta += 90.0
+
+    # FIX #231 — cultural style should not erase relaxation
+    if style == "cultural" and "relaxation" in prefs:
+        if any(k in name for k in ("ogród", "ogrod", "park ", "bulwar", "wyspa", "spa", "termy")):
+            delta += 70.0
+        if "muzeum" in name and "hydropolis" not in name:
+            delta -= 35.0
 
     # Hala Stulecia — friends + adventure + active_sport
     if "hala stulecia" in name and tg == "friends" and adv and "active_sport" in prefs:
@@ -134,9 +192,32 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
         "taras przy kościele", "taras przy kosciolu", "pomnik syrenki", "syrenki",
         "most świętokrzyski", "most swietokrzyski", "pałac prezydencki", "palac prezydencki",
         "grób nieznanego", "grob nieznanego", "bazylika św. jana", "bazylika sw. jana",
+        "plac europejski",
     )
     if any(k in name for k in _waw_micro):
-        delta -= 75.0
+        delta -= 85.0
+
+    # FIX #231 Warszawa — friends+adventure demote relax parks
+    if tg == "friends" and adv:
+        if any(k in name for k in (
+            "ogrody zamku", "ogrod zamku", "łazienki królewskie", "lazienki krolewskie",
+            "jeziorko czerniakowskie", "bulwary wiślane", "bulwary wislane",
+        )):
+            delta -= 80.0
+        if "muzeum fabryki norblina" in name or "norblin" in name:
+            delta -= 75.0
+
+    # FIX #231 Warszawa — nature landscape boosts
+    if "nature_landscape" in prefs and any(k in name for k in (
+        "ogród botaniczny uw", "ogrod botaniczny uw", "bulwary wiślane", "bulwary wislane",
+    )):
+        delta += 80.0
+
+    # FIX #231 Warszawa — museum_heritage flagship boosts
+    if "museum_heritage" in prefs and any(k in name for k in (
+        "zamek królewski", "zamek krolewski", "muzeum narodowe", "muzeum wojska polskiego",
+    )):
+        delta += 70.0
 
     if tg == "family_kids" and day == 1 and "kopiec powstania" in name:
         delta -= 100.0
@@ -156,19 +237,33 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             delta -= 80.0
 
     # ── Kraków ──
+    if any(k in name for k in (
+        "kościół św. wojciecha", "sw. wojciecha", "plac bohaterów getta",
+        "kładka bernatka", "kladka bernatka", "be happy museum",
+    )):
+        delta -= 80.0
+
     if "bazylika mariacka" in name:
         if tg == "family_kids":
-            delta -= 85.0
+            delta -= 95.0
         if tg == "friends" and adv:
-            delta -= 70.0
-
-    if "kościół św. wojciecha" in name or "sw. wojciecha" in name:
-        if tg == "seniors" and ("relaxation" in prefs or style == "relax"):
-            delta -= 80.0
+            delta -= 85.0
 
     if tg == "friends" and adv:
-        if any(k in name for k in ("kładka bernatka", "kladka bernatka", "park decjusza", "plac bohaterów getta")):
-            delta -= 75.0
+        if any(k in name for k in ("park decjusza", "kopiec wandy")):
+            delta -= 80.0
+        if day >= int(ctx.get("num_days") or 1) and "kopiec wandy" in name:
+            delta -= 100.0
+
+    if "alvernia planet" in name and tg == "solo" and {"nature_landscape", "museum_heritage", "history_mystery"} <= prefs:
+        delta -= 85.0
+
+    if tg == "family_kids" and "kopiec krakusa" in name:
+        delta -= 90.0
+
+    if {"water_attractions", "relaxation", "local_food_experience"} <= prefs:
+        if any(k in name for k in ("muzeum", "fabryka schindlera")) and "hydropolis" not in name:
+            delta -= 70.0
 
     if tg == "seniors" and ("relaxation" in prefs or style == "relax"):
         if "wieża ratuszowa" in name or "wieza ratuszowa" in name:
@@ -179,15 +274,66 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             delta -= 75.0
 
     # ── Katowice ──
+    if _has_church_name(name):
+        delta -= 45.0  # FIX #231 extra church demote all profiles
+
     if "park kościuszki" in name or "park kosciuszki" in name:
         if name in trip_names:
-            delta -= 90.0
+            delta -= 100.0
+        if tg == "family_kids":
+            delta -= 50.0
+
+    if "muzeum historii katowic" in name and name in trip_names:
+        delta -= 100.0
+
+    if "planetarium" in name and tg == "friends" and adv and "active_sport" in prefs:
+        delta -= 85.0
+
+    if day == 1 and any(k in name for k in ("rynek w katowicach", "rynek katowic")):
+        delta -= 90.0
+
+    if tg == "seniors" and ("relaxation" in prefs or style == "relax"):
+        if any(k in name for k in (
+            "park śląski", "park slaski", "dolina trzech stawów", "nikiszowiec",
+        )):
+            delta += 85.0
+
+    if nat_relax:
+        if any(k in name for k in ("muzeum historii katowic", "muzeum etnologii", "spodek")):
+            delta -= 75.0
+        if _has_church_name(name):
+            delta -= 60.0
 
     if "górnośląski park etnograficzny" in name or "gornoslaski park etnograficzny" in name:
         if {"water_attractions", "relaxation"} & prefs or "local_food_experience" in prefs:
             delta -= 70.0
 
     # ── Poznań ──
+    if any(k in name for k in (
+        "pomnik bamberki", "pomnik ofiar czerwca", "domy kupieckie",
+    )):
+        delta -= 80.0
+
+    if adv:
+        if any(k in name for k in (
+            "okrąglak", "okraglak", "domy kupieckie", "muzeum bambrów", "muzeum bambrow",
+            "fotoplastykon",
+        )):
+            delta -= 85.0
+        if _has_church_name(name) and no_history:
+            delta -= 70.0
+
+    if ("relaxation" in prefs or style == "relax") and any(k in name for k in (
+        "jezioro maltańskie", "jezioro maltanskie", "wartostrada", "park sołacki",
+        "park solacki", "ogród botaniczny", "ogrod botaniczny",
+    )):
+        delta += 85.0
+
+    if "water_attractions" in prefs and any(k in name for k in (
+        "jezioro maltańskie", "jezioro maltanskie", "bulwar", "warta",
+    )):
+        delta += 80.0
+
     if "okrąglak" in name or "okraglak" in name:
         if tg == "friends" and adv and {"underground", "history_mystery"} <= prefs:
             delta -= 80.0
@@ -201,16 +347,34 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
     # ── Adventure trip character — demote passive after day 1 ──
     if adv and day >= 2 and no_history:
         if any(k in name for k in ("muzeum", "galeri")) and "kopalnia" not in name:
-            delta -= 45.0
+            delta -= 60.0
+        if tg == "friends" and any(k in name for k in ("rynek", "plac ", "most ", "bazylika", "kościół")):
+            delta -= 70.0
+
+    # FIX #231 — friends + adventure active boost
+    if tg == "friends" and adv and "active_sport" in prefs:
+        if any(k in name for k in (
+            "gojump", "trampolin", "park linowy", "paintball", "escape", "pixel",
+            "bungee", "kopalnia", "aquapark", "hydropolis",
+        )):
+            delta += 80.0
 
     # ── Relax/nature spread — boost when pref not hit today ──
     needed = ctx.get("prefs_needed_today") or set()
-    if "relaxation" in needed and any(k in name for k in ("spa", "termy", "bulwar", "ogród", "ogrod", "park ", "palmiarnia")):
-        delta += 70.0
-    if "nature_landscape" in needed and any(k in name for k in ("ogród", "ogrod", "botaniczny", "rezerwat", "bulwar", "wyspa")):
-        delta += 70.0
-    if "active_sport" in needed and any(k in name for k in ("gojump", "park linowy", "trampolin", "aquapark", "kopalnia", "bungee", "hydropolis")):
-        delta += 65.0
+    if "relaxation" in needed and any(k in name for k in (
+        "spa", "termy", "bulwar", "ogród", "ogrod", "park ", "palmiarnia",
+        "wyspa", "pergola", "malta", "wartostrada", "sołacki", "solacki",
+    )):
+        delta += 90.0
+    if "nature_landscape" in needed and any(k in name for k in (
+        "ogród", "ogrod", "botaniczny", "rezerwat", "bulwar", "wyspa", "park szczytnicki",
+    )):
+        delta += 90.0
+    if "active_sport" in needed and any(k in name for k in (
+        "gojump", "park linowy", "trampolin", "aquapark", "kopalnia", "bungee",
+        "hydropolis", "paintball", "escape", "linowa", "planetarium",
+    )):
+        delta += 95.0
 
     # Ojców cluster — strong boost when Maczuga already scheduled today
     if ctx.get("ojcow_day_active"):
