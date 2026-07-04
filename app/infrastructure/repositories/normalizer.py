@@ -505,6 +505,9 @@ def normalize_poi(p, index):
         "id": poi_id,  # CLIENT DATA UPDATE: Use loader ID
         "name": _safe_str(p.get("name") or p.get("Name")),
         "description_short": _safe_str(p.get("Description_short")),
+        "description_long": _safe_str(
+            p.get("description_long") or p.get("Description_long")
+        ),
         # FIX #198: multi_city loader uses lowercase lat/lng/address/city; Zakopane uses Excel casing
         "address": _safe_str(p.get("address") or p.get("Address")),
         "city": _safe_str(p.get("city") or p.get("City")),

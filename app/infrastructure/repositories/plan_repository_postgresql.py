@@ -461,6 +461,8 @@ class PlanPostgreSQLRepository(IPlanRepository):
                 ctx["days_count"] = trip_input.trip_length.days
                 _sd = trip_input.trip_length.start_date
                 ctx["start_date"] = _sd.isoformat() if _sd else None
+                ctx["preferences"] = list(trip_input.preferences or [])
+                ctx["travel_style"] = getattr(trip_input, "travel_style", None)
             except Exception:
                 pass
         # Fallback to PlanResponse-carried fields
@@ -468,6 +470,10 @@ class PlanPostgreSQLRepository(IPlanRepository):
         ctx["region_type"] = ctx["region_type"] or getattr(plan, "region_type", None)
         ctx["group_type"] = ctx["group_type"] or getattr(plan, "group_type", None)
         ctx["start_date"] = ctx["start_date"] or getattr(plan, "start_date", None)
+        if getattr(plan, "preferences", None):
+            ctx["preferences"] = plan.preferences
+        if getattr(plan, "travel_style", None):
+            ctx["travel_style"] = plan.travel_style
         if getattr(plan, "title", None):
             ctx["title"] = plan.title
         # Build a readable title if still missing
@@ -490,7 +496,7 @@ class PlanPostgreSQLRepository(IPlanRepository):
         }
         # FIX (01.07.2026): persist trip context so /status, /my-plans and
         # GET /{id} can return city, dates and a proper plan name.
-        for key in ("city", "region_type", "group_type", "start_date", "title"):
+        for key in ("city", "region_type", "group_type", "start_date", "title", "preferences", "travel_style"):
             if ctx.get(key) is not None:
                 meta[key] = ctx[key]
         return meta
@@ -584,6 +590,8 @@ class PlanPostgreSQLRepository(IPlanRepository):
             title=trip_meta.get("title"),
             paid=paid,
             payment_status="paid" if paid else "unpaid",
+            preferences=trip_meta.get("preferences") or [],
+            travel_style=trip_meta.get("travel_style"),
         )
 
     def _calculate_total_cost(self, days: list[DayPlan]) -> float:

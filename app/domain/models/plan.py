@@ -194,6 +194,10 @@ class AttractionItem(BaseModel):
 
     # POI dane - MUSZĄ być w response (klientka 25.01)
     description_short: str = Field(..., description="Krótki opis")
+    description_long: Optional[str] = Field(
+        default=None,
+        description="Długi opis atrakcji z bazy POI (Description_long)",
+    )
     lat: float = Field(..., description="Szerokość geograficzna")
     lng: float = Field(..., description="Długość geograficzna")
     address: str = Field(..., description="Adres atrakcji")
@@ -254,6 +258,7 @@ class RestaurantSuggestion(BaseModel):
     price_level: int = Field(default=2, ge=1, le=4, description="Poziom cen 1-4")
     avg_meal_cost: int | None = Field(default=None, ge=0, description="Średni koszt posiłku PLN")
     city: str = Field(default="", description="Miasto restauracji")
+    pro_tip: str | None = Field(default=None, description="Pro tip dla restauracji (jeśli dostępne)")
 
 
 class LunchBreakItem(BaseModel):
@@ -436,6 +441,14 @@ class PlanResponse(BaseModel):
     )
     group_type: Optional[str] = Field(
         default=None, description="Typ grupy (couples, family_kids, ...)"
+    )
+    preferences: List[str] = Field(
+        default_factory=list,
+        description="Preferencje użytkownika wybrane przy tworzeniu planu",
+    )
+    travel_style: Optional[str] = Field(
+        default=None,
+        description="Styl podróży (balanced, cultural, adventure, relax, ...)",
     )
     start_date: Optional[str] = Field(
         default=None, description="Data rozpoczęcia wycieczki YYYY-MM-DD"

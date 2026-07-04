@@ -371,6 +371,7 @@ def _restaurant_dict_to_suggestion(r: Dict[str, Any], meal_type: str) -> Restaur
         price_level=int(r.get("price_level") or 2),
         avg_meal_cost=int(avg_cost) if avg_cost is not None else None,
         city=r.get("city", "") or "",
+        pro_tip=r.get("pro_tip") or None,
     )
 
 
@@ -416,6 +417,8 @@ def _trip_context_fields(trip_input: "TripInput") -> Dict[str, Any]:
         "start_date": start_date_str,
         "days_count": days_count,
         "title": title,
+        "preferences": list(trip_input.preferences or []),
+        "travel_style": getattr(trip_input, "travel_style", None),
     }
 
 
@@ -3681,6 +3684,11 @@ class PlanService:
             poi_id=poi_dict.get("id", ""),
             name=poi_dict.get("name", ""),
             description_short=poi_dict.get("description_short", ""),
+            description_long=(
+                poi_dict.get("description_long")
+                or poi_dict.get("Description_long")
+                or None
+            ),
             # FIX #3.2: Use extracted lat/lng values
             lat=lat_value,
             lng=lng_value,
@@ -3707,7 +3715,7 @@ class PlanService:
                 lat=_pk_lat,
                 lng=_pk_lng,
             ),
-            pro_tip=poi_dict.get("pro_tip"),  # ADD pro_tip from POI
+            pro_tip=poi_dict.get("pro_tip") or poi_dict.get("Pro_tip") or None,
             why_selected=why_selected,  # ETAP 2 Day 5
             quality_badges=quality_badges  # ETAP 2 Day 5
         )
