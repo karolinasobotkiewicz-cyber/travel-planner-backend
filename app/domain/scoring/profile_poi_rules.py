@@ -39,6 +39,7 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     prefs = _prefs(user)
     style = _safe_str(user.get("travel_style"))
     child_age = user.get("children_age")
+    adv = style == "adventure" or "adventure" in prefs
 
     # Wrocław: zoo off friends + adventure + underground + history
     if _is_zoo(poi) and tg == "friends" and {"adventure", "underground", "history_mystery"} <= prefs:

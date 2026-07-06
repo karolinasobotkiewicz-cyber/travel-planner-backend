@@ -95,6 +95,16 @@ def test_water_attractions_malta_boost():
     assert profile_poi_score_delta(malta, user) >= 80
 
 
+def test_friends_adventure_zoo_deny_no_nameerror():
+    user = {
+        "target_group": "friends",
+        "travel_style": "adventure",
+        "preferences": ["underground", "history_mystery", "museum_heritage"],
+    }
+    zoo = {"name": "Zoo Kraków", "tags": ["zoo"]}
+    assert should_deny_poi_for_profile(zoo, user) is True
+
+
 def test_is_active_city_poi():
     assert is_active_city_poi({"name": "Pixel XL", "tags": []})
     assert is_active_city_poi({"name": "Park Linowy", "tags": []})
