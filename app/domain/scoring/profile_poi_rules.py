@@ -1,5 +1,5 @@
 # type: ignore
-"""FIX #230/#231 — profile + preference POI deny/demote rules (client feedback)."""
+"""FIX #230/#231/#233 — profile + preference POI deny/demote rules (client feedback)."""
 
 from __future__ import annotations
 
@@ -46,6 +46,31 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     # Katowice: zoo off friends + adventure + active_sport
     if _is_zoo(poi) and tg == "friends" and {"adventure", "active_sport"} <= prefs:
         return True
+    # FIX #233 Katowice: zoo off friends+adventure (any combo) and couples+cultural
+    if _is_zoo(poi) and tg == "friends" and adv:
+        return True
+    if _is_zoo(poi) and tg == "couples" and style == "cultural":
+        return True
+
+    # FIX #233 Warszawa family_kids — Cmentarz Powązkowski
+    if tg == "family_kids" and any(k in name for k in (
+        "cmentarz powązkowski", "cmentarz powazkowski", "powązk", "powazk",
+    )):
+        return True
+
+    # FIX #233 Kraków family_kids — Fabryka Schindlera / Stare Miasto core
+    if tg == "family_kids":
+        if any(k in name for k in (
+            "fabryka schindlera", "schindlera",
+            "rynek główny", "rynek glowny", "sukiennice",
+        )):
+            return True
+
+    # FIX #233 solo + relax — block dry museums when no museum pref
+    if tg == "solo" and (style == "relax" or "relaxation" in prefs):
+        if "muzeum" in name and not ({"museum_heritage", "history_mystery"} & prefs):
+            if not any(k in name for k in ("hydropolis", "kopernik", "nauki")):
+                return True
 
     # Kraków: Podziemia Rynku for family with young child
     if tg == "family_kids" and "podziemia rynku" in name:
@@ -78,6 +103,14 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     # FIX #231 — cultural: Lustrzany Labirynt off
     if style == "cultural" and "lustrzany labirynt" in name:
         return True
+
+    # FIX #233 couples+cultural — misfit attractions
+    if tg == "couples" and style == "cultural":
+        if any(k in name for k in (
+            "pixel xl", "pixel", "gojump", "trampolin", "paintball", "laser tag",
+            "city golf", "bungee", "escape room",
+        )):
+            return True
 
     # FIX #231 — Katowice family: Kościół św. Anny
     if tg == "family_kids" and ("św. anny" in name or "sw. anny" in name):
@@ -347,9 +380,92 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
     # ── Adventure trip character — demote passive after day 1 ──
     if adv and day >= 2 and no_history:
         if any(k in name for k in ("muzeum", "galeri")) and "kopalnia" not in name:
-            delta -= 60.0
+            delta -= 80.0
         if tg == "friends" and any(k in name for k in ("rynek", "plac ", "most ", "bazylika", "kościół")):
+            delta -= 85.0
+
+    # FIX #233 — adventure needs multiple active POIs per day, not one + sightseeing
+    if adv and day >= 1:
+        if is_active_city_poi(poi):
+            delta += 70.0
+        _day_active = int(ctx.get("day_active_count") or 0)
+        if _day_active >= 1 and no_history:
+            if any(k in name for k in ("muzeum", "galeri", "kościół", "bazylika", "katedra")):
+                delta -= 90.0
+            if any(k in name for k in ("rynek", "stare miasto", "plac ", "most ", "pomnik ")):
+                delta -= 75.0
+
+    # FIX #233 — balanced long trips: demote extra museums
+    if style == "balanced":
+        _trip_mus = int(ctx.get("trip_museum_count") or 0)
+        if "muzeum" in name and _trip_mus >= 3 and "museum_heritage" not in prefs[:2]:
             delta -= 70.0
+        if "muzeum" in name and day >= 3 and _trip_mus >= 2:
+            delta -= 55.0
+
+    # FIX #233 — family_kids: demote Las Wolski, Rynek-area, Matejki, Geologiczne
+    if tg == "family_kids":
+        if any(k in name for k in (
+            "las wolski", "dom jana matejki", "muzeum geologiczne",
+            "wieża ratuszowa", "wieza ratuszowa", "park decjusza", "park bednarskiego",
+            "kładka bernatka", "kladka bernatka",
+        )):
+            delta -= 85.0
+        if any(k in name for k in ("kolejkowo", "hydropolis", "mini zoo", "papugarn", "pixel")):
+            delta += 75.0
+
+    # FIX #233 — Poznań water_attractions: Maltańskie is core
+    if "water_attractions" in prefs and any(k in name for k in (
+        "jezioro maltańskie", "jezioro maltanskie", "maltanka", "termy malta",
+    )):
+        delta += 95.0
+    if "water_attractions" in prefs and "malta" in name and "muzeum" not in name:
+        delta += 80.0
+
+    # FIX #233 Poznań — demote micro heritage
+    if any(k in name for k in (
+        "muzeum bambrów", "muzeum bambrow", "bazylika archikatedralna",
+        "okrąglak", "okraglak",
+    )):
+        delta -= 85.0
+
+    # FIX #233 Kraków — demote over-ranked micro
+    if any(k in name for k in (
+        "kościół św. wojciecha", "sw. wojciecha", "muzeum geologiczne",
+        "dom jana matejki", "wieża ratuszowa", "wieza ratuszowa",
+        "park decjusza", "park bednarskiego", "kładka bernatka", "kladka bernatka",
+    )):
+        delta -= 90.0
+
+    # FIX #233 Katowice — demote filler museums/churches/parks
+    if any(k in name for k in (
+        "muzeum historii katowic", "dział etnologii", "dzial etnologii",
+        "parafia św. anny", "parafia sw. anny", "park chrobrego",
+        "muzeum odlewnictwa", "odlewnictwa artystycznego",
+    )):
+        delta -= 90.0
+
+    # FIX #233 Wrocław — demote Wena, Arboretum Wojsławice day 1, Ogród Botaniczny repeat
+    if "muzeum motoryzacji wena" in name or ("muzeum motoryzacji" in name and "wena" in name):
+        delta -= 95.0
+    if day == 1 and any(k in name for k in ("arboretum wojsławice", "arboretum wojslawice")):
+        delta -= 120.0
+    if "ogród botaniczny" in name or "ogrod botaniczny" in name:
+        if name in trip_names:
+            delta -= 100.0
+
+
+    # FIX #233 — solo+relax museum demote
+    if tg == "solo" and (style == "relax" or "relaxation" in prefs) and "muzeum" in name:
+        if not ({"museum_heritage", "history_mystery"} & prefs):
+            delta -= 80.0
+
+    # FIX #233 — couples+cultural garden/culture boost, demote active fun
+    if tg == "couples" and style == "cultural":
+        if any(k in name for k in ("muzeum", "galeria", "zamek", "pałac", "palac", "ogród", "ogrod")):
+            delta += 45.0
+        if any(k in name for k in ("pixel", "trampolin", "paintball", "gojump")):
+            delta -= 85.0
 
     # FIX #231 — friends + adventure active boost
     if tg == "friends" and adv and "active_sport" in prefs:
@@ -377,8 +493,12 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
         delta += 95.0
 
     # Ojców cluster — strong boost when Maczuga already scheduled today
-    if ctx.get("ojcow_day_active"):
-        if any(k in name for k in ("pieskowa skała", "pieskowa skala", "jaskinia łokietka", "jaskinia lokietka", "zamek w ojcowie", "ojców", "ojcow")):
+    if ctx.get("ojcow_day_active") or ctx.get("excursion_day_active"):
+        _reg = ctx.get("excursion_day_active") or "region_ojcow"
+        from app.domain.planner.engine import poi_geo_region_key
+        if poi_geo_region_key(poi) == _reg:
+            delta += 90.0
+        elif any(k in name for k in ("pieskowa skała", "pieskowa skala", "jaskinia łokietka", "jaskinia lokietka", "zamek w ojcowie", "ojców", "ojcow", "maczuga")):
             delta += 90.0
 
     # Duplicate POI name penalty (Ogrody Zamku 2x)

@@ -238,8 +238,8 @@ def _trim_long_free_time_blocks(items: list, *, max_min: int = 30) -> list:
     return out
 
 
-def _trim_gap_after_day_start(items: list, *, max_gap_min: int = 20) -> list:
-    """FIX #229: first attraction should follow day_start within max_gap_min."""
+def _trim_gap_after_day_start(items: list, *, max_gap_min: int = 12) -> list:
+    """FIX #229/#233: first attraction should follow day_start within max_gap_min."""
     if not items:
         return items
     from app.domain.planner.time_utils import time_to_minutes as _ttm
@@ -268,8 +268,8 @@ def _trim_gap_after_day_start(items: list, *, max_gap_min: int = 20) -> list:
     return out
 
 
-def _cap_total_day_free_time(items: list, *, max_total: int = 45) -> list:
-    """FIX #231: limit total free_time minutes per day (client: 80% free_time days)."""
+def _cap_total_day_free_time(items: list, *, max_total: int = 35) -> list:
+    """FIX #231/#233: limit total free_time minutes per day (client: hour+ gaps)."""
     ft_indices = [
         i for i, it in enumerate(items)
         if getattr(it, "type", None) == ItemType.FREE_TIME
@@ -305,11 +305,11 @@ def _fix_late_lunch(items: list, *, latest_min: int = 840) -> list:
 
 
 def _max_merged_free_time_cap(context: Dict[str, Any]) -> int:
-    """FIX #221/#229/#230/#231: cap merged free_time — 20 min cities, 180 default, 300 Zakopane."""
+    """FIX #221/#229/#230/#231/#233: cap merged free_time — 15 min cities, 180 default, 300 Zakopane."""
     if context.get("is_zakopane_trip"):
         return 300
     if _is_urban_trip(context):
-        return 20
+        return 15
     return 180
 
 
@@ -2474,7 +2474,7 @@ class PlanService:
             day_items = _trim_long_free_time_blocks(day_items, max_min=_max_merged_free_time_cap(day_context))
             day_items = _strip_trailing_free_time(day_items, max_min=_max_merged_free_time_cap(day_context))
             if _is_urban_trip(day_context):
-                day_items = _cap_total_day_free_time(day_items, max_total=45)
+                day_items = _cap_total_day_free_time(day_items, max_total=35)
             day_items = _fix_late_lunch(day_items)
 
             # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
@@ -2938,10 +2938,7 @@ class PlanService:
                     suggestions=_parse_meal_suggestions(
                         item.get("suggestions", []),
                         "lunch",
-                    ) or [
-                        _restaurant_dict_to_suggestion(n, "lunch")
-                        for n in ["Restauracja w centrum", "Food court", "Piknik w parku"]
-                    ],
+                    ) or [],
                     location_context=item.get("location_context"),
                 )
                 items.append(lunch_item)
@@ -3100,6 +3097,14 @@ class PlanService:
                     # Track first parking name
                     last_parking_name = item.get("poi", {}).get("parking_name", "")
                 
+                if first_attraction_index == 0 and _urban_trip:
+                    from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+                    _ds = time_to_minutes(day_start)
+                    _orig = time_to_minutes(attr_start_time)
+                    if _orig > _ds + 12:
+                        attr_start_time = minutes_to_time(_ds + 5)
+                        print(f"[FIX #233] Urban first attraction snapped: {minutes_to_time(_orig)} -> {attr_start_time}")
+
                 first_attraction_index += 1
                 
                 attraction_item = self._generate_attraction_item(
@@ -3665,10 +3670,12 @@ class PlanService:
         # Fix: Distinguish "no parking data" from "parking exists but is free/paid".
         _pname = poi_dict.get("parking_name") or ""
         _ptype_raw = str(poi_dict.get("parking_type", "") or "").lower().strip()
-        if _ptype_raw == "paid":
+        if _ptype_raw in ("paid", "płatny", "platny"):
             _parking_type_enum = ParkingType.PAID
-        else:
+        elif _ptype_raw in ("free", "darmowy", "darmowe"):
             _parking_type_enum = ParkingType.FREE
+        else:
+            _parking_type_enum = ParkingType.PAID  # FIX #233: default paid when unknown
         # When no parking data at all → urban default label (FIX #200)
         if _pname:
             _parking_display_name = _pname
@@ -4054,7 +4061,9 @@ class PlanService:
                             # remaining gap (120-200+ min) was inserted as ONE free_time block.
                             # Engine itself never creates free_time >60 min; this aligns gap_filler.
                             day_end_str = context.get("day_end")
-                            free_duration = min(60, gap)  # FIX #76: was: gap (uncapped)
+                            from app.domain.planner.city_copy import is_city_tourism_trip as _city_ft233
+                            _max_ft233 = 15 if _city_ft233(context) else 60
+                            free_duration = min(_max_ft233, gap)
                             
                             if day_end_str:
                                 day_end_min = time_to_minutes(day_end_str)

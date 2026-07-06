@@ -930,6 +930,10 @@ _HARD_QUICK_STOP_MARKERS = (
     "muzeum obwarzanka",
     "cmentarz powązkowski", "cmentarz powazkowski",
     "manufaktura cukierków", "manufaktura cukierkow",
+    # FIX #233
+    "muzeum geologiczne", "dom jana matejki", "wieża ratuszowa", "wieza ratuszowa",
+    "park decjusza", "park bednarskiego", "muzeum bambrów", "muzeum bambrow",
+    "muzeum historii katowic", "park chrobrego", "arboretum wojsławice", "arboretum wojslawice",
 )
 
 _QUICK_STOP_NAME_MARKERS = (
@@ -1630,6 +1634,7 @@ _FAMILY_ICON_MARKERS = (
 _FAR_GEO_REGIONS = frozenset({
     "region_pieniny", "region_spisz_bukowina", "region_slowacja",
     "region_ojcow", "region_wieliczka",
+    "region_gniezno", "region_gliwice", "region_suntago", "region_modlin",
 })
 
 
@@ -1667,6 +1672,15 @@ def poi_geo_region_key(p: dict) -> str | None:
         "kopalnia soli",
     )):
         return "region_wieliczka"
+    # FIX #233: Poznań/Gniezno, Katowice/Gliwice, Warszawa day-trips
+    if any(k in blob for k in ("gniezno", "gnieźnie", "gniezn")):
+        return "region_gniezno"
+    if "gliwice" in blob:
+        return "region_gliwice"
+    if "suntago" in blob:
+        return "region_suntago"
+    if any(k in blob for k in ("modlin", "twierdza modlin")):
+        return "region_modlin"
     return None
 
 
@@ -1717,6 +1731,46 @@ def should_block_cross_region_in_day(p: dict, context: dict | None) -> bool:
     return False
 
 
+def is_seasonal_water_poi_out_of_season(p: dict, context: dict | None) -> bool:
+    """FIX #233: block cruises/pontoons in winter (Wrocław client feedback)."""
+    name = str(p.get("name", "")).lower()
+    if not any(m in name for m in ("rejs", "ponton", "żaglówk", "zaglówk", "spływ", "spluw", "kajak")):
+        return False
+    ctx = context or {}
+    date_tuple = ctx.get("date")
+    if date_tuple:
+        try:
+            month = date_tuple.month if hasattr(date_tuple, "month") else int(date_tuple[1])
+            return month in (12, 1, 2, 3, 11)
+        except (TypeError, IndexError, ValueError):
+            pass
+    return str(ctx.get("season", "")).lower() == "winter"
+
+
+def should_block_premature_excursion_return(p: dict, context: dict | None, plan: list) -> bool:
+    """FIX #233: don't return to city after a single out-of-town POI — build clusters."""
+    if not context:
+        return False
+    day_reg = context.get("day_geo_region")
+    if not day_reg or day_reg not in _FAR_GEO_REGIONS:
+        return False
+    regional_count = 0
+    for item in plan:
+        if item.get("type") != "attraction":
+            continue
+        poi_blob = item.get("poi") or {}
+        if poi_geo_region_key(poi_blob) == day_reg:
+            regional_count += 1
+    if regional_count >= 2:
+        return False
+    poi_reg = poi_geo_region_key(p)
+    if regional_count == 1 and poi_reg is None:
+        poi_name_safe = str(p.get("name", "Unknown")).encode("ascii", errors="ignore").decode("ascii")
+        print(f"[FIX #233] Blocked premature return to city: {poi_name_safe} (only {regional_count} regional POI)")
+        return True
+    return False
+
+
 def _is_signature_valley_hike(p: dict) -> bool:
     """FIX #182: Flagship all-day valley hikes (Kościeliska, Chochołowska, Strążyska)."""
     n = poi_name(p).lower()
@@ -1733,6 +1787,8 @@ def should_skip_poi_candidate(p: dict, context: dict | None) -> bool:
     if should_block_geo_region_repeat(p, context):
         return True
     if should_block_cross_region_in_day(p, context):
+        return True
+    if should_block_premature_excursion_return(p, context, (context or {}).get("_day_plan_snapshot") or []):
         return True
     if context and context.get("exclude_zone_c_pois") and str(p.get("zone", "")).strip() == "C":
         return True
@@ -2303,6 +2359,21 @@ def choose_duration(p, now, end, lunch_done, user=None):
     elif any(k in poi_name for k in ("rynek", "łazienki", "lazienki", "wawel", "sukiennice", "zamek")):
         type_min_duration = MIN_DURATION_BY_TYPE["landmark"]
     
+    # FIX #230/#231/#233: named POI minimum visit lengths (client feedback).
+    _poi_name_lower = str(p.get("name", "")).lower()
+    _named_mins = (
+        ("pixel", 45),
+        ("palmiarnia", 60),
+        ("kopiec krakusa", 45),
+        ("górnośląski park etnograficzny", 90),
+        ("gornoslaski park etnograficzny", 90),
+        ("muzeum powstania wielkopolskiego", 45),
+    )
+    for _marker, _nmin in _named_mins:
+        if _marker in _poi_name_lower:
+            tmin = max(tmin, _nmin)
+            break
+
     # Use the HIGHER of: POI's time_min OR type-based minimum
     # This ensures Excel data can set higher requirements, but types enforce floor
     effective_min = max(tmin, type_min_duration)
@@ -2334,12 +2405,6 @@ def choose_duration(p, now, end, lunch_done, user=None):
     else:
         lunch_target = time_to_minutes(LUNCH_TARGET)
         lunch_latest = time_to_minutes(LUNCH_LATEST)
-
-    # FIX #230/#231: Pixel XL / arcade — minimum visit length (client: 15 min slot).
-    if "pixel" in str(p.get("name", "")).lower():
-        tmin = max(tmin, 45)
-    if "palmiarnia" in str(p.get("name", "")).lower():
-        tmin = max(tmin, 60)
 
     # FIX #45 (20.05.2026 - Issue F root fix): Trails span the entire day including lunch.
     # Mountain trails are 90min-13h activities that naturally cross lunch time.
@@ -4390,6 +4455,12 @@ def score_poi(
         if _relax_pos & poi_tags:
             score += 55.0
 
+    # FIX #233: balanced long trips — demote museum stacking
+    if travel_style == "balanced" and is_museum_heritage_poi(p):
+        _trip_mus_bal = int((context or {}).get("trip_museum_count", 0) or 0)
+        if _trip_mus_bal >= 3 and "museum_heritage" not in _prefs221[:2]:
+            score -= 75.0
+
     # 4) Expensive single activity dominating the daily budget (client: Bungee for
     #    active_sport blows the daily limit). Group cost can pass the hard cap yet eat
     #    almost the entire budget — demote non-flagship POIs above 55% of the limit.
@@ -4397,7 +4468,7 @@ def score_poi(
         try:
             _cost223 = calculate_poi_cost_for_group(p, user)
             if (
-                _cost223 > 0.55 * float(daily_limit)
+                _cost223 > 0.45 * float(daily_limit)
                 and must_see_value < 8
                 and not is_heavy_sightseeing_poi(p)
             ):
@@ -4461,6 +4532,15 @@ def score_poi(
     # Ojców/Maczuga Herkulesa — boost cluster POIs when planning that area.
     if any(n in _name221 for n in ("maczuga herkulesa", "pieskowa skała", "jaskinia łokietka", "jaskinia lokietka", "zamek w ojcowie")):
         score += 55.0
+
+    # FIX #233: city day 1 — don't open with far excursion / Arboretum Wojsławice
+    from app.domain.planner.city_copy import is_city_tourism_trip as _city233
+    if _city233(context) and int((context or {}).get("current_day_num") or 1) == 1:
+        if int((context or {}).get("day_attraction_count") or 0) == 0:
+            if poi_geo_region_key(p) in _FAR_GEO_REGIONS:
+                score -= 110.0
+            if any(n in _name221 for n in ("arboretum wojsławice", "arboretum wojslawice")):
+                score -= 130.0
 
     # Nature+relax — must_see museums (Schindler, Czartoryskich) demote when no museum pref.
     if _nat_relax_focus and must_see_value >= 7 and is_museum_heritage_poi(p):
@@ -5106,6 +5186,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     """
     print("[BUILD_DAY CALLED] Starting build_day")
     ctx = _get_context(context)
+    context["day_active_count"] = 0
+    ctx["day_active_count"] = 0
     
     # SEASONALITY HARD FILTER (ETAP 1 enhancement - 29.01.2026)
     # Exclude POI outside current season BEFORE scoring
@@ -5383,6 +5465,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
     while now < end:
         context["remaining_day_minutes"] = end - now
+        context["_day_plan_snapshot"] = plan
+        ctx["_day_plan_snapshot"] = plan
         # FEEDBACK KLIENTKI (03.02.2026): Enforce core_min POI
         # If we're in second half of day and no core POI yet, boost core POI heavily
         half_day = (end + time_to_minutes(start_time_str)) // 2
@@ -5480,7 +5564,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 # ETAP 3 PHASE 3 (27.04.2026): Intelligent lunch suggestions from RestaurantRepository
                 # Use context["restaurants_available"] to find nearby lunch spots
                 # Fallback to generic suggestions if no restaurants available
-                lunch_suggestions = ["Lunch", "Restauracja", "Odpoczynek"]  # Default fallback
+                lunch_suggestions = []  # FIX #233: no generic fallback — nearby restaurants only
 
                 restaurants_available = context.get("restaurants_available", [])
                 if restaurants_available:
@@ -5877,10 +5961,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 continue
 
             # FIX #58 (21.05.2026): Hard cap: max 1 museum per day for adventure profile
-            # Issue: Adventure plans fill with museums after trails/active POIs are exhausted
+            # FIX #233: adventure without museum_heritage → zero museums/day
             _user_prefs_58 = user.get("preferences") or []
             _adv_museum_cap = travel_style == "adventure" or "adventure" in _user_prefs_58
-            if _adv_museum_cap and daily_museum_count >= 1:
+            _adv_mus_limit = 1 if "museum_heritage" in _user_prefs_58[:2] else 0
+            if _adv_museum_cap and daily_museum_count >= _adv_mus_limit:
                 _mus_tags_58 = {"themed_museum", "regional_heritage", "museum_heritage", "museums",
                                 "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
                                 "interactive_exhibit", "local_history", "architecture_heritage",
@@ -5938,6 +6023,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             ):
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
                 print(f"[FIX #229] MUSEUM CAP: EXCLUDED {poi_name_safe} ({daily_museum_count}/3 city)")
+                continue
+
+            # FIX #233: balanced style — max 2 museums/day unless museum_heritage leads
+            if (
+                travel_style == "balanced"
+                and "museum_heritage" not in _user_prefs229m[:2]
+                and daily_museum_count >= 2
+                and (is_museum_heritage_poi(p) or is_culture(p))
+            ):
                 continue
 
             # FIX #230: relax-led city trips — max 1 museum/day unless museum_heritage leads.
@@ -6265,6 +6359,12 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             if duration <= 0:
                 continue
 
+            # FIX #233: winter hard-block for cruises/pontoons without seasonal metadata
+            if is_seasonal_water_poi_out_of_season(p, ctx):
+                poi_name_debug = p.get("Name", p.get("name", "UNKNOWN"))
+                print(f"[FIX #233 SEASONAL] SKIP {poi_name_debug} - water activity out of season")
+                continue
+
             # CLIENT FEEDBACK (30.01.2026 - Requirement #6): Seasonal hard filter
             # Problem: Out-of-season POI inserted (Zjazd pontonem in February)
             # Solution: Explicitly check date range BEFORE is_open() validation
@@ -6298,6 +6398,9 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # FIX #133: inject current consecutive-short count for scoring
             ctx["consecutive_short_count"] = consecutive_short_count
             ctx["day_museum_count"] = daily_museum_count  # FIX #192
+            ctx["day_attraction_count"] = attraction_count  # FIX #233
+            ctx["day_active_count"] = context.get("day_active_count", 0)  # FIX #233
+            ctx["_day_plan_snapshot"] = plan  # FIX #233 excursion cluster
             score = score_poi(
                 p=p,
                 user=user,
@@ -6893,7 +6996,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         continue
 
                     # FIX #88 (28.05.2026): Adventure profile museum cap in soft fallback loop too.
-                    if travel_style == "adventure" and daily_museum_count >= 1:
+                    _adv_soft_lim = 1 if "museum_heritage" in (user.get("preferences") or [])[:2] else 0
+                    if travel_style == "adventure" and daily_museum_count >= _adv_soft_lim:
                         _adv_museum_soft_tags = {
                             "themed_museum", "regional_heritage", "museum_heritage", "museums",
                             "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
@@ -7342,6 +7446,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         _best_name230 = str(best.get("name", "")).lower()
         if "maczuga herkulesa" in _best_name230:
             ctx["ojcow_day_active"] = True
+        _best_reg233 = poi_geo_region_key(best)
+        if _best_reg233 and _best_reg233 in _FAR_GEO_REGIONS:
+            ctx["excursion_day_active"] = _best_reg233
+            ctx["day_geo_region"] = _best_reg233
+
+        from app.domain.scoring.profile_poi_rules import is_active_city_poi as _is_active233
+        if _is_active233(best):
+            context["day_active_count"] = int(context.get("day_active_count", 0) or 0) + 1
+            ctx["day_active_count"] = context["day_active_count"]
 
         # FIX #14 (29.04.2026 - CLIENT FEEDBACK): CRITICAL LUNCH CHECK AFTER POI
         # Problem: POI duration can push 'now' past lunch_target (e.g., 12:30 + 2.5h = 15:00)

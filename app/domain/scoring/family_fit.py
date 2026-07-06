@@ -57,9 +57,11 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "pałac w wilanowie", "muzeum pałacu",
         "podziemia rynku", "kopiec powstania",
         "katedra wrocławska", "katedra wroclawska",
-        # FIX #231 Kraków
+        "fabryka schindlera", "schindlera", "rynek główny", "rynek glowny",
+        # FIX #231/#233 Kraków + Warszawa
         "kościół św. wojciecha", "sw. wojciecha", "bazylika mariacka",
         "park decjusza", "kopiec krakusa", "aula leopoldina",
+        "cmentarz powązkowski", "cmentarz powazkowski",
     ),
     "solo": ("pixel xl", "pixel", "centrum nauki kopernik"),
     "couples": (

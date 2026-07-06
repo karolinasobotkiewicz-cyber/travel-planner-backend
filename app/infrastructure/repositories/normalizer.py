@@ -33,6 +33,16 @@ def _safe_lower(x):
     return _safe_str(x).lower()
 
 
+def _normalize_parking_type(raw) -> str:
+    """FIX #233: map Excel parking_type; default paid when missing (client: all shown free)."""
+    s = _safe_lower(raw)
+    if s in ("paid", "płatny", "platny", "p"):
+        return "paid"
+    if s in ("free", "darmowy", "darmowe", "f"):
+        return "free"
+    return "paid"
+
+
 def _safe_float(x, default=0.0):
     try:
         if x is None:
@@ -566,7 +576,7 @@ def normalize_poi(p, index):
         "parking_address": _safe_str(p.get("parking_address")),
         "parking_lat": _safe_float(p.get("parking_lat")),
         "parking_lng": _safe_float(p.get("parking_lng")),
-        "parking_type": _safe_str(p.get("parking_type")),
+        "parking_type": _normalize_parking_type(p.get("parking_type")),
         "parking_walk_time_min": int(_safe_float(p.get("parking_walk_time_min"), 5)),
         # FIX #113 (07.06.2026): Zone system — preserve zone field through normalization
         # Values: 'A' (centre), 'B' (mid), 'C' (far), '' (no zone = always available)
