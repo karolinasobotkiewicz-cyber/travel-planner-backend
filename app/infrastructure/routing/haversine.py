@@ -77,10 +77,12 @@ def haversine_route(a: dict, b: dict, context: Optional[dict] = None) -> RouteRe
         speed = CITY_TOURISM_WALK_SPEED_KMH if city_trip else 5.0
         mins = max(int((distance_km / speed) * 60), 5)
         profile = "foot-walking"
+        road_km = distance_km
     else:
+        road_km = distance_km * (1.45 if city_trip else 1.0)
         cluster_type = (ctx.get("signals") or {}).get("cluster_type", "standalone_city")
         speed = CLUSTER_ROAD_SPEEDS_KMH.get(cluster_type, 45.0)
-        raw = max(int((distance_km / speed) * 60 + 5), 10)
+        raw = max(int((road_km / speed) * 60 + 5), 10)
         try:
             from app.domain.planner.engine import effective_travel_minutes
 
@@ -90,4 +92,4 @@ def haversine_route(a: dict, b: dict, context: Optional[dict] = None) -> RouteRe
         profile = "driving-car"
 
     geometry = [[lng1, lat1], [lng2, lat2]]
-    return RouteResult(mins, distance_km, profile, "haversine", geometry)
+    return RouteResult(mins, road_km, profile, "haversine", geometry)

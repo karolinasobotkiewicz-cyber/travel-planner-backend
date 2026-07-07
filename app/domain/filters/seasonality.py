@@ -66,9 +66,10 @@ def filter_by_season(pois, current_date):
         if current_season == "winter" and any(
             m in _pname for m in (
                 "letni tor", "letni ", "saneczkowy", "góralka",
-                # FIX #219: summer-only fountain shows / kayaking.
-                "fontann", "multimedialny park", "kajak", "kajaki",
-                # FIX #222: pontoon / river rides closed in winter.
+                # FIX #234: summer-only water / river attractions (not year-round fountains).
+                "rejs", "statkiem", "gondol", "zatoka gondoli",
+                "kajak", "kajaki", "żaglówk", "zaglówk",
+                # FIX #222/#234: pontoon / river rides closed in winter.
                 "ponton", "spływ", "splyw", "złotniki", "zlotniki", "flisack",
             )
         ):

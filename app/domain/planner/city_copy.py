@@ -118,9 +118,10 @@ def multi_city_density_mode(
 
 
 def dinner_suggestions(is_zakopane: bool) -> List[str]:
+    """FIX #234: no generic placeholder restaurants for city trips."""
     if is_zakopane:
         return ["Regionalna restauracja", "Bacówka", "Karcma góralska"]
-    return ["Restauracja w centrum", "Lokalna kuchnia regionalna", "Kawiarnia z kolacją"]
+    return []
 
 
 def regional_food_free_time_label(is_zakopane: bool) -> str:
@@ -134,7 +135,7 @@ def evening_kolacja_label(is_zakopane: bool, duration_min: int) -> str:
         return "Czas przed kolacją"
     if is_zakopane:
         return "Kolacja i Krupówki: restauracja, spacer po Krupówkach"
-    return "Kolacja i spacer: restauracja w centrum"
+    return "Kolacja i spacer: wybierz restaurację w pobliżu ostatniej atrakcji"
 
 
 def evening_relax_label(is_zakopane: bool, now_min: int, *, long_block: bool = False) -> str:

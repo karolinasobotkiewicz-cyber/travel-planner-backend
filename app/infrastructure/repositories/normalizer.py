@@ -597,6 +597,27 @@ def normalize_poi(p, index):
     if _ms137 >= 8 or any(known in _name137 for known in _KNOWN_HIGH_CROWD_NAMES):
         _norm_result["crowd_level"] = 3  # Always high-crowd for iconic POIs
 
+    # FIX #234: correct known bad Excel descriptions (client feedback).
+    _nm234 = _norm_result["name"].lower()
+    if "fontanna multimedialna" in _nm234:
+        _norm_result["description_short"] = (
+            "Nowoczesny park z efektownymi pokazami fontann, światła i dźwięku we Wrocławiu."
+        )
+        _norm_result["description_long"] = (
+            "Fontanna Multimedialna we Wrocławiu to jedna z najpopularniejszych atrakcji "
+            "letnich w mieście. Zlokalizowana przy Pergoli, oferuje wieczorne pokazy "
+            "łączące wodę, światło i muzykę."
+        )
+    if "pixel xl" in _nm234 and "poznań" in (_norm_result.get("city") or "").lower():
+        _norm_result["description_short"] = (
+            "Interaktywne centrum rozrywki z grami, VR i atrakcjami multimedialnymi."
+        )
+        _norm_result["description_long"] = (
+            "Pixel XL w Poznaniu to nowoczesne centrum rozrywki oferujące stanowiska "
+            "do gier komputerowych, konsole, VR, bilard i inne atrakcje multimedialne "
+            "dla rodzin i grup przyjaciół."
+        )
+
     return _norm_result
 
 

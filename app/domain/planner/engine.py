@@ -715,6 +715,8 @@ WALK_THRESHOLD_KM = 1.2
 # FIX #213: city tourism — longer walk threshold, slower walk speed (realistic centre hops).
 CITY_TOURISM_WALK_THRESHOLD_KM = 3.5
 CITY_TOURISM_WALK_SPEED_KMH = 4.5
+# FIX #234: haversine understates road distance in cities (~1.4× vs straight line).
+CITY_ROAD_DISTANCE_FACTOR = 1.45
 # POIs farther than this from city centroid are day-trip only (Zone C / late days).
 CITY_FAR_POI_KM = 28.0
 
@@ -922,7 +924,7 @@ _HARD_QUICK_STOP_MARKERS = (
     "kopiec powstania", "manufaktura cukierków", "manufaktura cukierkow",
     "pijalnia wedla", "pijalnia czekolady",
     # FIX #227 (30.06.2026): Poznań — still over-ranked micro POIs.
-    "makiety dawnego poznania", "makiety dawnego", "pixel xl",
+    "makiety dawnego poznania", "makiety dawnego",
     # FIX #229: Wrocław/Katowice/Warszawa/Kraków micro/filler
     "muzeum motoryzacji wena", "muzeum motoryzacji",
     "plac wolności", "fort ", "forty ",
@@ -1429,19 +1431,22 @@ def travel_time_minutes(a, b, context):
         walk_time = (distance_km / _walk_speed) * 60
         return max(int(walk_time), 5)
     else:
+        # FIX #234: road distance in cities is longer than straight-line haversine.
+        _road_km = distance_km * (CITY_ROAD_DISTANCE_FACTOR if _city_trip else 1.0)
         # FIX #111: Car speed depends on cluster type (road conditions vary per region)
         cluster_type = context.get("signals", {}).get("cluster_type", "standalone_city")
         speed_kmh = CLUSTER_ROAD_SPEEDS_KMH.get(cluster_type, 45.0)
-        drive_time = (distance_km / speed_kmh) * 60 + 5
+        drive_time = (_road_km / speed_kmh) * 60 + 5
         raw = max(int(drive_time), 10)
         return effective_travel_minutes(raw, context, from_poi=a, to_poi=b)
 
 
-def get_transport_mode(a, b):
+def get_transport_mode(a, b, context=None):
     """Return transport mode between two POIs: 'walking' or 'car'.
 
     FIX #98 (28.05.2026): Pure helper – no side effects. Uses same
-    WALK_THRESHOLD_KM as travel_time_minutes so mode is always consistent.
+    walk threshold as travel_time_minutes so mode is always consistent.
+    FIX #234: honour city-tourism walk threshold when context provided.
     Returns 'car' as safe fallback when GPS coords are missing.
     """
     if not a or not b:
@@ -1451,7 +1456,12 @@ def get_transport_mode(a, b):
     if not all([lat1, lng1, lat2, lng2]):
         return "car"
     distance_km = haversine_distance(lat1, lng1, lat2, lng2)
-    return "walking" if distance_km < _walk_threshold(a, b) else "car"  # FIX #131
+    from app.domain.planner.city_copy import is_city_tourism_trip
+    _city_trip = context and is_city_tourism_trip(context)
+    _walk_thresh = (
+        CITY_TOURISM_WALK_THRESHOLD_KM if _city_trip else _walk_threshold(a, b)
+    )
+    return "walking" if distance_km < _walk_thresh else "car"
 
 
 # =========================
@@ -1635,6 +1645,7 @@ _FAR_GEO_REGIONS = frozenset({
     "region_pieniny", "region_spisz_bukowina", "region_slowacja",
     "region_ojcow", "region_wieliczka",
     "region_gniezno", "region_gliwice", "region_suntago", "region_modlin",
+    "region_zabrze", "region_olawa",
 })
 
 
@@ -1681,7 +1692,31 @@ def poi_geo_region_key(p: dict) -> str | None:
         return "region_suntago"
     if any(k in blob for k in ("modlin", "twierdza modlin")):
         return "region_modlin"
+    # FIX #234: Katowice day-trips — Zabrze underground cluster, Oława (Wrocław).
+    if "zabrze" in blob and any(k in blob for k in ("podziem", "szyb", "guido", "kopalnia")):
+        return "region_zabrze"
+    if "oława" in blob or "olawa" in blob:
+        if any(k in blob for k in ("arboretum", "wojsławice", "wojslawice")):
+            return "region_olawa"
     return None
+
+
+def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: dict | None) -> bool:
+    """FIX #234: don't suggest Wieliczka/Ojców restaurants when touring city centre."""
+    if not last_poi:
+        return True
+    poi_reg = poi_geo_region_key(last_poi)
+    r_city = str(restaurant.get("city") or "").lower()
+    r_name = str(restaurant.get("name") or "").lower()
+    blob = f"{r_city} {r_name}"
+    if poi_reg != "region_wieliczka" and any(k in blob for k in ("wieliczka", "bochnia", "kopalnia soli")):
+        return False
+    if poi_reg != "region_ojcow" and any(k in blob for k in ("ojców", "ojcow", "ojcówie")):
+        return False
+    day_reg = (context or {}).get("day_geo_region")
+    if day_reg == "region_wieliczka" and not any(k in blob for k in ("wieliczka", "bochnia", "krak")):
+        return False
+    return True
 
 
 def dominant_geo_region_key(pois: list) -> str | None:
@@ -1734,7 +1769,10 @@ def should_block_cross_region_in_day(p: dict, context: dict | None) -> bool:
 def is_seasonal_water_poi_out_of_season(p: dict, context: dict | None) -> bool:
     """FIX #233: block cruises/pontoons in winter (Wrocław client feedback)."""
     name = str(p.get("name", "")).lower()
-    if not any(m in name for m in ("rejs", "ponton", "żaglówk", "zaglówk", "spływ", "spluw", "kajak")):
+    if not any(m in name for m in (
+        "rejs", "ponton", "żaglówk", "zaglówk", "spływ", "spluw", "kajak",
+        "statkiem", "gondol", "zatoka",
+    )):
         return False
     ctx = context or {}
     date_tuple = ctx.get("date")
@@ -1761,10 +1799,10 @@ def should_block_premature_excursion_return(p: dict, context: dict | None, plan:
         poi_blob = item.get("poi") or {}
         if poi_geo_region_key(poi_blob) == day_reg:
             regional_count += 1
-    if regional_count >= 2:
+    if regional_count >= 3:
         return False
     poi_reg = poi_geo_region_key(p)
-    if regional_count == 1 and poi_reg is None:
+    if regional_count >= 1 and poi_reg != day_reg:
         poi_name_safe = str(p.get("name", "Unknown")).encode("ascii", errors="ignore").decode("ascii")
         print(f"[FIX #233] Blocked premature return to city: {poi_name_safe} (only {regional_count} regional POI)")
         return True
@@ -2362,9 +2400,13 @@ def choose_duration(p, now, end, lunch_done, user=None):
     # FIX #230/#231/#233: named POI minimum visit lengths (client feedback).
     _poi_name_lower = str(p.get("name", "")).lower()
     _named_mins = (
+        ("pixel xl", 45),
         ("pixel", 45),
         ("palmiarnia", 60),
         ("kopiec krakusa", 45),
+        ("stare zoo", 50),
+        ("plaża miejska", 60),
+        ("plaza miejska", 60),
         ("górnośląski park etnograficzny", 90),
         ("gornoslaski park etnograficzny", 90),
         ("muzeum powstania wielkopolskiego", 45),
@@ -2373,6 +2415,7 @@ def choose_duration(p, now, end, lunch_done, user=None):
         if _marker in _poi_name_lower:
             tmin = max(tmin, _nmin)
             break
+    tmax = max(tmax, tmin)
 
     # Use the HIGHER of: POI's time_min OR type-based minimum
     # This ensures Excel data can set higher requirements, but types enforce floor
@@ -4467,12 +4510,13 @@ def score_poi(
     if daily_limit is not None and daily_limit > 0:
         try:
             _cost223 = calculate_poi_cost_for_group(p, user)
+            _budget_frac = 0.35 if "bungee" in _name221 else 0.45
             if (
-                _cost223 > 0.45 * float(daily_limit)
+                _cost223 > _budget_frac * float(daily_limit)
                 and must_see_value < 8
                 and not is_heavy_sightseeing_poi(p)
             ):
-                score -= 120.0
+                score -= 150.0 if "bungee" in _name221 else 120.0
         except Exception:
             pass
 
@@ -4512,9 +4556,12 @@ def score_poi(
     if _num_days222 >= 5 and _is_city_221(context):
         if any(n in _name221 for n in (
             "hydropolis", "ogród japoński", "ogrod japonski",
-            "fontanna multimedialna", "wyspa słodowa", "wyspa slodowa",
+            "wyspa słodowa", "wyspa slodowa",
         )):
             score += 50.0
+        # FIX #234: Fontanna Multimedialna is a micro evening show — don't over-rank.
+        if "fontanna multimedialna" in _name221:
+            score -= 70.0
 
     # Pixel XL for underground/history without active_sport (Poznań).
     if "pixel" in _name221 and {"underground", "history_mystery"} & set(_prefs221):
@@ -5010,10 +5057,10 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         # (client: Poznań "ostatni dzień bez żadnej atrakcji"). If a single-city day is
         # still empty/very sparse, retry once allowing REUSE of POIs not used in the
         # last 2 days — a repeated highlight is far better than an empty day.
-        if pois_per_day is None and len(pois) > 6:
+        if pois_per_day is None and len(pois) > 4:
             _f227_attr, _f227_free = _f160_fill_metric(day_plan)
             _f227_last_day = day_num >= num_days - 1
-            if _f227_attr < 3 or (_f227_last_day and _f227_attr < 2):
+            if _f227_attr < 3 or (_f227_last_day and _f227_attr < 3):
                 _f227_added = set(_global_used_for_day) - set(_global_used_before_day)
                 _f227_recent = set(_f227_added)
                 for _ds in daily_used_sets[-2:]:
@@ -5619,6 +5666,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         if last_attraction and last_attraction.get("lat") and last_attraction.get("lng"):
                             current_lat = last_attraction.get("lat")
                             current_lng = last_attraction.get("lng")
+
+                            lunch_restaurants = [
+                                r for r in lunch_restaurants
+                                if _meal_restaurant_geo_ok(r, last_attraction, context)
+                            ]
                             
                             # Calculate distance to each restaurant
                             for r in lunch_restaurants:
@@ -5642,7 +5694,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                                 lunch_restaurants = _nearby_lunch141
                                 print(f"[LUNCH FIX#141] Filtered to {len(lunch_restaurants)} restaurants within {_LUNCH_MAX_DIST_KM}km")
                             else:
-                                print(f"[LUNCH FIX#141] No restaurant within {_LUNCH_MAX_DIST_KM}km — keeping sorted fallback list")
+                                print(f"[LUNCH FIX#141] No restaurant within {_LUNCH_MAX_DIST_KM}km — no lunch suggestions")
+                                lunch_restaurants = []
                     
                     # Take top 3 nearest restaurants
                     if lunch_restaurants:
@@ -5650,14 +5703,6 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         for s in lunch_suggestions:
                             s.pop("_distance", None)
                         print(f"[LUNCH] Intelligent suggestions: {[s.get('name') for s in lunch_suggestions]}")
-                    else:
-                        # No lunch restaurants available, try any restaurants
-                        any_restaurants = [r for r in restaurants_available if r.get("name")]
-                        if any_restaurants:
-                            lunch_suggestions = [{**r} for r in any_restaurants[:3]]
-                            for s in lunch_suggestions:
-                                s.pop("_distance", None)
-                            print(f"[LUNCH] Fallback suggestions (no lunch-specific): {[s.get('name') for s in lunch_suggestions]}")
                 
                 # FIX #Problem9 DEBUG: Log lunch insertion with group_type
                 group_type_debug = user.get("target_group")
@@ -5801,10 +5846,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     continue
                 
                 # ETAP 3 PHASE 3 (27.04.2026): Intelligent dinner suggestions from RestaurantRepository
-                # Use context["restaurants_available"] to find nearby dinner spots
-                # Fallback to generic suggestions if no restaurants available
-                from app.domain.planner.city_copy import dinner_suggestions as _dinner_sugg
-                dinner_suggestions = _dinner_sugg(context.get("is_zakopane_trip", False))
+                # FIX #234: no generic placeholder restaurants — DB matches only.
+                dinner_suggestions = []
                 
                 restaurants_available = context.get("restaurants_available", [])
                 if restaurants_available:
@@ -5830,6 +5873,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             current_lng = last_attraction.get("lng")
                             
                             # Calculate distance to each restaurant
+                            dinner_restaurants = [
+                                r for r in dinner_restaurants
+                                if _meal_restaurant_geo_ok(r, last_attraction, context)
+                            ]
                             for r in dinner_restaurants:
                                 r_lat = r.get("lat", 0)
                                 r_lng = r.get("lng", 0)
@@ -5842,6 +5889,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             # Sort by proximity
                             dinner_restaurants.sort(key=lambda r: r.get("_distance", 999.0))
                             print(f"[DINNER] Sorted {len(dinner_restaurants)} dinner spots by proximity to {last_attraction.get('name', 'current location')}")
+
+                            # FIX #234: hard geo filter — same as lunch (max 1 km).
+                            _nearby_dinner = [
+                                r for r in dinner_restaurants
+                                if r.get("_distance", 999.0) <= MEAL_RESTAURANT_MAX_DIST_KM
+                            ]
+                            if _nearby_dinner:
+                                dinner_restaurants = _nearby_dinner
+                                print(f"[DINNER FIX#234] Filtered to {len(dinner_restaurants)} within {MEAL_RESTAURANT_MAX_DIST_KM}km")
                     
                     # Boost local food restaurants if user wants local_food_experience
                     if "local_food_experience" in user.get("preferences", []):
@@ -5861,14 +5917,6 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         for s in dinner_suggestions:
                             s.pop("_distance", None)
                         print(f"[DINNER] Intelligent suggestions: {[s.get('name') for s in dinner_suggestions]}")
-                    else:
-                        # No dinner restaurants available, try any restaurants
-                        any_restaurants = [r for r in restaurants_available if r.get("name")]
-                        if any_restaurants:
-                            dinner_suggestions = [{**r} for r in any_restaurants[:3]]
-                            for s in dinner_suggestions:
-                                s.pop("_distance", None)
-                            print(f"[DINNER] Fallback suggestions (no dinner-specific): {[s.get('name') for s in dinner_suggestions]}")
                 
                 plan.append(
                     {
@@ -6025,11 +6073,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 print(f"[FIX #229] MUSEUM CAP: EXCLUDED {poi_name_safe} ({daily_museum_count}/3 city)")
                 continue
 
-            # FIX #233: balanced style — max 2 museums/day unless museum_heritage leads
+            # FIX #233/#234: balanced style — max 1 museum/day unless museum_heritage leads
             if (
                 travel_style == "balanced"
                 and "museum_heritage" not in _user_prefs229m[:2]
-                and daily_museum_count >= 2
+                and daily_museum_count >= 1
                 and (is_museum_heritage_poi(p) or is_culture(p))
             ):
                 continue

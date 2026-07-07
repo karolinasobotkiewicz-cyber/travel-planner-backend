@@ -113,6 +113,23 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
         )):
             return True
 
+    # FIX #234 couples+cultural — Park Wodny / aquapark off
+    if tg == "couples" and style == "cultural":
+        if any(k in name for k in ("park wodny", "aquapark", "aquaparki")):
+            return True
+
+    # FIX #234 Wrocław family_kids — Muzeum Uniwersytetu
+    if tg == "family_kids" and any(k in name for k in (
+        "muzeum uniwersytetu", "muzeum uniwersyteckie",
+    )):
+        return True
+
+    # FIX #234 Warszawa family_kids — Zamek Ujazdowski
+    if tg == "family_kids" and any(k in name for k in (
+        "zamek ujazdowski", "ujazdowski",
+    )):
+        return True
+
     # FIX #231 — Katowice family: Kościół św. Anny
     if tg == "family_kids" and ("św. anny" in name or "sw. anny" in name):
         if "kościół" in name or "kosciol" in name or "parafia" in name:
@@ -129,6 +146,7 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
     style = _safe_str(user.get("travel_style"))
     delta = 0.0
     ctx = context or {}
+    top_prefs = {_safe_str(p) for p in (user.get("preferences") or [])[:2]}
     day = int(ctx.get("current_day_num") or 1)
     num_days = int(ctx.get("num_days") or 1)
     trip_names = ctx.get("trip_used_poi_names") or set()
@@ -388,7 +406,7 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
     # FIX #233 — adventure needs multiple active POIs per day, not one + sightseeing
     if adv and day >= 1:
         if is_active_city_poi(poi):
-            delta += 70.0
+            delta += 85.0
         _day_active = int(ctx.get("day_active_count") or 0)
         if _day_active >= 1 and no_history:
             if any(k in name for k in ("muzeum", "galeri", "kościół", "bazylika", "katedra")):
@@ -399,10 +417,116 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
     # FIX #233 — balanced long trips: demote extra museums
     if style == "balanced":
         _trip_mus = int(ctx.get("trip_museum_count") or 0)
-        if "muzeum" in name and _trip_mus >= 3 and "museum_heritage" not in prefs[:2]:
+        _day_mus = int(ctx.get("day_museum_count") or 0)
+        if "muzeum" in name and _day_mus >= 1 and "museum_heritage" not in top_prefs:
+            delta -= 85.0
+        if "muzeum" in name and _trip_mus >= 2 and "museum_heritage" not in top_prefs:
             delta -= 70.0
-        if "muzeum" in name and day >= 3 and _trip_mus >= 2:
+        if "muzeum" in name and day >= 3 and _trip_mus >= 1:
             delta -= 55.0
+
+    # FIX #234 — adventure style: stronger active character, fewer museums/sightseeing
+    if adv:
+        if any(k in name for k in (
+            "gojump", "bungee", "park linowy", "trampolin", "paintball", "escape",
+            "kopalnia", "sztolnia", "hydropolis", "pixel", "kolejkowo",
+        )):
+            delta += 60.0
+        if "muzeum" in name and "museum_heritage" not in top_prefs:
+            delta -= 95.0
+        if tg == "friends" and any(k in name for k in (
+            "łazienki", "lazienki", "bulwar", "ogród na dachu", "ogrod na dachu",
+            "muzeum sztuki nowoczesnej", "centrum pieniądza", "centrum pieniadza",
+            "park decjusza", "park bednarskiego", "błonia", "blonia", "kładka bernatka",
+            "kladka bernatka",
+        )):
+            delta -= 90.0
+
+    # FIX #234 Kraków — solo+relax / seniors+relax demotes
+    if tg == "solo" and (style == "relax" or "relaxation" in prefs):
+        if any(k in name for k in ("kładka bernatka", "kladka bernatka", "park bednarskiego")):
+            delta -= 90.0
+    if tg == "seniors" and (style == "relax" or "relaxation" in prefs):
+        if any(k in name for k in (
+            "kościół św. wojciecha", "sw. wojciecha", "wieża ratuszowa", "wieza ratuszowa",
+        )):
+            delta -= 95.0
+
+    # FIX #234 Kraków friends+adventure — calm parks/bridges
+    if tg == "friends" and adv:
+        if any(k in name for k in (
+            "błonia krakowskie", "blonia krakowskie", "park decjusza", "park bednarskiego",
+            "kładka bernatka", "kladka bernatka",
+        )):
+            delta -= 95.0
+
+    # FIX #234 Wrocław — Dworzec Świebodzki extra demote; family kids boosts
+    if any(k in name for k in ("dworzec świebodzki", "dworzec swiebodzki")):
+        delta -= 100.0
+    if tg == "family_kids" and any(k in name for k in (
+        "hydropolis", "kolejkowo", "pixel xl", "pixel",
+    )):
+        delta += 95.0
+    if tg == "family_kids" and "muzeum uniwersytetu" in name:
+        delta -= 100.0
+
+    # FIX #234 Warszawa — family kids interactive boosts / demotes
+    if tg == "family_kids":
+        if any(k in name for k in (
+            "smart kids", "miniciti", "mini citi", "kolejkowo", "kopernik",
+            "centrum nauki", "pixel xl", "pixel",
+        )):
+            delta += 100.0
+        if any(k in name for k in ("bulwary wiślane", "bulwary wislane")):
+            delta -= 85.0
+
+    # FIX #234 Warszawa — couples+cultural needs more culture
+    if tg == "couples" and style == "cultural":
+        if any(k in name for k in ("muzeum", "galeria", "teatr", "opera", "filharmonia", "zamek", "pałac")):
+            delta += 65.0
+
+    # FIX #234 Warszawa — relax demote cemetery
+    if (style == "relax" or "relaxation" in prefs) and any(k in name for k in (
+        "cmentarz powązkowski", "cmentarz powazkowski", "powązk", "powazk",
+    )):
+        delta -= 95.0
+
+    # FIX #234 Warszawa — friends+adventure calm spots
+    if tg == "friends" and adv and any(k in name for k in (
+        "łazienki królewskie", "lazienki krolewskie", "bulwary wiślane", "bulwary wislane",
+        "ogród na dachu", "ogrod na dachu", "muzeum sztuki nowoczesnej",
+        "centrum pieniądza", "centrum pieniadza",
+    )):
+        delta -= 90.0
+
+    # FIX #234 Katowice — friends+adventure demote industrial museums
+    if tg == "friends" and adv and any(k in name for k in (
+        "galeria szyb wilson", "szyb wilson", "muzeum historii katowic",
+    )):
+        delta -= 95.0
+
+    # FIX #234 Katowice — relax demote churches
+    if (style == "relax" or "relaxation" in prefs) and any(k in name for k in (
+        "św. michała", "sw. michala", "parafia św. anny", "parafia sw. anny",
+    )):
+        delta -= 90.0
+
+    # FIX #234 Poznań — micro heritage demote
+    if any(k in name for k in (
+        "plac wolności", "plac wolnosci", "trakt królewsko", "trakt krolewsko",
+        "rynku jeżyckiego", "rynku jezyckiego", "rynek jeżycki",
+    )):
+        delta -= 90.0
+    if tg == "friends" and adv and any(k in name for k in (
+        "muzeum historii poznania", "domy kupieckie", "trakt królewsko", "trakt krolewsko",
+    )):
+        delta -= 95.0
+    if tg == "couples" and style == "cultural" and "muzeum iluzji" in name:
+        delta -= 85.0
+    if tg == "family_kids" and "park adama mickiewicza" in name:
+        delta -= 85.0
+    if (style == "relax" or "relaxation" in prefs) and "trakt królewsko" in name:
+        delta -= 80.0
 
     # FIX #233 — family_kids: demote Las Wolski, Rynek-area, Matejki, Geologiczne
     if tg == "family_kids":

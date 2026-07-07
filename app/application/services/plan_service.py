@@ -268,8 +268,8 @@ def _trim_gap_after_day_start(items: list, *, max_gap_min: int = 12) -> list:
     return out
 
 
-def _cap_total_day_free_time(items: list, *, max_total: int = 35) -> list:
-    """FIX #231/#233: limit total free_time minutes per day (client: hour+ gaps)."""
+def _cap_total_day_free_time(items: list, *, max_total: int = 25) -> list:
+    """FIX #231/#233/#234: limit total free_time minutes per day (client: hour+ gaps)."""
     ft_indices = [
         i for i, it in enumerate(items)
         if getattr(it, "type", None) == ItemType.FREE_TIME
@@ -305,11 +305,11 @@ def _fix_late_lunch(items: list, *, latest_min: int = 840) -> list:
 
 
 def _max_merged_free_time_cap(context: Dict[str, Any]) -> int:
-    """FIX #221/#229/#230/#231/#233: cap merged free_time — 15 min cities, 180 default, 300 Zakopane."""
+    """FIX #221/#229/#230/#231/#233/#234: cap merged free_time — 12 min cities, 180 default, 300 Zakopane."""
     if context.get("is_zakopane_trip"):
         return 300
     if _is_urban_trip(context):
-        return 15
+        return 12
     return 180
 
 
@@ -379,6 +379,29 @@ def _parse_meal_suggestions(raw: List[Any], meal_type: str) -> List[RestaurantSu
     if not raw:
         return []
     return [_restaurant_dict_to_suggestion(item, meal_type) for item in raw]
+
+
+_GENERIC_MEAL_NAMES = frozenset({
+    "restauracja w centrum", "lokalna kuchnia regionalna", "kawiarnia z kolacją",
+    "restauracja lokalna", "bistro", "lunch na wynos",
+})
+
+
+def _is_generic_meal_suggestion(sug: RestaurantSuggestion) -> bool:
+    name = (getattr(sug, "name", None) or "").strip().lower()
+    if name in _GENERIC_MEAL_NAMES:
+        return True
+    lat = float(getattr(sug, "lat", 0) or 0)
+    lng = float(getattr(sug, "lng", 0) or 0)
+    sid = str(getattr(sug, "id", "") or "")
+    return lat == 0.0 and lng == 0.0 and sid.startswith("generic_")
+
+
+def _filter_meal_suggestions(
+    suggestions: List[RestaurantSuggestion],
+) -> List[RestaurantSuggestion]:
+    """FIX #234: strip placeholder meal names from API output."""
+    return [s for s in (suggestions or []) if not _is_generic_meal_suggestion(s)]
 
 
 # FIX (01.07.2026 - front feedback): plan musi zwracać miasto, daty i nazwę.
@@ -2474,8 +2497,9 @@ class PlanService:
             day_items = _trim_long_free_time_blocks(day_items, max_min=_max_merged_free_time_cap(day_context))
             day_items = _strip_trailing_free_time(day_items, max_min=_max_merged_free_time_cap(day_context))
             if _is_urban_trip(day_context):
-                day_items = _cap_total_day_free_time(day_items, max_total=35)
+                day_items = _cap_total_day_free_time(day_items, max_total=25)
             day_items = _fix_late_lunch(day_items)
+            day_items = self._ensure_dinner_present(day_items, day_end, day_context)
 
             # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
             # This ensures day_end is always the last item in timeline
@@ -2935,17 +2959,15 @@ class PlanService:
                     start_time=lunch_start,  # FIX #23: Use engine's start_time (don't move backward!)
                     end_time=lunch_end,
                     duration_min=lunch_duration,
-                    suggestions=_parse_meal_suggestions(
-                        item.get("suggestions", []),
-                        "lunch",
-                    ) or [],
+                    suggestions=_filter_meal_suggestions(
+                        _parse_meal_suggestions(item.get("suggestions", []), "lunch")
+                    ),
                     location_context=item.get("location_context"),
                 )
                 items.append(lunch_item)
                 lunch_added = True
             
             elif item_type == "dinner_break":
-                from app.domain.planner.city_copy import dinner_suggestions
                 _dinner_start = item.get("start_time", "18:00")
                 _dinner_end = item.get("end_time", "19:30")
                 _dinner_dur = item.get("duration_min", 60)
@@ -2961,13 +2983,9 @@ class PlanService:
                     start_time=_dinner_start,
                     end_time=_dinner_end,
                     duration_min=_dinner_dur,
-                    suggestions=_parse_meal_suggestions(
-                        item.get("suggestions", []),
-                        "dinner",
-                    ) or [
-                        _restaurant_dict_to_suggestion(n, "dinner")
-                        for n in dinner_suggestions(context.get("is_zakopane_trip", False))
-                    ],
+                    suggestions=_filter_meal_suggestions(
+                        _parse_meal_suggestions(item.get("suggestions", []), "dinner")
+                    ),
                 )
                 items.append(dinner_item)
             
@@ -3304,20 +3322,15 @@ class PlanService:
                 items.append(free_time_item)
         
         # KRYTYCZNE (klientka 26.01): Lunch ZAWSZE musi być obecny!
-        # Jeśli engine nie dodał, dodajemy ręcznie 12:00-13:30
+        # FIX #234: only add lunch shell when engine omitted it — no generic restaurant names.
         if not lunch_added:
             lunch_item = LunchBreakItem(
                 type=ItemType.LUNCH_BREAK,
                 start_time="12:00",
                 end_time="13:00",
-                duration_min=60,  # FIX #226: 60 min (was 90 — client: lunch too long)
-                suggestions=[
-                    _restaurant_dict_to_suggestion(n, "lunch")
-                    for n in ["Restauracja lokalna", "Bistro", "Lunch na wynos"]
-                ],
+                duration_min=60,
+                suggestions=[],
             )
-            # Wstaw lunch między items (ideally między atrakcjami)
-            # TODO: lepsze pozycjonowanie - wstaw przed item który zaczyna się po 12:00
             items.append(lunch_item)
         
         # 7. FREE_TIME - gaps detection
@@ -4997,6 +5010,43 @@ class PlanService:
             result.append(day_end_item)
         
         return result
+
+    def _ensure_dinner_present(
+        self,
+        items: List[Any],
+        day_end: str,
+        context: Dict[str, Any],
+    ) -> List[Any]:
+        """FIX #234: add dinner_break when day ends late but engine skipped kolacja."""
+        if context.get("is_zakopane_trip"):
+            return items
+        if any(getattr(it, "type", None) == ItemType.DINNER_BREAK for it in items):
+            return items
+        day_end_min = time_to_minutes(day_end)
+        if day_end_min < time_to_minutes("19:00"):
+            return items
+        last_end = None
+        for it in items:
+            if getattr(it, "type", None) == ItemType.ATTRACTION:
+                en = getattr(it, "end_time", None)
+                if en:
+                    last_end = max(last_end or 0, time_to_minutes(en))
+        if last_end is None or last_end > time_to_minutes("18:30"):
+            return items
+        dinner_start = "18:00"
+        dinner_end_min = min(time_to_minutes("19:00"), day_end_min)
+        if dinner_end_min - time_to_minutes(dinner_start) < 30:
+            return items
+        from app.domain.planner.time_utils import minutes_to_time
+        items = list(items)
+        items.append(DinnerBreakItem(
+            type=ItemType.DINNER_BREAK,
+            start_time=dinner_start,
+            end_time=minutes_to_time(dinner_end_min),
+            duration_min=dinner_end_min - time_to_minutes(dinner_start),
+            suggestions=[],
+        ))
+        return items
 
     def _enforce_dinner_before_day_end(
         self,
