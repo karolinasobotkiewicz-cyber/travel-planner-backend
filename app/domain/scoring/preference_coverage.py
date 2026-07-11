@@ -726,7 +726,9 @@ def is_strong_relaxation_coverage_poi(poi: Dict[str, Any]) -> bool:
         return True
     tags = excel_tags(poi)
     weak_only = tags <= (_WEAK_NATURE_COVERAGE_TAGS | {"park", "park_walk", "recreation"})
-    if weak_only:
+    if weak_only and not any(m in name for m in (
+        "bulwar", "planty", "ogród", "ogrod", "spa", "termy", "palmiarnia",
+    )):
         return False
     return bool(tags & _STRONG_BY_PREF.get("relaxation", frozenset()))
 
@@ -739,14 +741,7 @@ def preference_coverage_adequate(pref: str, matching_pois: list) -> bool:
         strong = [p for p in matching_pois if is_strong_nature_coverage_poi(p)]
         return len(strong) >= 2 or (len(strong) >= 1 and len(matching_pois) >= 2)
     if pref == "relaxation":
-        strong = [p for p in matching_pois if is_strong_relaxation_coverage_poi(p)]
-        return len(strong) >= 2 or (
-            len(strong) >= 1 and len(matching_pois) >= 2
-        ) or any(
-            "spa" in (p.get("name") or "").lower()
-            or "termy" in (p.get("name") or "").lower()
-            for p in matching_pois
-        )
+        return len(matching_pois) >= 1
     if pref in ("active_sport", "water_attractions", "kids_attractions"):
         return len(matching_pois) >= 1
     return len(matching_pois) >= 1

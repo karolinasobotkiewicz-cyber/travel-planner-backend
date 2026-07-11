@@ -82,6 +82,13 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     if tg == "family_kids" and ("św. michała" in name or "sw. michala" in name):
         return True
 
+    # FIX #235 Katowice — Śląskie Centrum Wolności for family_kids
+    if tg == "family_kids" and any(k in name for k in (
+        "śląskie centrum wolności", "slaskie centrum wolnosci",
+        "centrum wolności i solidarności", "centrum wolnosci i solidarnosci",
+    )):
+        return True
+
     # Warszawa friends+adventure+underground+history — parks/churches off
     if tg == "friends" and (style == "adventure" or "adventure" in prefs):
         if {"underground", "history_mystery"} <= prefs:
@@ -628,6 +635,92 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
 
     # Duplicate POI name penalty (Ogrody Zamku 2x)
     if name and name in trip_names:
+        delta -= 100.0
+
+    # ── FIX #235 — client feedback round 6 (global + per city) ──
+    _trip_kids = int(ctx.get("trip_kids_attraction_count") or 0)
+
+    # Family kids: parks/classic city only after top kids attractions used
+    if tg == "family_kids" and _trip_kids < 2:
+        if any(k in name for k in (
+            "park ", "bulwar", "błonia", "blonia", "stare miasto", "rynek",
+            "planty", "ogród botaniczny", "ogrod botaniczny", "spacer",
+        )):
+            delta -= 95.0
+        if any(k in name for k in (
+            "zoo", "aquapark", "hydropolis", "kolejkowo", "pixel", "papugarnia",
+            "mini zoo", "smart kids", "miniciti", "kopernik", "centrum nauki",
+        )):
+            delta += 100.0
+
+    # Wrocław FIX #235
+    if tg == "family_kids":
+        if any(k in name for k in ("rynek", "ostrów tumski", "ostrow tumski", "ogród botaniczny", "ogrod botaniczny")):
+            if _trip_kids >= 1:
+                delta -= 90.0
+    if tg == "couples" and style == "cultural" and "city golf" in name:
+        delta -= 100.0
+    if any(k in name for k in ("dworzec świebodzki", "dworzec swiebodzki")):
+        delta -= 110.0
+    if tg == "solo" and (style == "relax" or "relaxation" in prefs) and "bastion sakwowy" in name:
+        delta -= 95.0
+    if tg == "solo" and (style == "relax" or "relaxation" in prefs) and "browar stu mostów" in name:
+        delta -= 90.0
+
+    # Kraków FIX #235
+    if tg == "family_kids" and "park bednarskiego" in name:
+        delta -= 100.0
+    if tg == "family_kids" and any(k in name for k in ("bulwary wiślane", "bulwary wislane", "błonia", "blonia")):
+        if _trip_kids < 2:
+            delta -= 95.0
+    if tg == "friends" and adv and "park decjusza" in name:
+        delta -= 100.0
+
+    # Katowice FIX #235
+    if any(k in name for k in (
+        "galeria szyb wilson", "szyb wilson", "muzeum historii katowic",
+        "parafia św. anny", "parafia sw. anny",
+    )):
+        delta -= 95.0
+    if tg == "family_kids" and any(k in name for k in (
+        "śląskie centrum wolności", "slaskie centrum wolnosci",
+        "kościół św. michała", "sw. michala",
+    )):
+        delta -= 100.0
+    if tg == "seniors" and (style == "relax" or "relaxation" in prefs):
+        if any(k in name for k in ("św. michała", "sw. michala", "muzeum historii katowic")):
+            delta -= 95.0
+    if tg == "friends" and adv and any(k in name for k in ("rynek w katowicach", "rynek katowic")):
+        delta -= 90.0
+
+    # Warszawa FIX #235
+    if tg == "family_kids" and any(k in name for k in ("syrenk", "ogrody zamku", "ogrod zamku")):
+        delta -= 90.0
+    if style == "cultural" and any(k in name for k in ("bulwary wiślane", "bulwary wislane")):
+        delta -= 70.0
+    if tg == "friends" and adv and any(k in name for k in (
+        "centrum pieniądza", "centrum pieniadza", "ogród na dachu", "ogrod na dachu",
+        "muzeum sztuki nowoczesnej", "bulwary wiślane", "bulwary wislane",
+    )):
+        delta -= 95.0
+
+    # Poznań FIX #235
+    if any(k in name for k in (
+        "domy kupieckie", "plac wolności", "plac wolnosci", "park adama mickiewicza",
+        "rynek jeżycki", "rynek jezycki", "park jana pawła", "park jana pawla",
+        "park stare koryto", "fort va", "fort bonin",
+    )):
+        delta -= 90.0
+    if tg == "family_kids" and "pomnik bamberki" in name:
+        delta -= 95.0
+    if tg == "friends" and adv and any(k in name for k in (
+        "park jana pawła", "park jana pawla", "park stare koryto",
+    )):
+        delta -= 95.0
+    if tg == "couples" and (style == "relax" or "relaxation" in prefs):
+        if "park stare koryto" in name:
+            delta -= 85.0
+    if tg == "seniors" and (style == "relax" or "relaxation" in prefs) and "fort va" in name:
         delta -= 100.0
 
     return delta

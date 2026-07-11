@@ -617,6 +617,24 @@ def normalize_poi(p, index):
             "do gier komputerowych, konsole, VR, bilard i inne atrakcje multimedialne "
             "dla rodzin i grup przyjaciół."
         )
+    if "pijalnia czekolady" in _nm234 and "wedel" in _nm234:
+        _norm_result["description_short"] = (
+            "Degustacja czekolady Wedel w historycznej pijalni przy ulicy Szpitalnej."
+        )
+        _norm_result["description_long"] = (
+            "Pijalnia Czekolady E. Wedel w Warszawie to miejsce degustacji wyrobów czekoladowych "
+            "marki Wedel w stylowym wnętrzu przy ulicy Szpitalnej — nie mylić z Muzeum "
+            "Fabryki Czekolady."
+        )
+    if "browary warszawskie" in _nm234:
+        _norm_result["description_short"] = (
+            "Kompakt browarniany z restauracjami, piwem rzemieślniczym i przestrzenią eventową."
+        )
+        _norm_result["description_long"] = (
+            "Browary Warszawskie to zrewitalizowany kompleks browarniany na Pradze-Północ "
+            "z restauracjami, lokalnymi browarami i przestrzenią kulturalną — oddzielna "
+            "atrakcja od Hali Koszyki."
+        )
 
     return _norm_result
 

@@ -1577,7 +1577,7 @@ def poi_repeat_cluster_key(name: str) -> str:
         "podziemia rynku", "ulica grodzka",
     )):
         return "cluster_krakow_core"
-    if "ostrów tumski" in n or "ostrow tumski" in n:
+    if any(k in n for k in ("ostrów tumski", "ostrow tumski", "ostrowie tumskim", "tumski")):
         return "cluster_wroclaw_tumski"
     # FIX #221: Warsaw 7-day repeats — cluster iconic POIs for trip-wide dedup.
     if any(k in n for k in ("pałac kultury", "palac kultury", "pkin")):
@@ -1645,7 +1645,7 @@ _FAR_GEO_REGIONS = frozenset({
     "region_pieniny", "region_spisz_bukowina", "region_slowacja",
     "region_ojcow", "region_wieliczka",
     "region_gniezno", "region_gliwice", "region_suntago", "region_modlin",
-    "region_zabrze", "region_olawa",
+    "region_zabrze", "region_olawa", "region_kampinos",
 })
 
 
@@ -1692,6 +1692,8 @@ def poi_geo_region_key(p: dict) -> str | None:
         return "region_suntago"
     if any(k in blob for k in ("modlin", "twierdza modlin")):
         return "region_modlin"
+    if any(k in blob for k in ("kampinos", "łomna", "lomna", "palmiry")):
+        return "region_kampinos"
     # FIX #234: Katowice day-trips — Zabrze underground cluster, Oława (Wrocław).
     if "zabrze" in blob and any(k in blob for k in ("podziem", "szyb", "guido", "kopalnia")):
         return "region_zabrze"
@@ -1717,6 +1719,60 @@ def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: di
     if day_reg == "region_wieliczka" and not any(k in blob for k in ("wieliczka", "bochnia", "krak")):
         return False
     return True
+
+
+def _tiered_nearby_restaurants(
+    restaurants: list,
+    last_poi: dict | None,
+    context: dict | None,
+    *,
+    radii_km: tuple[float, ...] = (1.0, 2.0, 3.5),
+    limit: int = 3,
+) -> list[dict]:
+    """FIX #235: tiered meal proximity — prefer 1 km, widen before returning empty."""
+    if not restaurants or not last_poi:
+        return []
+    lat = last_poi.get("lat")
+    lng = last_poi.get("lng")
+    if not lat or not lng:
+        return [{**r} for r in restaurants[:limit]]
+    candidates = [
+        r for r in restaurants
+        if _meal_restaurant_geo_ok(r, last_poi, context)
+    ]
+    for radius in radii_km:
+        nearby = []
+        for r in candidates:
+            r_lat, r_lng = r.get("lat"), r.get("lng")
+            if not r_lat or not r_lng:
+                continue
+            dist = haversine_distance(float(lat), float(lng), float(r_lat), float(r_lng))
+            if dist <= radius:
+                nearby.append({**r, "_distance": dist})
+        if nearby:
+            nearby.sort(key=lambda x: x.get("_distance", 999.0))
+            out = nearby[:limit]
+            for s in out:
+                s.pop("_distance", None)
+            return out
+    # FIX #235: nearest fallback (max 5 km) — never return empty when candidates exist.
+    if candidates:
+        scored: list = []
+        for r in candidates:
+            r_lat, r_lng = r.get("lat"), r.get("lng")
+            if not r_lat or not r_lng:
+                continue
+            dist = haversine_distance(float(lat), float(lng), float(r_lat), float(r_lng))
+            if dist <= 5.0:
+                scored.append((dist, r))
+        if scored:
+            scored.sort(key=lambda x: x[0])
+            out = [{**scored[i][1]} for i in range(min(limit, len(scored)))]
+            for s in out:
+                s.pop("_distance", None)
+            print(f"[MEAL FIX#235] Nearest fallback: {[s.get('name') for s in out]}")
+            return out
+    return []
 
 
 def dominant_geo_region_key(pois: list) -> str | None:
@@ -1785,6 +1841,29 @@ def is_seasonal_water_poi_out_of_season(p: dict, context: dict | None) -> bool:
     return str(ctx.get("season", "")).lower() == "winter"
 
 
+def should_block_far_region_reentry(p: dict, context: dict | None, plan: list) -> bool:
+    """FIX #235: block OPN/Kampinos re-entry same day after returning to city."""
+    poi_reg = poi_geo_region_key(p)
+    if not poi_reg or poi_reg not in _FAR_GEO_REGIONS:
+        return False
+    had_regional = False
+    left_region = False
+    for item in plan:
+        if item.get("type") != "attraction":
+            continue
+        pr = poi_geo_region_key(item.get("poi") or {})
+        if pr == poi_reg:
+            had_regional = True
+            left_region = False
+        elif had_regional and pr is None:
+            left_region = True
+    if left_region:
+        poi_name_safe = str(p.get("name", "Unknown")).encode("ascii", errors="ignore").decode("ascii")
+        print(f"[FIX #235] Blocked far-region re-entry: {poi_name_safe} ({poi_reg})")
+        return True
+    return False
+
+
 def should_block_premature_excursion_return(p: dict, context: dict | None, plan: list) -> bool:
     """FIX #233: don't return to city after a single out-of-town POI — build clusters."""
     if not context:
@@ -1825,6 +1904,8 @@ def should_skip_poi_candidate(p: dict, context: dict | None) -> bool:
     if should_block_geo_region_repeat(p, context):
         return True
     if should_block_cross_region_in_day(p, context):
+        return True
+    if should_block_far_region_reentry(p, context, (context or {}).get("_day_plan_snapshot") or []):
         return True
     if should_block_premature_excursion_return(p, context, (context or {}).get("_day_plan_snapshot") or []):
         return True
@@ -4828,6 +4909,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
     global_geo_region_use_count: dict = {}  # region_key -> times visited in trip
     global_museum_count = 0  # museums scheduled so far (for FIX #173 escalation)
     global_park_count = 0  # FIX #219: urban parks scheduled (nature diversity)
+    global_kids_count = 0  # FIX #235: kids attractions used so far (family_kids ranking)
 
     # FIX #179 (06.06.2026): Trip-level preference coverage for quota boosts.
     global_trip_covered_prefs: set = set()
@@ -4882,6 +4964,7 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
         context["global_geo_region_use_count"] = global_geo_region_use_count
         context["trip_museum_count"] = global_museum_count
         context["trip_park_count"] = global_park_count
+        context["trip_kids_attraction_count"] = global_kids_count
         context["trip_used_poi_names"] = global_trip_poi_names
         _all_user_prefs = user.get("preferences", [])
         context["trip_uncovered_preferences"] = set(_all_user_prefs) - global_trip_covered_prefs
@@ -5181,6 +5264,8 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
                     global_museum_count += 1
                 if is_park_or_green_space_poi(item["poi"]):
                     global_park_count += 1
+                if is_child_oriented_attraction(item["poi"]) or is_kids_focused_poi(item["poi"]):
+                    global_kids_count += 1
         # FIX #179/#222: Update trip-level covered preferences from today's attractions.
         from app.domain.scoring.preference_coverage import poi_covers_preference_report
         for item in day_plan:
@@ -5664,45 +5749,17 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                                 break
                         
                         if last_attraction and last_attraction.get("lat") and last_attraction.get("lng"):
-                            current_lat = last_attraction.get("lat")
-                            current_lng = last_attraction.get("lng")
-
-                            lunch_restaurants = [
-                                r for r in lunch_restaurants
-                                if _meal_restaurant_geo_ok(r, last_attraction, context)
-                            ]
-                            
-                            # Calculate distance to each restaurant
-                            for r in lunch_restaurants:
-                                r_lat = r.get("lat", 0)
-                                r_lng = r.get("lng", 0)
-                                if r_lat and r_lng:
-                                    distance = haversine_distance(current_lat, current_lng, r_lat, r_lng)
-                                    r["_distance"] = distance
-                                else:
-                                    r["_distance"] = 999.0  # Unknown location = far away
-                            
-                            # Sort by proximity
-                            lunch_restaurants.sort(key=lambda r: r.get("_distance", 999.0))
-                            print(f"[LUNCH] Sorted {len(lunch_restaurants)} lunch spots by proximity to {last_attraction.get('name', 'current location')}")
-
-                            # FIX #141 (31.05.2026): Hard 2km geo filter — only show nearby restaurants.
-                            # Prevents "lunch teleport" where suggestions are far from actual position.
-                            _LUNCH_MAX_DIST_KM = MEAL_RESTAURANT_MAX_DIST_KM
-                            _nearby_lunch141 = [r for r in lunch_restaurants if r.get("_distance", 999.0) <= _LUNCH_MAX_DIST_KM]
-                            if _nearby_lunch141:
-                                lunch_restaurants = _nearby_lunch141
-                                print(f"[LUNCH FIX#141] Filtered to {len(lunch_restaurants)} restaurants within {_LUNCH_MAX_DIST_KM}km")
-                            else:
-                                print(f"[LUNCH FIX#141] No restaurant within {_LUNCH_MAX_DIST_KM}km — no lunch suggestions")
-                                lunch_restaurants = []
-                    
-                    # Take top 3 nearest restaurants
-                    if lunch_restaurants:
+                            lunch_suggestions = _tiered_nearby_restaurants(
+                                lunch_restaurants, last_attraction, context, limit=3,
+                            )
+                            if lunch_suggestions:
+                                print(
+                                    f"[LUNCH FIX#235] Tiered suggestions: "
+                                    f"{[s.get('name') for s in lunch_suggestions]}"
+                                )
+                    if not lunch_suggestions and lunch_restaurants:
                         lunch_suggestions = [{**r} for r in lunch_restaurants[:3]]
-                        for s in lunch_suggestions:
-                            s.pop("_distance", None)
-                        print(f"[LUNCH] Intelligent suggestions: {[s.get('name') for s in lunch_suggestions]}")
+                        print(f"[LUNCH] Fallback suggestions: {[s.get('name') for s in lunch_suggestions]}")
                 
                 # FIX #Problem9 DEBUG: Log lunch insertion with group_type
                 group_type_debug = user.get("target_group")
@@ -5869,54 +5926,24 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                                 break
                         
                         if last_attraction and last_attraction.get("lat") and last_attraction.get("lng"):
-                            current_lat = last_attraction.get("lat")
-                            current_lng = last_attraction.get("lng")
-                            
-                            # Calculate distance to each restaurant
-                            dinner_restaurants = [
-                                r for r in dinner_restaurants
-                                if _meal_restaurant_geo_ok(r, last_attraction, context)
-                            ]
-                            for r in dinner_restaurants:
-                                r_lat = r.get("lat", 0)
-                                r_lng = r.get("lng", 0)
-                                if r_lat and r_lng:
-                                    distance = haversine_distance(current_lat, current_lng, r_lat, r_lng)
-                                    r["_distance"] = distance
-                                else:
-                                    r["_distance"] = 999.0  # Unknown location = far away
-                            
-                            # Sort by proximity
-                            dinner_restaurants.sort(key=lambda r: r.get("_distance", 999.0))
-                            print(f"[DINNER] Sorted {len(dinner_restaurants)} dinner spots by proximity to {last_attraction.get('name', 'current location')}")
-
-                            # FIX #234: hard geo filter — same as lunch (max 1 km).
-                            _nearby_dinner = [
-                                r for r in dinner_restaurants
-                                if r.get("_distance", 999.0) <= MEAL_RESTAURANT_MAX_DIST_KM
-                            ]
-                            if _nearby_dinner:
-                                dinner_restaurants = _nearby_dinner
-                                print(f"[DINNER FIX#234] Filtered to {len(dinner_restaurants)} within {MEAL_RESTAURANT_MAX_DIST_KM}km")
-                    
-                    # Boost local food restaurants if user wants local_food_experience
-                    if "local_food_experience" in user.get("preferences", []):
-                        # Re-sort to prioritize regional cuisine
-                        regional_tags = {"regional_cuisine", "local_food", "traditional", "góralska"}
-                        for r in dinner_restaurants:
-                            r_tags = set(r.get("tags", []))
-                            if regional_tags & r_tags:
-                                r["_distance"] = r.get("_distance", 999.0) * 0.5  # 50% distance reduction = priority boost
-                        
-                        dinner_restaurants.sort(key=lambda r: r.get("_distance", 999.0))
-                        print(f"[DINNER] Boosted regional cuisine restaurants (local_food_experience preference)")
-                    
-                    # Take top 3 nearest/best restaurants
-                    if dinner_restaurants:
+                            dinner_suggestions = _tiered_nearby_restaurants(
+                                dinner_restaurants, last_attraction, context, limit=3,
+                            )
+                            if dinner_suggestions:
+                                print(
+                                    f"[DINNER FIX#235] Tiered suggestions: "
+                                    f"{[s.get('name') for s in dinner_suggestions]}"
+                                )
+                    if not dinner_suggestions and dinner_restaurants:
+                        dinner_restaurants.sort(
+                            key=lambda r: r.get("_distance", 999.0)
+                            if "_distance" in r
+                            else 999.0,
+                        )
                         dinner_suggestions = [{**r} for r in dinner_restaurants[:3]]
                         for s in dinner_suggestions:
                             s.pop("_distance", None)
-                        print(f"[DINNER] Intelligent suggestions: {[s.get('name') for s in dinner_suggestions]}")
+                        print(f"[DINNER] Fallback suggestions: {[s.get('name') for s in dinner_suggestions]}")
                 
                 plan.append(
                     {

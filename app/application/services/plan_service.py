@@ -161,6 +161,34 @@ def _last_attraction_name(items: list) -> str:
     return ""
 
 
+def _item_type_value(item) -> str:
+    """Normalize ItemType enum / raw string."""
+    t = getattr(item, "type", None)
+    if hasattr(t, "value"):
+        return str(t.value)
+    return str(t or "")
+
+
+def _is_timeline_attraction(item) -> bool:
+    return _item_type_value(item) == ItemType.ATTRACTION.value
+
+
+def _find_next_attraction(items: list, start_idx: int):
+    """FIX #235: next attraction after index, skipping meals/free_time."""
+    for j in range(start_idx + 1, len(items)):
+        if _is_timeline_attraction(items[j]):
+            return items[j]
+    return None
+
+
+def _find_prev_attraction(items: list, start_idx: int):
+    """Last attraction before index (skips meals/transits)."""
+    for j in range(start_idx - 1, -1, -1):
+        if _is_timeline_attraction(items[j]):
+            return items[j]
+    return None
+
+
 def _is_urban_trip(context: Dict[str, Any]) -> bool:
     from app.domain.planner.city_copy import is_city_tourism_trip
     rt = str(context.get("region_type") or "").lower()
@@ -660,12 +688,14 @@ class PlanService:
 
         afternoon_slack = max(total_ft, gap_to_dinner)
         from app.domain.planner.city_copy import is_city_tourism_trip
-        # FIX #198: city / long trips — top-up przy ≥60 min (było 90)
-        _topup_min = 60 if (
+        # FIX #198: city / long trips — top-up przy ≥45 min when day ends early (było 60)
+        _last_end = last_end_min or 0
+        _early_day = _last_end > 0 and _last_end < time_to_minutes("14:00")
+        _topup_min = 45 if _early_day else (60 if (
             is_city_tourism_trip(context)
             or context.get("multi_city_density_mode")
             or context.get("num_days", 1) >= 5
-        ) else 90
+        ) else 90)
         if afternoon_slack < _topup_min:
             return items
 
@@ -2305,6 +2335,9 @@ class PlanService:
                 p.get("name"): p for p in all_pois_dict
                 if p.get("name") and p.get("lat") and p.get("lng")
             }
+            day_items = self._ensure_transits_between_attractions(
+                day_items, _poi_coord_map, day_context,
+            )
             day_items = self._update_transit_destinations(day_items, _poi_coord_map)
             day_items = self._validate_transit_endpoints(day_items)
 
@@ -2431,6 +2464,9 @@ class PlanService:
             # FIX #196: final overlap sweep (after all gap-fill / top-up mutations).
             day_items = self._sort_items_by_time(day_items)
             day_items = self._remove_timeline_overlaps(day_items, day_num + 1)
+            day_items = self._ensure_transits_between_attractions(
+                day_items, _poi_coord_map, day_context,
+            )
             day_items = self._update_transit_destinations(day_items, _poi_coord_map)
             day_items = self._validate_transit_endpoints(day_items)
             day_items = self._enrich_transits_with_routing(
@@ -2479,6 +2515,9 @@ class PlanService:
                 day_items = self._sort_items_by_time(day_items)
                 day_items, _ = validate_and_heal_timeline(
                     day_items, day_number=day_num + 1, raise_on_failure=False,
+                )
+                day_items = self._ensure_transits_between_attractions(
+                    day_items, _poi_coord_map, day_context,
                 )
                 day_items = self._update_transit_destinations(day_items, _poi_coord_map)
                 day_items = self._validate_transit_endpoints(day_items)
@@ -2692,6 +2731,9 @@ class PlanService:
             )
             _fitems = self._sort_items_by_time(_fitems)
             _fitems = self._remove_timeline_overlaps(_fitems, day_plan.day)
+            _fitems = self._ensure_transits_between_attractions(
+                _fitems, _final_coord_map, context,
+            )
             _fitems = self._update_transit_destinations(_fitems, _final_coord_map)
             _fitems = self._validate_transit_endpoints(_fitems)
             # FIX #203: the heal/overlap passes above can re-introduce items that run
@@ -5481,6 +5523,93 @@ class PlanService:
         total_min = time_to_minutes(time_str) + minutes
         return minutes_to_time(total_min)
 
+    def _ensure_transits_between_attractions(
+        self,
+        items: List[Any],
+        poi_coords: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> List[Any]:
+        """FIX #235: inject missing transit legs between consecutive attractions."""
+        if len(items) < 2:
+            return items
+
+        attr_idxs = [i for i, it in enumerate(items) if _is_timeline_attraction(it)]
+        if len(attr_idxs) < 2:
+            return items
+
+        result = list(items)
+        insert_offset = 0
+
+        for pair_i in range(len(attr_idxs) - 1):
+            idx_a = attr_idxs[pair_i] + insert_offset
+            idx_b = attr_idxs[pair_i + 1] + insert_offset
+            attr_a = result[idx_a]
+            attr_b = result[idx_b]
+
+            segment = result[idx_a + 1:idx_b]
+            if any(_item_type_value(it) == ItemType.TRANSIT.value for it in segment):
+                continue
+
+            from_name = getattr(attr_a, "name", "") or ""
+            to_name = getattr(attr_b, "name", "") or ""
+            from_poi = poi_coords.get(from_name) or {}
+            to_poi = poi_coords.get(to_name) or {}
+            lat1, lng1 = _poi_lat_lng(from_poi)
+            lat2, lng2 = _poi_lat_lng(to_poi)
+            if not all([lat1, lng1, lat2, lng2]):
+                continue
+
+            dist_km = haversine_distance(float(lat1), float(lng1), float(lat2), float(lng2))
+            if dist_km < 0.05:
+                continue
+
+            end_a = getattr(attr_a, "end_time", None)
+            start_b = getattr(attr_b, "start_time", None)
+            if not end_a or not start_b:
+                continue
+            gap_min = time_to_minutes(start_b) - time_to_minutes(end_a)
+            if gap_min < 3:
+                continue
+
+            from_d = {"lat": float(lat1), "lng": float(lng1)}
+            to_d = {"lat": float(lat2), "lng": float(lng2)}
+            ctx = {**context, "has_car": context.get("has_car", True)}
+            try:
+                mode_str = get_transport_mode(from_d, to_d)
+                travel_min = travel_time_minutes(from_d, to_d, ctx)
+            except Exception:
+                mode_str = "walking"
+                travel_min = max(5, int(dist_km * 15))
+
+            if dist_km < 1.0:
+                travel_min = max(5, min(gap_min, int(dist_km * 15)))
+                mode = TransitMode.WALK
+            else:
+                travel_min = max(5, min(gap_min, travel_min))
+                mode = TransitMode.CAR if mode_str != "walking" else TransitMode.WALK
+
+            if travel_min < 3:
+                continue
+
+            start_min = time_to_minutes(end_a)
+            transit = TransitItem(
+                type=ItemType.TRANSIT,
+                start_time=minutes_to_time(start_min),
+                end_time=minutes_to_time(start_min + travel_min),
+                duration_min=travel_min,
+                mode=mode,
+                from_location=from_name,
+                to_location=to_name,
+            )
+            result.insert(idx_b, transit)
+            insert_offset += 1
+            print(
+                f"[FIX #235] Injected transit: {from_name} -> {to_name} "
+                f"({travel_min}min, {dist_km:.2f}km)"
+            )
+
+        return result
+
     def _update_transit_destinations(self, items: List[Any], poi_coords: Dict[str, Any] = None) -> List[Any]:
         """
         FIX #3 (02.02.2026): Update transit 'to_location' after gap filling.
@@ -5508,37 +5637,30 @@ class PlanService:
             Updated list with correct transit destinations
         """
         # FIX #101b (29.05.2026): Build result while skipping orphaned transits.
+        # FIX #235: meals (lunch/dinner) between transit and next attraction do NOT orphan the leg.
         result = []
         for i, item in enumerate(items):
-            # Skip non-transit items
-            if item.type != ItemType.TRANSIT:
+            if _item_type_value(item) != ItemType.TRANSIT.value:
                 result.append(item)
                 continue
-            
-            # Find NEXT attraction after this transit (in original list)
-            next_attraction = None
-            for j in range(i + 1, len(items)):
-                if items[j].type == ItemType.ATTRACTION:
-                    next_attraction = items[j]
-                    break
-            
-            # If no following attraction, transit is orphaned — remove it
+
+            next_attraction = _find_next_attraction(items, i)
+
             if not next_attraction:
-                print(f"[TRANSIT FIX #101b] Removing orphaned transit: '{item.from_location}' -> '{item.to_location}' (no following attraction)")
+                print(
+                    f"[TRANSIT FIX #101b] Removing orphaned transit: "
+                    f"'{item.from_location}' -> '{item.to_location}' (no following attraction)"
+                )
                 continue
-            
-            # Update "to" to match next attraction
+
             item.to_location = next_attraction.name
-            print(f"[TRANSIT FIX] Updated transit destination: '{item.from_location}' -> '{item.to_location}'")
-            
-            # FIX #4: Update "from" to match PREVIOUS attraction
-            # Find last attraction BEFORE this transit (in original list)
-            prev_attraction = None
-            for j in range(i - 1, -1, -1):
-                if items[j].type == ItemType.ATTRACTION:
-                    prev_attraction = items[j]
-                    break
-            
+            print(
+                f"[TRANSIT FIX] Updated transit destination: "
+                f"'{item.from_location}' -> '{item.to_location}'"
+            )
+
+            prev_attraction = _find_prev_attraction(items, i)
+
             if prev_attraction:
                 item.from_location = prev_attraction.name
                 print(f"[TRANSIT FIX] Updated transit origin: -> '{prev_attraction.name}'")
