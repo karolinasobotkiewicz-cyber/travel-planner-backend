@@ -92,4 +92,5 @@ def haversine_route(a: dict, b: dict, context: Optional[dict] = None) -> RouteRe
         profile = "driving-car"
 
     geometry = [[lng1, lat1], [lng2, lat2]]
-    return RouteResult(mins, road_km, profile, "haversine", geometry)
+    source = "estimated_road" if profile == "driving-car" else "haversine"
+    return RouteResult(mins, road_km, profile, source, geometry)

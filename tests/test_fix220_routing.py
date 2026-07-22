@@ -68,7 +68,7 @@ def test_get_travel_route_uses_haversine_when_ors_off():
         mock_s.ors_cache_ttl_days = 60
         r = get_travel_route(a, b, {"has_car": True})
     assert r.duration_min > 0
-    assert r.source == "haversine"
+    assert r.source == "estimated_road"
 
 
 def test_get_travel_route_ors_mock():

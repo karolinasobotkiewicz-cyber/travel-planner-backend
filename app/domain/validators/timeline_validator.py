@@ -227,7 +227,7 @@ def _update_item_times(item: Any, new_start: str, new_end: str) -> Any:
 
 def heal_timeline_overlaps(
     day_items: List[Any],
-    max_iterations: int = 3
+    max_iterations: int = 6
 ) -> List[Any]:
     """
     Auto-heal timeline overlaps by cascading items forward.

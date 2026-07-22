@@ -507,15 +507,36 @@ class PlanService:
 
     @staticmethod
     def _attach_route_metadata(transit_item, from_poi: dict, to_poi: dict, context: dict):
-        """FIX #220: attach ORS geometry/distance to transit (no-op when ORS off)."""
+        """FIX #220/#237: attach route duration + geometry (ORS → cache → road estimate)."""
         try:
-            from app.infrastructure.config.settings import settings
-            if not (settings.ors_enabled and settings.ors_api_key):
-                return transit_item
             from app.infrastructure.routing import get_travel_route
+
             route = get_travel_route(from_poi, to_poi, context)
             extras = route.to_transit_extras()
-            return transit_item.model_copy(update=extras)
+            updated = transit_item.model_copy(update=extras)
+            # FIX #237: car legs must not stay on raw point-to-point haversine label alone.
+            if (
+                extras.get("routing_source") == "haversine"
+                and getattr(transit_item, "mode", None)
+                and str(getattr(transit_item, "mode", "")).lower() in ("car", "transitmode.car")
+            ):
+                prof = route.profile or ""
+                if "driving" in prof or route.distance_km > 1.2:
+                    extras = dict(extras)
+                    extras["routing_source"] = "estimated_road"
+                    updated = transit_item.model_copy(update=extras)
+            if extras.get("duration_min"):
+                dm = int(extras["duration_min"])
+                if dm > (getattr(transit_item, "duration_min", 0) or 0):
+                    updated = updated.model_copy(
+                        update={
+                            "duration_min": dm,
+                            "end_time": minutes_to_time(
+                                time_to_minutes(getattr(transit_item, "start_time", "09:00")) + dm
+                            ),
+                        }
+                    )
+            return updated
         except Exception:
             return transit_item
 
@@ -2726,21 +2747,19 @@ class PlanService:
         _finalized_days: List[DayPlan] = []
         for day_plan in days:
             _fitems = list(day_plan.items)
+            _day_ctx = contexts[day_plan.day - 1] if day_plan.day - 1 < len(contexts) else context
+            _fitems = self._apply_fix237_day_pipeline(
+                _fitems,
+                _final_coord_map,
+                _day_ctx,
+                day_plan.day,
+                all_pois_dict=all_pois_dict,
+                user=user,
+                global_used_pois=global_used_pois,
+            )
             _fitems, _ = validate_and_heal_timeline(
                 _fitems, day_number=day_plan.day, raise_on_failure=False,
             )
-            _fitems = self._sort_items_by_time(_fitems)
-            _fitems = self._remove_timeline_overlaps(_fitems, day_plan.day)
-            _fitems = self._ensure_transits_between_attractions(
-                _fitems, _final_coord_map, context,
-            )
-            _fitems = self._update_transit_destinations(_fitems, _final_coord_map)
-            _fitems = self._validate_transit_endpoints(_fitems)
-            # FIX #203: the heal/overlap passes above can re-introduce items that run
-            # past the day window (dinner shifted late, free_time stretched to fill).
-            # Client: "harmonogram wykracza poza zadany limit dnia" /
-            # "free_time kończy się po day_end". Re-cap dinner and clamp every item
-            # to the day_end as the final mutation.
             _fitems = self._enforce_dinner_before_day_end(
                 _fitems, day_end, day_num=day_plan.day,
             )
@@ -5601,6 +5620,14 @@ class PlanService:
                 from_location=from_name,
                 to_location=to_name,
             )
+            transit = self._attach_route_metadata(transit, from_poi, to_poi, ctx)
+            if getattr(transit, "duration_min", travel_min) != travel_min:
+                travel_min = int(transit.duration_min)
+                transit = transit.model_copy(
+                    update={
+                        "end_time": minutes_to_time(start_min + travel_min),
+                    }
+                )
             result.insert(idx_b, transit)
             insert_offset += 1
             print(
@@ -5702,6 +5729,54 @@ class PlanService:
                 continue
             out.append(it)
         return out
+
+    def _apply_fix237_day_pipeline(
+        self,
+        items: List[Any],
+        poi_coords: Dict[str, Any],
+        context: Dict[str, Any],
+        day_num: int,
+        *,
+        all_pois_dict: Optional[List[Dict[str, Any]]] = None,
+        user: Optional[Dict[str, Any]] = None,
+        global_used_pois: Optional[set] = None,
+    ) -> List[Any]:
+        """FIX #237: unified day finalize — timeline, transit, meals, afternoon fill."""
+        from app.application.services.plan_day_integrity import (
+            assert_transit_endpoints_match_pois,
+            ensure_meal_suggestions,
+            run_timeline_integrity_pass,
+        )
+
+        items = self._sort_items_by_time(items)
+        items, _ = run_timeline_integrity_pass(items, day_num)
+        items = self._remove_timeline_overlaps(items, day_num)
+        items = self._ensure_transits_between_attractions(items, poi_coords, context)
+        items = self._update_transit_destinations(items, poi_coords)
+        items = self._collapse_duplicate_transits(items)
+        items = assert_transit_endpoints_match_pois(items, poi_coords, day_num)
+        items = self._enrich_transits_with_routing(items, poi_coords, context)
+        items = ensure_meal_suggestions(
+            items,
+            poi_coords,
+            context,
+            parse_suggestion_fn=_restaurant_dict_to_suggestion,
+            filter_fn=_filter_meal_suggestions,
+        )
+        if all_pois_dict is not None and user is not None and global_used_pois is not None:
+            items = self._afternoon_topup_items(
+                items,
+                all_pois_dict,
+                context,
+                user,
+                global_used_pois,
+                all_pois_lookup=all_pois_dict,
+            )
+            for item in items:
+                if getattr(item, "poi_id", None):
+                    global_used_pois.add(item.poi_id)
+        items, _ = run_timeline_integrity_pass(items, day_num)
+        return self._sort_items_by_time(items)
 
     def _recompute_transit_leg(self, item, items, idx, poi_coords):
         """Correct one transit's transport_mode/duration from endpoint coords.

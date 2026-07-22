@@ -1406,10 +1406,10 @@ def travel_time_minutes(a, b, context):
         return 0
 
     try:
-        from app.infrastructure.config.settings import settings
-        if settings.ors_enabled and settings.ors_routing_enabled and settings.ors_api_key:
-            from app.infrastructure.routing import get_travel_minutes
-            return get_travel_minutes(a, b, context)
+        from app.infrastructure.routing import get_travel_route
+
+        route = get_travel_route(a, b, context)
+        return max(int(route.duration_min), 0)
     except Exception:
         pass
 
