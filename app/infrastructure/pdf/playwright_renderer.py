@@ -35,7 +35,19 @@ def render_url_to_pdf(url: str) -> bytes:
             browser = p.chromium.launch(headless=True)
             try:
                 page = browser.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                status_code = response.status if response else 0
+                if status_code >= 400:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED
+                        if status_code == 404
+                        else status.HTTP_502_BAD_GATEWAY,
+                        detail=(
+                            "PDF print page not available (invalid or expired token)"
+                            if status_code == 404
+                            else f"PDF print page returned HTTP {status_code}"
+                        ),
+                    )
                 page.wait_for_selector(_PDF_READY_SELECTOR, timeout=timeout_ms)
                 pdf_bytes = page.pdf(
                     format="A4",

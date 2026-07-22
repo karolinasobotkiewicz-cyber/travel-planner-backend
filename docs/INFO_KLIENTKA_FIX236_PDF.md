@@ -1,103 +1,65 @@
-# PDF z widoku Next.js (Playwright) — FIX #236
+# PDF z widoku Next.js (Playwright) — kontrakt frontu
 
-Backend gotowy pod kontrakt frontu (lipiec 2026). Stary endpoint ReportLab (`GET /plan/{id}/pdf`) nadal działa jako fallback.
+## Endpoint (jedyny)
 
-## Flow (docelowy)
+**POST** `/plan/render-pdf`
 
-1. Użytkownik klika **Generuj PDF** w aplikacji.
-2. Front buduje krótkotrwały token (5 min) i URL print view:  
-   `https://lets-travel.pl/plan/pdf/<token>`
-3. Front woła backend:  
-   **`POST /plan/render-pdf`**  
-   Body: `{ "url": "https://lets-travel.pl/plan/pdf/<token>" }`
-4. Backend (Playwright) otwiera ten URL, czeka na gotowość strony, zwraca **`application/pdf`**.
+**Nagłówek (wymagany):**
 
-## Widok print w Next.js (`/plan/pdf/[token]`)
+`X-Render-Secret: <PDF_RENDER_SECRET>`
 
-1. Pobierz plan: **`GET /plan/pdf-view/{token}`** (ten sam JWT co w URL).  
-   Odpowiedź: pełny `PlanResponse` (jak `GET /plan/{id}`), bez sesji użytkownika — autoryzacja = ważny token.
-2. Wyrenderuj layout 1:1 jak w aplikacji (fonty, obrazki).
-3. Gdy wszystko załadowane:
+Ta sama wartość w env backendu (`PDF_RENDER_SECRET`) i na serwerze Next.js (Route Handler wołający backend). Front **nie** musi znać żadnego secretu do samego tokenu w URL — token jest **opaque** (losowy identyfikator sesji PDF po stronie frontu).
+
+**Body:**
+
+```json
+{ "url": "https://<host>/plan/pdf/<opaque_token>" }
+```
+
+Backend:
+
+1. Sprawdza `X-Render-Secret`
+2. Sprawdza allowlistę hosta + ścieżkę `/plan/pdf/{token}`
+3. **Nie** parsuje tokenu (brak JWT)
+4. Playwright: `page.goto(url)` — jeśli **HTTP 404** → błąd (zły/wygasły token)
+5. Czeka na `html[data-pdf-ready="true"]` (max 20 s)
+6. Zwraca `application/pdf`
+
+## Dozwolone hosty (domyślnie)
+
+- `lets-travel.pl`, `www.lets-travel.pl`
+- `letstravel-blue.vercel.app`
+- `localhost`, `127.0.0.1`
+- host z `FRONTEND_BASE_URL`
+- hosty z `CORS_ORIGINS`
+- dodatkowo: `PDF_RENDER_ALLOWED_HOSTS` (csv)
+
+## Env na Renderze
+
+```env
+PDF_RENDER_SECRET=<wspólny z frontem — ten sam co w nagłówku X-Render-Secret>
+FRONTEND_BASE_URL=https://lets-travel.pl
+PDF_RENDER_WAIT_TIMEOUT_MS=20000
+PDF_PLAYWRIGHT_ENABLED=true
+```
+
+Możesz zostawić `PDF_RENDER_JWT_SECRET` — backend użyje go **tylko** jako fallback, gdy `PDF_RENDER_SECRET` jest pusty (kompatybilność wsteczna).
+
+## Usunięte (front ich nie woła)
+
+- `POST /plan/{id}/pdf-render-token`
+- `GET /plan/pdf-view/{token}`
+
+Mintowanie tokenu i autoryzacja (właściciel + opłacony plan) — **wyłącznie na froncie**, przed wywołaniem render-pdf.
+
+## Widok print w Next.js
+
+Po załadowaniu fontów/obrazków:
 
 ```javascript
 document.documentElement.setAttribute("data-pdf-ready", "true");
 ```
 
-Backend czeka max **20 s** na selektor: `html[data-pdf-ready="true"]`.
+## Stary PDF
 
-## Token JWT (wspólny secret z backendem)
-
-- Algorytm: **HS256**
-- Secret: env **`PDF_RENDER_JWT_SECRET`** (identyczny w Next.js i na Renderze backendu)
-- TTL: **300 s** (5 min)
-- Payload:
-
-```json
-{
-  "typ": "pdf_render",
-  "plan_id": "<uuid planu>",
-  "exp": 1234567890,
-  "iat": 1234567890
-}
-```
-
-Front może podpisać token sam (np. Route Handler w Next.js) **albo** użyć helpera backendu (wymaga dostępu do planu):
-
-**`POST /plan/{plan_id}/pdf-render-token`**  
-(nagłówek `Authorization` / `X-Guest-ID` jak przy `GET /plan/{id}`)
-
-Odpowiedź:
-
-```json
-{
-  "token": "...",
-  "url": "https://lets-travel.pl/plan/pdf/...",
-  "expires_at": "2026-07-22T12:00:00+00:00",
-  "ttl_sec": 300
-}
-```
-
-Token w URL musi być **jednym segmentem ścieżki** (standardowy JWT z kropkami jest OK). Przy budowaniu linku można użyć `encodeURIComponent(token)`.
-
-## Endpointy — skrót
-
-| Metoda | Ścieżka | Opis |
-|--------|---------|------|
-| POST | `/plan/render-pdf` | Body `{ "url" }` → plik PDF |
-| GET | `/plan/pdf-view/{token}` | Dane planu dla strony print |
-| POST | `/plan/{plan_id}/pdf-render-token` | Opcjonalne mintowanie URL |
-| GET | `/plan/{plan_id}/pdf` | Stary PDF (ReportLab) |
-
-## Backend — env na Renderze (Ty dodajesz)
-
-```env
-FRONTEND_BASE_URL=https://lets-travel.pl
-PDF_RENDER_JWT_SECRET=<ten sam co w Next.js>
-PDF_RENDER_TOKEN_TTL_SEC=300
-PDF_RENDER_WAIT_TIMEOUT_MS=20000
-PDF_PLAYWRIGHT_ENABLED=true
-CORS_ORIGINS=https://lets-travel.pl,http://localhost:3000
-```
-
-Opcjonalnie staging: `PDF_RENDER_ALLOWED_HOSTS=preview.lets-travel.pl`
-
-## Front — przykład wywołania render
-
-```typescript
-const res = await fetch(`${API_URL}/plan/render-pdf`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ url: printPageUrl }),
-});
-const blob = await res.blob();
-// pobierz plik…
-```
-
-## Błędy typowe
-
-| Kod | Przyczyna |
-|-----|-----------|
-| 400 | Zły host URL lub ścieżka ≠ `/plan/pdf/{token}` |
-| 401 | Token wygasły / zły podpis / zły `typ` |
-| 502 | Playwright / timeout 20 s (brak `data-pdf-ready`) |
-| 503 | Brak `PDF_RENDER_JWT_SECRET` lub Playwright wyłączony |
+`GET /plan/{id}/pdf` (ReportLab) — bez zmian, fallback.

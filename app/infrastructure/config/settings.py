@@ -83,11 +83,13 @@ class Settings(BaseSettings):
     # =========================
 
     frontend_base_url: str = "https://lets-travel.pl"
-    pdf_render_jwt_secret: str = ""
-    pdf_render_token_ttl_sec: int = 300  # 5 min — kontrakt klientki
+    # Współdzielony secret: nagłówek X-Render-Secret na POST /plan/render-pdf
+    pdf_render_secret: str = ""
+    pdf_render_jwt_secret: str = ""  # deprecated alias — używany tylko gdy PDF_RENDER_SECRET pusty
+    pdf_render_token_ttl_sec: int = 300
     pdf_render_wait_timeout_ms: int = 20000
     pdf_playwright_enabled: bool = True
-    # Dodatkowe hosty (csv), np. staging: pdf_render_allowed_hosts=preview.lets-travel.pl
+    # Dodatkowe hosty (csv), np. preview: letstravel-xxx.vercel.app
 
     pdf_render_allowed_hosts: str = ""
 

@@ -1,10 +1,11 @@
 """
 Plan endpoints - preview, status, get plan.
 """
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Header
 from fastapi.responses import Response
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
+import re
 import uuid
 
 from app.domain.models.trip_input import TripInput
@@ -27,9 +28,8 @@ from app.api.dependencies import (
 from app.infrastructure.config.settings import settings
 from app.infrastructure.pdf import (
     build_plan_pdf,
-    create_pdf_render_token,
     validate_pdf_render_url,
-    verify_pdf_render_token,
+    verify_x_render_secret,
     render_url_to_pdf,
 )
 from app.infrastructure.database.models import User
@@ -230,16 +230,9 @@ async def get_my_plans(
 
 
 class RenderPdfRequest(BaseModel):
-    """FIX #236 — Playwright render of frontend print view."""
+    """Playwright render of frontend print view (opaque token in URL)."""
 
-    url: str = Field(..., min_length=10, description="https://<site>/plan/pdf/<token>")
-
-
-class PdfRenderTokenResponse(BaseModel):
-    token: str
-    url: str
-    expires_at: str
-    ttl_sec: int
+    url: str = Field(..., min_length=10, description="https://<site>/plan/pdf/<opaque_token>")
 
 
 @router.post(
@@ -247,68 +240,28 @@ class PdfRenderTokenResponse(BaseModel):
     summary="Render plan PDF from frontend print URL (Playwright)",
     responses={200: {"content": {"application/pdf": {}}}},
 )
-def render_plan_pdf_from_url(body: RenderPdfRequest):
+def render_plan_pdf_from_url(
+    body: RenderPdfRequest,
+    x_render_secret: Optional[str] = Header(None, alias="X-Render-Secret"),
+):
     """
-    Kontrakt klientki (07/2026):
+    Kontrakt frontu:
 
-    - Body: ``{ \"url\": \"https://<site>/plan/pdf/<token>\" }``
-    - Token w URL ważny 5 min (JWT typ ``pdf_render``)
+    - Nagłówek ``X-Render-Secret`` (= env ``PDF_RENDER_SECRET``) — wymagany
+    - Body: ``{ \"url\": \"https://<site>/plan/pdf/<opaque_token>\" }``
+    - Token opaque — backend nie parsuje JWT; ważność = HTTP strony (404 → błąd)
     - Czeka na ``html[data-pdf-ready=\"true\"]`` (max 20 s), potem ``page.pdf()``
     """
-    _token, plan_id = validate_pdf_render_url(body.url)
+    verify_x_render_secret(x_render_secret)
+    opaque_token = validate_pdf_render_url(body.url)
     pdf_bytes = render_url_to_pdf(body.url)
-    filename = f"plan-{plan_id[:8]}.pdf"
+    safe = re.sub(r"[^a-zA-Z0-9]+", "", opaque_token)[:16] or "plan"
+    filename = f"plan-{safe}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-
-
-@router.get("/pdf-view/{token}", response_model=PlanResponse)
-def get_plan_for_pdf_view(
-    token: str,
-    plan_repo: PlanRepository = Depends(get_plan_repository),
-):
-    """
-    Pełny plan dla widoku ``/plan/pdf/[token]`` w Next.js.
-
-    Dostęp wyłącznie z ważnym tokenem renderowania (bez sesji użytkownika).
-    """
-    plan_id = verify_pdf_render_token(token)
-    plan = plan_repo.get_by_id(plan_id)
-    if plan is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Plan {plan_id} not found",
-        )
-    return plan
-
-
-@router.post(
-    "/{plan_id}/pdf-render-token",
-    response_model=PdfRenderTokenResponse,
-    summary="Mint short-lived URL for PDF print view",
-)
-def mint_pdf_render_token(
-    plan_id: str,
-    plan_repo: PlanRepository = Depends(get_plan_repository),
-    owner: Optional[OwnerIdentity] = Depends(get_optional_owner),
-):
-    """
-    Opcjonalny helper: backend generuje token + URL (TTL 5 min).
-
-    Front może też podpisać token sam (ten sam ``PDF_RENDER_JWT_SECRET``),
-    ale ten endpoint gwarantuje kontrolę dostępu przed wydaniem linku.
-    """
-    plan = plan_repo.get_by_id(plan_id)
-    if plan is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Plan {plan_id} not found",
-        )
-    _enforce_plan_access(plan_id, plan_repo, owner)
-    return create_pdf_render_token(plan_id)
 
 
 @router.get("/{plan_id}/status")
