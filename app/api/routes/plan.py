@@ -25,7 +25,13 @@ from app.api.dependencies import (
     OwnerIdentity  # ETAP 2: Owner identity wrapper
 )
 from app.infrastructure.config.settings import settings
-from app.infrastructure.pdf import build_plan_pdf
+from app.infrastructure.pdf import (
+    build_plan_pdf,
+    create_pdf_render_token,
+    validate_pdf_render_url,
+    verify_pdf_render_token,
+    render_url_to_pdf,
+)
 from app.infrastructure.database.models import User
 from app.application.services.plan_service import PlanService
 from app.application.services.plan_editor import PlanEditor
@@ -221,6 +227,88 @@ async def get_my_plans(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch user plans: {str(e)}"
         )
+
+
+class RenderPdfRequest(BaseModel):
+    """FIX #236 — Playwright render of frontend print view."""
+
+    url: str = Field(..., min_length=10, description="https://<site>/plan/pdf/<token>")
+
+
+class PdfRenderTokenResponse(BaseModel):
+    token: str
+    url: str
+    expires_at: str
+    ttl_sec: int
+
+
+@router.post(
+    "/render-pdf",
+    summary="Render plan PDF from frontend print URL (Playwright)",
+    responses={200: {"content": {"application/pdf": {}}}},
+)
+def render_plan_pdf_from_url(body: RenderPdfRequest):
+    """
+    Kontrakt klientki (07/2026):
+
+    - Body: ``{ \"url\": \"https://<site>/plan/pdf/<token>\" }``
+    - Token w URL ważny 5 min (JWT typ ``pdf_render``)
+    - Czeka na ``html[data-pdf-ready=\"true\"]`` (max 20 s), potem ``page.pdf()``
+    """
+    _token, plan_id = validate_pdf_render_url(body.url)
+    pdf_bytes = render_url_to_pdf(body.url)
+    filename = f"plan-{plan_id[:8]}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/pdf-view/{token}", response_model=PlanResponse)
+def get_plan_for_pdf_view(
+    token: str,
+    plan_repo: PlanRepository = Depends(get_plan_repository),
+):
+    """
+    Pełny plan dla widoku ``/plan/pdf/[token]`` w Next.js.
+
+    Dostęp wyłącznie z ważnym tokenem renderowania (bez sesji użytkownika).
+    """
+    plan_id = verify_pdf_render_token(token)
+    plan = plan_repo.get_by_id(plan_id)
+    if plan is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Plan {plan_id} not found",
+        )
+    return plan
+
+
+@router.post(
+    "/{plan_id}/pdf-render-token",
+    response_model=PdfRenderTokenResponse,
+    summary="Mint short-lived URL for PDF print view",
+)
+def mint_pdf_render_token(
+    plan_id: str,
+    plan_repo: PlanRepository = Depends(get_plan_repository),
+    owner: Optional[OwnerIdentity] = Depends(get_optional_owner),
+):
+    """
+    Opcjonalny helper: backend generuje token + URL (TTL 5 min).
+
+    Front może też podpisać token sam (ten sam ``PDF_RENDER_JWT_SECRET``),
+    ale ten endpoint gwarantuje kontrolę dostępu przed wydaniem linku.
+    """
+    plan = plan_repo.get_by_id(plan_id)
+    if plan is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Plan {plan_id} not found",
+        )
+    _enforce_plan_access(plan_id, plan_repo, owner)
+    return create_pdf_render_token(plan_id)
 
 
 @router.get("/{plan_id}/status")

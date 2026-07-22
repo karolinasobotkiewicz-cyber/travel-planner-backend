@@ -79,6 +79,19 @@ class Settings(BaseSettings):
     enforce_assigned_plan_auth: bool = True
 
     # =========================
+    # PDF RENDER (Playwright + short-lived token) — FIX #236
+    # =========================
+
+    frontend_base_url: str = "https://lets-travel.pl"
+    pdf_render_jwt_secret: str = ""
+    pdf_render_token_ttl_sec: int = 300  # 5 min — kontrakt klientki
+    pdf_render_wait_timeout_ms: int = 20000
+    pdf_playwright_enabled: bool = True
+    # Dodatkowe hosty (csv), np. staging: pdf_render_allowed_hosts=preview.lets-travel.pl
+
+    pdf_render_allowed_hosts: str = ""
+
+    # =========================
     # CORS
     # =========================
 

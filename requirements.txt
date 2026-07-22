@@ -38,3 +38,4 @@ python-jose[cryptography]==3.3.0
 
 # PDF generation (01.07.2026 - plan download)
 reportlab==4.1.0
+playwright==1.49.1

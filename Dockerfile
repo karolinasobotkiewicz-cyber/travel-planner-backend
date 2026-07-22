@@ -17,6 +17,8 @@ COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --user -r requirements.txt
+RUN pip install --no-cache-dir --user playwright==1.49.1 \
+    && python -m playwright install --with-deps chromium
 
 # Stage 2: Runtime
 FROM python:3.11-slim
