@@ -546,14 +546,49 @@ class PlanService:
         poi_coords: Dict[str, dict],
         context: dict,
     ) -> List[Any]:
-        """Apply route geometry to all transit legs with known endpoints."""
+        """Apply route geometry to all transit legs with known endpoints.
+
+        FIX #238 (client feedback 22.07): transits must NEVER be emitted with
+        ``routing_source: null`` / ``geometry: null``. Two root causes are fixed:
+          1. Endpoints not present in ``poi_coords`` (e.g. a POI whose name differs
+             from the pool key). We also resolve coords from the day's own
+             attraction items, which always carry lat/lng.
+          2. Hotel / city-label endpoints have no POI coords at all — we still
+             guarantee a non-null ``routing_source`` derived from the transit mode.
+        """
+        # Merge poi_coords with coords carried by the day's own attraction items.
+        coord_map: Dict[str, dict] = dict(poi_coords or {})
+        for it in items:
+            if _item_type_value(it) != ItemType.ATTRACTION.value:
+                continue
+            nm = getattr(it, "name", "") or ""
+            lat = getattr(it, "lat", None)
+            lng = getattr(it, "lng", None)
+            if nm and lat is not None and lng is not None:
+                existing = coord_map.get(nm) or {}
+                if _poi_lat_lng(existing)[0] is None:
+                    coord_map[nm] = {"lat": lat, "lng": lng, "name": nm}
+
         out = []
         for it in items:
-            if getattr(it, "type", None) == ItemType.TRANSIT:
-                fp = poi_coords.get(getattr(it, "from_location", "") or "")
-                tp = poi_coords.get(getattr(it, "to_location", "") or "")
-                if fp and tp:
+            if _item_type_value(it) == ItemType.TRANSIT.value:
+                fp = coord_map.get(getattr(it, "from_location", "") or "")
+                tp = coord_map.get(getattr(it, "to_location", "") or "")
+                if (
+                    fp and tp
+                    and _poi_lat_lng(fp)[0] is not None
+                    and _poi_lat_lng(tp)[0] is not None
+                ):
                     it = self._attach_route_metadata(it, fp, tp, context)
+                # FIX #238: guarantee a non-null routing_source on every transit.
+                if not getattr(it, "routing_source", None):
+                    mode_str = str(getattr(it, "mode", "") or "").lower()
+                    is_walk = "walk" in mode_str
+                    fallback_src = "estimated_walk" if is_walk else "estimated_road"
+                    try:
+                        it = it.model_copy(update={"routing_source": fallback_src})
+                    except Exception:
+                        pass
             out.append(it)
         return out
 
@@ -800,6 +835,20 @@ class PlanService:
         print(f"[FIX #197] City cap: trimmed {drop_n} attractions ({len(attr_slots)} → {max_attrs})")
         return out
 
+    def _poi_out_of_season(self, poi: Dict[str, Any], ctx: Dict[str, Any]) -> bool:
+        """FIX #238: True if POI is unavailable for the day's season (best-effort)."""
+        if not poi:
+            return False
+        trip_date = (ctx or {}).get("date") or (ctx or {}).get("trip_date")
+        if not trip_date:
+            return False
+        try:
+            from app.domain.filters.seasonality import filter_by_season
+
+            return len(filter_by_season([poi], trip_date)) == 0
+        except Exception:
+            return False
+
     def _strip_out_of_season_attractions(
         self,
         items: List[Any],
@@ -1044,6 +1093,10 @@ class PlanService:
                     if _blocked_after_trail(replacement, day):
                         continue
                     ctx = contexts[di] if di < len(contexts) else {}
+                    # FIX #238: never swap in a POI that is out of season for that
+                    # day (client: seasonal attractions still planned in winter).
+                    if self._poi_out_of_season(replacement, ctx):
+                        continue
                     _day_hub = ctx.get("day_hub_city")
                     if _day_hub and not poi_matches_city_filter(replacement, _day_hub):
                         continue
@@ -2748,6 +2801,9 @@ class PlanService:
         for day_plan in days:
             _fitems = list(day_plan.items)
             _day_ctx = contexts[day_plan.day - 1] if day_plan.day - 1 < len(contexts) else context
+            # FIX #238: expose day_end so transit injection can bound its forward shift.
+            if _day_ctx.get("day_end") != day_end:
+                _day_ctx = {**_day_ctx, "day_end": day_end}
             _fitems = self._apply_fix237_day_pipeline(
                 _fitems,
                 _final_coord_map,
@@ -5542,6 +5598,31 @@ class PlanService:
         total_min = time_to_minutes(time_str) + minutes
         return minutes_to_time(total_min)
 
+    def _shift_items_from(self, items: List[Any], from_idx: int, delta: int) -> List[Any]:
+        """FIX #238: shift start/end of all items at index >= from_idx forward by delta min."""
+        if delta <= 0:
+            return items
+        out: List[Any] = []
+        for i, it in enumerate(items):
+            if (
+                i >= from_idx
+                and getattr(it, "start_time", None)
+                and getattr(it, "end_time", None)
+            ):
+                try:
+                    s = time_to_minutes(it.start_time) + delta
+                    e = time_to_minutes(it.end_time) + delta
+                    it = it.model_copy(
+                        update={
+                            "start_time": minutes_to_time(s),
+                            "end_time": minutes_to_time(e),
+                        }
+                    )
+                except Exception:
+                    pass
+            out.append(it)
+        return out
+
     def _ensure_transits_between_attractions(
         self,
         items: List[Any],
@@ -5586,31 +5667,67 @@ class PlanService:
             start_b = getattr(attr_b, "start_time", None)
             if not end_a or not start_b:
                 continue
-            gap_min = time_to_minutes(start_b) - time_to_minutes(end_a)
-            if gap_min < 3:
-                continue
+            end_a_min = time_to_minutes(end_a)
+            start_b_min = time_to_minutes(start_b)
+            gap_min = start_b_min - end_a_min
 
             from_d = {"lat": float(lat1), "lng": float(lng1)}
             to_d = {"lat": float(lat2), "lng": float(lng2)}
             ctx = {**context, "has_car": context.get("has_car", True)}
             try:
                 mode_str = get_transport_mode(from_d, to_d)
-                travel_min = travel_time_minutes(from_d, to_d, ctx)
+                ideal_min = travel_time_minutes(from_d, to_d, ctx)
             except Exception:
                 mode_str = "walking"
-                travel_min = max(5, int(dist_km * 15))
+                ideal_min = max(5, int(dist_km * 15))
 
             if dist_km < 1.0:
-                travel_min = max(5, min(gap_min, int(dist_km * 15)))
+                ideal_min = max(5, int(dist_km * 15))
                 mode = TransitMode.WALK
             else:
-                travel_min = max(5, min(gap_min, travel_min))
+                ideal_min = max(5, ideal_min)
                 mode = TransitMode.CAR if mode_str != "walking" else TransitMode.WALK
 
+            # FIX #238 (client feedback 22.07): an attraction must never end at the
+            # exact minute the next one (in a different location) starts. When the
+            # available gap is smaller than the real travel time, shift attr_b and
+            # everything after it forward — bounded by the day's remaining slack so
+            # we don't blow past day_end (the caller clamps/heals afterwards).
+            if gap_min < ideal_min:
+                deficit = ideal_min - max(gap_min, 0)
+                day_end_min = None
+                _de = context.get("day_end")
+                if _de:
+                    try:
+                        day_end_min = time_to_minutes(_de)
+                    except Exception:
+                        day_end_min = None
+                shift = deficit
+                if day_end_min is not None:
+                    last_end = max(
+                        (
+                            time_to_minutes(getattr(x, "end_time"))
+                            for x in result
+                            if getattr(x, "end_time", None)
+                        ),
+                        default=start_b_min,
+                    )
+                    avail = max(0, day_end_min - last_end)
+                    shift = min(deficit, avail)
+                    # Overlap / identical-time bug: force a minimal separation even
+                    # when no slack remains (small overflow is absorbed downstream).
+                    if shift <= 0 and gap_min <= 0:
+                        shift = min(deficit, 10)
+                if shift > 0:
+                    result = self._shift_items_from(result, idx_b, shift)
+                    start_b_min += shift
+                    gap_min = start_b_min - end_a_min
+
+            travel_min = max(3, min(gap_min, ideal_min)) if gap_min >= 3 else 0
             if travel_min < 3:
                 continue
 
-            start_min = time_to_minutes(end_a)
+            start_min = end_a_min
             transit = TransitItem(
                 type=ItemType.TRANSIT,
                 start_time=minutes_to_time(start_min),
@@ -5775,6 +5892,14 @@ class PlanService:
             for item in items:
                 if getattr(item, "poi_id", None):
                     global_used_pois.add(item.poi_id)
+        # FIX #238: final seasonal safety net — the afternoon top-up / preference
+        # swaps run AFTER the per-day season strip, so re-check here to guarantee no
+        # out-of-season attraction survives into the response (client feedback 22.07).
+        if all_pois_dict is not None:
+            _trip_date = context.get("date") or context.get("trip_date")
+            if _trip_date:
+                _poi_by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+                items = self._strip_out_of_season_attractions(items, _trip_date, _poi_by_id)
         items, _ = run_timeline_integrity_pass(items, day_num)
         return self._sort_items_by_time(items)
 
