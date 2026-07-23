@@ -513,18 +513,20 @@ class PlanService:
 
             route = get_travel_route(from_poi, to_poi, context)
             extras = route.to_transit_extras()
-            updated = transit_item.model_copy(update=extras)
-            # FIX #237: car legs must not stay on raw point-to-point haversine label alone.
-            if (
-                extras.get("routing_source") == "haversine"
-                and getattr(transit_item, "mode", None)
-                and str(getattr(transit_item, "mode", "")).lower() in ("car", "transitmode.car")
+            # FIX #239: never expose raw haversine on driving legs (client JSON audit).
+            if extras.get("routing_source") == "haversine" and (
+                (route.profile or "").startswith("driving")
+                or route.distance_km >= 1.2
             ):
-                prof = route.profile or ""
-                if "driving" in prof or route.distance_km > 1.2:
-                    extras = dict(extras)
-                    extras["routing_source"] = "estimated_road"
-                    updated = transit_item.model_copy(update=extras)
+                extras = dict(extras)
+                extras["routing_source"] = "estimated_road"
+            mode_str = str(getattr(transit_item, "mode", "") or "").lower()
+            if extras.get("routing_source") == "haversine" and (
+                "car" in mode_str or "public" in mode_str
+            ):
+                extras = dict(extras)
+                extras["routing_source"] = "estimated_road"
+            updated = transit_item.model_copy(update=extras)
             if extras.get("duration_min"):
                 dm = int(extras["duration_min"])
                 if dm > (getattr(transit_item, "duration_min", 0) or 0):
@@ -2793,10 +2795,12 @@ class PlanService:
         # POIs that are no longer in the timeline (client: "transit z nieistniejącego POI",
         # "transit do POI którego nie ma w planie"). Re-run the endpoint reconciliation here,
         # the final mutation, so every transit reflects its real neighbours.
-        _final_coord_map = {
-            p.get("name"): p for p in all_pois_dict
-            if p.get("name") and p.get("lat") and p.get("lng")
-        }
+        _final_coord_map: Dict[str, dict] = {}
+        for p in all_pois_dict:
+            name = p.get("name")
+            lat, lng = _poi_lat_lng(p)
+            if name and lat is not None and lng is not None:
+                _final_coord_map[name] = {**p, "lat": lat, "lng": lng}
         _finalized_days: List[DayPlan] = []
         for day_plan in days:
             _fitems = list(day_plan.items)
@@ -2816,6 +2820,10 @@ class PlanService:
             _fitems, _ = validate_and_heal_timeline(
                 _fitems, day_number=day_plan.day, raise_on_failure=False,
             )
+            _fitems = self._run_transit_routing_pass(
+                _fitems, _final_coord_map, _day_ctx, day_plan.day,
+            )
+            _fitems = self._apply_free_time_final_hygiene(_fitems, _day_ctx)
             _fitems = self._enforce_dinner_before_day_end(
                 _fitems, day_end, day_num=day_plan.day,
             )
@@ -5847,6 +5855,155 @@ class PlanService:
             out.append(it)
         return out
 
+    @staticmethod
+    def _merge_coord_map(poi_coords: Dict[str, dict], items: List[Any]) -> Dict[str, dict]:
+        coord_map: Dict[str, dict] = dict(poi_coords or {})
+        for it in items:
+            if _item_type_value(it) != ItemType.ATTRACTION.value:
+                continue
+            nm = getattr(it, "name", "") or ""
+            lat = getattr(it, "lat", None)
+            lng = getattr(it, "lng", None)
+            if nm and lat is not None and lng is not None:
+                existing = coord_map.get(nm) or {}
+                if _poi_lat_lng(existing)[0] is None:
+                    coord_map[nm] = {"lat": lat, "lng": lng, "name": nm}
+        return coord_map
+
+    def _normalize_transit_routing_item(
+        self,
+        it: Any,
+        coord_map: Dict[str, dict],
+        context: dict,
+    ) -> Any:
+        """FIX #239: guarantee routing_source + geometry on every transit leg."""
+        if _item_type_value(it) != ItemType.TRANSIT.value:
+            return it
+        mode_str = str(getattr(it, "mode", "") or "").lower()
+        is_walk = "walk" in mode_str
+        src = getattr(it, "routing_source", None)
+        if not src:
+            src = "estimated_walk" if is_walk else "estimated_road"
+            it = it.model_copy(update={"routing_source": src})
+        elif src == "haversine" and not is_walk:
+            it = it.model_copy(update={"routing_source": "estimated_road"})
+        if getattr(it, "geometry", None):
+            return it
+        frm = getattr(it, "from_location", "") or ""
+        to = getattr(it, "to_location", "") or ""
+        fp, tp = coord_map.get(frm), coord_map.get(to)
+        if fp and tp and _poi_lat_lng(fp)[0] is not None and _poi_lat_lng(tp)[0] is not None:
+            it = self._attach_route_metadata(it, fp, tp, context)
+        lat1, lng1 = _poi_lat_lng(fp or {})
+        lat2, lng2 = _poi_lat_lng(tp or {})
+        if not getattr(it, "geometry", None) and lat1 is not None and lat2 is not None:
+            geom = [[float(lng1), float(lat1)], [float(lng2), float(lat2)]]
+            gll = [[float(lat1), float(lng1)], [float(lat2), float(lng2)]]
+            it = it.model_copy(
+                update={
+                    "geometry": geom,
+                    "geometry_latlng": gll,
+                    "routing_source": getattr(it, "routing_source") or "estimated_road",
+                }
+            )
+        return it
+
+    def _run_transit_routing_pass(
+        self,
+        items: List[Any],
+        poi_coords: Dict[str, dict],
+        context: Dict[str, Any],
+        day_num: int,
+    ) -> List[Any]:
+        """FIX #239: transit legs + routing metadata (re-runnable after timeline heal)."""
+        from app.application.services.plan_day_integrity import assert_transit_endpoints_match_pois
+
+        coord_map = self._merge_coord_map(poi_coords, items)
+        items = self._sort_items_by_time(items)
+        items = self._ensure_transits_between_attractions(items, coord_map, context)
+        items = self._update_transit_destinations(items, coord_map)
+        items = self._collapse_duplicate_transits(items)
+        items = assert_transit_endpoints_match_pois(items, coord_map, day_num)
+        items = self._enrich_transits_with_routing(items, coord_map, context)
+        out = []
+        for it in items:
+            out.append(self._normalize_transit_routing_item(it, coord_map, context))
+        return self._sort_items_by_time(out)
+
+    def _strip_inter_attraction_free_time(self, items: List[Any], *, max_min: int = 35) -> List[Any]:
+        """Remove large free_time blocks sandwiched between attractions (client: 1.5h holes)."""
+        attr_idx = [i for i, it in enumerate(items) if _is_timeline_attraction(it)]
+        if len(attr_idx) < 2:
+            return items
+        drop = set()
+        for k in range(len(attr_idx) - 1):
+            lo, hi = attr_idx[k], attr_idx[k + 1]
+            for j in range(lo + 1, hi):
+                if getattr(items[j], "type", None) != ItemType.FREE_TIME:
+                    continue
+                dur = int(getattr(items[j], "duration_min", 0) or 0)
+                if dur > max_min:
+                    drop.add(j)
+        if not drop:
+            return items
+        return [it for i, it in enumerate(items) if i not in drop]
+
+    def _collapse_excessive_timeline_slack(
+        self, items: List[Any], *, max_slack_min: int = 25
+    ) -> List[Any]:
+        """FIX #239: pull later items earlier when timeline has large holes."""
+        if not items:
+            return items
+        working = list(items)
+        for _pass in range(8):
+            working = self._sort_items_by_time(working)
+            shifted = False
+            for i in range(len(working) - 1):
+                cur, nxt = working[i], working[i + 1]
+                if not getattr(cur, "end_time", None) or not getattr(nxt, "start_time", None):
+                    continue
+                gap = time_to_minutes(nxt.start_time) - time_to_minutes(cur.end_time)
+                if gap <= max_slack_min:
+                    continue
+                delta = gap - max_slack_min
+                for j in range(i + 1, len(working)):
+                    it = working[j]
+                    if not getattr(it, "start_time", None) or not getattr(it, "end_time", None):
+                        continue
+                    s = time_to_minutes(it.start_time) - delta
+                    e = time_to_minutes(it.end_time) - delta
+                    floor = time_to_minutes(cur.end_time)
+                    if s < floor:
+                        dur = int(getattr(it, "duration_min", 0) or (e - s))
+                        s = floor
+                        e = s + max(dur, 5)
+                    try:
+                        working[j] = it.model_copy(
+                            update={
+                                "start_time": minutes_to_time(s),
+                                "end_time": minutes_to_time(e),
+                            }
+                        )
+                    except Exception:
+                        pass
+                shifted = True
+                break
+            if not shifted:
+                break
+        return self._sort_items_by_time(working)
+
+    def _apply_free_time_final_hygiene(self, items: List[Any], context: Dict[str, Any]) -> List[Any]:
+        """FIX #239: re-apply caps after final pipeline mutations."""
+        cap = _max_merged_free_time_cap(context)
+        max_total = 12 if _is_urban_trip(context) else 25
+        items = self._strip_inter_attraction_free_time(items, max_min=max(20, cap))
+        items = _strip_leading_free_time(items)
+        items = _trim_long_free_time_blocks(items, max_min=cap)
+        items = _strip_trailing_free_time(items, max_min=cap)
+        items = _cap_total_day_free_time(items, max_total=max_total)
+        items = self._collapse_excessive_timeline_slack(items, max_slack_min=25)
+        return items
+
     def _apply_fix237_day_pipeline(
         self,
         items: List[Any],
@@ -5858,9 +6015,8 @@ class PlanService:
         user: Optional[Dict[str, Any]] = None,
         global_used_pois: Optional[set] = None,
     ) -> List[Any]:
-        """FIX #237: unified day finalize — timeline, transit, meals, afternoon fill."""
+        """FIX #237/#239: unified day finalize — timeline, transit, meals, afternoon fill."""
         from app.application.services.plan_day_integrity import (
-            assert_transit_endpoints_match_pois,
             ensure_meal_suggestions,
             run_timeline_integrity_pass,
         )
@@ -5868,11 +6024,7 @@ class PlanService:
         items = self._sort_items_by_time(items)
         items, _ = run_timeline_integrity_pass(items, day_num)
         items = self._remove_timeline_overlaps(items, day_num)
-        items = self._ensure_transits_between_attractions(items, poi_coords, context)
-        items = self._update_transit_destinations(items, poi_coords)
-        items = self._collapse_duplicate_transits(items)
-        items = assert_transit_endpoints_match_pois(items, poi_coords, day_num)
-        items = self._enrich_transits_with_routing(items, poi_coords, context)
+        items = self._run_transit_routing_pass(items, poi_coords, context, day_num)
         items = ensure_meal_suggestions(
             items,
             poi_coords,
@@ -5892,14 +6044,15 @@ class PlanService:
             for item in items:
                 if getattr(item, "poi_id", None):
                     global_used_pois.add(item.poi_id)
-        # FIX #238: final seasonal safety net — the afternoon top-up / preference
-        # swaps run AFTER the per-day season strip, so re-check here to guarantee no
-        # out-of-season attraction survives into the response (client feedback 22.07).
+            items = self._strip_inter_attraction_free_time(items)
         if all_pois_dict is not None:
             _trip_date = context.get("date") or context.get("trip_date")
             if _trip_date:
                 _poi_by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
                 items = self._strip_out_of_season_attractions(items, _trip_date, _poi_by_id)
+        items, _ = run_timeline_integrity_pass(items, day_num)
+        items = self._run_transit_routing_pass(items, poi_coords, context, day_num)
+        items = self._apply_free_time_final_hygiene(items, context)
         items, _ = run_timeline_integrity_pass(items, day_num)
         return self._sort_items_by_time(items)
 
