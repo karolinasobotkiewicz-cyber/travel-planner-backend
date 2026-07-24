@@ -131,6 +131,31 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     )):
         return True
 
+    # FIX #240 Wrocław family_kids — Dworzec Świebodzki, Browar (wieczorny)
+    if tg == "family_kids" and any(k in name for k in (
+        "dworzec świebodzki", "dworzec swiebodzki",
+        "browar stu mostów", "browar stu mostow",
+    )):
+        return True
+
+    # FIX #240 Wrocław — Hala Targowa nie pasuje do active_sport + history_mystery
+    if "hala targowa" in name and {"active_sport", "history_mystery"} <= prefs:
+        return True
+
+    # FIX #240 — Dworzec Świebodzki poza profilami heritage/history
+    if any(k in name for k in ("dworzec świebodzki", "dworzec swiebodzki")):
+        if tg == "family_kids":
+            return True
+        if not ({"museum_heritage", "history_mystery"} & prefs):
+            return True
+
+    # FIX #240 Wrocław — family_kids + relaxation: Wystawa Pająków off
+    if tg == "family_kids" and "relaxation" in prefs:
+        if any(k in name for k in ("pająk", "pajak", "spider", "wystawa pająk")):
+            return True
+
+    # FIX #240 — Fontanna Multimedialna zimą (sezonowość też w filter_by_season)
+
     # FIX #234 Warszawa family_kids — Zamek Ujazdowski
     if tg == "family_kids" and any(k in name for k in (
         "zamek ujazdowski", "ujazdowski",
@@ -467,9 +492,49 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
         )):
             delta -= 95.0
 
-    # FIX #234 Wrocław — Dworzec Świebodzki extra demote; family kids boosts
+    # FIX #240 Wrocław — family_kids + relaxation: demote spider exhibit
+    if tg == "family_kids" and "relaxation" in prefs:
+        if any(k in name for k in ("pająk", "pajak", "spider", "wystawa pająk")):
+            delta -= 100.0
+
+    # FIX #240 Wrocław — Dworzec Świebodzki extra demote (ranking bazowy za wysoki)
     if any(k in name for k in ("dworzec świebodzki", "dworzec swiebodzki")):
+        delta -= 120.0
+
+    # FIX #240 Wrocław — Muzeum Motoryzacji Topacz bez dopasowanych preferencji
+    if "motoryzacji" in name and "topacz" in name:
+        if not ({"museum_heritage", "history_mystery"} & prefs):
+            delta -= 90.0
+
+    # FIX #240 Wrocław — Pigcasso słaby przy nature + museum (json8)
+    if "pigcasso" in name and "nature_landscape" in prefs:
+        delta -= 85.0
+
+    # FIX #240 Wrocław — seniors + relax: max różnorodność, demote kolejne muzeum
+    if tg == "seniors" and (style == "relax" or "relaxation" in prefs):
+        _day_mus = int(ctx.get("day_museum_count") or 0)
+        if "muzeum" in name and _day_mus >= 1:
+            delta -= 95.0
+        if any(k in name for k in (
+            "park szczytnicki", "pergola", "bulwar", "wyspa słodowa", "wyspa slodowa",
+            "ogród japoński", "ogrod japonski", "lasek", "las strzeli",
+        )):
+            delta += 90.0
+
+    # FIX #240 Wrocław — dzień 1 bez dalekiego Arboretum Wojsławice (json9)
+    if day == 1 and any(k in name for k in ("arboretum wojsławice", "arboretum wojslawice", "wojsławice")):
         delta -= 100.0
+        if num_days >= 5:
+            delta -= 50.0
+
+    # FIX #240 Wrocław — nature + relaxation: więcej terenów zielonych
+    if nat_relax and any(k in name for k in (
+        "park szczytnicki", "pergola", "bulwar", "wyspa słodowa", "wyspa slodowa",
+        "ogród japoński", "ogrod japonski", "lasek", "las strzeli", "rędziński",
+        "redzinski", "odra", "zoo",
+    )):
+        delta += 70.0
+
     if tg == "family_kids" and any(k in name for k in (
         "hydropolis", "kolejkowo", "pixel xl", "pixel",
     )):

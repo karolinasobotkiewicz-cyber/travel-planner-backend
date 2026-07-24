@@ -44,4 +44,5 @@ def test_collapse_timeline_slack_before_dinner():
     ]
     out = svc._collapse_excessive_timeline_slack(items, max_slack_min=25)
     dinner = out[1]
-    assert time_to_minutes(dinner.start_time) <= time_to_minutes("15:30")
+    # FIX #240: kolacja nie jest przesuwana wcześniej
+    assert time_to_minutes(dinner.start_time) == time_to_minutes("17:30")

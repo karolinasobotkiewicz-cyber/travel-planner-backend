@@ -125,6 +125,15 @@ def audit_large_idle_gaps(items: Sequence[Any], *, max_gap_min: int = 90) -> Lis
         gap = time_min(nxt.start_time) - time_min(cur.end_time)
         if gap <= max_gap_min:
             continue
+        # FIX #240: bufor przed kolacją po 17:30 jest akceptowalny do 150–240 min
+        if _type_val(nxt) == ItemType.DINNER_BREAK.value:
+            _dinner_ok = time_min(nxt.start_time) >= 17 * 60 + 30
+            _buf = 240 if _dinner_ok else 150
+            if _dinner_ok and gap <= _buf:
+                continue
+        # FIX #240: lunch buffer do 120 min
+        if _type_val(nxt) == ItemType.LUNCH_BREAK.value and gap <= 120:
+            continue
         if _type_val(cur) == ItemType.FREE_TIME.value or _type_val(nxt) == ItemType.FREE_TIME.value:
             issues.append(f"idle gap {gap}min around free_time")
         elif _type_val(cur) == ItemType.ATTRACTION.value and _type_val(nxt) == ItemType.ATTRACTION.value:
@@ -133,7 +142,12 @@ def audit_large_idle_gaps(items: Sequence[Any], *, max_gap_min: int = 90) -> Lis
             ItemType.DINNER_BREAK.value,
             ItemType.LUNCH_BREAK.value,
         ):
-            issues.append(f"idle gap {gap}min before meal")
+            if not (
+                _type_val(nxt) == ItemType.DINNER_BREAK.value
+                and time_min(nxt.start_time) >= 17 * 60 + 30
+                and gap <= 240
+            ):
+                issues.append(f"idle gap {gap}min before meal")
     return issues
 
 

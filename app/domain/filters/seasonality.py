@@ -71,6 +71,9 @@ def filter_by_season(pois, current_date):
                 "kajak", "kajaki", "żaglówk", "zaglówk",
                 # FIX #222/#234: pontoon / river rides closed in winter.
                 "ponton", "spływ", "splyw", "złotniki", "zlotniki", "flisack",
+                # FIX #240 Wrocław: fontanna multimedialna + arboretum sezonowe
+                "fontanna multimedialna", "fontanna multimedial",
+                "arboretum wojsławice", "arboretum wojslawice",
             )
         ):
             continue

@@ -2824,6 +2824,22 @@ class PlanService:
                 _fitems, _final_coord_map, _day_ctx, day_plan.day,
             )
             _fitems = self._apply_free_time_final_hygiene(_fitems, _day_ctx)
+            _fitems = self._enforce_minimum_dinner_time(
+                _fitems, day_end, day_num=day_plan.day,
+            )
+            _fitems = self._fill_post_dinner_shift_gaps(
+                _fitems,
+                all_pois_dict,
+                _day_ctx,
+                user,
+                global_used_pois,
+                day_num=day_plan.day,
+                poi_coords=_final_coord_map,
+            )
+            _fitems = self._enforce_minimum_dinner_time(
+                _fitems, day_end, day_num=day_plan.day,
+            )
+            _fitems = self._apply_free_time_final_hygiene(_fitems, _day_ctx)
             _fitems = self._enforce_dinner_before_day_end(
                 _fitems, day_end, day_num=day_plan.day,
             )
@@ -4334,7 +4350,13 @@ class PlanService:
                             if daily_park_count_gf >= 2 and is_park_or_green_space_poi(poi):
                                 continue
                             if is_evening_only_poi(poi) and current_end < 17 * 60:
-                                continue
+                                if not (
+                                    context.get("pre_dinner_fill")
+                                    and next_start
+                                    and next_start >= 17 * 60 + 30
+                                    and next_start - max(current_end, 17 * 60) >= 45
+                                ):
+                                    continue
                             if _daily_limit_gf:
                                 _poi_cost = calculate_poi_cost_for_group(poi, user)
                                 if _poi_cost > _daily_limit_gf or _daily_cost_gf + _poi_cost > _daily_limit_gf:
@@ -4400,6 +4422,11 @@ class PlanService:
                             if should_exclude_by_intensity(poi, user):
                                 continue  # EXCLUDE - intensity conflict
 
+                            # FIX #240: profile deny rules (Dworzec, Hala Targowa, etc.)
+                            from app.domain.scoring.profile_poi_rules import should_deny_poi_for_profile
+                            if should_deny_poi_for_profile(poi, user):
+                                continue
+
                             # FIX #222: budget hard filter in gap-fill (Bungee > daily_limit).
                             from app.domain.planner.engine import calculate_poi_cost_for_group
                             _dl222 = user.get("daily_limit")
@@ -4440,17 +4467,25 @@ class PlanService:
                             
                             # Check if POI fits in gap (travel + duration)
                             poi_duration = poi.get('time_min', 30)
+                            _slot_start = current_end
+                            if is_evening_only_poi(poi) and _slot_start < 17 * 60:
+                                _slot_start = 17 * 60
+                            _effective_gap = (
+                                (next_start - _slot_start) if next_start else gap
+                            )
                             _max_dur = (
                                 125 if (_f187_last_day_ps and gap > 120)
-                                else (min(gap - 15, 120) if _f195_pass else poi_duration)
+                                else (min(_effective_gap - 15, 120) if _f195_pass else poi_duration)
                             )
-                            if travel + min(poi_duration, _max_dur) > gap:
+                            if travel + min(poi_duration, _max_dur) > _effective_gap:
                                 continue  # Too long
                             if _f187_last_day_ps and gap > 120:
-                                poi_duration = min(poi_duration, gap - travel, 125)
+                                poi_duration = min(poi_duration, _effective_gap - travel, 125)
                             
                             # Check if POI is open at this time
-                            poi_start = current_end + travel
+                            poi_start = _slot_start + travel
+                            if next_start and poi_start + poi_duration > next_start:
+                                continue
                             poi_start_str = minutes_to_time(int(poi_start))
                             
                             # Ensure context has 'date' field before calling is_open
@@ -5887,6 +5922,8 @@ class PlanService:
             it = it.model_copy(update={"routing_source": src})
         elif src == "haversine" and not is_walk:
             it = it.model_copy(update={"routing_source": "estimated_road"})
+        elif src == "haversine" and is_walk:
+            it = it.model_copy(update={"routing_source": "estimated_walk"})
         if getattr(it, "geometry", None):
             return it
         frm = getattr(it, "from_location", "") or ""
@@ -5927,8 +5964,264 @@ class PlanService:
         items = self._enrich_transits_with_routing(items, coord_map, context)
         out = []
         for it in items:
-            out.append(self._normalize_transit_routing_item(it, coord_map, context))
+            fixed = self._normalize_transit_routing_item(it, coord_map, context)
+            out.append(self._fix_implausible_transit_duration(fixed, coord_map, context))
         return self._sort_items_by_time(out)
+
+    def _fix_implausible_transit_duration(
+        self,
+        it: Any,
+        coord_map: Dict[str, dict],
+        context: dict,
+    ) -> Any:
+        """FIX #240: 46 km in 5 min — recompute from real coords."""
+        if _item_type_value(it) != ItemType.TRANSIT.value:
+            return it
+        frm = getattr(it, "from_location", "") or ""
+        to = getattr(it, "to_location", "") or ""
+        fp, tp = coord_map.get(frm), coord_map.get(to)
+        if not fp or not tp:
+            return it
+        lat1, lng1 = _poi_lat_lng(fp)
+        lat2, lng2 = _poi_lat_lng(tp)
+        if lat1 is None or lat2 is None:
+            return it
+        dist = haversine_distance(float(lat1), float(lng1), float(lat2), float(lng2))
+        cur = int(getattr(it, "duration_min", 0) or 0)
+        if dist < 8:
+            return it
+        min_plausible = max(10, int(dist / 50 * 60 + 5))
+        if cur >= min_plausible:
+            return it
+        ctx = {**context, "has_car": context.get("has_car", True)}
+        try:
+            new_dur = travel_time_minutes(
+                {"lat": float(lat1), "lng": float(lng1)},
+                {"lat": float(lat2), "lng": float(lng2)},
+                ctx,
+            )
+            new_dur = max(new_dur, min_plausible)
+            st = time_to_minutes(getattr(it, "start_time", "09:00"))
+            return it.model_copy(
+                update={
+                    "duration_min": new_dur,
+                    "end_time": minutes_to_time(st + new_dur),
+                }
+            )
+        except Exception:
+            return it
+
+    def _strip_misscheduled_evening_attractions(
+        self,
+        items: List[Any],
+        all_pois_dict: Optional[List[Dict[str, Any]]],
+        day_num: int = 1,
+    ) -> List[Any]:
+        """FIX #240: Neon Side / Browar / Fontanna nie mogą być rano."""
+        from app.domain.planner.engine import is_evening_only_poi
+
+        if not all_pois_dict:
+            return items
+        by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+        by_name = {p.get("name"): p for p in all_pois_dict if p.get("name")}
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            poi = by_id.get(getattr(it, "poi_id", "")) or by_name.get(getattr(it, "name", ""), {})
+            if is_evening_only_poi(poi) or is_evening_only_poi({"name": getattr(it, "name", "")}):
+                st = getattr(it, "start_time", None)
+                if st and time_to_minutes(st) < 17 * 60:
+                    print(
+                        f"[FIX #240] Day {day_num}: stripped morning evening-only "
+                        f"{getattr(it, 'name', '?')}"
+                    )
+                    continue
+            out.append(it)
+        return out
+
+    def _enforce_minimum_dinner_time(
+        self,
+        items: List[Any],
+        day_end: str,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #240: kolacja nie wcześniej niż 17:00 (okno do 20:00 → od 18:00)."""
+        day_end_min = time_to_minutes(day_end)
+        if day_end_min >= 20 * 60:
+            min_dinner = 18 * 60
+        elif day_end_min >= 19 * 60:
+            min_dinner = 17 * 60 + 30
+        else:
+            min_dinner = 17 * 60
+        out: List[Any] = []
+        for it in items:
+            if getattr(it, "type", None) != ItemType.DINNER_BREAK:
+                out.append(it)
+                continue
+            st = getattr(it, "start_time", None)
+            en = getattr(it, "end_time", None)
+            if not st or not en:
+                out.append(it)
+                continue
+            st_min = time_to_minutes(st)
+            if st_min >= min_dinner:
+                out.append(it)
+                continue
+            dur = int(getattr(it, "duration_min", 0) or (time_to_minutes(en) - st_min))
+            new_st = min_dinner
+            new_en = min(new_st + dur, day_end_min)
+            if new_en - new_st < 30:
+                print(f"[FIX #240] Day {day_num}: dropped too-early dinner ({st})")
+                continue
+            try:
+                out.append(it.model_copy(update={
+                    "start_time": minutes_to_time(new_st),
+                    "end_time": minutes_to_time(new_en),
+                    "duration_min": new_en - new_st,
+                }))
+            except Exception:
+                out.append(it)
+            print(f"[FIX #240] Day {day_num}: pushed dinner {st} → {minutes_to_time(new_st)}")
+        return out
+
+    def _strip_profile_denied_attractions(
+        self,
+        items: List[Any],
+        user: Dict[str, Any],
+        all_pois_dict: List[Dict[str, Any]],
+        day_num: int = 1,
+    ) -> List[Any]:
+        """FIX #240: safety net — remove attractions blocked by profile rules."""
+        from app.domain.scoring.profile_poi_rules import should_deny_poi_for_profile
+
+        by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+        by_name = {p.get("name"): p for p in all_pois_dict if p.get("name")}
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            poi = by_id.get(getattr(it, "poi_id", "")) or by_name.get(
+                getattr(it, "name", ""), {"name": getattr(it, "name", ""), "tags": []}
+            )
+            if should_deny_poi_for_profile(poi, user):
+                print(
+                    f"[FIX #240] Day {day_num}: stripped profile-denied "
+                    f"{getattr(it, 'name', '?')}"
+                )
+                continue
+            out.append(it)
+        return out
+
+    def _strip_orphan_free_time_with_large_gaps(
+        self, items: List[Any], *, min_gap_min: int = 90
+    ) -> List[Any]:
+        """FIX #240: drop free_time sitting after a large idle hole (client json8/9)."""
+        timed = [
+            it for it in items
+            if getattr(it, "start_time", None) and getattr(it, "end_time", None)
+        ]
+        timed.sort(key=lambda x: time_to_minutes(x.start_time))
+        drop: set = set()
+        for idx, it in enumerate(items):
+            if getattr(it, "type", None) != ItemType.FREE_TIME:
+                continue
+            st = getattr(it, "start_time", None)
+            if not st:
+                continue
+            prev_end = 0
+            for other in timed:
+                if other is it:
+                    break
+                prev_end = max(prev_end, time_to_minutes(other.end_time))
+            if time_to_minutes(st) - prev_end >= min_gap_min:
+                drop.add(idx)
+        if not drop:
+            return items
+        return [it for i, it in enumerate(items) if i not in drop]
+
+    def _fill_post_dinner_shift_gaps(
+        self,
+        items: List[Any],
+        all_pois_dict: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        user: Dict[str, Any],
+        global_used_pois: set,
+        *,
+        day_num: int,
+        poi_coords: Dict[str, Any],
+    ) -> List[Any]:
+        """FIX #240: fill afternoon hole created when dinner is pushed to 17:30+."""
+        _last_end = 0
+        _dinner_start = None
+        for it in items:
+            t = _item_type_value(it)
+            if t in (ItemType.DAY_END.value, ItemType.FREE_TIME.value):
+                continue
+            if getattr(it, "end_time", None):
+                _last_end = max(_last_end, time_to_minutes(it.end_time))
+            if getattr(it, "type", None) == ItemType.DINNER_BREAK:
+                st = getattr(it, "start_time", None)
+                if st:
+                    _dinner_start = time_to_minutes(st)
+        if not _dinner_start or _dinner_start - _last_end < 90:
+            return items
+        items = self._strip_misscheduled_evening_attractions(
+            items, all_pois_dict, day_num,
+        )
+        items = self._strip_profile_denied_attractions(
+            items, user, all_pois_dict, day_num,
+        )
+        items = self._fill_gaps_in_items(
+            items,
+            all_pois_dict,
+            {
+                **context,
+                "afternoon_topup_pass": True,
+                "pre_dinner_fill": True,
+                "post_dinner_shift": True,
+            },
+            user,
+            global_used_pois,
+            all_pois_lookup=all_pois_dict,
+            cross_day_reuse=True,
+        )
+        items = self._strip_misscheduled_evening_attractions(
+            items, all_pois_dict, day_num,
+        )
+        items = self._strip_profile_denied_attractions(
+            items, user, all_pois_dict, day_num,
+        )
+        if _dinner_start - _last_end >= 90:
+            items = self._fill_gaps_in_items(
+                items,
+                all_pois_dict,
+                {
+                    **context,
+                    "afternoon_topup_pass": True,
+                    "pre_dinner_fill": True,
+                    "post_dinner_shift": True,
+                    "post_evening_strip_refill": True,
+                },
+                user,
+                global_used_pois,
+                all_pois_lookup=all_pois_dict,
+                cross_day_reuse=True,
+            )
+        items = self._afternoon_topup_items(
+            items,
+            all_pois_dict,
+            {**context, "afternoon_topup_pass": True, "post_dinner_shift": True},
+            user,
+            global_used_pois,
+            all_pois_lookup=all_pois_dict,
+            cross_day_reuse=True,
+        )
+        items = self._run_transit_routing_pass(items, poi_coords, context, day_num)
+        return self._sort_items_by_time(items)
 
     def _strip_inter_attraction_free_time(self, items: List[Any], *, max_min: int = 35) -> List[Any]:
         """Remove large free_time blocks sandwiched between attractions (client: 1.5h holes)."""
@@ -5952,6 +6245,8 @@ class PlanService:
         self, items: List[Any], *, max_slack_min: int = 25
     ) -> List[Any]:
         """FIX #239: pull later items earlier when timeline has large holes."""
+        from app.domain.planner.engine import is_evening_only_poi
+
         if not items:
             return items
         working = list(items)
@@ -5965,10 +6260,21 @@ class PlanService:
                 gap = time_to_minutes(nxt.start_time) - time_to_minutes(cur.end_time)
                 if gap <= max_slack_min:
                     continue
+                # FIX #240: nie przesuwaj kolacji/obiadu wcześniej — tylko atrakcje/free_time
+                if _item_type_value(nxt) in (
+                    ItemType.DINNER_BREAK.value,
+                    ItemType.LUNCH_BREAK.value,
+                ):
+                    continue
                 delta = gap - max_slack_min
                 for j in range(i + 1, len(working)):
                     it = working[j]
                     if not getattr(it, "start_time", None) or not getattr(it, "end_time", None):
+                        continue
+                    # FIX #240: nie przesuwaj atrakcji wieczornych przed 17:00
+                    if _is_timeline_attraction(it) and is_evening_only_poi(
+                        {"name": getattr(it, "name", "")}
+                    ):
                         continue
                     s = time_to_minutes(it.start_time) - delta
                     e = time_to_minutes(it.end_time) - delta
@@ -5977,6 +6283,10 @@ class PlanService:
                         dur = int(getattr(it, "duration_min", 0) or (e - s))
                         s = floor
                         e = s + max(dur, 5)
+                    if _is_timeline_attraction(it) and is_evening_only_poi(
+                        {"name": getattr(it, "name", "")}
+                    ) and s < 17 * 60:
+                        continue
                     try:
                         working[j] = it.model_copy(
                             update={
@@ -5996,6 +6306,7 @@ class PlanService:
         """FIX #239: re-apply caps after final pipeline mutations."""
         cap = _max_merged_free_time_cap(context)
         max_total = 12 if _is_urban_trip(context) else 25
+        items = self._strip_orphan_free_time_with_large_gaps(items, min_gap_min=90)
         items = self._strip_inter_attraction_free_time(items, max_min=max(20, cap))
         items = _strip_leading_free_time(items)
         items = _trim_long_free_time_blocks(items, max_min=cap)
@@ -6050,6 +6361,60 @@ class PlanService:
             if _trip_date:
                 _poi_by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
                 items = self._strip_out_of_season_attractions(items, _trip_date, _poi_by_id)
+        items = self._strip_misscheduled_evening_attractions(
+            items, all_pois_dict, day_num,
+        )
+        if user is not None:
+            items = self._strip_profile_denied_attractions(
+                items, user, all_pois_dict or [], day_num,
+            )
+        if all_pois_dict is not None and user is not None and global_used_pois is not None:
+            _n_attr = sum(1 for it in items if _is_timeline_attraction(it))
+            if _n_attr < 2:
+                items = self._fill_gaps_in_items(
+                    items,
+                    all_pois_dict,
+                    {**context, "final_sparse_day_pass": True},
+                    user,
+                    global_used_pois,
+                    all_pois_lookup=all_pois_dict,
+                    cross_day_reuse=True,
+                )
+            elif _n_attr >= 1:
+                _last_end = 0
+                _dinner_start = None
+                for it in items:
+                    if getattr(it, "end_time", None):
+                        _last_end = max(_last_end, time_to_minutes(it.end_time))
+                    if getattr(it, "type", None) == ItemType.DINNER_BREAK:
+                        st = getattr(it, "start_time", None)
+                        if st:
+                            _dinner_start = time_to_minutes(st)
+                _de = context.get("day_end")
+                _need_fill = False
+                if _de and time_to_minutes(_de) - _last_end >= 90:
+                    _need_fill = True
+                if _dinner_start and _dinner_start - _last_end >= 90:
+                    _need_fill = True
+                if _need_fill:
+                    items = self._fill_gaps_in_items(
+                        items,
+                        all_pois_dict,
+                        {**context, "afternoon_topup_pass": True, "pre_dinner_fill": True},
+                        user,
+                        global_used_pois,
+                        all_pois_lookup=all_pois_dict,
+                        cross_day_reuse=True,
+                    )
+                    items = self._afternoon_topup_items(
+                        items,
+                        all_pois_dict,
+                        {**context, "afternoon_topup_pass": True},
+                        user,
+                        global_used_pois,
+                        all_pois_lookup=all_pois_dict,
+                        cross_day_reuse=True,
+                    )
         items, _ = run_timeline_integrity_pass(items, day_num)
         items = self._run_transit_routing_pass(items, poi_coords, context, day_num)
         items = self._apply_free_time_final_hygiene(items, context)

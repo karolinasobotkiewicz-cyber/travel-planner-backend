@@ -1125,6 +1125,12 @@ def is_evening_only_poi(poi: dict) -> bool:
     name = str(poi.get("name", "")).lower()
     if "neon" in name and ("galeria" in name or "neon side" in name):
         return True
+    # FIX #240 Wrocław: browar wieczorny, fontanna multimedialna (pokazy)
+    if any(k in name for k in (
+        "browar stu mostów", "browar stu mostow",
+        "fontanna multimedialna", "fontanna multimedial",
+    )):
+        return True
     return False
 
 
@@ -1461,6 +1467,11 @@ def get_transport_mode(a, b, context=None):
     _walk_thresh = (
         CITY_TOURISM_WALK_THRESHOLD_KM if _city_trip else _walk_threshold(a, b)
     )
+    # FIX #240: user explicitly chose car — prefer driving for >=600 m (family/tired legs)
+    _modes = context.get("transport_modes") if context else None
+    if context and context.get("has_car", True) and _modes and "car" in _modes:
+        if distance_km >= 0.6:
+            return "car"
     return "walking" if distance_km < _walk_thresh else "car"
 
 
