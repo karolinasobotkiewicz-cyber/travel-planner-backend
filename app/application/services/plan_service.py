@@ -425,11 +425,40 @@ def _is_generic_meal_suggestion(sug: RestaurantSuggestion) -> bool:
     return lat == 0.0 and lng == 0.0 and sid.startswith("generic_")
 
 
+_NON_LOCAL_MEAL_CUISINES = frozenset({
+    "american", "burgers", "street_food", "fast_food", "italian", "asian",
+})
+_NON_LOCAL_MEAL_NAME_HINTS = (
+    "forno", "pizza", "włosk", "wlosk", "italian", "burger", "kebab",
+)
+
+
+def _meal_pref_str(x: Any) -> str:
+    return str(x).strip().lower() if x is not None else ""
+
+
 def _filter_meal_suggestions(
     suggestions: List[RestaurantSuggestion],
+    *,
+    preferences: Optional[List[str]] = None,
 ) -> List[RestaurantSuggestion]:
-    """FIX #234: strip placeholder meal names from API output."""
-    return [s for s in (suggestions or []) if not _is_generic_meal_suggestion(s)]
+    """FIX #234/#242: strip placeholders; prefer regional cuisine when requested."""
+    out: List[RestaurantSuggestion] = []
+    prefs = {_meal_pref_str(p) for p in (preferences or []) if p}
+    want_local = "local_food_experience" in prefs
+    for s in (suggestions or []):
+        if _is_generic_meal_suggestion(s):
+            continue
+        if want_local:
+            cuisine = _meal_pref_str(getattr(s, "cuisine_type", "") or "")
+            cuisines = {c.strip().lower() for c in cuisine.split(",") if c.strip()}
+            name = _meal_pref_str(getattr(s, "name", "") or "")
+            if cuisines & _NON_LOCAL_MEAL_CUISINES:
+                continue
+            if any(h in name for h in _NON_LOCAL_MEAL_NAME_HINTS):
+                continue
+        out.append(s)
+    return out
 
 
 # FIX (01.07.2026 - front feedback): plan musi zwracać miasto, daty i nazwę.
@@ -3112,7 +3141,8 @@ class PlanService:
                     end_time=lunch_end,
                     duration_min=lunch_duration,
                     suggestions=_filter_meal_suggestions(
-                        _parse_meal_suggestions(item.get("suggestions", []), "lunch")
+                        _parse_meal_suggestions(item.get("suggestions", []), "lunch"),
+                        preferences=list(trip_input.preferences or []),
                     ),
                     location_context=item.get("location_context"),
                 )
@@ -3136,7 +3166,8 @@ class PlanService:
                     end_time=_dinner_end,
                     duration_min=_dinner_dur,
                     suggestions=_filter_meal_suggestions(
-                        _parse_meal_suggestions(item.get("suggestions", []), "dinner")
+                        _parse_meal_suggestions(item.get("suggestions", []), "dinner"),
+                        preferences=list(trip_input.preferences or []),
                     ),
                 )
                 items.append(dinner_item)
@@ -6470,12 +6501,15 @@ class PlanService:
         items, _ = run_timeline_integrity_pass(items, day_num)
         items = self._remove_timeline_overlaps(items, day_num)
         items = self._run_transit_routing_pass(items, poi_coords, context, day_num)
+        _meal_prefs = list(context.get("preferences") or (user or {}).get("preferences") or [])
         items = ensure_meal_suggestions(
             items,
             poi_coords,
             context,
             parse_suggestion_fn=_restaurant_dict_to_suggestion,
-            filter_fn=_filter_meal_suggestions,
+            filter_fn=lambda sugs: _filter_meal_suggestions(
+                sugs, preferences=_meal_prefs,
+            ),
         )
         if all_pois_dict is not None and user is not None and global_used_pois is not None:
             items = self._afternoon_topup_items(

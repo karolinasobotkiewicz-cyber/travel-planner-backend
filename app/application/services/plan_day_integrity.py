@@ -134,9 +134,19 @@ def ensure_meal_suggestions(
             continue
         meal_type = meal_types[t]
         raw_sug = getattr(it, "suggestions", None) or []
-        filtered = filter_fn(raw_sug) if raw_sug else []
-        if filtered:
+        parsed = [
+            s if hasattr(s, "name") else parse_suggestion_fn(s, meal_type)
+            for s in raw_sug
+        ] if raw_sug else []
+        filtered = filter_fn(parsed) if parsed else []
+        if filtered and len(filtered) == len(parsed):
             out.append(it)
+            continue
+        if filtered:
+            try:
+                out.append(it.model_copy(update={"suggestions": filtered}))
+            except Exception:
+                out.append(it)
             continue
         prev = _last_attraction_before(items, idx)
         if not prev:

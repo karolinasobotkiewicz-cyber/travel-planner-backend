@@ -1125,10 +1125,11 @@ def is_evening_only_poi(poi: dict) -> bool:
     name = str(poi.get("name", "")).lower()
     if "neon" in name and ("galeria" in name or "neon side" in name):
         return True
-    # FIX #240 Wrocław: browar wieczorny, fontanna multimedialna (pokazy)
+    # FIX #240 Wrocław / FIX #242 Warszawa: wieczorne pokazy światła
     if any(k in name for k in (
         "browar stu mostów", "browar stu mostow",
         "fontanna multimedialna", "fontanna multimedial",
+        "multimedialny park fontann", "park fontann",
     )):
         return True
     return False
@@ -4688,8 +4689,10 @@ def score_poi(
             "wyspa słodowa", "wyspa slodowa",
         )):
             score += 50.0
-        # FIX #234: Fontanna Multimedialna is a micro evening show — don't over-rank.
-        if "fontanna multimedialna" in _name221:
+        # FIX #234/#242: fontanna/park fontann — wieczorne pokazy, nie rano.
+        if any(k in _name221 for k in (
+            "fontanna multimedialna", "multimedialny park fontann", "park fontann",
+        )):
             score -= 70.0
 
     # Pixel XL for underground/history without active_sport (Poznań).
@@ -5963,7 +5966,31 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         if "dinner" in (r.get("meal_type") or "").lower()
                         and restaurant_matches_target_group(r, user)
                     ]
-                    
+
+                    # FIX #242 Warszawa: kolacja „regionalne smaki” bez włoskiej/fast-food
+                    user_prefs_for_dinner = user.get("preferences", [])
+                    if "local_food_experience" in user_prefs_for_dinner:
+                        _NON_LOCAL_CUISINES = {
+                            "american", "burgers", "street_food", "fast_food", "italian", "asian",
+                        }
+                        _regional_dinner = [
+                            r for r in dinner_restaurants
+                            if not (set(
+                                c.strip().lower()
+                                for c in (r.get("cuisine_type") or "").split(",")
+                            ) & _NON_LOCAL_CUISINES)
+                            and not any(
+                                k in (r.get("name") or "").lower()
+                                for k in ("forno", "pizza", "włosk", "wlosk", "italian")
+                            )
+                        ]
+                        if _regional_dinner:
+                            dinner_restaurants = _regional_dinner
+                            print(
+                                f"[DINNER FIX#242] local_food_experience: "
+                                f"{len(dinner_restaurants)} regional restaurants"
+                            )
+
                     # If we have current location (last attraction), sort by proximity
                     if plan:
                         # Find last attraction for location context
