@@ -5520,6 +5520,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
     # FIX #58 (21.05.2026): Track museums per day for adventure profile (hard cap = 1)
     daily_museum_count = 0
+    daily_zoo_count = 0
     # FIX #99D: Track museums per day for friends profile (hard cap = 1)
     friends_museum_today = 0
     # FIX #127 (30.05.2026): Track museums per day for solo profile (hard cap = 2)
@@ -5766,12 +5767,22 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     # FIX #145 (01.06.2026): Also boost restaurants with regional tags from Excel
                     user_prefs_for_lunch = user.get("preferences", [])
                     if "local_food_experience" in user_prefs_for_lunch:
-                        NON_LOCAL_CUISINES = {"american", "burgers", "street_food", "fast_food", "italian", "asian"}
+                        _NON_LOCAL_CUISINES = {
+                            "american", "burgers", "street_food", "fast_food", "italian", "asian",
+                            "georgian", "caucasian", "gruzińska", "gruzinska",
+                        }
                         regional_restaurants = [
                             r for r in lunch_restaurants
                             if not (set(
                                 [c.strip().lower() for c in (r.get("cuisine_type") or "").split(",")]
-                            ) & NON_LOCAL_CUISINES)
+                            ) & _NON_LOCAL_CUISINES)
+                            and not any(
+                                k in (r.get("name") or "").lower()
+                                for k in (
+                                    "forno", "pizza", "włosk", "wlosk", "italian",
+                                    "gruzi", "georgian", "khinkali", "tbilisi",
+                                )
+                            )
                         ]
                         if regional_restaurants:
                             lunch_restaurants = regional_restaurants
@@ -5972,6 +5983,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if "local_food_experience" in user_prefs_for_dinner:
                         _NON_LOCAL_CUISINES = {
                             "american", "burgers", "street_food", "fast_food", "italian", "asian",
+                            "georgian", "caucasian", "gruzińska", "gruzinska",
                         }
                         _regional_dinner = [
                             r for r in dinner_restaurants
@@ -5981,7 +5993,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             ) & _NON_LOCAL_CUISINES)
                             and not any(
                                 k in (r.get("name") or "").lower()
-                                for k in ("forno", "pizza", "włosk", "wlosk", "italian")
+                                for k in (
+                                    "forno", "pizza", "włosk", "wlosk", "italian",
+                                    "gruzi", "georgian", "khinkali", "tbilisi",
+                                )
                             )
                         ]
                         if _regional_dinner:
@@ -6104,6 +6119,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 print(f"[FIX #197] EVENING ONLY: EXCLUDED {poi_name_safe} before 17:00")
                 continue
 
+            # FIX #244 Poznań: max 1 zoo/day (Nowe + Stare Zoo)
+            _poi_nm244 = str(p.get("name", "")).lower()
+            if daily_zoo_count >= 1 and any(
+                k in _poi_nm244 for k in ("nowe zoo", "stare zoo")
+            ):
+                poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                print(f"[FIX #244] ZOO CAP: EXCLUDED {poi_name_safe} ({daily_zoo_count}/1)")
+                continue
+
             # FIX #190: nature + museum/history prefs — max 2 culture sites/day.
             if user_wants_nature_museum_balance(user) and daily_museum_count >= 2 and is_heritage_culture_site_poi(p):
                 poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
@@ -6151,7 +6175,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     continue
 
             # FIX #132 (31.05.2026): Hard cap: max 2 museums per day for couples profile
-            if user.get("target_group") == "couples" and couples_museum_today >= 2:
+            # FIX #244: couples+cultural+relaxation → max 1 museum/day
+            _couples_mus_cap = 1 if (
+                user.get("target_group") == "couples"
+                and user.get("travel_style") == "cultural"
+                and "relaxation" in (user.get("preferences") or [])
+            ) else 2
+            if user.get("target_group") == "couples" and couples_museum_today >= _couples_mus_cap:
                 _mus_tags_132 = {"themed_museum", "regional_heritage", "museum_heritage", "museums",
                                  "mountain_culture", "multimedia_exhibition", "interactive_exhibits",
                                  "interactive_exhibit", "local_history", "architecture_heritage",
@@ -6548,6 +6578,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             # FIX #133: inject current consecutive-short count for scoring
             ctx["consecutive_short_count"] = consecutive_short_count
             ctx["day_museum_count"] = daily_museum_count  # FIX #192
+            ctx["day_zoo_count"] = daily_zoo_count  # FIX #244
             ctx["day_attraction_count"] = attraction_count  # FIX #233
             ctx["day_active_count"] = context.get("day_active_count", 0)  # FIX #233
             ctx["_day_plan_snapshot"] = plan  # FIX #233 excursion cluster
@@ -7880,6 +7911,11 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             daily_museum_count += 1
             if travel_style == "adventure" and is_museum_heritage_poi(best):
                 print(f"[MUSEUM CAP] Museum added today: {daily_museum_count}/1 (adventure)")
+
+        _best_nm244 = str(best.get("name", "")).lower()
+        if any(k in _best_nm244 for k in ("nowe zoo", "stare zoo")):
+            daily_zoo_count += 1
+            print(f"[FIX #244] Zoo added today: {daily_zoo_count}/1")
 
         # FIX #99D: Increment daily museum counter for friends profile
         if user.get("target_group") == "friends":

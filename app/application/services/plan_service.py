@@ -427,9 +427,11 @@ def _is_generic_meal_suggestion(sug: RestaurantSuggestion) -> bool:
 
 _NON_LOCAL_MEAL_CUISINES = frozenset({
     "american", "burgers", "street_food", "fast_food", "italian", "asian",
+    "georgian", "caucasian", "gruzińska", "gruzinska",
 })
 _NON_LOCAL_MEAL_NAME_HINTS = (
     "forno", "pizza", "włosk", "wlosk", "italian", "burger", "kebab",
+    "gruzi", "georgian", "khinkali", "tbilisi", "kaukask",
 )
 
 
@@ -2851,6 +2853,15 @@ class PlanService:
                 _fitems,
                 day_num=day_plan.day,
                 trip_used_names=_trip_names_so_far,
+            )
+            _fitems = self._strip_duplicate_zoo_same_day(
+                _fitems, day_num=day_plan.day,
+            )
+            _fitems = self._strip_excessive_museums_same_day(
+                _fitems, user, day_num=day_plan.day,
+            )
+            _fitems = self._enforce_minimum_named_poi_duration(
+                _fitems, user, day_num=day_plan.day,
             )
             _fitems, _ = validate_and_heal_timeline(
                 _fitems, day_number=day_plan.day, raise_on_failure=False,
@@ -6281,6 +6292,106 @@ class PlanService:
             out.append(it)
         return out
 
+    def _strip_duplicate_zoo_same_day(
+        self, items: List[Any], *, day_num: int = 0
+    ) -> List[Any]:
+        """FIX #244 Poznań: max jedno zoo/dzień (Nowe + Stare Zoo)."""
+        seen_zoo = False
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            is_zoo = any(k in nm for k in ("nowe zoo", "stare zoo")) or (
+                "zoo" in nm and "mini" not in nm
+            )
+            if is_zoo:
+                if seen_zoo:
+                    print(
+                        f"[FIX #244] Day {day_num}: stripped duplicate zoo "
+                        f"{getattr(it, 'name', '?')}"
+                    )
+                    continue
+                seen_zoo = True
+            out.append(it)
+        return out
+
+    def _strip_excessive_museums_same_day(
+        self, items: List[Any], user: Dict[str, Any], *, day_num: int = 0
+    ) -> List[Any]:
+        """FIX #244: nie układaj 3+ muzeów w jednym dniu."""
+        tg = user.get("target_group", "")
+        style = user.get("travel_style", "")
+        prefs = set(user.get("preferences") or [])
+        max_mus = 2
+        if tg == "couples" and style == "cultural" and "relaxation" in prefs:
+            max_mus = 1
+        elif style == "balanced" and "museum_heritage" not in prefs:
+            max_mus = 1
+        count = 0
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            if "muzeum" in nm or "museum" in nm:
+                count += 1
+                if count > max_mus:
+                    print(
+                        f"[FIX #244] Day {day_num}: stripped museum stack "
+                        f"{getattr(it, 'name', '?')}"
+                    )
+                    continue
+            out.append(it)
+        return out
+
+    def _enforce_minimum_named_poi_duration(
+        self, items: List[Any], user: Dict[str, Any], *, day_num: int = 0
+    ) -> List[Any]:
+        """FIX #244: Pixel XL min 45 min (60 dla family_kids)."""
+        tg = user.get("target_group", "")
+        _mins = (
+            ("pixel xl", 60 if tg == "family_kids" else 45),
+            ("pixel", 60 if tg == "family_kids" else 45),
+        )
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            need = 0
+            for marker, nmin in _mins:
+                if marker in nm:
+                    need = nmin
+                    break
+            if not need:
+                out.append(it)
+                continue
+            dur = int(getattr(it, "duration_min", 0) or 0)
+            if dur >= need:
+                out.append(it)
+                continue
+            st = getattr(it, "start_time", None)
+            if not st:
+                out.append(it)
+                continue
+            new_en = minutes_to_time(time_to_minutes(st) + need)
+            try:
+                out.append(it.model_copy(update={
+                    "end_time": new_en,
+                    "duration_min": need,
+                }))
+                print(
+                    f"[FIX #244] Day {day_num}: extended {getattr(it, 'name', '?')} "
+                    f"{dur}→{need} min"
+                )
+            except Exception:
+                out.append(it)
+        return out
+
     def _strip_orphan_free_time_with_large_gaps(
         self, items: List[Any], *, min_gap_min: int = 90
     ) -> List[Any]:
@@ -6541,6 +6652,13 @@ class PlanService:
         if user is not None:
             items = self._strip_profile_denied_attractions(
                 items, user, all_pois_dict or [], day_num,
+            )
+            items = self._strip_duplicate_zoo_same_day(items, day_num=day_num)
+            items = self._strip_excessive_museums_same_day(
+                items, user, day_num=day_num,
+            )
+            items = self._enforce_minimum_named_poi_duration(
+                items, user, day_num=day_num,
             )
         if all_pois_dict is not None and user is not None and global_used_pois is not None:
             _n_attr = sum(1 for it in items if _is_timeline_attraction(it))

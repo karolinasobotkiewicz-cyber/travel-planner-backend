@@ -285,6 +285,20 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
         )):
             return True
 
+    # FIX #244 Poznań — micro heritage off friends adventure
+    if tg == "friends" and adv:
+        if any(k in name for k in (
+            "okrąglak", "okraglak", "ratusz w poznaniu", "domy kupieckie",
+        )):
+            return True
+        if "ratusz" in name and "poznaniu" in name:
+            return True
+
+    # FIX #244 Poznań — Pixel XL off history/underground friends
+    if tg == "friends" and adv and {"underground", "history_mystery", "museum_heritage"} <= prefs:
+        if "pixel xl" in name or "pixel" in name:
+            return True
+
     # FIX #241 Kraków — couples+water+relax (json10)
     if tg == "couples" and {"water_attractions", "relaxation", "local_food_experience"} <= prefs:
         if _is_zoo(poi):
@@ -1088,6 +1102,44 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             delta -= 100.0
         if any(k in name for k in ("św. anny", "sw. anny")) and "parafia" in name:
             delta -= 100.0
+
+    # ── FIX #244 Poznań client feedback json 1–10 ──
+    if any(k in name for k in ("nowe zoo", "stare zoo")):
+        if int(ctx.get("day_zoo_count") or 0) >= 1:
+            delta -= 200.0
+
+    if tg == "friends" and adv:
+        if any(k in name for k in (
+            "okrąglak", "okraglak", "domy kupieckie", "ratusz w poznaniu",
+        )):
+            delta -= 120.0
+        if day == 1 and "ratusz" in name:
+            delta -= 80.0
+
+    if tg == "family_kids" and "pixel xl" in name:
+        delta += 70.0
+
+    _day_mus = int(ctx.get("day_museum_count") or 0)
+    if _day_mus >= 2 and "muzeum" in name:
+        if tg == "couples" and style == "cultural" and "relaxation" in prefs:
+            delta -= 110.0
+        elif style == "balanced" and "museum_heritage" not in top_prefs:
+            delta -= 100.0
+
+    if num_days >= 7 and day >= 7:
+        if any(k in name for k in (
+            "malta", "dolina", "park ", "fort ", "botaniczny", "jezioro", "bulwar",
+        )):
+            delta += 90.0
+        if "muzeum" in name and _day_mus >= 1:
+            delta -= 70.0
+
+    if tg == "solo" and nat_relax:
+        if any(k in name for k in (
+            "jezioro maltańskie", "jezioro maltanskie", "park sołacki", "park solacki",
+            "wartostrada", "palmiarnia", "dolina trzech",
+        )):
+            delta += 85.0
 
     return delta
 
