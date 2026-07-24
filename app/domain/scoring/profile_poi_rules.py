@@ -80,8 +80,11 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
         if child_age is None or (isinstance(child_age, (int, float)) and child_age <= 6):
             return True
 
-    # Katowice: Kościół św. Michała for family_kids
-    if tg == "family_kids" and ("św. michała" in name or "sw. michala" in name):
+    # Katowice: Kościół św. Michała for family_kids (FIX #243: pełna nazwa POI)
+    if tg == "family_kids" and any(k in name for k in (
+        "św. michała", "sw. michala", "świętego michała", "swietego michala",
+        "michała archanioła", "michala archanioła",
+    )):
         return True
 
     # FIX #235 Katowice — Śląskie Centrum Wolności for family_kids
@@ -247,6 +250,38 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     if tg == "friends" and adv and "active_sport" in prefs:
         if any(k in name for k in (
             "taras widokowy na dzwonnicy", "taras przy kościele", "taras przy kosciolu",
+        )):
+            return True
+
+    # FIX #243 Katowice — Spodek we wszystkich planach (słaby filler)
+    if "spodek" in name:
+        if tg == "family_kids":
+            return True
+        if tg == "solo" and nat_relax:
+            return True
+        if tg == "friends" and adv:
+            return True
+        if tg == "couples":
+            return True
+
+    # FIX #243 Katowice — Rynek dla family_kids i friends adventure
+    if tg == "family_kids" and any(k in name for k in ("rynek w katowicach", "rynek katowic")):
+        return True
+    if tg == "friends" and adv and any(k in name for k in ("rynek w katowicach", "rynek katowic")):
+        return True
+
+    # FIX #243 Katowice — couples+cultural: kościół św. Anny
+    if tg == "couples" and style == "cultural":
+        if any(k in name for k in ("św. anny", "sw. anny")) and any(
+            k in name for k in ("parafia", "kościół", "kosciol")
+        ):
+            return True
+
+    # FIX #243 Katowice — solo+nature+relax: miejskie fillery off
+    if tg == "solo" and nat_relax:
+        if any(k in name for k in (
+            "pijalnia czekolady", "muzeum historii katowic", "planetarium śląskie",
+            "planetarium slaskie",
         )):
             return True
 
@@ -666,11 +701,13 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
     )):
         delta -= 90.0
 
-    # FIX #234 Katowice — friends+adventure demote industrial museums
-    if tg == "friends" and adv and any(k in name for k in (
-        "galeria szyb wilson", "szyb wilson", "muzeum historii katowic",
-    )):
-        delta -= 95.0
+    # FIX #243 Katowice — friends+adventure+history: industrial Śląsk boost (było błędnie demote)
+    if tg == "friends" and adv and "history_mystery" in prefs:
+        if any(k in name for k in (
+            "kopalnia guido", "guido", "królowa luiza", "krolowa luiza",
+            "carboneum", "galeria szyb wilson", "szyb wilson", "sztolnia",
+        )):
+            delta += 115.0
 
     # FIX #234 Katowice — relax demote churches
     if (style == "relax" or "relaxation" in prefs) and any(k in name for k in (
@@ -844,7 +881,8 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
         delta -= 95.0
     if tg == "family_kids" and any(k in name for k in (
         "śląskie centrum wolności", "slaskie centrum wolnosci",
-        "kościół św. michała", "sw. michala",
+        "kościół św. michała", "sw. michala", "świętego michała", "swietego michala",
+        "michała archanioła", "michala archanioła", "rynek w katowicach", "rynek katowic",
     )):
         delta -= 100.0
     if tg == "seniors" and (style == "relax" or "relaxation" in prefs):
@@ -1011,6 +1049,41 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             delta -= 90.0
         if "museum_heritage" in prefs and any(k in name for k in ("muzeum", "norblin", "zamek", "polin")):
             delta += 70.0
+
+    # ── FIX #243 Katowice client feedback json 1–10 ──
+    if "spodek" in name:
+        delta -= 120.0
+        if day == 1:
+            delta -= 60.0
+
+    if tg == "couples" and style == "cultural":
+        if any(k in name for k in ("św. anny", "sw. anny")) and "parafia" in name:
+            delta -= 120.0
+
+    if tg == "friends" and adv:
+        if any(k in name for k in ("rynek w katowicach", "rynek katowic")):
+            delta -= 100.0
+        if "spodek" in name:
+            delta -= 80.0
+
+    if tg == "solo" and nat_relax:
+        if any(k in name for k in (
+            "dolina trzech stawów", "dolina trzech stawow", "palmiarnia",
+            "park śląski", "park slaski", "tężnia", "teznia", "nikiszowiec",
+            "górnośląski park etnograficzny", "gornoslaski park etnograficzny",
+        )):
+            delta += 95.0
+
+    if num_days >= 7 and day >= 4 and tg == "couples":
+        if any(k in name for k in (
+            "nikiszowiec", "kopalnia guido", "dolina trzech", "tężnia", "teznia",
+            "palmiarnia", "carboneum",
+        )):
+            delta += 85.0
+        if "spodek" in name:
+            delta -= 100.0
+        if any(k in name for k in ("św. anny", "sw. anny")) and "parafia" in name:
+            delta -= 100.0
 
     return delta
 
