@@ -708,6 +708,10 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             "carboneum", "galeria szyb wilson", "szyb wilson", "sztolnia",
         )):
             delta += 115.0
+        if "kopalnia guido" in name or (name.strip() == "guido"):
+            delta += 80.0
+        if "królowa luiza" in name or "krolowa luiza" in name:
+            delta += 70.0
 
     # FIX #234 Katowice — relax demote churches
     if (style == "relax" or "relaxation" in prefs) and any(k in name for k in (
