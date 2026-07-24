@@ -1134,6 +1134,22 @@ def is_evening_only_poi(poi: dict) -> bool:
     return False
 
 
+def is_afternoon_only_poi(poi: dict) -> bool:
+    """FIX #241 Kraków: tours/degustacje nie rano (Fabryka Wódki ~14:00+)."""
+    name = str(poi.get("name", "")).lower()
+    if any(k in name for k in (
+        "fabryka wódki", "fabryka wodki",
+        "muzeum polskiej wódki", "muzeum polskiej wodki",
+        "polish vodka museum",
+    )):
+        return True
+    tod = str(poi.get("recommended_time_of_day") or poi.get("best_time") or "").lower()
+    if tod and any(p in tod for p in ("afternoon", "popołudnie", "popoludnie", "evening", "wieczór", "wieczor")):
+        if not any(p in tod for p in ("morning", "rano", "any")):
+            return True
+    return False
+
+
 def is_kids_focused_poi(poi):
     """
     Check if POI is kids-focused (target_groups + tags analysis).
@@ -2688,6 +2704,18 @@ def score_poi(
     if must_see_value >= 8 and is_city_tourism_trip(context) and not is_quick_stop_poi(p):
         iconic_extra = must_see_value * 1.5 * must_see_multiplier
         score += iconic_extra
+        # FIX #241 Kraków solo+relax+nature — must_see icons bez dopasowanych pref
+        _prefs241 = user.get("preferences") or []
+        _nat_rel241 = (
+            bool({"nature_landscape", "relaxation"} & set(_prefs241))
+            and not ({"museum_heritage", "history_mystery", "underground"} & set(_prefs241))
+        )
+        if _nat_rel241 and not poi_matches_preferences:
+            _nm241 = str(p.get("name", "")).lower()
+            if any(k in _nm241 for k in (
+                "podziemia rynku", "fabryka schindlera", "wieliczka", "kopalnia soli",
+            )):
+                score -= 130.0
 
     # FIX #204 (16.06.2026): demote low-value "micro-POIs" as MAIN day anchors.
     # FIX #206 (18.06.2026): stronger penalty; applies even when must_see>=7 (Pomnik Smoka=10).
@@ -4556,6 +4584,9 @@ def score_poi(
     #    Browar Stu Mostów keeps surfacing as a full program point in every plan.
     if any(m in _name221 for m in _UNIVERSAL_FILLER_NAME_MARKERS):
         score -= 70.0
+    # FIX #241 Kraków — Kładka Bernatka persistent filler
+    if any(k in _name221 for k in ("kładka bernatka", "kladka bernatka", "kładka ojca bernatka")):
+        score -= 80.0
 
     # FIX #225: client — Wieża Ratuszowa over-ranked for seniors (tower climb,
     # narrow stairs). Demote tower-climb POIs for the seniors profile.
@@ -4578,6 +4609,12 @@ def score_poi(
             score -= 80.0
         elif _trip_mus223 >= 2:
             score -= 45.0
+        # FIX #241 Kraków solo+relax+nature — iconic must_see bez history pref
+        _name241 = str(p.get("name", "")).lower()
+        if _nat_relax_focus and any(k in _name241 for k in (
+            "podziemia rynku", "fabryka schindlera", "wieliczka", "kopalnia soli",
+        )):
+            score -= 90.0
 
     # 3) relax style must not collapse into Free Time — actively reward real
     #    relaxation/nature POIs so the day fills with parks/spas instead of gaps.

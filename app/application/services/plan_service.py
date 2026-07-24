@@ -2802,6 +2802,7 @@ class PlanService:
             if name and lat is not None and lng is not None:
                 _final_coord_map[name] = {**p, "lat": lat, "lng": lng}
         _finalized_days: List[DayPlan] = []
+        _trip_names_so_far: set = set()
         for day_plan in days:
             _fitems = list(day_plan.items)
             _day_ctx = contexts[day_plan.day - 1] if day_plan.day - 1 < len(contexts) else context
@@ -2816,6 +2817,11 @@ class PlanService:
                 all_pois_dict=all_pois_dict,
                 user=user,
                 global_used_pois=global_used_pois,
+            )
+            _fitems = self._strip_repeat_old_town_attractions(
+                _fitems,
+                day_num=day_plan.day,
+                trip_used_names=_trip_names_so_far,
             )
             _fitems, _ = validate_and_heal_timeline(
                 _fitems, day_number=day_plan.day, raise_on_failure=False,
@@ -2864,6 +2870,11 @@ class PlanService:
                     # else: too short after clamp → drop
                 # else: starts at/after day_end → drop
             _fitems = _clamped
+            for _it in _fitems:
+                if _is_timeline_attraction(_it):
+                    _nm = (getattr(_it, "name", "") or "").lower()
+                    if _nm:
+                        _trip_names_so_far.add(_nm)
             _finalized_days.append(DayPlan(
                 day=day_plan.day,
                 title=_generate_day_title(_fitems, day_plan.day),
@@ -4357,6 +4368,9 @@ class PlanService:
                                     and next_start - max(current_end, 17 * 60) >= 45
                                 ):
                                     continue
+                            from app.domain.planner.engine import is_afternoon_only_poi
+                            if is_afternoon_only_poi(poi) and current_end < 14 * 60:
+                                continue
                             if _daily_limit_gf:
                                 _poi_cost = calculate_poi_cost_for_group(poi, user)
                                 if _poi_cost > _daily_limit_gf or _daily_cost_gf + _poi_cost > _daily_limit_gf:
@@ -6041,6 +6055,126 @@ class PlanService:
             out.append(it)
         return out
 
+    def _strip_misscheduled_afternoon_attractions(
+        self,
+        items: List[Any],
+        all_pois_dict: Optional[List[Dict[str, Any]]],
+        day_num: int = 1,
+    ) -> List[Any]:
+        """FIX #241 Kraków: Fabryka Wódki / degustacje nie przed 14:00."""
+        from app.domain.planner.engine import is_afternoon_only_poi
+
+        if not all_pois_dict:
+            return items
+        by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+        by_name = {p.get("name"): p for p in all_pois_dict if p.get("name")}
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            poi = by_id.get(getattr(it, "poi_id", "")) or by_name.get(
+                getattr(it, "name", ""), {},
+            )
+            if is_afternoon_only_poi(poi) or is_afternoon_only_poi(
+                {"name": getattr(it, "name", "")}
+            ):
+                st = getattr(it, "start_time", None)
+                if st and time_to_minutes(st) < 14 * 60:
+                    print(
+                        f"[FIX #241] Day {day_num}: stripped morning afternoon-only "
+                        f"{getattr(it, 'name', '?')}"
+                    )
+                    continue
+            out.append(it)
+        return out
+
+    def _strip_mixed_opn_krakow_attractions(
+        self,
+        items: List[Any],
+        all_pois_dict: Optional[List[Dict[str, Any]]],
+        day_num: int = 1,
+    ) -> List[Any]:
+        """FIX #241: nie mieszaj Ojcowskiego PN z centrum Krakowa w jednym dniu."""
+        from app.domain.planner.engine import poi_geo_region_key
+
+        if not all_pois_dict:
+            return items
+        by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+        by_name = {p.get("name"): p for p in all_pois_dict if p.get("name")}
+        attrs = [it for it in items if _is_timeline_attraction(it)]
+        if len(attrs) < 2:
+            return items
+        has_opn = False
+        has_city = False
+        for it in attrs:
+            poi = by_id.get(getattr(it, "poi_id", "")) or by_name.get(
+                getattr(it, "name", ""), {"name": getattr(it, "name", "")},
+            )
+            reg = poi_geo_region_key(poi)
+            nm = str(getattr(it, "name", "") or poi.get("name", "")).lower()
+            if reg == "region_ojcow" or any(
+                k in nm for k in ("ojców", "ojcow", "maczuga", "pieskowa skała", "pieskowa skala")
+            ):
+                has_opn = True
+            elif reg != "region_wieliczka" and not any(
+                k in nm for k in ("wieliczka", "kopalnia soli", "bochnia")
+            ):
+                has_city = True
+        if not (has_opn and has_city):
+            return items
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            poi = by_id.get(getattr(it, "poi_id", "")) or by_name.get(
+                getattr(it, "name", ""), {"name": getattr(it, "name", "")},
+            )
+            reg = poi_geo_region_key(poi)
+            nm = str(getattr(it, "name", "") or poi.get("name", "")).lower()
+            is_opn = reg == "region_ojcow" or any(
+                k in nm for k in ("ojców", "ojcow", "maczuga", "pieskowa")
+            )
+            if not is_opn:
+                print(
+                    f"[FIX #241] Day {day_num}: stripped city POI on OPN day "
+                    f"{getattr(it, 'name', '?')}"
+                )
+                continue
+            out.append(it)
+        return out
+
+    def _strip_repeat_old_town_attractions(
+        self,
+        items: List[Any],
+        *,
+        day_num: int,
+        trip_used_names: set,
+    ) -> List[Any]:
+        """FIX #241 Kraków: nie powtarzaj Rynku/Stare Miasto od dnia 2."""
+        if day_num < 2:
+            return items
+        _markers = ("rynek główny", "rynek glowny", "stare miasto", "sukiennice", "planty")
+        trip_has = any(
+            any(k in (n or "").lower() for k in _markers) for n in trip_used_names
+        )
+        if not trip_has:
+            return items
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            if any(k in nm for k in _markers):
+                print(
+                    f"[FIX #241] Day {day_num}: stripped repeat old-town {getattr(it, 'name', '?')}"
+                )
+                continue
+            out.append(it)
+        return out
+
     def _enforce_minimum_dinner_time(
         self,
         items: List[Any],
@@ -6362,6 +6496,12 @@ class PlanService:
                 _poi_by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
                 items = self._strip_out_of_season_attractions(items, _trip_date, _poi_by_id)
         items = self._strip_misscheduled_evening_attractions(
+            items, all_pois_dict, day_num,
+        )
+        items = self._strip_misscheduled_afternoon_attractions(
+            items, all_pois_dict, day_num,
+        )
+        items = self._strip_mixed_opn_krakow_attractions(
             items, all_pois_dict, day_num,
         )
         if user is not None:

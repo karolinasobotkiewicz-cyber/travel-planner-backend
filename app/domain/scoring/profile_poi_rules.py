@@ -40,6 +40,8 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     style = _safe_str(user.get("travel_style"))
     child_age = user.get("children_age")
     adv = style == "adventure" or "adventure" in prefs
+    nat_relax = {"nature_landscape", "relaxation"} <= prefs
+    no_history = not ({"history_mystery", "museum_heritage", "underground"} & prefs)
 
     # Wrocław: zoo off friends + adventure + underground + history
     if _is_zoo(poi) and tg == "friends" and {"adventure", "underground", "history_mystery"} <= prefs:
@@ -165,6 +167,54 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     # FIX #231 — Katowice family: Kościół św. Anny
     if tg == "family_kids" and ("św. anny" in name or "sw. anny" in name):
         if "kościół" in name or "kosciol" in name or "parafia" in name:
+            return True
+
+    # FIX #241 Kraków — Kładka Bernatka (słaby filler we wszystkich planach)
+    if any(k in name for k in (
+        "kładka bernatka", "kladka bernatka", "kładka ojca bernatka", "ojca bernatka",
+    )):
+        return True
+
+    # FIX #241 Kraków — solo+relax+nature bez history: bez ikon muzealnych
+    if tg == "solo" and nat_relax and no_history:
+        if any(k in name for k in (
+            "podziemia rynku", "fabryka schindlera", "wieliczka", "kopalnia soli",
+        )):
+            return True
+
+    # FIX #241 Kraków — Kino 7D / VR / pixel zamiast aktywności adventure
+    if adv and any(k in name for k in (
+        "kino 7d", "kino 7 d", "& vr", "7d & vr", "digital floor", "pixel xl",
+    )):
+        return True
+
+    # FIX #241 Kraków — Lustrzany Labirynt poza dopasowanymi profilami
+    if "lustrzany labirynt" in name:
+        if style == "cultural":
+            return True
+        if tg == "couples" and ({"water_attractions", "relaxation"} & prefs):
+            return True
+        if adv and no_history:
+            return True
+
+    # FIX #241 Kraków — friends+history: Park Decjusza, Kopiec Wandy, Kładka
+    if tg == "friends" and adv and {"underground", "history_mystery", "museum_heritage"} <= prefs:
+        if any(k in name for k in (
+            "park decjusza", "kopiec wandy", "kładka bernatka", "kladka bernatka",
+            "stare miasto",
+        )):
+            return True
+
+    # FIX #241 Kraków — couples+water+relax (json10)
+    if tg == "couples" and {"water_attractions", "relaxation", "local_food_experience"} <= prefs:
+        if _is_zoo(poi):
+            return True
+        if "zoo" in name and "mini" not in name:
+            return True
+        if any(k in name for k in (
+            "kościół św. wojciecha", "sw. wojciecha", "nowa huta",
+            "bazylika mariacka", "lustrzany labirynt",
+        )):
             return True
 
     return False
@@ -787,6 +837,82 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             delta -= 85.0
     if tg == "seniors" and (style == "relax" or "relaxation" in prefs) and "fort va" in name:
         delta -= 100.0
+
+    # ── FIX #241 Kraków client feedback ──
+    if any(k in name for k in (
+        "kładka bernatka", "kladka bernatka", "kładka ojca bernatka", "ojca bernatka",
+    )):
+        delta -= 150.0
+
+    _trip_old_town = any(
+        any(k in (tn or "") for k in (
+            "rynek główny", "rynek glowny", "stare miasto", "sukiennice", "planty",
+        ))
+        for tn in trip_names
+    )
+    if _trip_old_town and name not in trip_names:
+        if any(k in name for k in ("rynek główny", "rynek glowny", "stare miasto", "sukiennice")):
+            delta -= 150.0
+        elif any(k in name for k in ("rynek", "stare miasto")) and day >= 2:
+            delta -= 120.0
+
+    if tg == "seniors" and _trip_old_town:
+        if any(k in name for k in ("rynek", "stare miasto", "bazylika mariacka")):
+            delta -= 100.0
+
+    if tg == "solo" and nat_relax and no_history:
+        if any(k in name for k in (
+            "podziemia rynku", "fabryka schindlera", "wieliczka", "kopalnia soli",
+        )):
+            delta -= 130.0
+        if any(k in name for k in (
+            "park ", "rezerwat", "bulwar", "dolina", "jaskinia", "las ", "skansen",
+            "botaniczny", "zieleniec",
+        )) and "wanda" not in name and "krakusa" not in name:
+            delta += 95.0
+
+    _child_age241 = user.get("children_age")
+    if tg == "family_kids" and _child_age241 is not None:
+        try:
+            if int(_child_age241) <= 5:
+                if any(k in name for k in (
+                    "papugarnia", "kolejkowo", "pixel", "smoczy", "fabryka cukier",
+                    "mini zoo", "park wodny", "aquapark", "fabryka cukierk",
+                )):
+                    delta += 120.0
+                if any(k in name for k in (
+                    "kładka bernatka", "kladka bernatka", "park decjusza", "kopiec wandy",
+                )):
+                    delta -= 110.0
+        except (TypeError, ValueError):
+            pass
+
+    if "nowa huta" in name:
+        delta -= 100.0
+        if not ({"history_mystery", "museum_heritage"} & prefs):
+            delta -= 60.0
+
+    if ctx.get("ojcow_day_active") or ctx.get("excursion_day_active") == "region_ojcow":
+        from app.domain.planner.engine import poi_geo_region_key
+        if poi_geo_region_key(poi) != "region_ojcow":
+            if not any(k in name for k in (
+                "ojców", "ojcow", "maczuga", "pieskowa", "jaskinia",
+            )):
+                delta -= 145.0
+
+    if adv and any(k in name for k in (
+        "escape room", "escape ", "paintball", "park linowy", "gojump", "bungee",
+    )):
+        delta += 85.0
+    if adv and any(k in name for k in ("kino 7d", "kino 7 d", "& vr")):
+        delta -= 120.0
+
+    if tg == "couples" and style == "cultural":
+        if any(k in name for k in ("fabryka wódki", "fabryka wodki")):
+            delta -= 40.0
+
+    if tg == "friends" and adv and "kopiec wandy" in name:
+        delta -= 110.0
 
     return delta
 
