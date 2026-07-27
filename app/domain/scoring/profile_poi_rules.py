@@ -224,7 +224,20 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
             return True
         if tg == "couples" and ({"water_attractions", "relaxation"} & prefs):
             return True
+        if tg == "couples" and "kids_attractions" not in prefs:
+            if "nature_landscape" in prefs or "museum_heritage" in prefs:
+                return True
         if adv and no_history:
+            return True
+
+    # FIX #246 Kraków — Alvernia Planet off nature-led solo (json4)
+    if "alvernia planet" in name:
+        if tg == "solo" and "nature_landscape" in prefs:
+            return True
+
+    # FIX #246 Kraków — Be Happy Museum off couples nature (json8)
+    if "be happy museum" in name:
+        if tg == "couples" and "nature_landscape" in prefs and "kids_attractions" not in prefs:
             return True
 
     # FIX #241 Kraków — friends+history: Park Decjusza, Kopiec Wandy, Kładka
@@ -1219,6 +1232,50 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             "tężnia", "teznia", "park śląski", "park slaski",
         )):
             delta += 95.0
+
+    # ── FIX #246 Kraków client feedback (json 2/4/5/8/10) ──
+    if "lustrzany labirynt" in name:
+        delta -= 140.0
+        if tg == "couples" and "kids_attractions" not in prefs:
+            delta -= 100.0
+
+    if tg == "family_kids" and "kids_attractions" in prefs:
+        if any(k in name for k in (
+            "papugarnia", "kolejkowo", "pixel", "guliwer", "w budowie", "lego",
+            "smoczy", "iluzj", "motyl", "fabryka cukier", "park wodny", "trampolin",
+            "gojump", "smart kids", "miniciti",
+        )):
+            delta += 115.0
+        _trip_kids246 = int(ctx.get("trip_kids_attraction_count") or 0)
+        if _trip_kids246 < 2:
+            if any(k in name for k in ("muzeum lotnictwa", "zamek królewski", "zamek krolewski")):
+                delta -= 90.0
+
+    if tg == "solo" and "nature_landscape" in prefs:
+        if any(k in name for k in (
+            "ogród botaniczny", "ogrod botaniczny", "bulwary", "kopiec krakusa",
+            "kopiec kościuszki", "kopiec kosciuszki", "park decjusza", "rezerwat",
+            "zespół przyrodniczo", "zespol przyrodniczo", "błonia", "blonia",
+        )):
+            delta += 105.0
+        if "nature_landscape" in top_prefs and "muzeum" in name:
+            if int(ctx.get("day_museum_count") or 0) >= 2:
+                delta -= 95.0
+
+    if "alvernia planet" in name:
+        delta -= 120.0
+
+    if tg == "couples" and {"water_attractions", "relaxation", "local_food_experience"} <= prefs:
+        from app.domain.scoring.preference_coverage import poi_covers_preference_report
+        if poi_covers_preference_report(poi, "relaxation") or poi_covers_preference_report(poi, "water_attractions"):
+            delta += 115.0
+        if any(k in name for k in (
+            "rynek główny", "rynek glowny", "sukiennice", "plac bohaterów getta",
+            "plac bohaterow getta", "barbakan", "pomnik smoka",
+        )):
+            delta -= 100.0
+        if "muzeum" in name and int(ctx.get("day_museum_count") or 0) >= 1:
+            delta -= 75.0
 
     return delta
 

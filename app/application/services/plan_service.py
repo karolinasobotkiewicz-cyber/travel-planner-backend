@@ -460,6 +460,11 @@ def _filter_meal_suggestions(
             if any(h in name for h in _NON_LOCAL_MEAL_NAME_HINTS):
                 continue
         out.append(s)
+    # FIX #246: when local_food filter removes all, keep any non-generic suggestions
+    if want_local and not out and suggestions:
+        for s in suggestions:
+            if not _is_generic_meal_suggestion(s):
+                out.append(s)
     return out
 
 
@@ -2974,6 +2979,30 @@ class PlanService:
             _fitems = self._run_transit_routing_pass(
                 _fitems, _final_coord_map, _day_ctx, day_plan.day,
             )
+            _fitems = self._strip_long_transit_destinations(
+                _fitems, max_min=35, day_num=day_plan.day,
+            )
+            _n_after_lt246 = sum(1 for it in _fitems if _is_timeline_attraction(it))
+            if _n_after_lt246 < 2 and all_pois_dict:
+                _fitems = self._backfill_sparse_day_attractions(
+                    _fitems,
+                    all_pois_dict,
+                    {**_day_ctx, "trip_kids_attraction_count": _trip_kids_count},
+                    user,
+                    global_used_pois,
+                    _trip_repeat_keys_so_far,
+                    _trip_names_so_far,
+                    day_num=day_plan.day,
+                    min_attr=2,
+                    cross_day_reuse=True,
+                    last_guido_day=_last_guido_day,
+                    last_luiza_day=_last_luiza_day,
+                    trip_has_water=_trip_has_water,
+                )
+                _fitems = self._sort_items_by_time(_fitems)
+            _fitems = self._strip_couples_heritage_for_relax(
+                _fitems, user, all_pois_dict or [], day_num=day_plan.day,
+            )
             _fitems = self._apply_free_time_final_hygiene(_fitems, _day_ctx)
             _fitems = self._enforce_minimum_dinner_time(
                 _fitems, day_end, day_num=day_plan.day,
@@ -3015,6 +3044,92 @@ class PlanService:
                     # else: too short after clamp → drop
                 # else: starts at/after day_end → drop
             _fitems = _clamped
+            _meal_prefs246 = list(user.get("preferences") or [])
+            if (
+                user.get("target_group") == "family_kids"
+                and "kids_attractions" in _meal_prefs246
+                and _trip_kids_count < max(2, min(num_days, 3))
+                and all_pois_dict
+            ):
+                _cur_k246 = sum(1 for it in _fitems if _is_timeline_attraction(it))
+                _fitems = self._backfill_sparse_day_attractions(
+                    _fitems,
+                    all_pois_dict,
+                    {**_day_ctx, "trip_kids_attraction_count": _trip_kids_count},
+                    user,
+                    global_used_pois,
+                    _trip_repeat_keys_so_far,
+                    _trip_names_so_far,
+                    day_num=day_plan.day,
+                    min_attr=_cur_k246 + 1,
+                    cross_day_reuse=True,
+                    last_guido_day=_last_guido_day,
+                    last_luiza_day=_last_luiza_day,
+                    trip_has_water=_trip_has_water,
+                )
+                _fitems = self._strip_profile_denied_attractions(
+                    _fitems, user, all_pois_dict, day_num=day_plan.day,
+                )
+                _fitems = self._strip_long_transit_destinations(
+                    _fitems, max_min=35, day_num=day_plan.day,
+                )
+                _fitems = self._sort_items_by_time(_fitems)
+            _couples_relax246 = (
+                user.get("target_group") == "couples"
+                and {"water_attractions", "relaxation", "local_food_experience"} <= set(_meal_prefs246)
+            )
+            if _couples_relax246 and all_pois_dict:
+                from app.domain.scoring.preference_coverage import poi_covers_preference_report
+                _poi_by_id246 = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+                _has_relax_day = False
+                for _it246 in _fitems:
+                    if not _is_timeline_attraction(_it246):
+                        continue
+                    _p246 = _poi_by_id246.get(getattr(_it246, "poi_id", ""), {"name": getattr(_it246, "name", ""), "tags": []})
+                    if (
+                        poi_covers_preference_report(_p246, "relaxation")
+                        or poi_covers_preference_report(_p246, "water_attractions")
+                        or any(k in (getattr(_it246, "name", "") or "").lower() for k in (
+                            "park wodny", "bulwary", "błonia", "blonia", "spa",
+                        ))
+                    ):
+                        _has_relax_day = True
+                        break
+                if not _has_relax_day:
+                    _cur_r246 = sum(1 for it in _fitems if _is_timeline_attraction(it))
+                    _fitems = self._backfill_sparse_day_attractions(
+                        _fitems,
+                        all_pois_dict,
+                        _day_ctx,
+                        user,
+                        global_used_pois,
+                        _trip_repeat_keys_so_far,
+                        _trip_names_so_far,
+                        day_num=day_plan.day,
+                        min_attr=_cur_r246 + 1,
+                        cross_day_reuse=True,
+                        last_guido_day=_last_guido_day,
+                        last_luiza_day=_last_luiza_day,
+                        trip_has_water=_trip_has_water,
+                    )
+                    _fitems = self._strip_long_transit_destinations(
+                        _fitems, max_min=35, day_num=day_plan.day,
+                    )
+                    _fitems = self._sort_items_by_time(_fitems)
+            from app.application.services.plan_day_integrity import ensure_meal_suggestions
+            _fitems = ensure_meal_suggestions(
+                _fitems,
+                _final_coord_map,
+                _day_ctx,
+                parse_suggestion_fn=_restaurant_dict_to_suggestion,
+                filter_fn=lambda sugs: _filter_meal_suggestions(
+                    sugs, preferences=_meal_prefs246,
+                ),
+            )
+            if all_pois_dict:
+                _fitems = self._strip_misscheduled_afternoon_attractions(
+                    _fitems, all_pois_dict, day_num=day_plan.day,
+                )
             for _it in _fitems:
                 if _is_timeline_attraction(_it):
                     _nm = (getattr(_it, "name", "") or "").lower()
@@ -6390,6 +6505,88 @@ class PlanService:
             except Exception:
                 out.append(it)
             print(f"[FIX #240] Day {day_num}: pushed dinner {st} → {minutes_to_time(new_st)}")
+        return out
+
+    def _strip_long_transit_destinations(
+        self,
+        items: List[Any],
+        *,
+        max_min: int = 35,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #246 Kraków: usuń cel atrakcji przy zbyt długim transporcie (np. 41 min)."""
+        drop_names: set[str] = set()
+        for it in items:
+            if getattr(it, "type", None) != ItemType.TRANSIT:
+                continue
+            dur = int(getattr(it, "duration_min", 0) or 0)
+            if dur <= max_min:
+                continue
+            to = getattr(it, "to_location", "") or ""
+            if to:
+                drop_names.add(to)
+                print(
+                    f"[FIX #246] Day {day_num}: long transit {dur}m, "
+                    f"drop destination {to!r}"
+                )
+        if not drop_names:
+            return items
+        out: List[Any] = []
+        for it in items:
+            if getattr(it, "type", None) == ItemType.TRANSIT:
+                dur = int(getattr(it, "duration_min", 0) or 0)
+                to = getattr(it, "to_location", "") or ""
+                fr = getattr(it, "from_location", "") or ""
+                if dur > max_min or to in drop_names or fr in drop_names:
+                    continue
+            if _is_timeline_attraction(it) and getattr(it, "name", "") in drop_names:
+                continue
+            out.append(it)
+        return out
+
+    def _strip_couples_heritage_for_relax(
+        self,
+        items: List[Any],
+        user: Dict[str, Any],
+        all_pois_dict: List[Dict[str, Any]],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #246 json10: couples water+relax — usuń heritage filler bez relaksu."""
+        prefs = set(user.get("preferences") or [])
+        if user.get("target_group") != "couples":
+            return items
+        if not {"water_attractions", "relaxation", "local_food_experience"} <= prefs:
+            return items
+        from app.domain.scoring.preference_coverage import poi_covers_preference_report
+
+        by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+        for it in items:
+            if not _is_timeline_attraction(it):
+                continue
+            poi = by_id.get(getattr(it, "poi_id", ""), {"name": getattr(it, "name", ""), "tags": []})
+            nm = (getattr(it, "name", "") or "").lower()
+            if (
+                poi_covers_preference_report(poi, "relaxation")
+                or poi_covers_preference_report(poi, "water_attractions")
+                or any(k in nm for k in ("park wodny", "bulwary", "błonia", "blonia", "spa"))
+            ):
+                return items
+        _heritage = (
+            "rynek główny", "rynek glowny", "sukiennice", "plac bohaterów getta",
+            "plac bohaterow getta", "stare miasto", "barbakan", "pomnik smoka",
+            "wieża ratuszowa", "wieza ratuszowa",
+        )
+        out: List[Any] = []
+        stripped = 0
+        for it in items:
+            if _is_timeline_attraction(it):
+                nm = (getattr(it, "name", "") or "").lower()
+                if any(k in nm for k in _heritage) and stripped < 3:
+                    stripped += 1
+                    print(f"[FIX #246] Day {day_num}: stripped heritage for relax {nm}")
+                    continue
+            out.append(it)
         return out
 
     def _strip_family_non_kids_late_day(
