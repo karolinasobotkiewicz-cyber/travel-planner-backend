@@ -32,6 +32,33 @@ def _is_zoo(poi: dict) -> bool:
     return "zoo" in name or "zoo" in tags or "mini zoo" in name
 
 
+def poi_trip_repeat_key(name: str) -> str | None:
+    """FIX #245: fuzzy trip-level repeat key for filler POIs (Katowice cluster)."""
+    n = _safe_str(name)
+    _markers = (
+        ("park kościuszki", "kat_park_kosciuszki"),
+        ("park kosciuszki", "kat_park_kosciuszki"),
+        ("rynek w katowicach", "kat_rynek"),
+        ("pijalnia czekolady", "kat_wedel"),
+        ("planetarium śląskie", "kat_planetarium"),
+        ("planetarium slaskie", "kat_planetarium"),
+        ("dolina trzech stawów", "kat_dolina"),
+        ("dolina trzech stawow", "kat_dolina"),
+        ("górnośląski park etnograficzny", "kat_park_etno"),
+        ("gornoslaski park etnograficzny", "kat_park_etno"),
+        ("muzeum historii katowic", "kat_muzeum_hist"),
+        ("pixel xl", "kat_pixel"),
+        ("kolejkowo", "kat_kolejkowo"),
+        ("nikiszowiec", "kat_nikiszowiec"),
+        ("tężnia", "kat_teznia"),
+        ("teznia", "kat_teznia"),
+    )
+    for marker, key in _markers:
+        if marker in n:
+            return key
+    return None
+
+
 def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     """Hard exclude POI for specific profile + preference combinations."""
     name = _name(poi)
@@ -283,6 +310,13 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
             "pijalnia czekolady", "muzeum historii katowic", "planetarium śląskie",
             "planetarium slaskie",
         )):
+            return True
+        if "muzeum" in name and not ({"museum_heritage", "history_mystery"} & prefs):
+            return True
+
+    # FIX #245 Katowice — couples water: planetarium off
+    if tg == "couples" and "water_attractions" in prefs:
+        if "planetarium" in name:
             return True
 
     # FIX #244 Poznań — micro heritage off friends adventure
@@ -715,17 +749,21 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
     )):
         delta -= 90.0
 
-    # FIX #243 Katowice — friends+adventure+history: industrial Śląsk boost (było błędnie demote)
+    # FIX #243 Katowice — friends+adventure+history: industrial Śląsk boost (Wilson demote)
     if tg == "friends" and adv and "history_mystery" in prefs:
         if any(k in name for k in (
             "kopalnia guido", "guido", "królowa luiza", "krolowa luiza",
-            "carboneum", "galeria szyb wilson", "szyb wilson", "sztolnia",
+            "carboneum", "sztolnia", "jumpcity", "funhouse",
         )):
             delta += 115.0
         if "kopalnia guido" in name or (name.strip() == "guido"):
             delta += 80.0
         if "królowa luiza" in name or "krolowa luiza" in name:
             delta += 70.0
+        if any(k in name for k in ("galeria szyb wilson", "szyb wilson")):
+            delta -= 110.0
+        if any(k in name for k in ("muzeum śląskie", "muzeum slaskie")) and "active_sport" in prefs:
+            delta -= 90.0
 
     # FIX #234 Katowice — relax demote churches
     if (style == "relax" or "relaxation" in prefs) and any(k in name for k in (
@@ -1140,6 +1178,47 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             "wartostrada", "palmiarnia", "dolina trzech",
         )):
             delta += 85.0
+
+    # ── FIX #245 Katowice — powtórki fillerów, kids, water, sparse dni ──
+    _rk245 = poi_trip_repeat_key(name)
+    if _rk245:
+        for _tn in trip_names:
+            if poi_trip_repeat_key(_tn) == _rk245:
+                delta -= 160.0
+                break
+
+    if tg == "family_kids" and "kids_attractions" in prefs:
+        if any(k in name for k in (
+            "papugarnia", "jumpcity", "pixel xl", "pixel", "zoo", "funhouse",
+        )):
+            delta += 90.0
+        _trip_kids245 = int(ctx.get("trip_kids_attraction_count") or 0)
+        if day >= 2 and _trip_kids245 >= 1:
+            if any(k in name for k in (
+                "pijalnia czekolady", "planetarium", "galeria szyb wilson", "szyb wilson",
+            )):
+                delta -= 95.0
+
+    if tg == "couples" and "water_attractions" in prefs:
+        if any(k in name for k in ("park wodny", "nemo", "wodny park", "tychy")):
+            delta += 110.0
+        if "park kościuszki" in name or "park kosciuszki" in name:
+            delta -= 100.0
+        if "planetarium" in name:
+            delta -= 95.0
+        if any(k in name for k in ("muzeum śląskie", "muzeum slaskie", "rynek w katowicach", "rynek katowic")):
+            delta -= 85.0
+
+    if tg == "solo" and nat_relax and not ({"museum_heritage", "history_mystery"} & prefs):
+        if "muzeum" in name or "planetarium" in name:
+            delta -= 100.0
+
+    if num_days >= 7 and day >= 7:
+        if any(k in name for k in (
+            "park wodny", "nemo", "dolina trzech", "palmiarnia", "nikiszowiec",
+            "tężnia", "teznia", "park śląski", "park slaski",
+        )):
+            delta += 95.0
 
     return delta
 

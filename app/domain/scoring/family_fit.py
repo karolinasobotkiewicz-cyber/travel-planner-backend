@@ -17,8 +17,9 @@ _CHILD_POI_NAME_MARKERS = (
     "akwariat", "podwodny świat", "podwodny swiat", "myszogród", "myszogrod",
     "dino park", "park rozrywki", "sala zabaw", "plac zabaw", "tatra family",
     "park harnasia", "góralski ślizg", "goral ski slizg", "woskowych", "iluzja park",
-    "lego", "wielka wystawa klock", "loopy", "pixel xl",
+    "lego", "wielka wystawa klock",     "loopy", "pixel xl",
     "guliwer", "centrum rozrywki",
+    "kolejkowo", "jumpcity", "nemo", "park wodny", "wodny park",
 )
 # FIX #197: recurring client mismatches (name heuristics when Excel target_group is loose)
 _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {

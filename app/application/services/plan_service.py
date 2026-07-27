@@ -2834,12 +2834,22 @@ class PlanService:
                 _final_coord_map[name] = {**p, "lat": lat, "lng": lng}
         _finalized_days: List[DayPlan] = []
         _trip_names_so_far: set = set()
+        _trip_repeat_keys_so_far: set = set()
+        _last_guido_day = 0
+        _last_luiza_day = 0
+        _trip_kids_count = 0
+        _trip_has_water = False
         for day_plan in days:
             _fitems = list(day_plan.items)
             _day_ctx = contexts[day_plan.day - 1] if day_plan.day - 1 < len(contexts) else context
             # FIX #238: expose day_end so transit injection can bound its forward shift.
             if _day_ctx.get("day_end") != day_end:
                 _day_ctx = {**_day_ctx, "day_end": day_end}
+            _day_ctx = {
+                **_day_ctx,
+                "trip_kids_attraction_count": _trip_kids_count,
+                "trip_used_poi_names": _trip_names_so_far,
+            }
             _fitems = self._apply_fix237_day_pipeline(
                 _fitems,
                 _final_coord_map,
@@ -2857,12 +2867,107 @@ class PlanService:
             _fitems = self._strip_duplicate_zoo_same_day(
                 _fitems, day_num=day_plan.day,
             )
+            _fitems = self._strip_trip_repeat_filler_attractions(
+                _fitems,
+                _trip_repeat_keys_so_far,
+                day_num=day_plan.day,
+            )
+            _fitems = self._strip_guido_luiza_same_day(
+                _fitems,
+                day_num=day_plan.day,
+                last_guido_day=_last_guido_day,
+                last_luiza_day=_last_luiza_day,
+            )
             _fitems = self._strip_excessive_museums_same_day(
+                _fitems, user, day_num=day_plan.day,
+            )
+            _fitems = self._strip_family_non_kids_late_day(
                 _fitems, user, day_num=day_plan.day,
             )
             _fitems = self._enforce_minimum_named_poi_duration(
                 _fitems, user, day_num=day_plan.day,
             )
+            _min_attr245 = 2
+            if num_days >= 7 and day_plan.day >= 7:
+                _min_attr245 = 3
+            _n_attr245 = sum(1 for it in _fitems if _is_timeline_attraction(it))
+            _first_st245 = None
+            for _it245 in _fitems:
+                if _is_timeline_attraction(_it245):
+                    _first_st245 = getattr(_it245, "start_time", None)
+                    break
+            _adv245 = user.get("travel_style") == "adventure" or "adventure" in (user.get("preferences") or [])
+            _need_refill = _n_attr245 < _min_attr245
+            if (
+                not _need_refill
+                and _adv245
+                and user.get("target_group") == "friends"
+                and _first_st245
+                and time_to_minutes(_first_st245) >= 12 * 60
+            ):
+                _need_refill = True
+            if _need_refill and all_pois_dict:
+                _fitems = self._backfill_sparse_day_attractions(
+                    _fitems,
+                    all_pois_dict,
+                    _day_ctx,
+                    user,
+                    global_used_pois,
+                    _trip_repeat_keys_so_far,
+                    _trip_names_so_far,
+                    day_num=day_plan.day,
+                    min_attr=_min_attr245,
+                    cross_day_reuse=True,
+                    last_guido_day=_last_guido_day,
+                    last_luiza_day=_last_luiza_day,
+                    trip_has_water=_trip_has_water,
+                )
+                _fitems = self._fill_gaps_in_items(
+                    _fitems,
+                    all_pois_dict,
+                    {**_day_ctx, "trip_used_poi_names": _trip_names_so_far},
+                    user,
+                    global_used_pois,
+                    all_pois_lookup=all_pois_dict,
+                    cross_day_reuse=True,
+                )
+                _fitems = self._strip_trip_repeat_filler_attractions(
+                    _fitems,
+                    _trip_repeat_keys_so_far,
+                    day_num=day_plan.day,
+                )
+                _fitems = self._strip_guido_luiza_same_day(
+                    _fitems,
+                    day_num=day_plan.day,
+                    last_guido_day=_last_guido_day,
+                    last_luiza_day=_last_luiza_day,
+                )
+                _fitems = self._sort_items_by_time(_fitems)
+            _couples_water = (
+                user.get("target_group") == "couples"
+                and "water_attractions" in (user.get("preferences") or [])
+            )
+            if _couples_water and not _trip_has_water and all_pois_dict:
+                _cur_w = sum(1 for it in _fitems if _is_timeline_attraction(it))
+                _fitems = self._backfill_sparse_day_attractions(
+                    _fitems,
+                    all_pois_dict,
+                    _day_ctx,
+                    user,
+                    global_used_pois,
+                    _trip_repeat_keys_so_far,
+                    _trip_names_so_far,
+                    day_num=day_plan.day,
+                    min_attr=_cur_w + 1,
+                    cross_day_reuse=True,
+                    last_guido_day=_last_guido_day,
+                    last_luiza_day=_last_luiza_day,
+                    trip_has_water=False,
+                )
+                _fitems = self._strip_trip_repeat_filler_attractions(
+                    _fitems, _trip_repeat_keys_so_far, day_num=day_plan.day,
+                )
+                _fitems = self._sort_items_by_time(_fitems)
             _fitems, _ = validate_and_heal_timeline(
                 _fitems, day_number=day_plan.day, raise_on_failure=False,
             )
@@ -2915,6 +3020,21 @@ class PlanService:
                     _nm = (getattr(_it, "name", "") or "").lower()
                     if _nm:
                         _trip_names_so_far.add(_nm)
+                    from app.domain.scoring.profile_poi_rules import poi_trip_repeat_key
+                    from app.domain.scoring.family_fit import is_child_oriented_attraction
+                    _rk = poi_trip_repeat_key(getattr(_it, "name", "") or "")
+                    if _rk:
+                        _trip_repeat_keys_so_far.add(_rk)
+                    if is_child_oriented_attraction(
+                        {"name": getattr(_it, "name", ""), "tags": []}
+                    ):
+                        _trip_kids_count += 1
+                    if "kopalnia guido" in _nm or _nm.strip() == "guido":
+                        _last_guido_day = day_plan.day
+                    if "królowa luiza" in _nm or "krolowa luiza" in _nm:
+                        _last_luiza_day = day_plan.day
+                    if any(k in _nm for k in ("park wodny", "nemo", "wodny park", "tychy")):
+                        _trip_has_water = True
             _finalized_days.append(DayPlan(
                 day=day_plan.day,
                 title=_generate_day_title(_fitems, day_plan.day),
@@ -4627,6 +4747,15 @@ class PlanService:
                                 score += 35.0
                             if _f187_last_day_ps and poi_geo_region_key(poi) == context.get("day_geo_region"):
                                 score += 80.0
+                            from app.domain.scoring.profile_poi_rules import profile_poi_score_delta
+                            score += profile_poi_score_delta(
+                                poi,
+                                user,
+                                context={
+                                    **context,
+                                    "trip_used_poi_names": context.get("trip_used_poi_names") or set(),
+                                },
+                            )
                             # FIX #220: Excel POI always preferred over Overpass supplement
                             if str(poi.get("source", "")).startswith("external"):
                                 score -= 45.0
@@ -6261,6 +6390,327 @@ class PlanService:
             except Exception:
                 out.append(it)
             print(f"[FIX #240] Day {day_num}: pushed dinner {st} → {minutes_to_time(new_st)}")
+        return out
+
+    def _strip_family_non_kids_late_day(
+        self,
+        items: List[Any],
+        user: Dict[str, Any],
+        *,
+        day_num: int = 1,
+    ) -> List[Any]:
+        """FIX #245: family_kids D2+ bez kids POI — usuń dorosłe fillery przed backfill."""
+        from app.domain.scoring.family_fit import is_child_oriented_attraction
+
+        if user.get("target_group") != "family_kids":
+            return items
+        if day_num < 2 or "kids_attractions" not in (user.get("preferences") or []):
+            return items
+        has_kids = any(
+            is_child_oriented_attraction({"name": getattr(it, "name", ""), "tags": []})
+            for it in items
+            if _is_timeline_attraction(it)
+        )
+        if has_kids:
+            return items
+        _adult_fillers = (
+            "pijalnia czekolady", "galeria szyb wilson", "szyb wilson",
+            "planetarium", "dolina trzech",
+        )
+        out: List[Any] = []
+        for it in items:
+            if _is_timeline_attraction(it):
+                nm = (getattr(it, "name", "") or "").lower()
+                if any(k in nm for k in _adult_fillers):
+                    print(f"[FIX #245] Day {day_num}: stripped adult filler {nm}")
+                    continue
+            out.append(it)
+        return out
+
+    def _backfill_sparse_day_attractions(
+        self,
+        items: List[Any],
+        pool: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        user: Dict[str, Any],
+        global_used: set,
+        trip_repeat_keys: set,
+        trip_names: set,
+        *,
+        day_num: int = 1,
+        min_attr: int = 2,
+        cross_day_reuse: bool = True,
+        last_guido_day: int = 0,
+        last_luiza_day: int = 0,
+        trip_has_water: bool = False,
+    ) -> List[Any]:
+        """FIX #245: seed morning/sparse days when gap-fill alone leaves holes."""
+        from app.domain.planner.engine import calculate_poi_cost_for_group, is_open
+        from app.domain.planner.city_copy import (
+            normalize_city_name,
+            poi_city_norm,
+            poi_hub_norm,
+            poi_matches_city_filter,
+        )
+        from app.domain.scoring.family_fit import (
+            is_child_oriented_attraction,
+            should_exclude_by_target_group,
+        )
+        from app.domain.scoring.intensity_scoring import should_exclude_by_intensity
+        from app.domain.scoring.profile_poi_rules import (
+            poi_trip_repeat_key,
+            profile_poi_score_delta,
+            should_deny_poi_for_profile,
+        )
+        from app.domain.scoring.preference_coverage import poi_covers_preference_report
+
+        n_attr = sum(1 for it in items if _is_timeline_attraction(it))
+        day_start_str = context.get("day_start") or "09:00"
+        day_start_min = time_to_minutes(day_start_str)
+
+        first_block_min = None
+        for it in items:
+            t = _item_type_value(it)
+            if t in (ItemType.ATTRACTION.value, ItemType.LUNCH_BREAK.value):
+                st = getattr(it, "start_time", None)
+                if st:
+                    first_block_min = time_to_minutes(st)
+                    break
+
+        _adv = user.get("travel_style") == "adventure" or "adventure" in (user.get("preferences") or [])
+        need_morning = (
+            first_block_min is not None
+            and first_block_min >= 11 * 60 + 30
+            and n_attr >= 1
+            and user.get("target_group") == "friends"
+            and _adv
+        )
+        target = min_attr
+        if int(context.get("num_days") or 1) >= 7 and day_num >= 7:
+            target = max(target, 3)
+
+        if n_attr >= target and not need_morning:
+            return items
+
+        _req_city = context.get("requested_city", "")
+        _cluster = context.get("cluster_cities") or []
+        if cross_day_reuse:
+            used_ids = {
+                getattr(it, "poi_id", None)
+                for it in items
+                if _is_timeline_attraction(it) and getattr(it, "poi_id", None)
+            }
+        else:
+            used_ids = set(global_used or set())
+
+        _today_ids = {
+            getattr(it, "poi_id", None)
+            for it in items
+            if _is_timeline_attraction(it) and getattr(it, "poi_id", None)
+        }
+
+        prefs = user.get("preferences") or []
+        require_kids = (
+            user.get("target_group") == "family_kids"
+            and "kids_attractions" in prefs
+            and day_num >= 2
+            and not any(
+                is_child_oriented_attraction({"name": getattr(it, "name", ""), "tags": []})
+                for it in items
+                if _is_timeline_attraction(it)
+            )
+        )
+
+        def _score_candidate(poi: dict) -> float:
+            sc = profile_poi_score_delta(
+                poi,
+                user,
+                context={
+                    **context,
+                    "current_day_num": day_num,
+                    "trip_used_poi_names": trip_names,
+                    "trip_kids_attraction_count": context.get("trip_kids_attraction_count", 0),
+                },
+            )
+            for pref in prefs:
+                if poi_covers_preference_report(poi, pref):
+                    sc += 40.0
+            if require_kids and is_child_oriented_attraction(poi):
+                sc += 120.0
+            elif require_kids:
+                sc -= 200.0
+            if (
+                user.get("target_group") == "couples"
+                and "water_attractions" in prefs
+                and not trip_has_water
+            ):
+                pn = (poi.get("name") or "").lower()
+                if any(k in pn for k in ("park wodny", "nemo", "wodny park", "tychy")):
+                    sc += 180.0
+                else:
+                    sc -= 120.0
+            return sc
+
+        _cluster_norms = {normalize_city_name(c) for c in _cluster if c}
+
+        def _poi_ok_city(poi: dict) -> bool:
+            if _cluster_norms:
+                return (
+                    poi_city_norm(poi) in _cluster_norms
+                    or poi_hub_norm(poi) in _cluster_norms
+                )
+            if _req_city:
+                return poi_matches_city_filter(poi, _req_city)
+            return True
+
+        def _pick_poi(slot_start_min: int, slot_end_min: int) -> dict | None:
+            best_poi = None
+            best_score = -9999.0
+            for poi in pool:
+                pid = poi.get("id")
+                if not pid or pid in used_ids:
+                    continue
+                if not _poi_ok_city(poi):
+                    continue
+                if should_deny_poi_for_profile(poi, user):
+                    continue
+                if should_exclude_by_target_group(poi, user):
+                    continue
+                if should_exclude_by_intensity(poi, user):
+                    continue
+                rk = poi_trip_repeat_key(poi.get("name", ""))
+                if rk and rk in trip_repeat_keys:
+                    continue
+                pn = (poi.get("name") or "").lower()
+                if pn and pn in trip_names:
+                    continue
+                if ("kopalnia guido" in pn or pn.strip() == "guido") and last_luiza_day and day_num - last_luiza_day == 1:
+                    continue
+                if ("królowa luiza" in pn or "krolowa luiza" in pn) and last_guido_day and day_num - last_guido_day == 1:
+                    continue
+                dur = int(poi.get("time_min") or poi.get("duration_min") or 60)
+                if slot_start_min + dur > slot_end_min:
+                    continue
+                if context.get("date") and not is_open(
+                    poi, slot_start_min, dur, context.get("season", "all"), context
+                ):
+                    continue
+                _dl = user.get("daily_limit")
+                if _dl and calculate_poi_cost_for_group(poi, user) > float(_dl):
+                    continue
+                sc = _score_candidate(poi)
+                if sc > best_score:
+                    best_score = sc
+                    best_poi = poi
+            return best_poi
+
+        working = list(items)
+        inserts: List[Any] = []
+
+        if need_morning and first_block_min:
+            slot_end = first_block_min - 15
+            if slot_end - day_start_min >= 60:
+                poi = _pick_poi(day_start_min + 10, slot_end)
+                if poi:
+                    st = minutes_to_time(day_start_min + 10)
+                    inserts.append(
+                        self._generate_attraction_item(
+                            poi, st, user, user.get("target_group", "solo"), context, None
+                        )
+                    )
+                    used_ids.add(poi.get("id"))
+                    pid = poi.get("id")
+                    if pid:
+                        _today_ids.add(pid)
+                    print(f"[FIX #245] Day {day_num}: morning backfill {poi.get('name')}")
+
+        n_attr = sum(1 for it in working if _is_timeline_attraction(it)) + len(inserts)
+        while n_attr < target:
+            slot_start = day_start_min + 10
+            slot_end = time_to_minutes(context.get("day_end") or "19:00") - 90
+            poi = _pick_poi(slot_start, slot_end)
+            if not poi:
+                break
+            st = minutes_to_time(slot_start)
+            inserts.append(
+                self._generate_attraction_item(
+                    poi, st, user, user.get("target_group", "solo"), context, None
+                )
+            )
+            used_ids.add(poi.get("id"))
+            dur = int(poi.get("time_min") or 60)
+            day_start_min = slot_start + dur + 15
+            n_attr += 1
+            print(f"[FIX #245] Day {day_num}: sparse backfill {poi.get('name')}")
+
+        if not inserts:
+            return items
+
+        merged = working + inserts
+        return self._sort_items_by_time(merged)
+
+    def _strip_trip_repeat_filler_attractions(
+        self,
+        items: List[Any],
+        trip_repeat_keys: set,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #245 Katowice: max 1× Park Kościuszki / Rynek / Wedel / Planetarium per trip."""
+        from app.domain.scoring.profile_poi_rules import poi_trip_repeat_key
+
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = getattr(it, "name", "") or ""
+            rk = poi_trip_repeat_key(nm)
+            if rk and rk in trip_repeat_keys:
+                print(
+                    f"[FIX #245] Day {day_num}: stripped trip repeat "
+                    f"{nm} ({rk})"
+                )
+                continue
+            out.append(it)
+        return out
+
+    def _strip_guido_luiza_same_day(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+        last_guido_day: int = 0,
+        last_luiza_day: int = 0,
+    ) -> List[Any]:
+        """FIX #245: Guido + Królowa Luiza — nie tego samego dnia ani kolejnych dni."""
+        has_guido = False
+        has_luiza = False
+        for it in items:
+            if not _is_timeline_attraction(it):
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            if "kopalnia guido" in nm or nm.strip() == "guido":
+                has_guido = True
+            if "królowa luiza" in nm or "krolowa luiza" in nm:
+                has_luiza = True
+        out: List[Any] = []
+        for it in items:
+            if _is_timeline_attraction(it):
+                nm = (getattr(it, "name", "") or "").lower()
+                if has_guido and ("królowa luiza" in nm or "krolowa luiza" in nm):
+                    print(f"[FIX #245] Day {day_num}: stripped Luiza after Guido same day")
+                    continue
+                if has_luiza and ("kopalnia guido" in nm or nm.strip() == "guido"):
+                    print(f"[FIX #245] Day {day_num}: stripped Guido after Luiza same day")
+                    continue
+                if ("kopalnia guido" in nm or nm.strip() == "guido") and last_luiza_day and day_num - last_luiza_day == 1:
+                    print(f"[FIX #245] Day {day_num}: stripped Guido day after Luiza")
+                    continue
+                if ("królowa luiza" in nm or "krolowa luiza" in nm) and last_guido_day and day_num - last_guido_day == 1:
+                    print(f"[FIX #245] Day {day_num}: stripped Luiza day after Guido")
+                    continue
+            out.append(it)
         return out
 
     def _strip_profile_denied_attractions(
