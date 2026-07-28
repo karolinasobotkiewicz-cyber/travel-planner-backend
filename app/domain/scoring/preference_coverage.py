@@ -242,6 +242,9 @@ _STRONG_BY_PREF: Dict[str, frozenset] = {
         "adrenaline_attractions", "adrenaline_activity", "adrenaline_fun",
         "outdoor_activity", "sport", "fitness", "fitness_path", "health_trail",
         "golf_course_resort", "horse_riding", "mountain_adventure", "adventure_sport",
+        # FIX #247 Warszawa Excel tags
+        "team_challenge", "escape_challenges", "physical_activity", "river_activity",
+        "water_adventure", "group_activity",
     }),
     # FIX #204 (16.06.2026): mountain_trails had NO strict allowlist, so it fell
     # back to the broad scoring vocabulary and credited urban parks (Park
@@ -600,10 +603,14 @@ def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
     """True when Excel tags justify reporting this POI under `pref` in coverage API."""
     if _name_denied(poi, pref):
         return False
+    name = (poi.get("name") or poi.get("Name") or "").lower()
     if pref == "nature_landscape":
-        _name = (poi.get("name") or poi.get("Name") or "").lower()
-        if any(_frag in _name for _frag in _NATURE_LANDMARK_NAME_DENY):
+        if any(_frag in name for _frag in _NATURE_LANDMARK_NAME_DENY):
             return False
+    if pref == "active_sport" and any(m in name for m in _STRONG_ACTIVE_NAME_MARKERS):
+        return True
+    if pref == "water_attractions" and any(m in name for m in _STRONG_WATER_NAME_MARKERS):
+        return True
     tags = excel_tags(poi)
     if pref == "nature_landscape":
         tags = {t for t in tags if t not in _NATURE_COVERAGE_TAG_DENY}
@@ -703,6 +710,18 @@ _STRONG_RELAX_NAME_MARKERS = (
     "ogród japoński", "ogrod japonski", "fontanna",
     # FIX #213: mountain relax walks (Zakopane) still count as relaxation.
     "morskie oko", "polana", "rowień", "rowien", "dolina", "gubałów", "gubalow",
+    # FIX #247 Warszawa
+    "park wodny", "warszawianka",
+)
+
+_STRONG_ACTIVE_NAME_MARKERS = (
+    "tepfactor", "park linowy", "kajak", "trampolin", "gojump", "paintball",
+    "escape room", "gokart", "wspinacz", "obstacle",
+)
+
+_STRONG_WATER_NAME_MARKERS = (
+    "park wodny", "warszawianka", "aquapark", "hydropolis", "nemo",
+    "bulwary wiślane", "bulwary wislane", "kajak",
 )
 
 

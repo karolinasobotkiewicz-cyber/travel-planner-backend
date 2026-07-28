@@ -52,6 +52,17 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("nikiszowiec", "kat_nikiszowiec"),
         ("tężnia", "kat_teznia"),
         ("teznia", "kat_teznia"),
+        # FIX #247 Warszawa — powtarzalne mikro-fillery
+        ("most świętokrzyski", "waw_most_swietokrzyski"),
+        ("most swietokrzyski", "waw_most_swietokrzyski"),
+        ("pałac prezydencki", "waw_palac_prezydencki"),
+        ("palac prezydencki", "waw_palac_prezydencki"),
+        ("ogrody zamku", "waw_ogrody_zamku"),
+        ("ogrod zamku", "waw_ogrody_zamku"),
+        ("plac europejski", "waw_plac_europejski"),
+        ("centrum pieniądza", "waw_centrum_pieniadza"),
+        ("centrum pieniadza", "waw_centrum_pieniadza"),
+        ("browary warszawskie", "waw_browary"),
     )
     for marker, key in _markers:
         if marker in n:
@@ -240,6 +251,26 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
         if tg == "couples" and "nature_landscape" in prefs and "kids_attractions" not in prefs:
             return True
 
+    # FIX #247 Warszawa — Centrum Pieniądza off solo relax/nature (json9)
+    if any(k in name for k in ("centrum pieniądza", "centrum pieniadza")):
+        if tg == "solo" and (style == "relax" or {"relaxation", "nature_landscape"} <= prefs):
+            return True
+        if tg == "couples" and {"water_attractions", "relaxation"} <= prefs:
+            return True
+
+    # FIX #247 Warszawa — Plac Europejski (słaby filler)
+    if "plac europejski" in name:
+        if tg == "couples" and {"water_attractions", "relaxation"} <= prefs:
+            return True
+
+    # FIX #247 Warszawa — couples museum/relax: Most + Pałac Prezydencki (json2)
+    if tg == "couples" and "museum_heritage" in prefs and "relaxation" in prefs:
+        if any(k in name for k in (
+            "most świętokrzyski", "most swietokrzyski",
+            "pałac prezydencki", "palac prezydencki",
+        )):
+            return True
+
     # FIX #241 Kraków — friends+history: Park Decjusza, Kopiec Wandy, Kładka
     if tg == "friends" and adv and {"underground", "history_mystery", "museum_heritage"} <= prefs:
         if any(k in name for k in (
@@ -269,6 +300,19 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
             "browary warszawskie", "pałac prezydencki", "palac prezydencki",
             "most świętokrzyski", "most swietokrzyski",
         )):
+            return True
+
+    # FIX #247 Warszawa — solo+nature: Most / Pałac Prezydencki (json4)
+    if tg == "solo" and "nature_landscape" in prefs:
+        if any(k in name for k in (
+            "most świętokrzyski", "most swietokrzyski",
+            "pałac prezydencki", "palac prezydencki",
+        )):
+            return True
+
+    # FIX #247 Warszawa — couples water+relax: Pałac Prezydencki (json10)
+    if tg == "couples" and {"water_attractions", "relaxation"} <= prefs:
+        if any(k in name for k in ("pałac prezydencki", "palac prezydencki", "grób nieznanego", "grob nieznanego")):
             return True
 
     # FIX #242 Warszawa — friends+adventure+history: słabe mikro-atrakcje
@@ -1277,6 +1321,78 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
         if "muzeum" in name and int(ctx.get("day_museum_count") or 0) >= 1:
             delta -= 75.0
 
+    # ── FIX #247 Warszawa — client feedback json 2/3/4/7/8/9/10 ──
+    _waw247_filler = (
+        "most świętokrzyski", "most swietokrzyski", "pałac prezydencki", "palac prezydencki",
+        "plac europejski", "centrum pieniądza", "centrum pieniadza",
+    )
+    if any(k in name for k in _waw247_filler):
+        delta -= 130.0
+
+    if any(k in name for k in ("ogrody zamku", "ogrod zamku")):
+        delta -= 110.0
+        if name in trip_names:
+            delta -= 90.0
+
+    if tg == "friends" and adv and "active_sport" in prefs:
+        if any(k in name for k in (
+            "tepfactor", "park linowy", "kajak", "kajaki", "trampolin", "gojump",
+            "paintball", "escape", "gokart", "wspinacz",
+        )):
+            delta += 125.0
+        if any(k in name for k in ("centrum nauki kopernik", "pijalnia czekolady", "polin")):
+            if int(ctx.get("trip_active_sport_count") or 0) < 1:
+                delta -= 85.0
+
+    if tg == "friends" and adv and {"underground", "history_mystery"} <= prefs:
+        if any(k in name for k in (
+            "podziemia", "schron", "krypta", "bunkier", "fort ", "katakumby",
+            "muzeum powstania", "warszawskiego",
+        )):
+            delta += 110.0
+        if any(k in name for k in (
+            "tepfactor", "park linowy", "grawitacja", "gazowni", "kajak",
+        )):
+            delta += 115.0
+        if any(k in name for k in ("pałac kultury", "palac kultury", "pkin")):
+            if int(ctx.get("day_museum_count") or 0) >= 1:
+                delta -= 95.0
+            delta -= 60.0
+
+    if tg == "solo" and "nature_landscape" in prefs:
+        if any(k in name for k in (
+            "łazienki królewskie", "lazienki krolewskie", "ogród botaniczny", "ogrod botaniczny",
+            "bulwary wiślane", "bulwary wislane", "wilanów", "wilanow", "kopiec",
+            "ogrody zamku", "ogrod zamku", "palmiarnia",
+        )):
+            delta += 100.0
+        if any(k in name for k in _waw247_filler):
+            delta -= 80.0
+        if "muzeum" in name and int(ctx.get("day_museum_count") or 0) >= 2:
+            delta -= 90.0
+
+    if tg == "couples" and {"water_attractions", "relaxation"} <= prefs:
+        if any(k in name for k in (
+            "park wodny", "warszawianka", "bulwary wiślane", "bulwary wislane",
+            "łazienki królewskie", "lazienki krolewskie",
+        )):
+            delta += 120.0
+        if any(k in name for k in ("pałac prezydencki", "palac prezydencki", "grób nieznanego", "grob nieznanego")):
+            delta -= 100.0
+
+    if num_days >= 7 and day >= 6:
+        if any(k in name for k in (
+            "łazienki królewskie", "lazienki krolewskie", "wilanów", "wilanow",
+            "ogród botaniczny", "ogrod botaniczny", "bulwary", "muzeum pałacu",
+            "muzeum palacu", "park wodny",
+        )):
+            delta += 85.0
+        if any(k in name for k in (
+            "centrum pieniądza", "centrum pieniadza", "muzeum geologiczne",
+            "muzeum gazowni", "cmentarz powązkowski", "cmentarz powazkowski",
+        )):
+            delta -= 75.0
+
     return delta
 
 
@@ -1304,6 +1420,6 @@ def is_active_city_poi(poi: dict) -> bool:
     _active_names = (
         "gojump", "aquapark", "hydropolis", "bungee", "park linowy", "trampolin",
         "kopalnia", "sztolnia", "guido", "carboneum", "spływ", "spluw", "ponton",
-        "pixel xl", "escape", "paintball", "linowa", "kajak", "gokart",
+        "pixel xl", "escape", "paintball", "linowa", "kajak", "gokart", "tepfactor",
     )
     return any(n in name for n in _active_names)
