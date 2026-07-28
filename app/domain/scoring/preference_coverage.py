@@ -700,6 +700,7 @@ _STRONG_NATURE_NAME_MARKERS = (
     "wilanów", "wilanow", "arboretum",
     # FIX #229: Wrocław/Warszawa signature green spots.
     "wyspa słodowa", "wyspa slodowa", "ogród japoński", "ogrod japonski",
+    "park szczytnicki", "pergola przy hali", "pergola", "lasek", "las strzeli",
 )
 
 _STRONG_RELAX_NAME_MARKERS = (

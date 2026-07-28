@@ -2845,6 +2845,7 @@ class PlanService:
         _trip_kids_count = 0
         _trip_has_water = False
         _trip_active_count = 0
+        _trip_relax_nat_count = 0
         for day_plan in days:
             _fitems = list(day_plan.items)
             _day_ctx = contexts[day_plan.day - 1] if day_plan.day - 1 < len(contexts) else context
@@ -3072,6 +3073,9 @@ class PlanService:
             _fitems = self._strip_long_transit_destinations(
                 _fitems, max_min=35, day_num=day_plan.day,
             )
+            _fitems = self._strip_transits_to_unscheduled_destinations(
+                _fitems, day_num=day_plan.day,
+            )
             _n_after_lt246 = sum(1 for it in _fitems if _is_timeline_attraction(it))
             if _n_after_lt246 < 2 and all_pois_dict:
                 _fitems = self._backfill_sparse_day_attractions(
@@ -3245,6 +3249,103 @@ class PlanService:
                         _fitems, max_min=35, day_num=day_plan.day,
                     )
                     _fitems = self._sort_items_by_time(_fitems)
+            _relax_nat248 = (
+                all_pois_dict
+                and (
+                    (
+                        user.get("target_group") == "couples"
+                        and "relaxation" in _meal_prefs246
+                        and user.get("travel_style") == "cultural"
+                    )
+                    or (
+                        user.get("target_group") == "seniors"
+                        and {"nature_landscape", "relaxation"} <= set(_meal_prefs246)
+                    )
+                    or (
+                        user.get("target_group") == "solo"
+                        and {"nature_landscape", "relaxation"} <= set(_meal_prefs246)
+                    )
+                    or (
+                        user.get("target_group") == "solo"
+                        and "nature_landscape" in _meal_prefs246
+                    )
+                )
+            )
+            if _relax_nat248:
+                from app.domain.scoring.preference_coverage import (
+                    is_strong_nature_coverage_poi,
+                    is_strong_relaxation_coverage_poi,
+                )
+                _poi_by_id248 = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+                _has_rn_day = False
+                for _it248 in _fitems:
+                    if not _is_timeline_attraction(_it248):
+                        continue
+                    _p248 = _poi_by_id248.get(
+                        getattr(_it248, "poi_id", ""),
+                        {"name": getattr(_it248, "name", ""), "tags": []},
+                    )
+                    _nm248 = (getattr(_it248, "name", "") or "").lower()
+                    if (
+                        is_strong_nature_coverage_poi(_p248)
+                        or is_strong_relaxation_coverage_poi(_p248)
+                        or any(k in _nm248 for k in (
+                            "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
+                            "ogród japoński", "ogrod japonski", "lasek", "las strzeli",
+                            "bulwar", "odra",
+                        ))
+                    ):
+                        _has_rn_day = True
+                        break
+                if _has_rn_day:
+                    _trip_relax_nat_count = max(_trip_relax_nat_count, 1)
+                if _trip_relax_nat_count < 1:
+                    _fitems, _inj248 = self._inject_relax_nature_green_poi(
+                        _fitems,
+                        all_pois_dict,
+                        _day_ctx,
+                        user,
+                        global_used_pois,
+                        _trip_repeat_keys_so_far,
+                        _trip_names_so_far,
+                        day_num=day_plan.day,
+                    )
+                    if _inj248:
+                        _trip_relax_nat_count += 1
+                        _fitems = self._strip_profile_denied_attractions(
+                            _fitems, user, all_pois_dict, day_num=day_plan.day,
+                        )
+                        _fitems = self._strip_transits_to_unscheduled_destinations(
+                            _fitems, day_num=day_plan.day,
+                        )
+                        _fitems = self._sort_items_by_time(_fitems)
+                elif not _has_rn_day:
+                    _fitems = self._strip_one_museum_for_relax_nature(
+                        _fitems, user, day_num=day_plan.day,
+                    )
+                    _cur248 = sum(1 for it in _fitems if _is_timeline_attraction(it))
+                    _fitems = self._backfill_sparse_day_attractions(
+                        _fitems,
+                        all_pois_dict,
+                        _day_ctx,
+                        user,
+                        global_used_pois,
+                        _trip_repeat_keys_so_far,
+                        _trip_names_so_far,
+                        day_num=day_plan.day,
+                        min_attr=_cur248 + 1,
+                        cross_day_reuse=True,
+                        last_guido_day=_last_guido_day,
+                        last_luiza_day=_last_luiza_day,
+                        trip_has_water=_trip_has_water,
+                    )
+                    _fitems = self._strip_profile_denied_attractions(
+                        _fitems, user, all_pois_dict, day_num=day_plan.day,
+                    )
+                    _fitems = self._strip_transits_to_unscheduled_destinations(
+                        _fitems, day_num=day_plan.day,
+                    )
+                    _fitems = self._sort_items_by_time(_fitems)
             if all_pois_dict:
                 _fitems = self._strip_profile_denied_attractions(
                     _fitems, user, all_pois_dict, day_num=day_plan.day,
@@ -3263,6 +3364,39 @@ class PlanService:
                 _fitems = self._strip_misscheduled_afternoon_attractions(
                     _fitems, all_pois_dict, day_num=day_plan.day,
                 )
+            _hist_mus248 = (
+                all_pois_dict
+                and user.get("target_group") == "friends"
+                and (user.get("travel_style") == "adventure" or "adventure" in (user.get("preferences") or []))
+                and {"history_mystery", "museum_heritage"} <= set(user.get("preferences") or [])
+                and "active_sport" not in (user.get("preferences") or [])
+            )
+            if _hist_mus248:
+                _has_hist_day = any(
+                    _is_timeline_attraction(it)
+                    and (
+                        "muzeum" in (getattr(it, "name", "") or "").lower()
+                        or "panorama" in (getattr(it, "name", "") or "").lower()
+                        or "zajezdnia" in (getattr(it, "name", "") or "").lower()
+                    )
+                    for it in _fitems
+                )
+                if not _has_hist_day:
+                    _cur_h248 = sum(1 for it in _fitems if _is_timeline_attraction(it))
+                    _fitems = self._backfill_sparse_day_attractions(
+                        _fitems, all_pois_dict, _day_ctx, user, global_used_pois,
+                        _trip_repeat_keys_so_far, _trip_names_so_far,
+                        day_num=day_plan.day, min_attr=_cur_h248 + 1,
+                        cross_day_reuse=True, last_guido_day=_last_guido_day,
+                        last_luiza_day=_last_luiza_day, trip_has_water=_trip_has_water,
+                    )
+                    _fitems = self._strip_profile_denied_attractions(
+                        _fitems, user, all_pois_dict, day_num=day_plan.day,
+                    )
+                    _fitems = self._sort_items_by_time(_fitems)
+            _fitems = self._strip_transits_to_unscheduled_destinations(
+                _fitems, day_num=day_plan.day,
+            )
             for _it in _fitems:
                 if _is_timeline_attraction(_it):
                     _nm = (getattr(_it, "name", "") or "").lower()
@@ -6654,6 +6788,274 @@ class PlanService:
             print(f"[FIX #240] Day {day_num}: pushed dinner {st} → {minutes_to_time(new_st)}")
         return out
 
+    def _strip_transits_to_unscheduled_destinations(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #248 Wrocław: usuń transit do POI bez atrakcji w timeline (Grabowy Labirynt)."""
+        attr_names = {
+            (getattr(it, "name", "") or "").strip()
+            for it in items
+            if _is_timeline_attraction(it)
+        }
+        attr_lower = {n.lower() for n in attr_names if n}
+
+        def _matches(dest: str) -> bool:
+            if not dest:
+                return True
+            dl = dest.strip().lower()
+            if dl in attr_lower:
+                return True
+            dl_norm = dl.replace("ł", "l").replace("ó", "o").replace("ś", "s").replace("ź", "z").replace("ż", "z").replace("ę", "e").replace("ą", "a").replace("ć", "c").replace("ń", "n")
+            for n in attr_lower:
+                nn = n.replace("ł", "l").replace("ó", "o").replace("ś", "s").replace("ź", "z").replace("ż", "z").replace("ę", "e").replace("ą", "a").replace("ć", "c").replace("ń", "n")
+                if dl in n or n in dl or dl_norm in nn or nn in dl_norm:
+                    return True
+            return False
+
+        out: List[Any] = []
+        for it in items:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            to = (getattr(it, "to_location", "") or "").strip()
+            fr = (getattr(it, "from_location", "") or "").strip()
+            if to and not _matches(to):
+                print(
+                    f"[FIX #248] Day {day_num}: stripped transit to unscheduled {to!r}"
+                )
+                continue
+            if fr and not _matches(fr) and not to:
+                print(
+                    f"[FIX #248] Day {day_num}: stripped transit from unscheduled {fr!r}"
+                )
+                continue
+            out.append(it)
+        return out
+
+    def _inject_relax_nature_green_poi(
+        self,
+        items: List[Any],
+        pool: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        user: Dict[str, Any],
+        global_used: set,
+        trip_repeat_keys: set,
+        trip_names: set,
+        *,
+        day_num: int = 1,
+    ) -> tuple[List[Any], bool]:
+        """FIX #248 Wrocław: wstrzyknij wyspę/park/pergolę zamiast muzeum."""
+        from app.domain.scoring.preference_coverage import (
+            is_strong_nature_coverage_poi,
+            is_strong_relaxation_coverage_poi,
+        )
+        from app.domain.scoring.profile_poi_rules import (
+            poi_trip_repeat_key,
+            profile_poi_score_delta,
+            should_deny_poi_for_profile,
+        )
+        from app.domain.scoring.family_fit import should_exclude_by_target_group
+        from app.domain.scoring.intensity_scoring import should_exclude_by_intensity
+        from app.domain.planner.city_copy import (
+            normalize_city_name,
+            poi_city_norm,
+            poi_hub_norm,
+            poi_matches_city_filter,
+        )
+
+        prefs = set(user.get("preferences") or [])
+        tg = user.get("target_group")
+        if tg not in ("seniors", "solo", "couples"):
+            return items, False
+        if not ({"relaxation", "nature_landscape"} & prefs):
+            return items, False
+
+        _GREEN_HINTS = (
+            "wyspa słodowa", "wyspa slodowa", "pergola", "park szczytnicki",
+            "ogród japoński", "ogrod japonski", "lasek", "las strzeli", "bulwar",
+        )
+
+        def _is_green(poi: dict) -> bool:
+            nm = (poi.get("name") or "").lower()
+            return (
+                is_strong_nature_coverage_poi(poi)
+                or is_strong_relaxation_coverage_poi(poi)
+                or any(k in nm for k in _GREEN_HINTS)
+            )
+
+        used_ids = {
+            getattr(it, "poi_id", None)
+            for it in items
+            if _is_timeline_attraction(it) and getattr(it, "poi_id", None)
+        }
+        _req_city = context.get("requested_city", "")
+        _cluster = context.get("cluster_cities") or []
+        _cluster_norms = {normalize_city_name(c) for c in _cluster if c}
+
+        def _poi_ok_city(poi: dict) -> bool:
+            if _cluster_norms:
+                return (
+                    poi_city_norm(poi) in _cluster_norms
+                    or poi_hub_norm(poi) in _cluster_norms
+                )
+            if _req_city:
+                return poi_matches_city_filter(poi, _req_city)
+            return True
+
+        def _candidate_ok(poi: dict) -> bool:
+            if not _is_green(poi):
+                return False
+            pid = poi.get("id")
+            if not pid or pid in used_ids:
+                return False
+            if not _poi_ok_city(poi):
+                return False
+            if should_deny_poi_for_profile(poi, user):
+                return False
+            if should_exclude_by_target_group(poi, user):
+                return False
+            if should_exclude_by_intensity(poi, user):
+                return False
+            pn = (poi.get("name") or "").lower()
+            rk = poi_trip_repeat_key(poi.get("name", ""))
+            if rk and rk in trip_repeat_keys:
+                return False
+            if pn and pn in trip_names:
+                return False
+            return True
+
+        _PRIORITY = (
+            "wyspa słodowa", "wyspa slodowa",
+            "pergola przy hali", "pergola",
+            "ogród japoński", "ogrod japonski",
+            "park szczytnicki",
+            "lasek", "las strzeli", "bulwar",
+            "ogród botaniczny", "ogrod botaniczny",
+        )
+        best_poi = None
+        for hint in _PRIORITY:
+            for poi in pool:
+                if hint not in (poi.get("name") or "").lower():
+                    continue
+                if _candidate_ok(poi):
+                    best_poi = poi
+                    break
+            if best_poi:
+                break
+
+        if not best_poi:
+            best_score = -9999.0
+            for poi in pool:
+                if not _candidate_ok(poi):
+                    continue
+                pn = (poi.get("name") or "").lower()
+                sc = profile_poi_score_delta(
+                    poi,
+                    user,
+                    context={**context, "current_day_num": day_num},
+                )
+                if any(k in pn for k in ("wyspa", "pergola", "park szczytnicki", "ogród japoński", "ogrod japonski")):
+                    sc += 220.0
+                if sc > best_score:
+                    best_score = sc
+                    best_poi = poi
+
+        if not best_poi:
+            return items, False
+
+        strip_idx = None
+        strip_st = None
+        for i, it in enumerate(items):
+            if not _is_timeline_attraction(it):
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            if "muzeum" in nm and "hydropolis" not in nm:
+                strip_idx = i
+                strip_st = getattr(it, "start_time", None)
+                break
+        if strip_idx is None:
+            for i, it in enumerate(items):
+                if not _is_timeline_attraction(it):
+                    continue
+                nm = (getattr(it, "name", "") or "").lower()
+                if any(k in nm for k in ("katedra", "hala stulecia", "zajezdnia", "panorama rac")):
+                    strip_idx = i
+                    strip_st = getattr(it, "start_time", None)
+                    break
+        if strip_idx is None:
+            return items, False
+
+        out = list(items)
+        stripped_name = getattr(out[strip_idx], "name", "")
+        del out[strip_idx]
+        start_time = strip_st or context.get("day_start") or "10:00"
+        new_item = self._generate_attraction_item(
+            best_poi,
+            start_time,
+            user,
+            user.get("target_group", "solo"),
+            context,
+            None,
+        )
+        out.append(new_item)
+        print(
+            f"[FIX #248] Day {day_num}: injected green {best_poi.get('name')} "
+            f"replacing {stripped_name}"
+        )
+        return self._sort_items_by_time(out), True
+
+    def _strip_one_museum_for_relax_nature(
+        self,
+        items: List[Any],
+        user: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #248: usuń jedno muzeum gdy brakuje relaksu/natury na dniu."""
+        prefs = set(user.get("preferences") or [])
+        tg = user.get("target_group")
+        if tg not in ("seniors", "solo", "couples"):
+            return items
+        if not ({"relaxation", "nature_landscape"} & prefs):
+            return items
+        from app.domain.scoring.preference_coverage import poi_covers_preference_report
+
+        has_green = False
+        for it in items:
+            if not _is_timeline_attraction(it):
+                continue
+            poi = {"name": getattr(it, "name", ""), "tags": []}
+            nl = (getattr(it, "name", "") or "").lower()
+            if (
+                poi_covers_preference_report(poi, "relaxation")
+                or poi_covers_preference_report(poi, "nature_landscape")
+                or any(k in nl for k in (
+                    "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
+                    "ogród japoński", "ogrod japonski", "lasek", "las strzeli", "bulwar",
+                ))
+            ):
+                has_green = True
+                break
+        if has_green:
+            return items
+        stripped = False
+        out: List[Any] = []
+        for it in items:
+            if (
+                not stripped
+                and _is_timeline_attraction(it)
+                and "muzeum" in (getattr(it, "name", "") or "").lower()
+                and "hydropolis" not in (getattr(it, "name", "") or "").lower()
+            ):
+                stripped = True
+                print(f"[FIX #248] Day {day_num}: stripped museum for relax/nature {getattr(it, 'name', '')}")
+                continue
+            out.append(it)
+        return out
+
     def _strip_long_transit_destinations(
         self,
         items: List[Any],
@@ -6826,8 +7228,13 @@ class PlanService:
             first_block_min is not None
             and first_block_min >= 11 * 60 + 30
             and n_attr >= 1
-            and user.get("target_group") == "friends"
-            and _adv
+            and (
+                (user.get("target_group") == "friends" and _adv)
+                or (
+                    user.get("target_group") == "solo"
+                    and int(context.get("num_days") or 1) >= 5
+                )
+            )
         )
         target = min_attr
         if int(context.get("num_days") or 1) >= 7 and day_num >= 7:
@@ -6906,6 +7313,32 @@ class PlanService:
                     ))
                 ):
                     sc += 175.0
+            _relax_prefs = set(prefs)
+            _need_relax = (
+                "relaxation" in _relax_prefs
+                or (
+                    user.get("target_group") == "solo"
+                    and {"nature_landscape", "relaxation"} <= _relax_prefs
+                )
+                or (
+                    user.get("target_group") == "seniors"
+                    and {"nature_landscape", "relaxation"} <= _relax_prefs
+                )
+            )
+            if _need_relax:
+                pn = (poi.get("name") or "").lower()
+                if (
+                    poi_covers_preference_report(poi, "relaxation")
+                    or poi_covers_preference_report(poi, "nature_landscape")
+                    or any(k in pn for k in (
+                        "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
+                        "ogród japoński", "ogrod japonski", "lasek", "las strzeli",
+                        "bulwar", "odra",
+                    ))
+                ):
+                    sc += 200.0
+                elif "muzeum" in pn:
+                    sc -= 150.0
             return sc
 
         _cluster_norms = {normalize_city_name(c) for c in _cluster if c}

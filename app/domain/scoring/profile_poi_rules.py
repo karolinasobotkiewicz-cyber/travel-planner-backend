@@ -63,6 +63,19 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("centrum pieniądza", "waw_centrum_pieniadza"),
         ("centrum pieniadza", "waw_centrum_pieniadza"),
         ("browary warszawskie", "waw_browary"),
+        # FIX #248 Wrocław — powtarzalne fillery
+        ("wyspa słodowa", "wro_wyspa_slodowa"),
+        ("wyspa slodowa", "wro_wyspa_slodowa"),
+        ("hala stulecia", "wro_hala_stulecia"),
+        ("dworzec świebodzki", "wro_dworzec"),
+        ("dworzec swiebodzki", "wro_dworzec"),
+        ("hydropolis", "wro_hydropolis"),
+        ("rynek we wrocławiu", "wro_rynek"),
+        ("rynek we wroclawiu", "wro_rynek"),
+        ("hala targowa", "wro_hala_targowa"),
+        ("bastion sakwowy", "wro_bastion"),
+        ("most grunwaldzki", "wro_most_grunwaldzki"),
+        ("centrum historii zajezdnia", "wro_zajezdnia"),
     )
     for marker, key in _markers:
         if marker in n:
@@ -171,8 +184,37 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     # FIX #234 Wrocław family_kids — Muzeum Uniwersytetu
     if tg == "family_kids" and any(k in name for k in (
         "muzeum uniwersytetu", "muzeum uniwersyteckie",
+        "muzeum uniwesytetu", "uniwesytetu",
     )):
         return True
+
+    # FIX #248 Wrocław — Hala Targowa off family_kids (json1)
+    if tg == "family_kids" and "hala targowa" in name:
+        return True
+
+    # FIX #248 Wrocław — Pigcasso off couples museum+relax (json2)
+    if "pigcasso" in name:
+        if tg == "couples" and {"museum_heritage", "relaxation"} <= prefs:
+            return True
+
+    # FIX #248 Wrocław — Hala Targowa off seniors relax (json6)
+    if tg == "seniors" and (style == "relax" or {"relaxation", "nature_landscape"} <= prefs):
+        if "hala targowa" in name:
+            return True
+
+    # FIX #248 Wrocław — Fort Przygody/paintball off history+museum bez active_sport (json7)
+    if tg == "friends" and adv and "active_sport" not in prefs:
+        if any(k in name for k in (
+            "fort przygody", "paintball", "quad", "kosmopark", "laser tag",
+            "gojump", "citypaintball", "jumpcity", "pitlane", "gokart", "gokarty",
+            "aquapark", "kosmopark",
+        )):
+            return True
+
+    # FIX #248 Wrocław — Fort Przygody/paintball off history+museum bez active_sport (json7)
+    if any(k in name for k in ("katedra wrocławska", "katedra wroclawska")):
+        if tg == "couples" and {"water_attractions", "relaxation"} <= prefs:
+            return True
 
     # FIX #240 Wrocław family_kids — Dworzec Świebodzki, Browar (wieczorny)
     if tg == "family_kids" and any(k in name for k in (
@@ -188,6 +230,10 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     # FIX #240 — Dworzec Świebodzki poza profilami heritage/history
     if any(k in name for k in ("dworzec świebodzki", "dworzec swiebodzki")):
         if tg == "family_kids":
+            return True
+        if tg == "seniors" and (style == "relax" or {"relaxation", "nature_landscape"} <= prefs):
+            return True
+        if tg == "solo" and (style == "relax" or nat_relax):
             return True
         if not ({"museum_heritage", "history_mystery"} & prefs):
             return True
@@ -1392,6 +1438,79 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             "muzeum gazowni", "cmentarz powązkowski", "cmentarz powazkowski",
         )):
             delta -= 75.0
+
+    # ── FIX #248 Wrocław — client feedback json 1–10 ──
+    if any(k in name for k in ("dworzec świebodzki", "dworzec swiebodzki")):
+        delta -= 80.0
+        if tg in ("seniors", "solo") and (style == "relax" or "relaxation" in prefs):
+            delta -= 90.0
+
+    if tg == "friends" and adv and {"history_mystery", "museum_heritage", "underground"} <= prefs:
+        if "active_sport" not in prefs:
+            if any(k in name for k in (
+                "fort przygody", "paintball", "quad", "kosmopark", "laser tag",
+                "gojump", "citypaintball",
+            )):
+                delta -= 130.0
+            if any(k in name for k in (
+                "panorama racławicka", "muzeum narodowe", "centrum historii zajezdnia",
+                "zajezdnia", "hydropolis", "katedra",
+            )):
+                delta += 95.0
+
+    if tg == "friends" and adv and {"active_sport", "history_mystery"} <= prefs:
+        if any(k in name for k in ("rynek we wrocławiu", "rynek we wroclawiu", "hala stulecia")):
+            delta -= 130.0
+        if any(k in name for k in ("gojump", "citypaintball", "paintball", "park linowy")):
+            delta += 100.0
+
+    if tg == "couples" and style == "cultural" and "relaxation" in prefs:
+        if any(k in name for k in (
+            "wyspa słodowa", "wyspa slodowa", "pergola", "park szczytnicki",
+            "ogród japoński", "ogrod japonski", "bulwar", "odra",
+        )):
+            delta += 110.0
+        if "pigcasso" in name:
+            delta -= 120.0
+
+    if tg == "seniors" and {"museum_heritage", "nature_landscape", "relaxation"} <= prefs:
+        if any(k in name for k in (
+            "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
+            "ogród japoński", "ogrod japonski", "lasek", "las strzeli",
+        )):
+            delta += 105.0
+        if "muzeum" in name and int(ctx.get("day_museum_count") or 0) >= 2:
+            delta -= 95.0
+
+    if tg == "solo" and nat_relax:
+        if any(k in name for k in (
+            "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
+            "ogród japoński", "ogrod japonski", "lasek", "las strzeli",
+            "ogród botaniczny", "ogrod botaniczny", "arboretum",
+        )):
+            delta += 100.0
+        if "muzeum" in name and not ({"museum_heritage", "history_mystery"} & prefs):
+            if "hydropolis" not in name:
+                delta -= 100.0
+        if day >= 3 and "muzeum" in name:
+            delta -= 90.0
+
+    if tg == "couples" and {"water_attractions", "relaxation"} <= prefs:
+        if any(k in name for k in ("katedra wrocławska", "katedra wroclawska")):
+            delta -= 130.0
+
+    if tg == "family_kids" and "hala targowa" in name:
+        delta -= 110.0
+
+    if num_days >= 7 and day >= 6:
+        if any(k in name for k in (
+            "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
+            "ogród japoński", "ogrod japonski", "ogród botaniczny", "ogrod botaniczny",
+            "lasek", "las strzeli",
+        )):
+            delta += 90.0
+        if any(k in name for k in ("aquapark", "city golf", "movie gate", "pigcasso")):
+            delta -= 85.0
 
     return delta
 
