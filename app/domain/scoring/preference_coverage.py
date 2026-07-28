@@ -515,6 +515,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "katedra", "archikatedra", "bazylika", "parafia",
         # FIX #225: Kraków — socialist district tour / mirror maze / palace-park ≠ relax.
         "nowa huta", "lustrzany labirynt", "park decjusza",
+        # FIX #249 Poznań — palmiarnia ≠ relaxation (json5 family_kids)
+        "palmiarnia",
     ),
     "history_mystery": (
         # FIX #204: client (Sopot/Gdańsk) — spa-resort buildings & promenade gates

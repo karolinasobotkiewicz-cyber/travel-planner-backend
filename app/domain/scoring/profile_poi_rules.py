@@ -76,6 +76,17 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("bastion sakwowy", "wro_bastion"),
         ("most grunwaldzki", "wro_most_grunwaldzki"),
         ("centrum historii zajezdnia", "wro_zajezdnia"),
+        # FIX #249 Poznań — powtarzalne fillery centrum
+        ("stary rynek w poznaniu", "poz_stary_rynek"),
+        ("ratusz w poznaniu", "poz_ratusz"),
+        ("zamek królewski", "poz_zamek_krolewski"),
+        ("zamek krolewski", "poz_zamek_krolewski"),
+        ("park adama mickiewicza", "poz_park_mickiewicza"),
+        ("makieta dawnego poznania", "poz_makieta"),
+        ("zamek cesarski", "poz_zamek_cesarski"),
+        ("domy kupieckie", "poz_domy_kupieckie"),
+        ("okrąglak", "poz_okraglak"),
+        ("okraglak", "poz_okraglak"),
     )
     for marker, key in _markers:
         if marker in n:
@@ -434,6 +445,28 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     # FIX #244 Poznań — Pixel XL off history/underground friends
     if tg == "friends" and adv and {"underground", "history_mystery", "museum_heritage"} <= prefs:
         if "pixel xl" in name or "pixel" in name:
+            return True
+
+    # FIX #249 Poznań — Pixel XL / Pomnik Ofiar off family 5 lat (json5)
+    _child_age249 = user.get("children_age")
+    if tg == "family_kids" and _child_age249 is not None:
+        try:
+            if int(_child_age249) <= 5:
+                if "pixel xl" in name or ("pixel" in name and "pozna" in name):
+                    return True
+                if "pomnik ofiar czerwca" in name:
+                    return True
+        except (TypeError, ValueError):
+            pass
+
+    # FIX #249 Poznań — Muzeum Bambrów off friends underground (json7)
+    if tg == "friends" and adv and {"underground", "history_mystery", "museum_heritage"} <= prefs:
+        if any(k in name for k in ("muzeum bambrów", "muzeum bambrow")):
+            return True
+
+    # FIX #249 Poznań — Makieta off active_sport+friends (json3)
+    if tg == "friends" and adv and {"active_sport", "history_mystery"} <= prefs:
+        if "makieta dawnego poznania" in name:
             return True
 
     # FIX #241 Kraków — couples+water+relax (json10)
@@ -1258,7 +1291,14 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             delta -= 80.0
 
     if tg == "family_kids" and "pixel xl" in name:
-        delta += 70.0
+        _ca244 = user.get("children_age")
+        try:
+            if _ca244 is not None and int(_ca244) <= 5:
+                delta -= 120.0
+            else:
+                delta += 70.0
+        except (TypeError, ValueError):
+            delta += 70.0
 
     _day_mus = int(ctx.get("day_museum_count") or 0)
     if _day_mus >= 2 and "muzeum" in name:
@@ -1281,6 +1321,71 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             "wartostrada", "palmiarnia", "dolina trzech",
         )):
             delta += 85.0
+
+    # ── FIX #249 Poznań client feedback json 3/4/5/6/7/8/9 ──
+    if "park adama mickiewicza" in name:
+        if tg == "family_kids" and "relaxation" in prefs:
+            delta -= 120.0
+        if tg == "seniors" and (style == "relax" or {"relaxation", "nature_landscape"} <= prefs):
+            delta -= 115.0
+        if tg == "friends" and "active_sport" in prefs:
+            delta -= 120.0
+        if tg == "solo" and {"nature_landscape", "museum_heritage", "history_mystery"} <= prefs:
+            delta -= 100.0
+
+    if "makieta dawnego poznania" in name:
+        if tg == "friends" and adv and "active_sport" in prefs:
+            delta -= 130.0
+
+    if tg == "family_kids" and "kids_attractions" in prefs:
+        if "palmiarnia" in name and "relaxation" in prefs:
+            delta -= 90.0
+        if any(k in name for k in ("nowe zoo", "stare zoo", "termy malta", "jezioro malta")):
+            delta += 85.0
+
+    if tg == "couples" and num_days >= 7 and day >= 2:
+        _had_center = any(
+            any(k in (tn or "") for k in ("stary rynek w poznaniu", "zamek królewski", "zamek krolewski"))
+            for tn in trip_names
+        )
+        if _had_center and any(k in name for k in (
+            "stary rynek w poznaniu", "zamek królewski", "zamek krolewski",
+            "ratusz w poznaniu", "domy kupieckie", "okrąglak", "okraglak",
+        )):
+            delta -= 145.0
+        if day >= 6 and any(k in name for k in ("domy kupieckie", "okrąglak", "okraglak", "ratusz w poznaniu")):
+            delta -= 160.0
+
+    if tg == "solo" and nat_relax and day >= 2:
+        if any(k in name for k in (
+            "stary rynek", "ostrów tumski", "ostrow tumski", "bazylika",
+            "plac wolności", "plac wolnosci", "trakt królewsko", "trakt krolewsko",
+            "ratusz w poznaniu", "zamek cesarski",
+        )):
+            delta -= 125.0
+        if any(k in name for k in (
+            "jezioro malta", "wartostrada", "park sołacki", "park solacki",
+            "dolina trzech", "park cytadela", "rezerwat", "lasek",
+        )):
+            delta += 100.0
+
+    if tg == "friends" and adv and {"underground", "history_mystery", "museum_heritage"} <= prefs:
+        if _has_church_name(name) and int(ctx.get("day_church_count") or 0) >= 1:
+            delta -= 135.0
+        if any(k in name for k in (
+            "flypark", "jump arena", "fort ", "termy malta", "centrum szyfrów",
+            "centrum szyfrow", "enigma", "brama poznania", "szachty", "podziem",
+        )):
+            delta += 95.0
+
+    if "active_sport" in prefs and adv:
+        if any(k in name for k in (
+            "flypark", "jump arena", "wartostrada", "park linowy", "trampolin",
+            "paintball", "escape", "gokart",
+        )):
+            delta += 105.0
+        if any(k in name for k in ("park adama mickiewicza", "makieta dawnego poznania")):
+            delta -= 110.0
 
     # ── FIX #245 Katowice — powtórki fillerów, kids, water, sparse dni ──
     _rk245 = poi_trip_repeat_key(name)

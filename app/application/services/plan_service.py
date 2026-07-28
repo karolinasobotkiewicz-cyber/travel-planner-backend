@@ -3097,16 +3097,38 @@ class PlanService:
             _fitems = self._strip_couples_heritage_for_relax(
                 _fitems, user, all_pois_dict or [], day_num=day_plan.day,
             )
+            if (
+                user.get("target_group") == "couples"
+                and num_days >= 7
+                and day_plan.day >= 6
+            ):
+                _fitems = self._strip_poznan_late_center_fillers(
+                    _fitems, _trip_names_so_far, day_num=day_plan.day,
+                )
             _fitems = self._apply_free_time_final_hygiene(_fitems, _day_ctx)
             _ft_late247 = sum(
                 int(getattr(it, "duration_min", 0) or 0)
                 for it in _fitems
                 if getattr(it, "type", None) == ItemType.FREE_TIME
             )
+            _last_end247 = 0
+            for _it247e in _fitems:
+                if getattr(_it247e, "end_time", None):
+                    _last_end247 = max(_last_end247, time_to_minutes(_it247e.end_time))
+            _de247 = time_to_minutes(_day_ctx.get("day_end") or day_end or "19:00")
+            _early_finish247 = (
+                num_days >= 7
+                and day_plan.day >= 7
+                and _de247 - _last_end247 >= 180
+            )
             if (
                 num_days >= 7
                 and day_plan.day >= 6
-                and (_ft_late247 >= 45 or sum(1 for it in _fitems if _is_timeline_attraction(it)) < 3)
+                and (
+                    _ft_late247 >= 45
+                    or sum(1 for it in _fitems if _is_timeline_attraction(it)) < 3
+                    or _early_finish247
+                )
                 and all_pois_dict
             ):
                 _fitems = self._backfill_sparse_day_attractions(
@@ -3293,13 +3315,27 @@ class PlanService:
                             "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
                             "ogród japoński", "ogrod japonski", "lasek", "las strzeli",
                             "bulwar", "odra",
+                            "jezioro malta", "wartostrada", "park sołacki", "park solacki",
+                            "dolina trzech", "park cytadela",
                         ))
                     ):
                         _has_rn_day = True
                         break
                 if _has_rn_day:
                     _trip_relax_nat_count = max(_trip_relax_nat_count, 1)
-                if _trip_relax_nat_count < 1:
+                _solo_relax249 = (
+                    user.get("target_group") == "solo"
+                    and {"nature_landscape", "relaxation"} <= set(_meal_prefs246)
+                    and day_plan.day >= 2
+                )
+                _need_inj248 = _trip_relax_nat_count < 1 or (
+                    _solo_relax249 and _trip_relax_nat_count < 2
+                )
+                if _solo_relax249 and _need_inj248:
+                    _fitems = self._strip_one_sightsee_for_solo_relax(
+                        _fitems, day_num=day_plan.day,
+                    )
+                if _need_inj248:
                     _fitems, _inj248 = self._inject_relax_nature_green_poi(
                         _fitems,
                         all_pois_dict,
@@ -6722,7 +6758,11 @@ class PlanService:
         """FIX #241 Kraków: nie powtarzaj Rynku/Stare Miasto od dnia 2."""
         if day_num < 2:
             return items
-        _markers = ("rynek główny", "rynek glowny", "stare miasto", "sukiennice", "planty")
+        _markers = (
+            "rynek główny", "rynek glowny", "stare miasto", "sukiennice", "planty",
+            "stary rynek w poznaniu", "zamek królewski", "zamek krolewski",
+            "ratusz w poznaniu",
+        )
         trip_has = any(
             any(k in (n or "").lower() for k in _markers) for n in trip_used_names
         )
@@ -6835,6 +6875,66 @@ class PlanService:
             out.append(it)
         return out
 
+    def _strip_one_sightsee_for_solo_relax(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 2,
+    ) -> List[Any]:
+        """FIX #249 Poznań: solo relax D2+ — usuń jeden filler miejskie zwiedzanie."""
+        _markers = (
+            "bazylika", "trakt królewsko", "trakt krolewsko",
+            "plac wolności", "plac wolnosci", "stary rynek w poznaniu",
+            "ratusz w poznaniu", "zamek cesarski",
+        )
+        stripped = False
+        out: List[Any] = []
+        for it in items:
+            if (
+                not stripped
+                and _is_timeline_attraction(it)
+                and any(k in (getattr(it, "name", "") or "").lower() for k in _markers)
+            ):
+                stripped = True
+                print(
+                    f"[FIX #249] Day {day_num}: stripped sightseeing for solo relax "
+                    f"{getattr(it, 'name', '')}"
+                )
+                continue
+            out.append(it)
+        return out
+
+    def _strip_poznan_late_center_fillers(
+        self,
+        items: List[Any],
+        trip_names: set,
+        *,
+        day_num: int = 6,
+    ) -> List[Any]:
+        """FIX #249 Poznań json8: bez powrotu do mikro-centrum na D6+."""
+        had_center = any(
+            any(k in (n or "").lower() for k in (
+                "stary rynek w poznaniu", "zamek królewski", "zamek krolewski",
+            ))
+            for n in trip_names
+        )
+        if not had_center:
+            return items
+        out: List[Any] = []
+        for it in items:
+            if _is_timeline_attraction(it):
+                nm = (getattr(it, "name", "") or "").lower()
+                if any(k in nm for k in (
+                    "domy kupieckie", "okrąglak", "okraglak", "ratusz w poznaniu",
+                    "stary rynek w poznaniu",
+                )):
+                    print(
+                        f"[FIX #249] Day {day_num}: stripped late center filler {nm}"
+                    )
+                    continue
+            out.append(it)
+        return out
+
     def _inject_relax_nature_green_poi(
         self,
         items: List[Any],
@@ -6876,6 +6976,8 @@ class PlanService:
         _GREEN_HINTS = (
             "wyspa słodowa", "wyspa slodowa", "pergola", "park szczytnicki",
             "ogród japoński", "ogrod japonski", "lasek", "las strzeli", "bulwar",
+            "jezioro malta", "wartostrada", "park sołacki", "park solacki",
+            "dolina trzech", "park cytadela",
         )
 
         def _is_green(poi: dict) -> bool:
@@ -6929,6 +7031,9 @@ class PlanService:
 
         _PRIORITY = (
             "wyspa słodowa", "wyspa slodowa",
+            "jezioro malta", "wartostrada",
+            "park sołacki", "park solacki",
+            "dolina trzech", "park cytadela",
             "pergola przy hali", "pergola",
             "ogród japoński", "ogrod japonski",
             "park szczytnicki",

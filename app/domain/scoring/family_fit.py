@@ -51,6 +51,7 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "muzeum czartoryskich", "laser tag",
         # FIX #227 (30.06.2026): Poznań
         "bazylika archikatedralna", "archikatedr", "domy kupieckie", "escape room",
+        "pomnik ofiar czerwca",
         # FIX #229: extreme / bridges / micro for families
         "bungee", "secret room", "the secret room",
         "most grunwaldzki", "most ", "kładka bernatka", "kladka bernatka",
