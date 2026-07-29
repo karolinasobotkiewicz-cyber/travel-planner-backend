@@ -1748,6 +1748,8 @@ class PlanService:
             for day_num in range(num_days):
                 day_context = context.copy()
                 day_context["date"] = dates[day_num]
+                day_context["day_start"] = day_start
+                day_context["day_end"] = day_end
                 day_context["_target_group_filter"] = user.get("target_group")
                 contexts.append(day_context)
 
@@ -2690,10 +2692,11 @@ class PlanService:
         
         # FIX #Problem8 (13.05.2026 - Round 2): Budget overflow warning
         # Check if any day's cost exceeds or approaches daily_limit
-        daily_limit = None
-        budget_dict = user.get("budget", {})
-        if isinstance(budget_dict, dict):
-            daily_limit = budget_dict.get("daily_limit")
+        daily_limit = user.get("daily_limit")
+        if daily_limit is None:
+            budget_dict = user.get("budget", {})
+            if isinstance(budget_dict, dict):
+                daily_limit = budget_dict.get("daily_limit")
         
         if daily_limit is not None and daily_limit > 0:
             print(f"[BUDGET WARNING CHECK] Daily limit: {daily_limit} PLN")
@@ -2849,11 +2852,10 @@ class PlanService:
         for day_plan in days:
             _fitems = list(day_plan.items)
             _day_ctx = contexts[day_plan.day - 1] if day_plan.day - 1 < len(contexts) else context
-            # FIX #238: expose day_end so transit injection can bound its forward shift.
-            if _day_ctx.get("day_end") != day_end:
-                _day_ctx = {**_day_ctx, "day_end": day_end}
             _day_ctx = {
                 **_day_ctx,
+                "day_start": day_start,
+                "day_end": day_end,
                 "trip_kids_attraction_count": _trip_kids_count,
                 "trip_active_sport_count": _trip_active_count,
                 "trip_used_poi_names": _trip_names_so_far,
@@ -3467,6 +3469,15 @@ class PlanService:
                         or is_active_city_poi(_poi_act)
                     ):
                         _trip_active_count += 1
+            _fitems = self._apply_fix250_timeline_quality_pass(
+                _fitems,
+                _final_coord_map,
+                _day_ctx,
+                day_plan.day,
+                all_pois_dict=all_pois_dict,
+                user=user,
+                global_used_pois=global_used_pois,
+            )
             _finalized_days.append(DayPlan(
                 day=day_plan.day,
                 title=_generate_day_title(_fitems, day_plan.day),
@@ -7935,6 +7946,205 @@ class PlanService:
         items = _cap_total_day_free_time(items, max_total=max_total)
         items = self._collapse_excessive_timeline_slack(items, max_slack_min=25)
         return items
+
+    def _clamp_items_before_day_start(
+        self,
+        items: List[Any],
+        day_start: str,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #250: nothing scheduled before user's daily_time_window.start."""
+        floor = time_to_minutes(day_start)
+        out: List[Any] = []
+        for it in items:
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                out.append(it)
+                continue
+            st = getattr(it, "start_time", None)
+            if not st:
+                out.append(it)
+                continue
+            st_min = time_to_minutes(st)
+            if st_min >= floor:
+                out.append(it)
+                continue
+            en = getattr(it, "end_time", None)
+            dur = int(getattr(it, "duration_min", 0) or 0)
+            if not dur and en:
+                dur = max(time_to_minutes(en) - st_min, 5)
+            new_st = floor + (5 if _is_timeline_attraction(it) else 0)
+            new_en = new_st + max(dur, 5)
+            try:
+                d = it.model_dump() if hasattr(it, "model_dump") else it.dict()
+                d["start_time"] = minutes_to_time(new_st)
+                d["end_time"] = minutes_to_time(new_en)
+                d["duration_min"] = new_en - new_st
+                out.append(type(it)(**d))
+                print(
+                    f"[FIX #250] Day {day_num}: clamped {tv} "
+                    f"{st}->{minutes_to_time(new_st)} (day_start={day_start})"
+                )
+            except Exception:
+                out.append(it)
+        return out
+
+    def _day_attractions_cost(self, items: List[Any]) -> float:
+        total = 0.0
+        for it in items:
+            if getattr(it, "type", None) != ItemType.ATTRACTION:
+                continue
+            try:
+                total += float(getattr(it, "cost_estimate", None) or 0)
+            except (TypeError, ValueError):
+                pass
+        return total
+
+    def _trim_day_to_budget(
+        self,
+        items: List[Any],
+        user: Optional[Dict[str, Any]],
+        poi_by_id: Optional[Dict[str, Dict[str, Any]]] = None,
+        *,
+        day_num: int = 0,
+        min_attrs: int = 3,
+    ) -> List[Any]:
+        """FIX #250: drop lowest-priority attractions until daily_limit is respected."""
+        if not user:
+            return items
+        daily_limit = user.get("daily_limit")
+        if daily_limit is None:
+            budget_dict = user.get("budget", {})
+            if isinstance(budget_dict, dict):
+                daily_limit = budget_dict.get("daily_limit")
+        if not daily_limit or float(daily_limit) <= 0:
+            return items
+
+        daily_limit = float(daily_limit)
+        poi_by_id = poi_by_id or {}
+        from app.domain.scoring.preference_coverage import poi_covers_preference_report
+
+        user_prefs = list(user.get("preferences") or [])
+
+        def _cost(it: Any) -> float:
+            try:
+                return float(getattr(it, "cost_estimate", None) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _must_see(it: Any) -> float:
+            p = poi_by_id.get(getattr(it, "poi_id", ""), {})
+            try:
+                return float(p.get("must_see") or p.get("must_see_score") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _covers_pref(it: Any) -> bool:
+            p = poi_by_id.get(getattr(it, "poi_id", ""), {})
+            if not p:
+                p = {"name": getattr(it, "name", "") or "", "tags": []}
+            return any(poi_covers_preference_report(p, pref) for pref in user_prefs)
+
+        working = list(items)
+        while self._day_attractions_cost(working) > daily_limit:
+            attr_indices = [
+                i for i, it in enumerate(working)
+                if getattr(it, "type", None) == ItemType.ATTRACTION
+            ]
+            if len(attr_indices) <= min_attrs:
+                break
+            drop_idx = min(
+                attr_indices,
+                key=lambda i: (
+                    1 if _covers_pref(working[i]) else 0,
+                    _must_see(working[i]),
+                    -_cost(working[i]),
+                ),
+            )
+            dropped = working[drop_idx]
+            print(
+                f"[FIX #250] Day {day_num}: budget trim dropped "
+                f"{getattr(dropped, 'name', '?')} ({_cost(dropped):.0f} PLN) "
+                f"— day cost {self._day_attractions_cost(working):.0f}/{daily_limit:.0f} PLN"
+            )
+            working = [it for i, it in enumerate(working) if i != drop_idx]
+        return working
+
+    def _apply_fix250_timeline_quality_pass(
+        self,
+        items: List[Any],
+        poi_coords: Dict[str, Any],
+        context: Dict[str, Any],
+        day_num: int,
+        *,
+        all_pois_dict: Optional[List[Dict[str, Any]]] = None,
+        user: Optional[Dict[str, Any]] = None,
+        global_used_pois: Optional[set] = None,
+    ) -> List[Any]:
+        """FIX #250: mandatory post-mutation timeline — heal, transits, gaps, season."""
+        from app.application.services.plan_day_integrity import run_timeline_integrity_pass
+
+        day_start = context.get("day_start") or "09:00"
+        day_end = context.get("day_end") or "19:00"
+        ctx = {**context, "day_start": day_start, "day_end": day_end}
+
+        items = self._clamp_items_before_day_start(items, day_start, day_num=day_num)
+        items = self._sort_items_by_time(items)
+        items, _ = run_timeline_integrity_pass(items, day_num)
+        items = self._remove_timeline_overlaps(items, day_num)
+        items = self._run_transit_routing_pass(items, poi_coords, ctx, day_num)
+        items = self._strip_transits_to_unscheduled_destinations(items, day_num=day_num)
+
+        if all_pois_dict is not None:
+            _trip_date = ctx.get("date") or ctx.get("trip_date")
+            if _trip_date:
+                _poi_by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+                items = self._strip_out_of_season_attractions(items, _trip_date, _poi_by_id)
+
+        if all_pois_dict is not None and user is not None and global_used_pois is not None:
+            _last_end = 0
+            _dinner_start = None
+            for it in items:
+                if getattr(it, "end_time", None):
+                    _last_end = max(_last_end, time_to_minutes(it.end_time))
+                if getattr(it, "type", None) == ItemType.DINNER_BREAK:
+                    st = getattr(it, "start_time", None)
+                    if st:
+                        _dinner_start = time_to_minutes(st)
+            _de_min = time_to_minutes(day_end)
+            _need_fill = _de_min - _last_end >= 90
+            if _dinner_start and _dinner_start - _last_end >= 90:
+                _need_fill = True
+            if _need_fill:
+                items = self._fill_gaps_in_items(
+                    items,
+                    all_pois_dict,
+                    {**ctx, "afternoon_topup_pass": True, "pre_dinner_fill": True},
+                    user,
+                    global_used_pois,
+                    all_pois_lookup=all_pois_dict,
+                    cross_day_reuse=True,
+                )
+                items = self._strip_profile_denied_attractions(
+                    items, user, all_pois_dict, day_num=day_num,
+                )
+
+        items = _trim_gap_after_day_start(items)
+        items = self._apply_free_time_final_hygiene(items, ctx)
+        if user is not None:
+            _poi_by_id: Dict[str, Dict[str, Any]] = {}
+            if all_pois_dict:
+                _poi_by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+            items = self._trim_day_to_budget(
+                items, user, _poi_by_id, day_num=day_num,
+            )
+        items, _ = run_timeline_integrity_pass(items, day_num)
+        items = self._remove_timeline_overlaps(items, day_num)
+        items = self._run_transit_routing_pass(items, poi_coords, ctx, day_num)
+        items = self._strip_transits_to_unscheduled_destinations(items, day_num=day_num)
+        items, _ = run_timeline_integrity_pass(items, day_num)
+        return self._sort_items_by_time(items)
 
     def _apply_fix237_day_pipeline(
         self,

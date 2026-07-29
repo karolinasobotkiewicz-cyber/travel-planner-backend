@@ -47,9 +47,18 @@ def test_client_json_fix239_quality(city, json_path, plan_service):
         payload = json.load(f)
     trip = TripInput(**payload)
     plan = plan_service.generate_plan(trip)
+    day_start = payload.get("daily_time_window", {}).get("start", "09:00")
+    daily_limit = payload.get("budget", {}).get("daily_limit")
     all_issues = []
     for day in plan.days:
-        all_issues.extend(audit_day(day, day_label=f"{city}/{json_path.name} "))
+        all_issues.extend(
+            audit_day(
+                day,
+                day_label=f"{city}/{json_path.name} ",
+                day_start=day_start,
+                daily_limit=daily_limit,
+            )
+        )
     assert not all_issues, "; ".join(all_issues[:12]) + (
         f" (+{len(all_issues) - 12} more)" if len(all_issues) > 12 else ""
     )

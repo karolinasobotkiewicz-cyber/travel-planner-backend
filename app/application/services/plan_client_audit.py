@@ -151,16 +151,126 @@ def audit_large_idle_gaps(items: Sequence[Any], *, max_gap_min: int = 90) -> Lis
     return issues
 
 
-def audit_day(day, *, day_label: str = "") -> List[str]:
+def _norm_name(s: str) -> str:
+    s = (s or "").lower()
+    for a, b in (("ł", "l"), ("ó", "o"), ("ś", "s"), ("ź", "z"), ("ż", "z"), ("ę", "e"), ("ą", "a"), ("ć", "c"), ("ń", "n")):
+        s = s.replace(a, b)
+    return s
+
+
+def _attr_names_set(items: Sequence[Any]) -> set[str]:
+    names: set[str] = set()
+    for it in items:
+        if _type_val(it) == ItemType.ATTRACTION.value:
+            n = getattr(it, "name", "") or ""
+            if n:
+                names.add(n)
+                names.add(_norm_name(n))
+    return names
+
+
+def audit_timeline_overlaps(items: Sequence[Any]) -> List[str]:
+    issues: List[str] = []
+    ordered = _sorted_timed(items)
+    for i in range(len(ordered) - 1):
+        cur, nxt = ordered[i], ordered[i + 1]
+        if time_min(cur.end_time) > time_min(nxt.start_time):
+            issues.append(
+                f"overlap {getattr(cur, 'name', _type_val(cur))} "
+                f"({cur.start_time}-{cur.end_time}) vs "
+                f"{getattr(nxt, 'name', _type_val(nxt))} ({nxt.start_time})"
+            )
+    return issues
+
+
+def audit_before_day_start(items: Sequence[Any], day_start: str) -> List[str]:
+    issues: List[str] = []
+    if not day_start:
+        return issues
+    floor = time_min(day_start)
+    for it in items:
+        if _type_val(it) not in (
+            ItemType.ATTRACTION.value,
+            ItemType.LUNCH_BREAK.value,
+            ItemType.DINNER_BREAK.value,
+            ItemType.TRANSIT.value,
+            ItemType.FREE_TIME.value,
+        ):
+            continue
+        st = getattr(it, "start_time", None)
+        if st and time_min(st) < floor:
+            issues.append(
+                f"starts before day_start ({day_start}): "
+                f"{getattr(it, 'name', _type_val(it))} at {st}"
+            )
+    return issues
+
+
+def audit_orphan_transits(items: Sequence[Any]) -> List[str]:
+    issues: List[str] = []
+    names = _attr_names_set(items)
+
+    def _matches(name: str) -> bool:
+        if not name:
+            return True
+        nn = _norm_name(name)
+        if name in names or nn in names:
+            return True
+        return any(nn in _norm_name(n) or _norm_name(n) in nn for n in names if n)
+
+    for it in items:
+        if _type_val(it) != ItemType.TRANSIT.value:
+            continue
+        fr = (getattr(it, "from_location", "") or "").strip()
+        to = (getattr(it, "to_location", "") or "").strip()
+        if to and not _matches(to):
+            issues.append(f"orphan transit to {to!r}")
+        if fr and not to and not _matches(fr):
+            issues.append(f"orphan transit from {fr!r}")
+    return issues
+
+
+def audit_budget_exceeded(items: Sequence[Any], daily_limit: float | int | None) -> List[str]:
+    if not daily_limit or float(daily_limit) <= 0:
+        return []
+    total = 0.0
+    for it in items:
+        c = getattr(it, "cost_estimate", None) or getattr(it, "total_cost", None) or 0
+        try:
+            total += float(c)
+        except (TypeError, ValueError):
+            pass
+    if total > float(daily_limit):
+        return [f"budget exceeded {int(total)} > {int(daily_limit)} PLN"]
+    return []
+
+
+def audit_day(
+    day,
+    *,
+    day_label: str = "",
+    day_start: str = "",
+    daily_limit: float | int | None = None,
+) -> List[str]:
     items = day.items or []
     prefix = f"{day_label}day{day.day}: " if day_label or getattr(day, "day", None) else ""
     issues: List[str] = []
-    for fn in (
+    checks = [
+        audit_timeline_overlaps,
+        audit_before_day_start,
+        audit_orphan_transits,
         audit_transit_routing,
         audit_missing_transits,
         audit_free_time,
         audit_large_idle_gaps,
-    ):
-        for msg in fn(items):
+    ]
+    for fn in checks:
+        if fn is audit_before_day_start:
+            msgs = fn(items, day_start)
+        else:
+            msgs = fn(items)
+        for msg in msgs:
             issues.append(prefix + msg)
+    for msg in audit_budget_exceeded(items, daily_limit):
+        issues.append(prefix + msg)
     return issues
