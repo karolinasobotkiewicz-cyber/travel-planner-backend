@@ -3354,7 +3354,7 @@ class PlanService:
                         or any(k in _nm248 for k in (
                             "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
                             "ogród japoński", "ogrod japonski", "lasek", "las strzeli",
-                            "bulwar", "odra",
+                            "bulwar",
                             "jezioro malta", "wartostrada", "park sołacki", "park solacki",
                             "dolina trzech", "park cytadela",
                         ))
@@ -3515,7 +3515,35 @@ class PlanService:
                 all_pois_dict=all_pois_dict,
                 user=user,
                 global_used_pois=global_used_pois,
+                ensure_green_coverage=(_trip_relax_nat_count < 1),
             )
+            # FIX #252: refresh trip green count after quality pass (may reinject / strip)
+            if user is not None and all_pois_dict is not None:
+                from app.domain.scoring.preference_coverage import (
+                    is_strong_nature_coverage_poi as _is_nat252b,
+                    is_strong_relaxation_coverage_poi as _is_rel252b,
+                )
+                _by_id252b = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+                for _it252b in _fitems:
+                    if not _is_timeline_attraction(_it252b):
+                        continue
+                    _p252b = _by_id252b.get(
+                        getattr(_it252b, "poi_id", ""),
+                        {"name": getattr(_it252b, "name", ""), "tags": []},
+                    )
+                    _nm252b = (getattr(_it252b, "name", "") or "").lower()
+                    if (
+                        _is_nat252b(_p252b)
+                        or _is_rel252b(_p252b)
+                        or any(k in _nm252b for k in (
+                            "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
+                            "ogród japoński", "ogrod japonski", "lasek", "las strzeli",
+                            "bulwar", "jezioro malta", "wartostrada",
+                            "park sołacki", "park solacki", "dolina trzech", "park cytadela",
+                        ))
+                    ):
+                        _trip_relax_nat_count = max(_trip_relax_nat_count, 1)
+                        break
             _finalized_days.append(DayPlan(
                 day=day_plan.day,
                 title=_generate_day_title(_fitems, day_plan.day),
@@ -7139,7 +7167,8 @@ class PlanService:
 
         _GREEN_HINTS = (
             "wyspa słodowa", "wyspa slodowa", "pergola", "park szczytnicki",
-            "ogród japoński", "ogrod japonski", "lasek", "las strzeli", "bulwar",
+            "ogród japoński", "ogrod japonski", "ogród botaniczny", "ogrod botaniczny",
+            "lasek", "las strzeli", "bulwar",
             "jezioro malta", "wartostrada", "park sołacki", "park solacki",
             "dolina trzech", "park cytadela",
         )
@@ -7177,12 +7206,22 @@ class PlanService:
             pid = poi.get("id")
             if not pid or pid in used_ids:
                 return False
+            # FIX #252: never re-inject a POI already used earlier in the trip
+            if pid in global_used:
+                return False
             if not _poi_ok_city(poi):
                 return False
             if should_deny_poi_for_profile(poi, user):
                 return False
+            # FIX #252: Excel tags Wyspa/Pergola/Japanese as couples,friends only —
+            # still allow for solo/seniors when trip asks for relax/nature.
             if should_exclude_by_target_group(poi, user):
-                return False
+                _kids = poi.get("kids_only")
+                _kids_only = _kids is True or (
+                    isinstance(_kids, str) and _kids.lower() in ("true", "1", "yes")
+                )
+                if _kids_only or tg not in ("solo", "seniors", "couples"):
+                    return False
             if should_exclude_by_intensity(poi, user):
                 return False
             pn = (poi.get("name") or "").lower()
@@ -7254,11 +7293,23 @@ class PlanService:
                     strip_idx = i
                     strip_st = getattr(it, "start_time", None)
                     break
+        # FIX #252: if no museum/landmark to swap, replace any non-green attraction
+        if strip_idx is None:
+            for i, it in enumerate(items):
+                if not _is_timeline_attraction(it):
+                    continue
+                nm = (getattr(it, "name", "") or "").lower()
+                if any(k in nm for k in _GREEN_HINTS):
+                    continue
+                strip_idx = i
+                strip_st = getattr(it, "start_time", None)
+                break
         if strip_idx is None:
             return items, False
 
         out = list(items)
         stripped_name = getattr(out[strip_idx], "name", "")
+        stripped_id = getattr(out[strip_idx], "poi_id", None)
         del out[strip_idx]
         start_time = strip_st or context.get("day_start") or "10:00"
         new_item = self._generate_attraction_item(
@@ -7270,6 +7321,12 @@ class PlanService:
             None,
         )
         out.append(new_item)
+        pid_new = best_poi.get("id")
+        if pid_new:
+            global_used.add(pid_new)
+        if stripped_id and stripped_id in global_used:
+            # keep stripped id marked used so we don't re-pick it later the same trip
+            pass
         print(
             f"[FIX #248] Day {day_num}: injected green {best_poi.get('name')} "
             f"replacing {stripped_name}"
@@ -8208,7 +8265,7 @@ class PlanService:
             # Rewrite transit before meal → restaurant (or inject Attr→Restaurant)
             has_pre_transit = False
             prev_attr = None
-            for j in range(idx - 1, max(-1, idx - 4), -1):
+            for j in range(idx - 1, -1, -1):
                 prev = working[j]
                 tv = _item_type_value(prev)
                 if tv == ItemType.TRANSIT.value:
@@ -8227,6 +8284,16 @@ class PlanService:
                 from_name = getattr(prev_attr, "name", "") or ""
                 from_poi = poi_coords.get(from_name) or {}
                 lat1, lng1 = _poi_lat_lng(from_poi)
+                # FIX #252: sparse days — use attraction item coords when map miss
+                if lat1 is None:
+                    alat = getattr(prev_attr, "lat", None)
+                    alng = getattr(prev_attr, "lng", None)
+                    if alat is not None and alng is not None:
+                        lat1, lng1 = float(alat), float(alng)
+                        poi_coords[from_name] = {
+                            "name": from_name, "lat": lat1, "lng": lng1,
+                            "id": getattr(prev_attr, "poi_id", "") or "",
+                        }
                 if attr_end and lat1 is not None:
                     from_d = {"lat": float(lat1), "lng": float(lng1)}
                     to_d = {"lat": float(rlat), "lng": float(rlng)}
@@ -8258,7 +8325,7 @@ class PlanService:
             next_attr = None
             next_attr_idx = None
             has_post_transit = False
-            for j in range(idx + 1, min(len(working), idx + 5)):
+            for j in range(idx + 1, len(working)):
                 nxt = working[j]
                 tv = _item_type_value(nxt)
                 if tv == ItemType.TRANSIT.value:
@@ -8280,6 +8347,15 @@ class PlanService:
                     to_name = getattr(next_attr, "name", "") or ""
                     to_poi = poi_coords.get(to_name) or {}
                     lat2, lng2 = _poi_lat_lng(to_poi)
+                    if lat2 is None:
+                        tlat = getattr(next_attr, "lat", None)
+                        tlng = getattr(next_attr, "lng", None)
+                        if tlat is not None and tlng is not None:
+                            lat2, lng2 = float(tlat), float(tlng)
+                            poi_coords[to_name] = {
+                                "name": to_name, "lat": lat2, "lng": lng2,
+                                "id": getattr(next_attr, "poi_id", "") or "",
+                            }
                     if lat2 is not None and lng2 is not None:
                         from_d = {"lat": float(rlat), "lng": float(rlng)}
                         to_d = {"lat": float(lat2), "lng": float(lng2)}
@@ -8370,7 +8446,22 @@ class PlanService:
             p = by_id.get(getattr(it, "poi_id", ""), {})
             if not p:
                 p = {"name": getattr(it, "name", "") or "", "tags": []}
-            return any(poi_covers_preference_report(p, pref) for pref in prefs)
+            if any(poi_covers_preference_report(p, pref) for pref in prefs):
+                return True
+            # FIX #252 Wrocław: name-based green POIs count as relax/nature coverage
+            nm = (getattr(it, "name", "") or "").lower()
+            _green = (
+                "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
+                "ogród japoński", "ogrod japonski", "ogród botaniczny", "ogrod botaniczny",
+                "lasek", "las strzeli", "bulwar", "jezioro malta", "wartostrada",
+                "park sołacki", "park solacki", "park cytadela", "dolina trzech",
+            )
+            if (
+                ("relaxation" in prefs or "nature_landscape" in prefs)
+                and any(k in nm for k in _green)
+            ):
+                return True
+            return False
 
         matching = [it for it in attrs if _covers(it)]
         if len(matching) < 1:
@@ -8457,8 +8548,10 @@ class PlanService:
         *,
         day_num: int = 0,
         min_attrs: int = 3,
+        all_pois_dict: Optional[List[Dict[str, Any]]] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> List[Any]:
-        """FIX #250: drop lowest-priority attractions until daily_limit is respected."""
+        """FIX #250/#252: drop/swap attractions until daily_limit is respected."""
         if not user:
             return items
         daily_limit = user.get("daily_limit")
@@ -8506,8 +8599,9 @@ class PlanService:
                 attr_indices,
                 key=lambda i: (
                     1 if _covers_pref(working[i]) else 0,
-                    _must_see(working[i]),
+                    # FIX #252: drop expensive first (was dropping free parks / relax POIs)
                     -_cost(working[i]),
+                    _must_see(working[i]),
                 ),
             )
             dropped = working[drop_idx]
@@ -8517,6 +8611,141 @@ class PlanService:
                 f"— day cost {self._day_attractions_cost(working):.0f}/{daily_limit:.0f} PLN"
             )
             working = [it for i, it in enumerate(working) if i != drop_idx]
+        # FIX #252: still over at min_attrs — swap most expensive for a cheaper POI.
+        if (
+            self._day_attractions_cost(working) > daily_limit
+            and all_pois_dict
+            and context is not None
+        ):
+            working = self._swap_expensive_for_budget(
+                working, user, all_pois_dict, poi_by_id, context, day_num=day_num,
+            )
+        return working
+
+    def _swap_expensive_for_budget(
+        self,
+        items: List[Any],
+        user: Dict[str, Any],
+        all_pois_dict: List[Dict[str, Any]],
+        poi_by_id: Dict[str, Dict[str, Any]],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #252: replace costliest attraction with a cheaper in-slot alternative."""
+        from app.domain.planner.engine import calculate_poi_cost_for_group
+        from app.domain.scoring.preference_coverage import poi_covers_preference_report
+        from app.domain.scoring.profile_poi_rules import should_deny_poi_for_profile
+        from app.domain.scoring.family_fit import should_exclude_by_target_group
+
+        daily_limit = float(user.get("daily_limit") or 0)
+        if daily_limit <= 0:
+            return items
+        prefs = list(user.get("preferences") or [])
+        used_ids = {
+            getattr(it, "poi_id", None)
+            for it in items
+            if getattr(it, "poi_id", None)
+        }
+        used_names = {
+            (getattr(it, "name", "") or "").strip().lower()
+            for it in items
+            if _is_timeline_attraction(it)
+        }
+
+        def _cost(it: Any) -> float:
+            try:
+                return float(getattr(it, "cost_estimate", None) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        working = list(items)
+        for _attempt in range(3):
+            if self._day_attractions_cost(working) <= daily_limit:
+                break
+            attrs = [
+                (i, it) for i, it in enumerate(working)
+                if getattr(it, "type", None) == ItemType.ATTRACTION and _cost(it) > 0
+            ]
+            if not attrs:
+                break
+            drop_i, expensive = max(attrs, key=lambda x: _cost(x[1]))
+            slot_start = getattr(expensive, "start_time", None)
+            if not slot_start:
+                break
+            slot_min = time_to_minutes(slot_start)
+            day_cost_without = self._day_attractions_cost(working) - _cost(expensive)
+            budget_left = max(0.0, daily_limit - day_cost_without)
+            best = None
+            best_score = -1e9
+            for poi in all_pois_dict:
+                pid = poi.get("id")
+                if not pid or pid in used_ids:
+                    continue
+                pn = (poi.get("name") or "").strip().lower()
+                if not pn or pn in used_names:
+                    continue
+                try:
+                    if should_deny_poi_for_profile(poi, user):
+                        continue
+                    if should_exclude_by_target_group(poi, user):
+                        continue
+                except Exception:
+                    continue
+                try:
+                    pc = float(calculate_poi_cost_for_group(poi, user))
+                except Exception:
+                    pc = 0.0
+                if pc > budget_left:
+                    continue
+                dur = int(poi.get("time_min") or poi.get("duration_min") or 60)
+                if context.get("date") and not is_open(
+                    poi, slot_min, dur, context.get("season", "all"), context
+                ):
+                    continue
+                sc = 0.0
+                for pref in prefs:
+                    if poi_covers_preference_report(poi, pref):
+                        sc += 50.0
+                sc -= pc * 0.05
+                try:
+                    sc += float(poi.get("must_see") or poi.get("must_see_score") or 0)
+                except (TypeError, ValueError):
+                    pass
+                if sc > best_score:
+                    best_score = sc
+                    best = poi
+            if not best:
+                n_attr = sum(
+                    1 for it in working
+                    if getattr(it, "type", None) == ItemType.ATTRACTION
+                )
+                if n_attr > 1:
+                    print(
+                        f"[FIX #252] Day {day_num}: budget drop (no swap) "
+                        f"{getattr(expensive, 'name', '?')} ({_cost(expensive):.0f} PLN)"
+                    )
+                    working = [it for i, it in enumerate(working) if i != drop_i]
+                    used_ids.discard(getattr(expensive, "poi_id", None))
+                break
+            replacement = self._generate_attraction_item(
+                best,
+                slot_start,
+                user,
+                user.get("target_group", "solo"),
+                context,
+                None,
+            )
+            print(
+                f"[FIX #252] Day {day_num}: budget swap "
+                f"{getattr(expensive, 'name', '?')} ({_cost(expensive):.0f}) → "
+                f"{best.get('name')} "
+                f"({float(calculate_poi_cost_for_group(best, user)):.0f} PLN)"
+            )
+            working[drop_i] = replacement
+            used_ids.discard(getattr(expensive, "poi_id", None))
+            used_ids.add(best.get("id"))
+            used_names.add((best.get("name") or "").strip().lower())
         return working
 
     def _apply_fix250_timeline_quality_pass(
@@ -8529,13 +8758,52 @@ class PlanService:
         all_pois_dict: Optional[List[Dict[str, Any]]] = None,
         user: Optional[Dict[str, Any]] = None,
         global_used_pois: Optional[set] = None,
+        ensure_green_coverage: bool = False,
     ) -> List[Any]:
-        """FIX #250/#251: mandatory post-mutation timeline — heal, transits, gaps, season."""
-        from app.application.services.plan_day_integrity import run_timeline_integrity_pass
+        """FIX #250/#251/#252: mandatory post-mutation timeline — heal, transits, meals, budget."""
+        from app.application.services.plan_day_integrity import (
+            ensure_meal_suggestions,
+            run_timeline_integrity_pass,
+        )
 
         day_start = context.get("day_start") or "09:00"
         day_end = context.get("day_end") or "19:00"
         ctx = {**context, "day_start": day_start, "day_end": day_end}
+        _meal_prefs = list(
+            context.get("preferences") or (user or {}).get("preferences") or []
+        )
+
+        # Snapshot: green present at entry (so we can reinject if mid-pass strips it)
+        _green_at_entry252 = False
+        if user is not None and all_pois_dict is not None:
+            _prefs_e = set(user.get("preferences") or [])
+            if _prefs_e & {"relaxation", "nature_landscape"}:
+                from app.domain.scoring.preference_coverage import (
+                    is_strong_nature_coverage_poi as _is_nat_e,
+                    is_strong_relaxation_coverage_poi as _is_rel_e,
+                )
+                _by_e = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+                _gk_e = (
+                    "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
+                    "ogród japoński", "ogrod japonski", "ogród botaniczny", "ogrod botaniczny",
+                    "lasek", "las strzeli", "bulwar", "jezioro malta", "wartostrada",
+                    "park sołacki", "park solacki", "park cytadela",
+                )
+                for _it_e in items:
+                    if not _is_timeline_attraction(_it_e):
+                        continue
+                    _pe = _by_e.get(
+                        getattr(_it_e, "poi_id", ""),
+                        {"name": getattr(_it_e, "name", ""), "tags": []},
+                    )
+                    _ne = (getattr(_it_e, "name", "") or "").lower()
+                    if (
+                        _is_nat_e(_pe)
+                        or _is_rel_e(_pe)
+                        or any(k in _ne for k in _gk_e)
+                    ):
+                        _green_at_entry252 = True
+                        break
 
         items = self._clamp_items_before_day_start(items, day_start, day_num=day_num)
         items = self._sort_items_by_time(items)
@@ -8554,6 +8822,17 @@ class PlanService:
             )
         items, _ = run_timeline_integrity_pass(items, day_num)
         items = self._remove_timeline_overlaps(items, day_num)
+
+        # FIX #252: always fill meal suggestions BEFORE routing through restaurants
+        items = ensure_meal_suggestions(
+            items,
+            poi_coords,
+            ctx,
+            parse_suggestion_fn=_restaurant_dict_to_suggestion,
+            filter_fn=lambda sugs: _filter_meal_suggestions(
+                sugs, preferences=_meal_prefs,
+            ),
+        )
         items = self._route_meals_into_timeline(
             items, poi_coords, ctx, day_num=day_num,
         )
@@ -8582,7 +8861,7 @@ class PlanService:
                     user,
                     global_used_pois,
                     all_pois_lookup=all_pois_dict,
-                    cross_day_reuse=True,
+                    cross_day_reuse=False,
                 )
                 items = self._strip_profile_denied_attractions(
                     items, user, all_pois_dict, day_num=day_num,
@@ -8602,16 +8881,177 @@ class PlanService:
                 _poi_by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
             items = self._trim_day_to_budget(
                 items, user, _poi_by_id, day_num=day_num, min_attrs=2,
+                all_pois_dict=all_pois_dict, context=ctx,
             )
         items = self._strip_same_day_duplicate_attractions(items, day_num=day_num)
         items, _ = run_timeline_integrity_pass(items, day_num)
         items = self._remove_timeline_overlaps(items, day_num)
+        items = ensure_meal_suggestions(
+            items,
+            poi_coords,
+            ctx,
+            parse_suggestion_fn=_restaurant_dict_to_suggestion,
+            filter_fn=lambda sugs: _filter_meal_suggestions(
+                sugs, preferences=_meal_prefs,
+            ),
+        )
         items = self._route_meals_into_timeline(
             items, poi_coords, ctx, day_num=day_num,
         )
         items = self._run_transit_routing_pass(items, poi_coords, ctx, day_num)
         items = self._strip_transits_to_unscheduled_destinations(items, day_num=day_num)
         items, _ = run_timeline_integrity_pass(items, day_num)
+
+        # FIX #252: guarantee relax/nature green POI survives finalize (Wrocław #248)
+        if user is not None and all_pois_dict is not None:
+            _prefs252 = set(user.get("preferences") or [])
+            if _prefs252 & {"relaxation", "nature_landscape"}:
+                from app.domain.scoring.preference_coverage import (
+                    is_strong_nature_coverage_poi,
+                    is_strong_relaxation_coverage_poi,
+                )
+                _by_id252 = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+                _has_green = False
+                _green_keys = (
+                    "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
+                    "ogród japoński", "ogrod japonski", "ogród botaniczny", "ogrod botaniczny",
+                    "lasek", "las strzeli", "bulwar", "jezioro malta", "wartostrada",
+                    "park sołacki", "park solacki", "park cytadela",
+                )
+                for _itg in items:
+                    if not _is_timeline_attraction(_itg):
+                        continue
+                    _pg = _by_id252.get(
+                        getattr(_itg, "poi_id", ""),
+                        {"name": getattr(_itg, "name", ""), "tags": []},
+                    )
+                    _ng = (getattr(_itg, "name", "") or "").lower()
+                    if (
+                        is_strong_nature_coverage_poi(_pg)
+                        or is_strong_relaxation_coverage_poi(_pg)
+                        or any(k in _ng for k in _green_keys)
+                    ):
+                        _has_green = True
+                        break
+                # FIX #252: reinject only when trip still needs coverage OR mid-pass
+                # stripped today's green. Always pass real trip keys (empty keys caused
+                # Wyspa Słodowa on every day of long trips).
+                _should_inj252 = (
+                    not _has_green
+                    and global_used_pois is not None
+                    and (ensure_green_coverage or _green_at_entry252)
+                )
+                if _should_inj252:
+                    from app.domain.scoring.profile_poi_rules import poi_trip_repeat_key
+                    _trip_names252 = {
+                        (getattr(it, "name", "") or "").lower()
+                        for it in items
+                        if _is_timeline_attraction(it)
+                    }
+                    _trip_keys252: set = set()
+                    for _pid_g in global_used_pois:
+                        _pg_prev = _by_id252.get(_pid_g)
+                        if not _pg_prev:
+                            continue
+                        _nm_prev = (_pg_prev.get("name") or "").lower()
+                        if _nm_prev:
+                            _trip_names252.add(_nm_prev)
+                        _rk_prev = poi_trip_repeat_key(_pg_prev.get("name") or "")
+                        if _rk_prev:
+                            _trip_keys252.add(_rk_prev)
+                    items, _inj252 = self._inject_relax_nature_green_poi(
+                        items,
+                        all_pois_dict,
+                        ctx,
+                        user,
+                        global_used_pois,
+                        _trip_keys252,
+                        _trip_names252,
+                        day_num=day_num,
+                    )
+                    if _inj252:
+                        items = ensure_meal_suggestions(
+                            items,
+                            poi_coords,
+                            ctx,
+                            parse_suggestion_fn=_restaurant_dict_to_suggestion,
+                            filter_fn=lambda sugs: _filter_meal_suggestions(
+                                sugs, preferences=_meal_prefs,
+                            ),
+                        )
+                        items = self._route_meals_into_timeline(
+                            items, poi_coords, ctx, day_num=day_num,
+                        )
+                        items = self._run_transit_routing_pass(
+                            items, poi_coords, ctx, day_num,
+                        )
+                        items = self._strip_transits_to_unscheduled_destinations(
+                            items, day_num=day_num,
+                        )
+                        items, _ = run_timeline_integrity_pass(items, day_num)
+
+        # FIX #252: rescue sparse late days after budget/weak-filler trim
+        if (
+            user is not None
+            and all_pois_dict is not None
+            and global_used_pois is not None
+        ):
+            _n_attr252 = sum(1 for it in items if _is_timeline_attraction(it))
+            _num_days252 = int(ctx.get("num_days") or 1)
+            _min_attr252 = 3 if (_num_days252 >= 5 and day_num >= max(6, _num_days252 - 1)) else 2
+            if _n_attr252 < _min_attr252:
+                from app.domain.scoring.profile_poi_rules import poi_trip_repeat_key as _rk252
+                _by_bf = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+                _names_bf = {
+                    (getattr(it, "name", "") or "").lower()
+                    for it in items
+                    if _is_timeline_attraction(it)
+                }
+                _keys_bf: set = set()
+                for _pid_bf in global_used_pois:
+                    _p_bf = _by_bf.get(_pid_bf)
+                    if not _p_bf:
+                        continue
+                    _nm_bf = (_p_bf.get("name") or "").lower()
+                    if _nm_bf:
+                        _names_bf.add(_nm_bf)
+                    _k_bf = _rk252(_p_bf.get("name") or "")
+                    if _k_bf:
+                        _keys_bf.add(_k_bf)
+                items = self._backfill_sparse_day_attractions(
+                    items,
+                    all_pois_dict,
+                    ctx,
+                    user,
+                    global_used_pois,
+                    _keys_bf,
+                    _names_bf,
+                    day_num=day_num,
+                    min_attr=_min_attr252,
+                    cross_day_reuse=False,
+                )
+                _n_attr252b = sum(1 for it in items if _is_timeline_attraction(it))
+                if _n_attr252b < _min_attr252:
+                    # Last resort: allow unused-name reuse but still honor repeat keys
+                    items = self._backfill_sparse_day_attractions(
+                        items,
+                        all_pois_dict,
+                        ctx,
+                        user,
+                        global_used_pois,
+                        _keys_bf,
+                        _names_bf,
+                        day_num=day_num,
+                        min_attr=_min_attr252,
+                        cross_day_reuse=True,
+                    )
+                items = self._strip_same_day_duplicate_attractions(items, day_num=day_num)
+                items, _ = run_timeline_integrity_pass(items, day_num)
+                items = self._run_transit_routing_pass(items, poi_coords, ctx, day_num)
+                items = self._strip_transits_to_unscheduled_destinations(
+                    items, day_num=day_num,
+                )
+
         return self._sort_items_by_time(items)
 
     def _apply_fix237_day_pipeline(

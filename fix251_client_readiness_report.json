@@ -1,0 +1,778 @@
+{
+  "total_fixtures": 50,
+  "passed": 15,
+  "failed": 35,
+  "issue_totals": {
+    "meal_not_on_route": 111,
+    "idle_gaps": 3,
+    "overlaps": 6,
+    "meal_no_suggestions": 5
+  },
+  "by_city": {
+    "Wrocław": {
+      "meal_not_on_route": 24
+    },
+    "Warszawa": {
+      "meal_not_on_route": 19,
+      "idle_gaps": 1,
+      "overlaps": 1,
+      "meal_no_suggestions": 1
+    },
+    "Kraków": {
+      "meal_not_on_route": 23,
+      "overlaps": 1,
+      "idle_gaps": 2,
+      "meal_no_suggestions": 1
+    },
+    "Katowice": {
+      "meal_not_on_route": 26,
+      "meal_no_suggestions": 3,
+      "overlaps": 3
+    },
+    "Poznań": {
+      "meal_not_on_route": 19,
+      "overlaps": 1
+    }
+  },
+  "failed_labels": [
+    "Wrocław/test-01.json",
+    "Wrocław/test-02.json",
+    "Wrocław/test-03.json",
+    "Wrocław/test-05.json",
+    "Wrocław/test-07.json",
+    "Wrocław/test-08.json",
+    "Wrocław/test-09.json",
+    "Warszawa/test-01.json",
+    "Warszawa/test-02.json",
+    "Warszawa/test-03.json",
+    "Warszawa/test-05.json",
+    "Warszawa/test-07.json",
+    "Warszawa/test-08.json",
+    "Warszawa/test-09.json",
+    "Kraków/test-01.json",
+    "Kraków/test-02.json",
+    "Kraków/test-03.json",
+    "Kraków/test-04.json",
+    "Kraków/test-08.json",
+    "Kraków/test-09.json",
+    "Kraków/test-10.json",
+    "Katowice/test-01.json",
+    "Katowice/test-02.json",
+    "Katowice/test-03.json",
+    "Katowice/test-04.json",
+    "Katowice/test-06.json",
+    "Katowice/test-07.json",
+    "Katowice/test-08.json",
+    "Katowice/test-09.json",
+    "Poznań/test-01.json",
+    "Poznań/test-02.json",
+    "Poznań/test-03.json",
+    "Poznań/test-05.json",
+    "Poznań/test-08.json",
+    "Poznań/test-09.json"
+  ],
+  "results": [
+    {
+      "label": "Wrocław/test-01.json",
+      "city": "Wrocław",
+      "file": "test-01.json",
+      "days": 3,
+      "issue_count": 5,
+      "categories": {
+        "meal_not_on_route": [
+          "Wrocław/test-01.json day1: Pierogarnia Ze Smakiem",
+          "Wrocław/test-01.json day1: Warzywniak",
+          "Wrocław/test-01.json day2: Restauracja Forum Kulinarne",
+          "Wrocław/test-01.json day3: House of Spices",
+          "Wrocław/test-01.json day3: House of Spices"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Wrocław/test-02.json",
+      "city": "Wrocław",
+      "file": "test-02.json",
+      "days": 3,
+      "issue_count": 3,
+      "categories": {
+        "meal_not_on_route": [
+          "Wrocław/test-02.json day1: The Cork",
+          "Wrocław/test-02.json day2: The Cork",
+          "Wrocław/test-02.json day3: Taste"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Wrocław/test-03.json",
+      "city": "Wrocław",
+      "file": "test-03.json",
+      "days": 2,
+      "issue_count": 1,
+      "categories": {
+        "meal_not_on_route": [
+          "Wrocław/test-03.json day2: Taste"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Wrocław/test-04.json",
+      "city": "Wrocław",
+      "file": "test-04.json",
+      "days": 5,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    },
+    {
+      "label": "Wrocław/test-05.json",
+      "city": "Wrocław",
+      "file": "test-05.json",
+      "days": 2,
+      "issue_count": 1,
+      "categories": {
+        "meal_not_on_route": [
+          "Wrocław/test-05.json day2: Pierogarnia Ze Smakiem"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Wrocław/test-06.json",
+      "city": "Wrocław",
+      "file": "test-06.json",
+      "days": 3,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    },
+    {
+      "label": "Wrocław/test-07.json",
+      "city": "Wrocław",
+      "file": "test-07.json",
+      "days": 2,
+      "issue_count": 2,
+      "categories": {
+        "meal_not_on_route": [
+          "Wrocław/test-07.json day2: VaffaNapoli",
+          "Wrocław/test-07.json day2: VaffaNapoli"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Wrocław/test-08.json",
+      "city": "Wrocław",
+      "file": "test-08.json",
+      "days": 7,
+      "issue_count": 7,
+      "categories": {
+        "meal_not_on_route": [
+          "Wrocław/test-08.json day1: The Cork",
+          "Wrocław/test-08.json day3: The Cork",
+          "Wrocław/test-08.json day4: House of Spices",
+          "Wrocław/test-08.json day4: Restauracja Forum Kulinarne",
+          "Wrocław/test-08.json day5: House of Spices",
+          "Wrocław/test-08.json day5: House of Spices",
+          "Wrocław/test-08.json day6: Chinkalnia Wrocław Sukiennice"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Wrocław/test-09.json",
+      "city": "Wrocław",
+      "file": "test-09.json",
+      "days": 3,
+      "issue_count": 5,
+      "categories": {
+        "meal_not_on_route": [
+          "Wrocław/test-09.json day1: VaffaNapoli",
+          "Wrocław/test-09.json day2: House of Spices",
+          "Wrocław/test-09.json day2: House of Spices",
+          "Wrocław/test-09.json day3: House of Spices",
+          "Wrocław/test-09.json day3: House of Spices"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Wrocław/test-10.json",
+      "city": "Wrocław",
+      "file": "test-10.json",
+      "days": 2,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    },
+    {
+      "label": "Warszawa/test-01.json",
+      "city": "Warszawa",
+      "file": "test-01.json",
+      "days": 3,
+      "issue_count": 3,
+      "categories": {
+        "meal_not_on_route": [
+          "Warszawa/test-01.json day1: Gospoda pod Zygmuntem",
+          "Warszawa/test-01.json day2: Gospoda pod Zygmuntem",
+          "Warszawa/test-01.json day2: Restauracja Primitivo Kuchnia i Wino"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Warszawa/test-02.json",
+      "city": "Warszawa",
+      "file": "test-02.json",
+      "days": 3,
+      "issue_count": 1,
+      "categories": {
+        "meal_not_on_route": [
+          "Warszawa/test-02.json day3: Restauracja Primitivo Kuchnia i Wino"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Warszawa/test-03.json",
+      "city": "Warszawa",
+      "file": "test-03.json",
+      "days": 2,
+      "issue_count": 2,
+      "categories": {
+        "meal_not_on_route": [
+          "Warszawa/test-03.json day1: Restauracja U Jakuba",
+          "Warszawa/test-03.json day2: Stary Dom"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Warszawa/test-04.json",
+      "city": "Warszawa",
+      "file": "test-04.json",
+      "days": 5,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    },
+    {
+      "label": "Warszawa/test-05.json",
+      "city": "Warszawa",
+      "file": "test-05.json",
+      "days": 2,
+      "issue_count": 2,
+      "categories": {
+        "idle_gaps": [
+          "Warszawa/test-05.json day1: idle gap 100min around free_time"
+        ],
+        "meal_not_on_route": [
+          "Warszawa/test-05.json day1: Restauracja Słoik"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Warszawa/test-06.json",
+      "city": "Warszawa",
+      "file": "test-06.json",
+      "days": 3,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    },
+    {
+      "label": "Warszawa/test-07.json",
+      "city": "Warszawa",
+      "file": "test-07.json",
+      "days": 2,
+      "issue_count": 1,
+      "categories": {
+        "meal_not_on_route": [
+          "Warszawa/test-07.json day2: Restauracja Słoik"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Warszawa/test-08.json",
+      "city": "Warszawa",
+      "file": "test-08.json",
+      "days": 7,
+      "issue_count": 9,
+      "categories": {
+        "meal_not_on_route": [
+          "Warszawa/test-08.json day1: Stary Dom",
+          "Warszawa/test-08.json day2: U Szwejka",
+          "Warszawa/test-08.json day3: FORNO Powiśle",
+          "Warszawa/test-08.json day4: Restauracja Primitivo Kuchnia i Wino",
+          "Warszawa/test-08.json day6: Gospoda pod Zygmuntem",
+          "Warszawa/test-08.json day6: Gospoda pod Zygmuntem",
+          "Warszawa/test-08.json day7: Gospoda pod Zygmuntem"
+        ],
+        "overlaps": [
+          "Warszawa/test-08.json day6: overlap transit (10:05-10:19) vs Ogród Krasińskich (10:15)"
+        ],
+        "meal_no_suggestions": [
+          "Warszawa/test-08.json day7: lunch_break"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Warszawa/test-09.json",
+      "city": "Warszawa",
+      "file": "test-09.json",
+      "days": 3,
+      "issue_count": 4,
+      "categories": {
+        "meal_not_on_route": [
+          "Warszawa/test-09.json day1: U Szwejka",
+          "Warszawa/test-09.json day2: Gospoda pod Zygmuntem",
+          "Warszawa/test-09.json day2: U Szwejka",
+          "Warszawa/test-09.json day3: Restauracja Tutti Santi Królewska"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Warszawa/test-10.json",
+      "city": "Warszawa",
+      "file": "test-10.json",
+      "days": 2,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    },
+    {
+      "label": "Kraków/test-01.json",
+      "city": "Kraków",
+      "file": "test-01.json",
+      "days": 3,
+      "issue_count": 3,
+      "categories": {
+        "meal_not_on_route": [
+          "Kraków/test-01.json day1: Tawerna Wilczy Dół",
+          "Kraków/test-01.json day2: Szalone Widelce",
+          "Kraków/test-01.json day3: Restauracja Olio | Pizza Napoletana"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Kraków/test-02.json",
+      "city": "Kraków",
+      "file": "test-02.json",
+      "days": 3,
+      "issue_count": 6,
+      "categories": {
+        "meal_not_on_route": [
+          "Kraków/test-02.json day1: Otto Pompieri - Kraków",
+          "Kraków/test-02.json day2: Royal Curry",
+          "Kraków/test-02.json day2: Czarna Kaczka / Black Duck",
+          "Kraków/test-02.json day3: Drevny Kocur Kraków"
+        ],
+        "overlaps": [
+          "Kraków/test-02.json day2: overlap transit (11:35-11:53) vs Park im. Henryka Jordana (11:48)"
+        ],
+        "idle_gaps": [
+          "Kraków/test-02.json day2: idle gap 208min before meal"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Kraków/test-03.json",
+      "city": "Kraków",
+      "file": "test-03.json",
+      "days": 2,
+      "issue_count": 2,
+      "categories": {
+        "idle_gaps": [
+          "Kraków/test-03.json day2: idle gap 347min before meal"
+        ],
+        "meal_not_on_route": [
+          "Kraków/test-03.json day2: MIŁA bar mleczny 7"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Kraków/test-04.json",
+      "city": "Kraków",
+      "file": "test-04.json",
+      "days": 5,
+      "issue_count": 2,
+      "categories": {
+        "meal_not_on_route": [
+          "Kraków/test-04.json day1: Czarna Kaczka / Black Duck",
+          "Kraków/test-04.json day2: Restauracja Sukiennice"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Kraków/test-05.json",
+      "city": "Kraków",
+      "file": "test-05.json",
+      "days": 2,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    },
+    {
+      "label": "Kraków/test-06.json",
+      "city": "Kraków",
+      "file": "test-06.json",
+      "days": 3,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    },
+    {
+      "label": "Kraków/test-07.json",
+      "city": "Kraków",
+      "file": "test-07.json",
+      "days": 2,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    },
+    {
+      "label": "Kraków/test-08.json",
+      "city": "Kraków",
+      "file": "test-08.json",
+      "days": 7,
+      "issue_count": 9,
+      "categories": {
+        "meal_not_on_route": [
+          "Kraków/test-08.json day2: Royal Curry",
+          "Kraków/test-08.json day3: Lokalna Restauracja Polska",
+          "Kraków/test-08.json day3: Szalone Widelce",
+          "Kraków/test-08.json day4: Restauracja Polska",
+          "Kraków/test-08.json day4: Royal Curry",
+          "Kraków/test-08.json day5: Restauracja Po Krakosku",
+          "Kraków/test-08.json day6: MIŁA bar mleczny 7",
+          "Kraków/test-08.json day7: MIŁA bar mleczny 7",
+          "Kraków/test-08.json day7: Lokalna Restauracja Polska"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Kraków/test-09.json",
+      "city": "Kraków",
+      "file": "test-09.json",
+      "days": 3,
+      "issue_count": 4,
+      "categories": {
+        "meal_not_on_route": [
+          "Kraków/test-09.json day1: Szalone Widelce",
+          "Kraków/test-09.json day3: Restauracja Sukiennice",
+          "Kraków/test-09.json day3: Otto Pompieri - Kraków"
+        ],
+        "meal_no_suggestions": [
+          "Kraków/test-09.json day2: dinner_break"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Kraków/test-10.json",
+      "city": "Kraków",
+      "file": "test-10.json",
+      "days": 2,
+      "issue_count": 1,
+      "categories": {
+        "meal_not_on_route": [
+          "Kraków/test-10.json day2: Restauracja Sukiennice"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Katowice/test-01.json",
+      "city": "Katowice",
+      "file": "test-01.json",
+      "days": 3,
+      "issue_count": 2,
+      "categories": {
+        "meal_not_on_route": [
+          "Katowice/test-01.json day1: SOHO - Restauracja przy Teatrze Żelaznym",
+          "Katowice/test-01.json day3: BUŁKĘS"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Katowice/test-02.json",
+      "city": "Katowice",
+      "file": "test-02.json",
+      "days": 3,
+      "issue_count": 4,
+      "categories": {
+        "meal_not_on_route": [
+          "Katowice/test-02.json day1: Śląska Prohibicja",
+          "Katowice/test-02.json day2: BUŁKĘS",
+          "Katowice/test-02.json day3: Tatiana",
+          "Katowice/test-02.json day3: BUŁKĘS"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Katowice/test-03.json",
+      "city": "Katowice",
+      "file": "test-03.json",
+      "days": 2,
+      "issue_count": 2,
+      "categories": {
+        "meal_not_on_route": [
+          "Katowice/test-03.json day1: Śląska Prohibicja",
+          "Katowice/test-03.json day2: BUŁKĘS"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Katowice/test-04.json",
+      "city": "Katowice",
+      "file": "test-04.json",
+      "days": 5,
+      "issue_count": 2,
+      "categories": {
+        "meal_not_on_route": [
+          "Katowice/test-04.json day2: Bar Gucio"
+        ],
+        "meal_no_suggestions": [
+          "Katowice/test-04.json day4: lunch_break"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Katowice/test-05.json",
+      "city": "Katowice",
+      "file": "test-05.json",
+      "days": 2,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    },
+    {
+      "label": "Katowice/test-06.json",
+      "city": "Katowice",
+      "file": "test-06.json",
+      "days": 3,
+      "issue_count": 2,
+      "categories": {
+        "meal_not_on_route": [
+          "Katowice/test-06.json day2: Bar Gucio",
+          "Katowice/test-06.json day3: Śląska Prohibicja"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Katowice/test-07.json",
+      "city": "Katowice",
+      "file": "test-07.json",
+      "days": 2,
+      "issue_count": 1,
+      "categories": {
+        "meal_not_on_route": [
+          "Katowice/test-07.json day2: BUŁKĘS"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Katowice/test-08.json",
+      "city": "Katowice",
+      "file": "test-08.json",
+      "days": 7,
+      "issue_count": 14,
+      "categories": {
+        "meal_not_on_route": [
+          "Katowice/test-08.json day1: BUŁKĘS",
+          "Katowice/test-08.json day2: Śląska Prohibicja",
+          "Katowice/test-08.json day3: Bar Mleczny KukuRyku",
+          "Katowice/test-08.json day3: SOHO - Restauracja przy Teatrze Żelaznym",
+          "Katowice/test-08.json day4: Tatiana",
+          "Katowice/test-08.json day4: Tatiana",
+          "Katowice/test-08.json day6: BUŁKĘS",
+          "Katowice/test-08.json day6: BUŁKĘS",
+          "Katowice/test-08.json day7: Śląska Prohibicja"
+        ],
+        "overlaps": [
+          "Katowice/test-08.json day4: overlap transit (10:45-11:28) vs Miejski Ogród Botaniczny w Zabrzu (11:13)",
+          "Katowice/test-08.json day6: overlap transit (11:15-11:56) vs Park Śląski (11:41)",
+          "Katowice/test-08.json day7: overlap transit (10:45-11:36) vs House of Air - Park Trampolin (11:18)"
+        ],
+        "meal_no_suggestions": [
+          "Katowice/test-08.json day5: dinner_break",
+          "Katowice/test-08.json day7: lunch_break"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Katowice/test-09.json",
+      "city": "Katowice",
+      "file": "test-09.json",
+      "days": 3,
+      "issue_count": 5,
+      "categories": {
+        "meal_not_on_route": [
+          "Katowice/test-09.json day1: SOHO - Restauracja przy Teatrze Żelaznym",
+          "Katowice/test-09.json day2: Śląska Prohibicja",
+          "Katowice/test-09.json day2: Śląska Prohibicja",
+          "Katowice/test-09.json day3: Stara Ponderosa",
+          "Katowice/test-09.json day3: Stara Ponderosa"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Katowice/test-10.json",
+      "city": "Katowice",
+      "file": "test-10.json",
+      "days": 2,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    },
+    {
+      "label": "Poznań/test-01.json",
+      "city": "Poznań",
+      "file": "test-01.json",
+      "days": 3,
+      "issue_count": 3,
+      "categories": {
+        "meal_not_on_route": [
+          "Poznań/test-01.json day1: Kaprys na Smak",
+          "Poznań/test-01.json day2: NOOKS",
+          "Poznań/test-01.json day3: Restauracja Drevny Kocur Poznań"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Poznań/test-02.json",
+      "city": "Poznań",
+      "file": "test-02.json",
+      "days": 3,
+      "issue_count": 5,
+      "categories": {
+        "meal_not_on_route": [
+          "Poznań/test-02.json day1: Just Friends Poznań - Restauracja | Cocktail bar",
+          "Poznań/test-02.json day2: Modra Kuchnia",
+          "Poznań/test-02.json day2: NOOKS",
+          "Poznań/test-02.json day3: Restauracja Drevny Kocur Poznań"
+        ],
+        "overlaps": [
+          "Poznań/test-02.json day2: overlap transit (11:05-11:20) vs Park Adama Wodziczki (11:16)"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Poznań/test-03.json",
+      "city": "Poznań",
+      "file": "test-03.json",
+      "days": 2,
+      "issue_count": 2,
+      "categories": {
+        "meal_not_on_route": [
+          "Poznań/test-03.json day1: Lavenda Cafe & Lunch",
+          "Poznań/test-03.json day2: Antrejka obiady domowe"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Poznań/test-04.json",
+      "city": "Poznań",
+      "file": "test-04.json",
+      "days": 5,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    },
+    {
+      "label": "Poznań/test-05.json",
+      "city": "Poznań",
+      "file": "test-05.json",
+      "days": 2,
+      "issue_count": 1,
+      "categories": {
+        "meal_not_on_route": [
+          "Poznań/test-05.json day1: Schaboszczak od Dziadka"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Poznań/test-06.json",
+      "city": "Poznań",
+      "file": "test-06.json",
+      "days": 3,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    },
+    {
+      "label": "Poznań/test-07.json",
+      "city": "Poznań",
+      "file": "test-07.json",
+      "days": 2,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    },
+    {
+      "label": "Poznań/test-08.json",
+      "city": "Poznań",
+      "file": "test-08.json",
+      "days": 7,
+      "issue_count": 7,
+      "categories": {
+        "meal_not_on_route": [
+          "Poznań/test-08.json day1: Just Friends Poznań - Restauracja | Cocktail bar",
+          "Poznań/test-08.json day2: Restauracja Drevny Kocur Poznań",
+          "Poznań/test-08.json day3: Restauracja Drevny Kocur Poznań",
+          "Poznań/test-08.json day4: Antrejka obiady domowe",
+          "Poznań/test-08.json day5: Just Friends Poznań - Restauracja | Cocktail bar",
+          "Poznań/test-08.json day6: Restauracja Drevny Kocur Poznań",
+          "Poznań/test-08.json day7: Restauracja Drevny Kocur Poznań"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Poznań/test-09.json",
+      "city": "Poznań",
+      "file": "test-09.json",
+      "days": 3,
+      "issue_count": 2,
+      "categories": {
+        "meal_not_on_route": [
+          "Poznań/test-09.json day2: Restauracja Drevny Kocur Poznań",
+          "Poznań/test-09.json day3: Antrejka obiady domowe"
+        ]
+      },
+      "ok": false
+    },
+    {
+      "label": "Poznań/test-10.json",
+      "city": "Poznań",
+      "file": "test-10.json",
+      "days": 2,
+      "issue_count": 0,
+      "categories": {},
+      "ok": true
+    }
+  ]
+}
