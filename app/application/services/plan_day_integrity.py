@@ -183,12 +183,23 @@ def assert_transit_endpoints_match_pois(
     poi_coords: Dict[str, dict],
     day_num: int = 1,
 ) -> List[Any]:
-    """Drop transits whose endpoints are not scheduled attractions (already in #200)."""
+    """Drop transits whose endpoints are not scheduled attractions/restaurants."""
     names = {
         getattr(it, "name", "")
         for it in items
         if _is_attraction(it) and getattr(it, "name", "")
     }
+    # FIX #251: primary meal restaurants are valid endpoints.
+    for it in items:
+        if _type_val(it) not in (
+            ItemType.LUNCH_BREAK.value,
+            ItemType.DINNER_BREAK.value,
+        ):
+            continue
+        for sug in (getattr(it, "suggestions", None) or [])[:1]:
+            rn = getattr(sug, "name", None) or ""
+            if rn:
+                names.add(rn)
     out = []
     for it in items:
         if _type_val(it) != ItemType.TRANSIT.value:

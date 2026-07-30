@@ -209,6 +209,18 @@ def audit_before_day_start(items: Sequence[Any], day_start: str) -> List[str]:
 def audit_orphan_transits(items: Sequence[Any]) -> List[str]:
     issues: List[str] = []
     names = _attr_names_set(items)
+    # FIX #251: meal restaurants are valid transit endpoints.
+    for it in items:
+        if _type_val(it) not in (
+            ItemType.LUNCH_BREAK.value,
+            ItemType.DINNER_BREAK.value,
+        ):
+            continue
+        for sug in (getattr(it, "suggestions", None) or [])[:1]:
+            rn = (getattr(sug, "name", None) or "").strip()
+            if rn:
+                names.add(rn)
+                names.add(_norm_name(rn))
 
     def _matches(name: str) -> bool:
         if not name:

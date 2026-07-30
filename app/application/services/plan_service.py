@@ -3486,6 +3486,65 @@ class PlanService:
             ))
         days = _finalized_days
 
+        # FIX #251: budget warnings must reflect FINAL day costs (after trim/gap-fill).
+        plan_warnings = [
+            w for w in plan_warnings
+            if w.get("type") not in ("budget_exceeded", "budget_constraint_active")
+        ]
+        daily_limit = user.get("daily_limit")
+        if daily_limit is None:
+            budget_dict = user.get("budget", {})
+            if isinstance(budget_dict, dict):
+                daily_limit = budget_dict.get("daily_limit")
+        if daily_limit is not None and float(daily_limit) > 0:
+            daily_limit = float(daily_limit)
+            for day_plan in days:
+                day_cost = 0.0
+                expensive_items = []
+                for item in day_plan.items:
+                    try:
+                        item_cost = float(
+                            getattr(item, "cost_estimate", None)
+                            or getattr(item, "total_cost", None)
+                            or 0
+                        )
+                    except (TypeError, ValueError):
+                        item_cost = 0.0
+                    if item_cost > 0:
+                        day_cost += item_cost
+                        if item_cost / daily_limit > 0.70:
+                            expensive_items.append({
+                                "name": getattr(item, "name", None) or "Unknown",
+                                "cost": int(item_cost),
+                                "percentage": int(item_cost / daily_limit * 100),
+                            })
+                if day_cost > daily_limit:
+                    plan_warnings.append({
+                        "type": "budget_exceeded",
+                        "day": day_plan.day,
+                        "daily_limit": int(daily_limit),
+                        "actual_cost": int(day_cost),
+                        "overage": int(day_cost - daily_limit),
+                        "message": (
+                            f"Dzień {day_plan.day}: Koszt przekracza dzienny limit "
+                            f"o {int(day_cost - daily_limit)} PLN"
+                        ),
+                    })
+                for item_info in expensive_items:
+                    plan_warnings.append({
+                        "type": "budget_constraint_active",
+                        "day": day_plan.day,
+                        "daily_limit": int(daily_limit),
+                        "expensive_item": item_info["name"],
+                        "item_cost": item_info["cost"],
+                        "percentage_of_budget": item_info["percentage"],
+                        "message": (
+                            f"Dzień {day_plan.day}: '{item_info['name']}' pochłania "
+                            f"{item_info['percentage']}% dziennego budżetu "
+                            f"({item_info['cost']} PLN z {int(daily_limit)} PLN limitu)"
+                        ),
+                    })
+
         for _pw in _pref_guarantee_warnings:
             if not any(
                 w.get("type") == "preference_not_covered"
@@ -4453,6 +4512,8 @@ class PlanService:
             _parking_display_name = "Parking w okolicy atrakcji"
         else:
             _parking_display_name = "Brak danych o parkingu"
+        # FIX #251: never ship empty description_short / pro_tip to the client.
+        _desc_short, _pro_tip = self._fallback_attraction_copy(poi_dict)
         return AttractionItem(
             type=ItemType.ATTRACTION,
             start_time=start_time,
@@ -4460,7 +4521,7 @@ class PlanService:
             duration_min=visit_min,
             poi_id=poi_dict.get("id", ""),
             name=poi_dict.get("name", ""),
-            description_short=poi_dict.get("description_short", ""),
+            description_short=_desc_short,
             description_long=(
                 poi_dict.get("description_long")
                 or poi_dict.get("Description_long")
@@ -4492,7 +4553,7 @@ class PlanService:
                 lat=_pk_lat,
                 lng=_pk_lng,
             ),
-            pro_tip=poi_dict.get("pro_tip") or poi_dict.get("Pro_tip") or None,
+            pro_tip=_pro_tip,
             why_selected=why_selected,  # ETAP 2 Day 5
             quality_badges=quality_badges  # ETAP 2 Day 5
         )
@@ -5188,6 +5249,15 @@ class PlanService:
                                 poi, "nature_landscape"
                             ):
                                 score += 35.0
+                            # FIX #251: after first attraction, keep gap-fill aligned to ALL prefs.
+                            _pref_hits = sum(
+                                1 for pref in _prefs_gf211
+                                if poi_covers_preference_report(poi, pref)
+                            )
+                            if _pref_hits:
+                                score += 55.0 * _pref_hits
+                            elif _prefs_gf211:
+                                score -= 40.0  # random filler penalty
                             if _f187_last_day_ps and poi_geo_region_key(poi) == context.get("day_geo_region"):
                                 score += 80.0
                             from app.domain.scoring.profile_poi_rules import profile_poi_score_delta
@@ -6366,35 +6436,23 @@ class PlanService:
             # we don't blow past day_end (the caller clamps/heals afterwards).
             if gap_min < ideal_min:
                 deficit = ideal_min - max(gap_min, 0)
-                day_end_min = None
-                _de = context.get("day_end")
-                if _de:
-                    try:
-                        day_end_min = time_to_minutes(_de)
-                    except Exception:
-                        day_end_min = None
-                shift = deficit
-                if day_end_min is not None:
-                    last_end = max(
-                        (
-                            time_to_minutes(getattr(x, "end_time"))
-                            for x in result
-                            if getattr(x, "end_time", None)
-                        ),
-                        default=start_b_min,
-                    )
-                    avail = max(0, day_end_min - last_end)
-                    shift = min(deficit, avail)
-                    # Overlap / identical-time bug: force a minimal separation even
-                    # when no slack remains (small overflow is absorbed downstream).
-                    if shift <= 0 and gap_min <= 0:
-                        shift = min(deficit, 10)
+                # FIX #251: never squeeze a real transfer into 5 min for 6 km —
+                # always shift the next attraction (heal absorbs day_end overflow).
+                shift = max(deficit, 0)
+                if shift <= 0 and gap_min <= 0:
+                    shift = min(ideal_min, 10)
                 if shift > 0:
                     result = self._shift_items_from(result, idx_b, shift)
                     start_b_min += shift
                     gap_min = start_b_min - end_a_min
 
-            travel_min = max(3, min(gap_min, ideal_min)) if gap_min >= 3 else 0
+            # Prefer realistic travel time; do not clamp to a too-small gap.
+            travel_min = max(3, ideal_min)
+            if gap_min >= ideal_min:
+                travel_min = ideal_min
+            elif gap_min >= 3 and gap_min < ideal_min:
+                # Still under — use ideal and leave a short overlap for heal to fix.
+                travel_min = ideal_min
             if travel_min < 3:
                 continue
 
@@ -6602,7 +6660,7 @@ class PlanService:
         coord_map: Dict[str, dict],
         context: dict,
     ) -> Any:
-        """FIX #240: 46 km in 5 min — recompute from real coords."""
+        """FIX #240/#251: 6 km in 5 min (or any unrealistic speed) — recompute."""
         if _item_type_value(it) != ItemType.TRANSIT.value:
             return it
         frm = getattr(it, "from_location", "") or ""
@@ -6616,9 +6674,15 @@ class PlanService:
             return it
         dist = haversine_distance(float(lat1), float(lng1), float(lat2), float(lng2))
         cur = int(getattr(it, "duration_min", 0) or 0)
-        if dist < 8:
+        if dist < 0.8:
             return it
-        min_plausible = max(10, int(dist / 50 * 60 + 5))
+        # City traffic: ~25 km/h effective + 5 min buffer; walk: ~4.5 km/h.
+        mode = str(getattr(it, "mode", "") or "").lower()
+        is_walk = "walk" in mode
+        if is_walk:
+            min_plausible = max(5, int(dist / 4.5 * 60))
+        else:
+            min_plausible = max(8, int(dist / 25.0 * 60 + 5))
         if cur >= min_plausible:
             return it
         ctx = {**context, "has_car": context.get("has_car", True)}
@@ -6628,12 +6692,17 @@ class PlanService:
                 {"lat": float(lat2), "lng": float(lng2)},
                 ctx,
             )
-            new_dur = max(new_dur, min_plausible)
+            new_dur = max(int(new_dur), min_plausible)
             st = time_to_minutes(getattr(it, "start_time", "09:00"))
+            print(
+                f"[FIX #251] Implausible transit {frm}->{to}: "
+                f"{cur}min for {dist:.1f}km → {new_dur}min"
+            )
             return it.model_copy(
                 update={
                     "duration_min": new_dur,
                     "end_time": minutes_to_time(st + new_dur),
+                    "distance_km": round(dist, 2),
                 }
             )
         except Exception:
@@ -6845,12 +6914,23 @@ class PlanService:
         *,
         day_num: int = 0,
     ) -> List[Any]:
-        """FIX #248 Wrocław: usuń transit do POI bez atrakcji w timeline (Grabowy Labirynt)."""
+        """FIX #248/#251: usuń transit do POI bez atrakcji/restauracji w timeline."""
         attr_names = {
             (getattr(it, "name", "") or "").strip()
             for it in items
             if _is_timeline_attraction(it)
         }
+        # FIX #251: primary meal restaurants are valid transit endpoints.
+        for it in items:
+            if _item_type_value(it) not in (
+                ItemType.LUNCH_BREAK.value,
+                ItemType.DINNER_BREAK.value,
+            ):
+                continue
+            for sug in (getattr(it, "suggestions", None) or [])[:1]:
+                rn = (getattr(sug, "name", None) or "").strip()
+                if rn:
+                    attr_names.add(rn)
         attr_lower = {n.lower() for n in attr_names if n}
 
         def _matches(dest: str) -> bool:
@@ -7947,6 +8027,262 @@ class PlanService:
         items = self._collapse_excessive_timeline_slack(items, max_slack_min=25)
         return items
 
+    def _strip_closed_attractions(
+        self,
+        items: List[Any],
+        all_pois_dict: Optional[List[Dict[str, Any]]],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #251: drop attractions closed at their scheduled start (day/hours)."""
+        if not all_pois_dict:
+            return items
+        by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+        by_name = {(p.get("name") or ""): p for p in all_pois_dict if p.get("name")}
+        season = context.get("season", "all")
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            poi = by_id.get(getattr(it, "poi_id", "")) or by_name.get(
+                getattr(it, "name", "") or "", {}
+            )
+            if not poi:
+                out.append(it)
+                continue
+            st = getattr(it, "start_time", None)
+            dur = int(getattr(it, "duration_min", 0) or 60)
+            if not st:
+                out.append(it)
+                continue
+            try:
+                if not is_open(poi, time_to_minutes(st), dur, season, context):
+                    print(
+                        f"[FIX #251] Day {day_num}: stripped closed "
+                        f"{getattr(it, 'name', '?')} at {st}"
+                    )
+                    continue
+            except Exception:
+                pass
+            out.append(it)
+        return out
+
+    def _strip_same_day_duplicate_attractions(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #251: no duplicate POI id/name within a single day."""
+        seen_ids: set = set()
+        seen_names: set = set()
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            pid = getattr(it, "poi_id", None) or ""
+            nm = (getattr(it, "name", "") or "").strip().lower()
+            if (pid and pid in seen_ids) or (nm and nm in seen_names):
+                print(
+                    f"[FIX #251] Day {day_num}: stripped duplicate "
+                    f"{getattr(it, 'name', '?')}"
+                )
+                continue
+            if pid:
+                seen_ids.add(pid)
+            if nm:
+                seen_names.add(nm)
+            out.append(it)
+        return out
+
+    def _route_meals_into_timeline(
+        self,
+        items: List[Any],
+        poi_coords: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #251: transit via primary restaurant — no teleport across lunch/dinner."""
+        from app.domain.models.plan import TransitItem, TransitMode
+
+        working = list(items)
+        meal_types = {ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value}
+        inserts: List[tuple] = []  # (index, transit_item) after meal
+
+        for idx, it in enumerate(list(working)):
+            if _item_type_value(it) not in meal_types:
+                continue
+            sugs = getattr(it, "suggestions", None) or []
+            if not sugs:
+                continue
+            primary = sugs[0]
+            rname = getattr(primary, "name", None) or ""
+            rlat = getattr(primary, "lat", None)
+            rlng = getattr(primary, "lng", None)
+            if not rname or rlat is None or rlng is None:
+                continue
+            poi_coords[rname] = {
+                "name": rname,
+                "lat": float(rlat),
+                "lng": float(rlng),
+                "id": getattr(primary, "id", "") or f"rest_{idx}",
+            }
+
+            # Rewrite transit before meal → restaurant
+            for j in range(idx - 1, max(-1, idx - 4), -1):
+                prev = working[j]
+                if _item_type_value(prev) == ItemType.TRANSIT.value:
+                    try:
+                        working[j] = prev.model_copy(update={"to_location": rname})
+                    except Exception:
+                        pass
+                    break
+
+            # Find next attraction after meal
+            next_attr = None
+            next_attr_idx = None
+            has_post_transit = False
+            for j in range(idx + 1, min(len(working), idx + 5)):
+                nxt = working[j]
+                tv = _item_type_value(nxt)
+                if tv == ItemType.TRANSIT.value:
+                    try:
+                        working[j] = nxt.model_copy(update={"from_location": rname})
+                        has_post_transit = True
+                    except Exception:
+                        pass
+                    break
+                if _is_timeline_attraction(nxt):
+                    next_attr = nxt
+                    next_attr_idx = j
+                    break
+
+            if next_attr and not has_post_transit and next_attr_idx is not None:
+                meal_end = getattr(it, "end_time", None)
+                attr_start = getattr(next_attr, "start_time", None)
+                if meal_end and attr_start:
+                    to_name = getattr(next_attr, "name", "") or ""
+                    to_poi = poi_coords.get(to_name) or {}
+                    lat2, lng2 = _poi_lat_lng(to_poi)
+                    if lat2 is not None and lng2 is not None:
+                        from_d = {"lat": float(rlat), "lng": float(rlng)}
+                        to_d = {"lat": float(lat2), "lng": float(lng2)}
+                        ctx = {**context, "has_car": context.get("has_car", True)}
+                        try:
+                            dur = max(5, travel_time_minutes(from_d, to_d, ctx))
+                            mode_str = get_transport_mode(from_d, to_d, ctx)
+                        except Exception:
+                            dist = haversine_distance(
+                                float(rlat), float(rlng), float(lat2), float(lng2)
+                            )
+                            dur = max(5, int(dist * 15))
+                            mode_str = "walking" if dist < 1.2 else "car"
+                        st = time_to_minutes(meal_end)
+                        transit = TransitItem(
+                            type=ItemType.TRANSIT,
+                            start_time=minutes_to_time(st),
+                            end_time=minutes_to_time(st + dur),
+                            duration_min=dur,
+                            mode=TransitMode.WALK if "walk" in mode_str else TransitMode.CAR,
+                            from_location=rname,
+                            to_location=to_name,
+                        )
+                        inserts.append((next_attr_idx, transit))
+
+            print(f"[FIX #251] Day {day_num}: meal routed via {rname}")
+
+        for offset, (ins_idx, transit) in enumerate(inserts):
+            working.insert(ins_idx + offset, transit)
+        return working
+
+    def _fallback_attraction_copy(self, poi_dict: Dict[str, Any]) -> tuple:
+        """FIX #251: generate PL description_short / pro_tip when Excel is empty."""
+        name = (poi_dict.get("name") or "Atrakcja").strip()
+        city = (poi_dict.get("city") or "").strip()
+        tags = poi_dict.get("tags") or []
+        if isinstance(tags, str):
+            tags_l = tags.lower()
+        else:
+            tags_l = ",".join(str(t).lower() for t in tags)
+        desc = (poi_dict.get("description_short") or "").strip()
+        tip = (poi_dict.get("pro_tip") or poi_dict.get("Pro_tip") or "").strip() or None
+        if not desc:
+            if any(k in tags_l for k in ("museum", "muzeum", "heritage", "history")):
+                desc = f"{name} — muzeum / dziedzictwo warte zobaczenia{(' w ' + city) if city else ''}."
+            elif any(k in tags_l for k in ("park", "nature", "garden", "scenic")):
+                desc = f"{name} — zielona przestrzeń na spacer i odpoczynek{(' w ' + city) if city else ''}."
+            elif any(k in tags_l for k in ("kids", "family", "playground", "zoo")):
+                desc = f"{name} — atrakcja przyjazna rodzinom z dziećmi{(' w ' + city) if city else ''}."
+            elif any(k in tags_l for k in ("viewpoint", "panoram", "tower", "widok")):
+                desc = f"{name} — punkt widokowy z panoramą okolicy."
+            else:
+                desc = f"{name} — polecana atrakcja{(' w ' + city) if city else ''} w Twoim planie."
+        if not tip:
+            if any(k in tags_l for k in ("museum", "muzeum")):
+                tip = "Sprawdź godziny otwarcia i ewentualną konieczność rezerwacji biletów."
+            elif any(k in tags_l for k in ("kids", "family", "zoo")):
+                tip = "Weź wygodne buty i zaplanuj przerwę na przekąskę dla dzieci."
+            elif any(k in tags_l for k in ("park", "nature", "scenic")):
+                tip = "Najlepiej odwiedzić przy dobrej pogodzie; weź wodę na spacer."
+            else:
+                tip = "Zaplanuj dojazd z buforem 10–15 min na parking / dojście."
+        return desc, tip
+
+    def _strip_weak_preference_fillers(
+        self,
+        items: List[Any],
+        user: Optional[Dict[str, Any]],
+        all_pois_dict: Optional[List[Dict[str, Any]]],
+        *,
+        day_num: int = 0,
+        min_attrs: int = 3,
+    ) -> List[Any]:
+        """FIX #251: drop random fillers that match none of user preferences."""
+        if not user or not all_pois_dict:
+            return items
+        prefs = list(user.get("preferences") or [])
+        if not prefs:
+            return items
+        from app.domain.scoring.preference_coverage import poi_covers_preference_report
+
+        by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+        attrs = [it for it in items if _is_timeline_attraction(it)]
+        if len(attrs) <= min_attrs:
+            return items
+
+        def _covers(it: Any) -> bool:
+            p = by_id.get(getattr(it, "poi_id", ""), {})
+            if not p:
+                p = {"name": getattr(it, "name", "") or "", "tags": []}
+            return any(poi_covers_preference_report(p, pref) for pref in prefs)
+
+        matching = [it for it in attrs if _covers(it)]
+        if len(matching) < 1:
+            return items
+        out: List[Any] = []
+        non_match_budget = max(0, min_attrs - len(matching))
+        non_match_kept = 0
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            if _covers(it):
+                out.append(it)
+                continue
+            if non_match_kept < non_match_budget:
+                out.append(it)
+                non_match_kept += 1
+            else:
+                print(
+                    f"[FIX #251] Day {day_num}: stripped weak filler "
+                    f"{getattr(it, 'name', '?')}"
+                )
+        return out
+
     def _clamp_items_before_day_start(
         self,
         items: List[Any],
@@ -8082,7 +8418,7 @@ class PlanService:
         user: Optional[Dict[str, Any]] = None,
         global_used_pois: Optional[set] = None,
     ) -> List[Any]:
-        """FIX #250: mandatory post-mutation timeline — heal, transits, gaps, season."""
+        """FIX #250/#251: mandatory post-mutation timeline — heal, transits, gaps, season."""
         from app.application.services.plan_day_integrity import run_timeline_integrity_pass
 
         day_start = context.get("day_start") or "09:00"
@@ -8091,16 +8427,26 @@ class PlanService:
 
         items = self._clamp_items_before_day_start(items, day_start, day_num=day_num)
         items = self._sort_items_by_time(items)
-        items, _ = run_timeline_integrity_pass(items, day_num)
-        items = self._remove_timeline_overlaps(items, day_num)
-        items = self._run_transit_routing_pass(items, poi_coords, ctx, day_num)
-        items = self._strip_transits_to_unscheduled_destinations(items, day_num=day_num)
-
+        items = self._strip_same_day_duplicate_attractions(items, day_num=day_num)
         if all_pois_dict is not None:
+            items = self._strip_closed_attractions(
+                items, all_pois_dict, ctx, day_num=day_num,
+            )
             _trip_date = ctx.get("date") or ctx.get("trip_date")
             if _trip_date:
                 _poi_by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
                 items = self._strip_out_of_season_attractions(items, _trip_date, _poi_by_id)
+        if user is not None and all_pois_dict is not None:
+            items = self._strip_weak_preference_fillers(
+                items, user, all_pois_dict, day_num=day_num,
+            )
+        items, _ = run_timeline_integrity_pass(items, day_num)
+        items = self._remove_timeline_overlaps(items, day_num)
+        items = self._route_meals_into_timeline(
+            items, poi_coords, ctx, day_num=day_num,
+        )
+        items = self._run_transit_routing_pass(items, poi_coords, ctx, day_num)
+        items = self._strip_transits_to_unscheduled_destinations(items, day_num=day_num)
 
         if all_pois_dict is not None and user is not None and global_used_pois is not None:
             _last_end = 0
@@ -8129,6 +8475,12 @@ class PlanService:
                 items = self._strip_profile_denied_attractions(
                     items, user, all_pois_dict, day_num=day_num,
                 )
+                items = self._strip_closed_attractions(
+                    items, all_pois_dict, ctx, day_num=day_num,
+                )
+                items = self._strip_weak_preference_fillers(
+                    items, user, all_pois_dict, day_num=day_num,
+                )
 
         items = _trim_gap_after_day_start(items)
         items = self._apply_free_time_final_hygiene(items, ctx)
@@ -8137,10 +8489,14 @@ class PlanService:
             if all_pois_dict:
                 _poi_by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
             items = self._trim_day_to_budget(
-                items, user, _poi_by_id, day_num=day_num,
+                items, user, _poi_by_id, day_num=day_num, min_attrs=2,
             )
+        items = self._strip_same_day_duplicate_attractions(items, day_num=day_num)
         items, _ = run_timeline_integrity_pass(items, day_num)
         items = self._remove_timeline_overlaps(items, day_num)
+        items = self._route_meals_into_timeline(
+            items, poi_coords, ctx, day_num=day_num,
+        )
         items = self._run_transit_routing_pass(items, poi_coords, ctx, day_num)
         items = self._strip_transits_to_unscheduled_destinations(items, day_num=day_num)
         items, _ = run_timeline_integrity_pass(items, day_num)
