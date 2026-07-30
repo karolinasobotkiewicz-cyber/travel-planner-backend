@@ -189,6 +189,44 @@ def _find_prev_attraction(items: list, start_idx: int):
     return None
 
 
+def _meal_primary_restaurant_name(item) -> str | None:
+    """FIX #251: primary restaurant suggestion name for lunch/dinner."""
+    tv = _item_type_value(item)
+    if tv not in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+        return None
+    sugs = getattr(item, "suggestions", None) or []
+    if not sugs:
+        return None
+    name = (getattr(sugs[0], "name", None) or "").strip()
+    return name or None
+
+
+def _find_meal_restaurant_between(items: list, transit_idx: int, next_attraction) -> str | None:
+    """Restaurant between this transit and the next attraction (route via meal)."""
+    for j in range(transit_idx + 1, len(items)):
+        it = items[j]
+        if it is next_attraction or _is_timeline_attraction(it):
+            break
+        rn = _meal_primary_restaurant_name(it)
+        if rn:
+            return rn
+    return None
+
+
+def _find_prev_meal_restaurant(items: list, transit_idx: int) -> str | None:
+    """If the immediately preceding scheduled block is a meal, return its restaurant."""
+    for j in range(transit_idx - 1, -1, -1):
+        it = items[j]
+        if _is_timeline_attraction(it):
+            return None
+        rn = _meal_primary_restaurant_name(it)
+        if rn:
+            return rn
+        if _item_type_value(it) == ItemType.TRANSIT.value:
+            continue
+    return None
+
+
 def _is_urban_trip(context: Dict[str, Any]) -> bool:
     from app.domain.planner.city_copy import is_city_tourism_trip
     rt = str(context.get("region_type") or "").lower()
@@ -6511,6 +6549,7 @@ class PlanService:
         """
         # FIX #101b (29.05.2026): Build result while skipping orphaned transits.
         # FIX #235: meals (lunch/dinner) between transit and next attraction do NOT orphan the leg.
+        # FIX #251: when a meal with restaurant suggestion sits between POIs, route via restaurant.
         result = []
         for i, item in enumerate(items):
             if _item_type_value(item) != ItemType.TRANSIT.value:
@@ -6526,15 +6565,26 @@ class PlanService:
                 )
                 continue
 
-            item.to_location = next_attraction.name
-            print(
-                f"[TRANSIT FIX] Updated transit destination: "
-                f"'{item.from_location}' -> '{item.to_location}'"
-            )
+            meal_rest = _find_meal_restaurant_between(items, i, next_attraction)
+            if meal_rest:
+                item.to_location = meal_rest
+                print(
+                    f"[FIX #251] Transit via restaurant: "
+                    f"'{item.from_location}' -> '{meal_rest}'"
+                )
+            else:
+                item.to_location = next_attraction.name
+                print(
+                    f"[TRANSIT FIX] Updated transit destination: "
+                    f"'{item.from_location}' -> '{item.to_location}'"
+                )
 
             prev_attraction = _find_prev_attraction(items, i)
-
-            if prev_attraction:
+            prev_meal_rest = _find_prev_meal_restaurant(items, i)
+            if prev_meal_rest:
+                item.from_location = prev_meal_rest
+                print(f"[FIX #251] Transit origin from restaurant: '{prev_meal_rest}'")
+            elif prev_attraction:
                 item.from_location = prev_attraction.name
                 print(f"[TRANSIT FIX] Updated transit origin: -> '{prev_attraction.name}'")
 
@@ -6554,12 +6604,22 @@ class PlanService:
         return result
 
     def _validate_transit_endpoints(self, items: List[Any]) -> List[Any]:
-        """FIX #200: drop transits whose from/to don't match scheduled attractions."""
+        """FIX #200/#251: drop transits whose from/to don't match scheduled attractions/restaurants."""
         attr_names = {
             getattr(it, "name", "")
             for it in items
             if getattr(it, "type", None) == ItemType.ATTRACTION and getattr(it, "name", "")
         }
+        for it in items:
+            if _item_type_value(it) not in (
+                ItemType.LUNCH_BREAK.value,
+                ItemType.DINNER_BREAK.value,
+            ):
+                continue
+            for sug in (getattr(it, "suggestions", None) or [])[:1]:
+                rn = (getattr(sug, "name", None) or "").strip()
+                if rn:
+                    attr_names.add(rn)
         out = []
         for it in items:
             if getattr(it, "type", None) != ItemType.TRANSIT:
@@ -6580,15 +6640,28 @@ class PlanService:
     def _merge_coord_map(poi_coords: Dict[str, dict], items: List[Any]) -> Dict[str, dict]:
         coord_map: Dict[str, dict] = dict(poi_coords or {})
         for it in items:
-            if _item_type_value(it) != ItemType.ATTRACTION.value:
-                continue
-            nm = getattr(it, "name", "") or ""
-            lat = getattr(it, "lat", None)
-            lng = getattr(it, "lng", None)
-            if nm and lat is not None and lng is not None:
-                existing = coord_map.get(nm) or {}
-                if _poi_lat_lng(existing)[0] is None:
-                    coord_map[nm] = {"lat": lat, "lng": lng, "name": nm}
+            tv = _item_type_value(it)
+            if tv == ItemType.ATTRACTION.value:
+                nm = getattr(it, "name", "") or ""
+                lat = getattr(it, "lat", None)
+                lng = getattr(it, "lng", None)
+                if nm and lat is not None and lng is not None:
+                    existing = coord_map.get(nm) or {}
+                    if _poi_lat_lng(existing)[0] is None:
+                        coord_map[nm] = {"lat": lat, "lng": lng, "name": nm}
+            elif tv in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                # FIX #251: restaurant coords for meal-aware transit routing
+                for sug in (getattr(it, "suggestions", None) or [])[:1]:
+                    rn = (getattr(sug, "name", None) or "").strip()
+                    rlat = getattr(sug, "lat", None)
+                    rlng = getattr(sug, "lng", None)
+                    if rn and rlat is not None and rlng is not None:
+                        coord_map[rn] = {
+                            "name": rn,
+                            "lat": float(rlat),
+                            "lng": float(rlng),
+                            "id": getattr(sug, "id", "") or f"rest_{rn}",
+                        }
         return coord_map
 
     def _normalize_transit_routing_item(
@@ -8132,15 +8205,54 @@ class PlanService:
                 "id": getattr(primary, "id", "") or f"rest_{idx}",
             }
 
-            # Rewrite transit before meal → restaurant
+            # Rewrite transit before meal → restaurant (or inject Attr→Restaurant)
+            has_pre_transit = False
+            prev_attr = None
             for j in range(idx - 1, max(-1, idx - 4), -1):
                 prev = working[j]
-                if _item_type_value(prev) == ItemType.TRANSIT.value:
+                tv = _item_type_value(prev)
+                if tv == ItemType.TRANSIT.value:
                     try:
                         working[j] = prev.model_copy(update={"to_location": rname})
+                        has_pre_transit = True
                     except Exception:
                         pass
                     break
+                if _is_timeline_attraction(prev):
+                    prev_attr = prev
+                    break
+
+            if prev_attr and not has_pre_transit:
+                attr_end = getattr(prev_attr, "end_time", None)
+                from_name = getattr(prev_attr, "name", "") or ""
+                from_poi = poi_coords.get(from_name) or {}
+                lat1, lng1 = _poi_lat_lng(from_poi)
+                if attr_end and lat1 is not None:
+                    from_d = {"lat": float(lat1), "lng": float(lng1)}
+                    to_d = {"lat": float(rlat), "lng": float(rlng)}
+                    ctx = {**context, "has_car": context.get("has_car", True)}
+                    try:
+                        dur = max(5, travel_time_minutes(from_d, to_d, ctx))
+                        mode_str = get_transport_mode(from_d, to_d, ctx)
+                    except Exception:
+                        dist = haversine_distance(
+                            float(lat1), float(lng1), float(rlat), float(rlng)
+                        )
+                        dur = max(5, int(dist * 15))
+                        mode_str = "walking" if dist < 1.2 else "car"
+                    st = time_to_minutes(attr_end)
+                    inserts.append((
+                        idx,
+                        TransitItem(
+                            type=ItemType.TRANSIT,
+                            start_time=minutes_to_time(st),
+                            end_time=minutes_to_time(st + dur),
+                            duration_min=dur,
+                            mode=TransitMode.WALK if "walk" in mode_str else TransitMode.CAR,
+                            from_location=from_name,
+                            to_location=rname,
+                        ),
+                    ))
 
             # Find next attraction after meal
             next_attr = None
@@ -8195,8 +8307,8 @@ class PlanService:
 
             print(f"[FIX #251] Day {day_num}: meal routed via {rname}")
 
-        for offset, (ins_idx, transit) in enumerate(inserts):
-            working.insert(ins_idx + offset, transit)
+        for ins_idx, transit in sorted(inserts, key=lambda x: x[0], reverse=True):
+            working.insert(ins_idx, transit)
         return working
 
     def _fallback_attraction_copy(self, poi_dict: Dict[str, Any]) -> tuple:
