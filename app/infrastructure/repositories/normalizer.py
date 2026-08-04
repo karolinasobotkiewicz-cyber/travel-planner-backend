@@ -514,7 +514,12 @@ def normalize_poi(p, index):
     _norm_result = {
         "id": poi_id,  # CLIENT DATA UPDATE: Use loader ID
         "name": _safe_str(p.get("name") or p.get("Name")),
-        "description_short": _safe_str(p.get("Description_short")),
+        # FIX #253: multi_city loader emits lowercase keys; reading only the Excel
+        # casing returned "" and the {**orig, **norm} merge wiped real descriptions,
+        # so every POI fell back to generic copy ("muzeum / dziedzictwo…").
+        "description_short": _safe_str(
+            p.get("Description_short") or p.get("description_short")
+        ),
         "description_long": _safe_str(
             p.get("description_long") or p.get("Description_long")
         ),
@@ -569,7 +574,7 @@ def normalize_poi(p, index):
         "ticket_normal": int(_safe_float(p.get("ticket_normal"), 0)),
         "ticket_reduced": int(_safe_float(p.get("ticket_reduced"), 0)),
         "free_entry": free_entry,  # Derived from Price field
-        "pro_tip": _safe_str(p.get("Pro_tip")),
+        "pro_tip": _safe_str(p.get("Pro_tip") or p.get("pro_tip")),  # FIX #253
         "image_key": _safe_str(p.get("image_key")),
         # Add parking info for parking items
         "parking_name": _safe_str(p.get("parking_name")),

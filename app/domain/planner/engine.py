@@ -5592,6 +5592,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             limits["hard"] = min(limits["hard"], 6)
         print(f"[FIX #197/#221] City tourism cap: soft={limits['soft']}, hard={limits['hard']}")
 
+    # FIX #253 (G9/G12): spread a small city over a long trip. The cap is set by
+    # plan_service only when the admissible pool cannot feed every day at the
+    # profile limit; hard stays one above soft so a strong candidate still fits.
+    _fair253 = context.get("fair_share_attraction_cap")
+    if _fair253:
+        limits["soft"] = min(limits["soft"], int(_fair253))
+        limits["hard"] = min(limits["hard"], int(_fair253) + 1)
+        print(f"[FIX #253] Fair-share cap: soft={limits['soft']}, hard={limits['hard']}")
+
     # FIX #123 (30.05.2026): Solo progressive daily limits — fewer POIs as trip continues
     # FIX #192: skip on 5+ day balanced trips (caused sparse afternoons with huge free_time).
     if (

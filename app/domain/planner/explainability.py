@@ -161,16 +161,22 @@ def _explain_travel_style_match(
 
 
 def _explain_profile_match(
-    poi: Dict[str, Any], user: Dict[str, Any]
+    poi: Dict[str, Any],
+    user: Dict[str, Any],
+    context: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     target_group = user.get("target_group", "").lower()
     travel_style = user.get("travel_style", "").lower()
     poi_tags_str = str(poi.get("tags", "")).lower()
     poi_name = str(poi.get("name", "")).lower()
+    season = str((context or {}).get("season", "") or "").lower()
 
     if target_group == "couples":
+        # FIX #253: only call it "zimowe" on an actual winter trip.
         winter_indicators = ["kulig", "sleigh", "horse_riding", "seasonal_activity"]
-        if any(ind in poi_name or ind in poi_tags_str for ind in winter_indicators):
+        if season == "winter" and any(
+            ind in poi_name or ind in poi_tags_str for ind in winter_indicators
+        ):
             return "Romantyczne zimowe doświadczenie"
 
         romantic_indicators = ["romantic", "cultural", "heritage", "scenic", "termy", "spa"]
@@ -197,24 +203,108 @@ def _explain_profile_match(
     return None
 
 
+_SEASON_LABEL_PL = {
+    "winter": "zimowa",
+    "spring": "wiosenna",
+    "summer": "letnia",
+    "autumn": "jesienna",
+    "fall": "jesienna",
+}
+
+_WINTER_TOKENS = {"kulig", "sleigh", "snow", "winter", "ski", "narty", "narciarski",
+                  "snowboard", "lodowisko", "sanki", "saneczkowy", "zima", "zimowy"}
+_LOCAL_TOKENS = {"local_tradition", "folklore", "highland", "regional", "tradycja",
+                 "folklor", "regionalny"}
+
+
 def _explain_seasonal_experience(
     poi: Dict[str, Any], context: Dict[str, Any]
 ) -> Optional[str]:
-    poi_name = str(poi.get("name", "")).lower()
-    poi_tags_str = str(poi.get("tags", "")).lower()
+    """FIX #253: seasonal reasons must match the actual travel season.
+
+    The old version substring-matched "ski" against the POI name, so
+    "Ostrów Tum-ski" and "Ogród Botaniczny Uniwersytetu Wrocław-ski-ego" were
+    labelled "Zimowe doświadczenie" in July. Matching is now token-based and
+    winter copy is only produced for winter trips.
+    """
+    from app.domain.planner.poi_copy import poi_name_tokens, poi_token_set
+
     season = str(context.get("season", "") or "").lower()
+    toks = poi_token_set(poi) | poi_name_tokens(poi)
 
-    winter_indicators = ["kulig", "sleigh", "snow", "winter", "ski"]
-    if any(ind in poi_name or ind in poi_tags_str for ind in winter_indicators):
-        return "Zimowe doświadczenie"
+    if toks & _WINTER_TOKENS:
+        # Genuinely winter-only activity outside winter → not a selling point.
+        return "Zimowe doświadczenie" if season == "winter" else None
 
-    local_indicators = ["local_tradition", "folklore", "highland", "regional"]
-    if any(ind in poi_tags_str for ind in local_indicators):
+    if toks & _LOCAL_TOKENS:
         return "Lokalne doświadczenie"
 
-    if season == "winter" and "seasonal" in poi_tags_str:
-        return "Zimowe doświadczenie"
+    if "seasonal" in toks and season in _SEASON_LABEL_PL:
+        return f"Sezonowa atrakcja ({_SEASON_LABEL_PL[season]})"
 
+    return None
+
+
+_CATEGORY_HIGHLIGHT_PL = {
+    "aquapark": "Strefa wodna na relaks i zabawę",
+    "spa": "Chwila wytchnienia w strefie spa",
+    "trampoline": "Porcja ruchu i adrenaliny w hali trampolin",
+    "climbing": "Wyzwanie na trasach w koronach drzew",
+    "motorsport": "Sportowa dawka adrenaliny na torze",
+    "shooting": "Rywalizacja w grupie na arenie",
+    "escape_room": "Zagadki do rozwiązania zespołowo",
+    "maze": "Zabawa na orientację na świeżym powietrzu",
+    "amusement": "Rozrywka w klimacie parku tematycznego",
+    "playground": "Bezpieczna strefa zabaw dla najmłodszych",
+    "zoo": "Spotkanie ze zwierzętami z bliska",
+    "science": "Interaktywne eksponaty do samodzielnego testowania",
+    "museum": "Ekspozycja warta dłuższej wizyty",
+    "heritage": "Zabytek z bogatą historią",
+    "old_town": "Klimat historycznego centrum",
+    "viewpoint": "Panorama miasta z góry",
+    "garden": "Kolekcje roślin i spokojne alejki",
+    "park": "Zieleń i przestrzeń na oddech w środku dnia",
+    "water_nature": "Nadwodne widoki i spokojniejsze tempo",
+    "hiking": "Kontakt z przyrodą na trasie spacerowej",
+    "cruise": "Miasto oglądane od strony wody",
+    "winter_sport": "Aktywność typowa dla sezonu zimowego",
+    "sport": "Aktywne spędzenie czasu",
+    "nightlife": "Dobre miejsce na wieczór",
+    "shopping": "Zakupy i przerwa przy kawie",
+    "entertainment": "Wieczór z kulturą na żywo",
+}
+
+
+def _explain_category_highlight(poi: Dict[str, Any]) -> Optional[str]:
+    """FIX #253: category-specific reason so why_selected is not always generic."""
+    from app.domain.planner.poi_copy import classify_poi_category
+
+    return _CATEGORY_HIGHLIGHT_PL.get(classify_poi_category(poi))
+
+
+def _explain_rating(poi: Dict[str, Any]) -> Optional[str]:
+    """FIX #253: surface the rating when it is genuinely high."""
+    try:
+        rating = float(str(poi.get("popularity_score") or poi.get("popularity") or 0))
+    except (TypeError, ValueError):
+        return None
+    if rating >= 4.6:
+        return f"Bardzo wysoko oceniana ({rating:.1f}/5)"
+    if rating >= 4.3:
+        return f"Wysoko oceniana przez odwiedzających ({rating:.1f}/5)"
+    return None
+
+
+def _explain_duration_fit(poi: Dict[str, Any]) -> Optional[str]:
+    """FIX #253: short stops are a real reason to slot a POI in."""
+    try:
+        tmin = int(float(poi.get("time_min") or poi.get("duration_min") or 0))
+    except (TypeError, ValueError):
+        return None
+    if 0 < tmin <= 30:
+        return "Krótki przystanek, który dobrze wpasowuje się w dzień"
+    if tmin >= 150:
+        return "Atrakcja na dłużej — warto zarezerwować pół dnia"
     return None
 
 
@@ -243,13 +333,23 @@ def explain_poi_selection(
     if seasonal_reason:
         reasons.append(seasonal_reason)
 
-    profile_reason = _explain_profile_match(poi, user)
+    profile_reason = _explain_profile_match(poi, user, context)
     if profile_reason:
         reasons.append(profile_reason)
 
     pref_reason = _explain_preference_match(poi, user)
     if pref_reason:
         reasons.append(pref_reason)
+
+    # FIX #253: category highlight before the generic crowd/budget lines so the
+    # client stops seeing only "Must-see / Pasuje do preferencji".
+    category_reason = _explain_category_highlight(poi)
+    if category_reason:
+        reasons.append(category_reason)
+
+    rating_reason = _explain_rating(poi)
+    if rating_reason:
+        reasons.append(rating_reason)
 
     crowd_reason = _explain_crowd_fit(poi, user)
     if crowd_reason:
@@ -263,10 +363,22 @@ def explain_poi_selection(
     if style_reason:
         reasons.append(style_reason)
 
+    duration_reason = _explain_duration_fit(poi)
+    if duration_reason:
+        reasons.append(duration_reason)
+
     if not reasons:
         reasons.append("Pasuje do czasu i lokalizacji w Twoim planie")
 
-    return reasons[:3]
+    # De-duplicate while preserving order (several explainers can overlap).
+    seen: set = set()
+    unique: List[str] = []
+    for reason in reasons:
+        if reason not in seen:
+            seen.add(reason)
+            unique.append(reason)
+
+    return unique[:3]
 
 
 def generate_quality_summary(

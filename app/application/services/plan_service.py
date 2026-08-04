@@ -1519,6 +1519,10 @@ class PlanService:
         else:
             context["restaurants_available"] = []
         
+        # FIX #253 (G3): trip-wide memory of restaurants already served. Day
+        # contexts are shallow copies, so they all share this one set.
+        context["trip_used_restaurants"] = set()
+
         # Store router config in context for engine customization
         context["trip_type"] = router_config["trip_type"]
         context["scoring_weights"] = router_config["scoring_weights"]
@@ -2052,6 +2056,31 @@ class PlanService:
             # ================================================================
             # END FIX #113 / #166 / #167
             # ================================================================
+
+            # FIX #253 (G9/G12): fair share of a small city across a long trip.
+            # With a 6-attraction daily cap, days 1-4 consumed everything Wrocław
+            # had and day 7 was left with one 35-minute stop plus eight empty
+            # hours. When the admissible pool cannot feed every day at full
+            # speed, lower the daily cap so the content spreads evenly. Only 6+
+            # day trips need this; on shorter trips the pool still reaches the
+            # last day and capping made those plans thinner, not better.
+            if num_days >= 6 and contexts:
+                _admissible253 = self._count_available_pois(
+                    all_pois_dict,
+                    user=user,
+                    context=contexts[0],
+                    used_ids=set(),
+                    used_names=set(),
+                    repeat_keys=set(),
+                )
+                if 0 < _admissible253 < num_days * 6:
+                    _fair253 = max(3, _admissible253 // num_days)
+                    for _ctx253 in contexts:
+                        _ctx253["fair_share_attraction_cap"] = _fair253
+                    print(
+                        f"[FIX #253] Fair share: {_admissible253} POI / "
+                        f"{num_days} dni -> max {_fair253} atrakcji dziennie"
+                    )
 
             # Call multi-day planner
             _engine_warnings: list = []  # FIX #130
@@ -2887,7 +2916,51 @@ class PlanService:
         _trip_has_water = False
         _trip_active_count = 0
         _trip_relax_nat_count = 0
-        for day_plan in days:
+        for _day_idx253, day_plan in enumerate(days):
+            # FIX #253: `global_used_pois` accumulated every POI the engine ever
+            # considered, including ones later stripped by budget/profile passes.
+            # By finalize time it claimed ~12 POIs for a 8-attraction plan, so the
+            # day-completion pass believed the city was exhausted and left 5-hour
+            # blanks. Re-derive it from what is actually scheduled right now:
+            # already-finalized days plus the days still to come.
+            _reclaim253: set = set()
+            if global_used_pois is not None:
+                _live_used253: set = set()
+                for _src253 in (
+                    _finalized_days + list(days[_day_idx253:])
+                ):
+                    for _sit253 in (_src253.items or []):
+                        if not _is_timeline_attraction(_sit253):
+                            continue
+                        _spid253 = getattr(_sit253, "poi_id", None)
+                        if _spid253:
+                            _live_used253.add(_spid253)
+                global_used_pois.clear()
+                global_used_pois.update(_live_used253)
+
+                # FIX #253 (G12): a day that lost stops to the strip passes has
+                # nowhere to refill from once the city is fully booked, so it
+                # ends after two attractions while a later day carries four.
+                # Offer it what a still-unfinalized surplus day can spare; that
+                # day drops the duplicate when its own turn comes.
+                _kept253: set = set()
+                for _src253 in _finalized_days + [days[_day_idx253]]:
+                    for _sit253 in (_src253.items or []):
+                        if _is_timeline_attraction(_sit253):
+                            _pid_k = getattr(_sit253, "poi_id", None)
+                            if _pid_k:
+                                _kept253.add(_pid_k)
+                for _later253 in days[_day_idx253 + 1:]:
+                    _later_attrs = [
+                        it for it in (_later253.items or [])
+                        if _is_timeline_attraction(it)
+                    ]
+                    if len(_later_attrs) < 4:
+                        continue
+                    for _sit253 in _later_attrs:
+                        _pid_r = getattr(_sit253, "poi_id", None)
+                        if _pid_r and _pid_r not in _kept253:
+                            _reclaim253.add(_pid_r)
             _fitems = list(day_plan.items)
             _day_ctx = contexts[day_plan.day - 1] if day_plan.day - 1 < len(contexts) else context
             _day_ctx = {
@@ -3473,6 +3546,10 @@ class PlanService:
             _fitems = self._strip_transits_to_unscheduled_destinations(
                 _fitems, day_num=day_plan.day,
             )
+            # FIX #253 (G2): snapshot before this day registers its own names, so
+            # the quality pass can tell "already seen on an earlier day" apart
+            # from "scheduled today".
+            _names_before_day253 = set(_trip_names_so_far)
             for _it in _fitems:
                 if _is_timeline_attraction(_it):
                     _nm = (getattr(_it, "name", "") or "").lower()
@@ -3516,7 +3593,28 @@ class PlanService:
                 user=user,
                 global_used_pois=global_used_pois,
                 ensure_green_coverage=(_trip_relax_nat_count < 1),
+                trip_repeat_keys=_trip_repeat_keys_so_far,
+                trip_names_before_day=_names_before_day253,
+                reclaimable_poi_ids=_reclaim253,
             )
+            # FIX #253 (G2): the quality pass can still add attractions, and those
+            # were never registered trip-wide — which is how 5–7 day plans started
+            # repeating the same museum. Re-scan after the pass, not only before.
+            from app.domain.scoring.profile_poi_rules import (
+                poi_trip_repeat_key as _rk_fn253,
+            )
+            for _it253 in _fitems:
+                if not _is_timeline_attraction(_it253):
+                    continue
+                _nm253 = (getattr(_it253, "name", "") or "").lower()
+                if _nm253:
+                    _trip_names_so_far.add(_nm253)
+                _rk253 = _rk_fn253(getattr(_it253, "name", "") or "")
+                if _rk253:
+                    _trip_repeat_keys_so_far.add(_rk253)
+                _pid253 = getattr(_it253, "poi_id", None)
+                if _pid253 and global_used_pois is not None:
+                    global_used_pois.add(_pid253)
             # FIX #252: refresh trip green count after quality pass (may reinject / strip)
             if user is not None and all_pois_dict is not None:
                 from app.domain.scoring.preference_coverage import (
@@ -4427,6 +4525,12 @@ class PlanService:
                         # FIX #226: squares / old-town / castle grounds (e.g. Rynek
                         # w Katowicach was 35 min) — give a meaningful stroll.
                         _floor225 = 45
+                    # FIX #253 (Wrocław): booked activities need a realistic slot.
+                    # The client saw 65 min of paintball, 35 min of go-karting and
+                    # a 35-minute maze — nobody books those for half an hour.
+                    _floor253 = self._booked_activity_floor(poi_dict)
+                    if _floor253 > _floor225:
+                        _floor225 = _floor253
                     _tmax225 = _si225(poi_dict.get("time_max"), 0)
                     if _tmax225 > 0:
                         _floor225 = min(_floor225, _tmax225)
@@ -4832,6 +4936,11 @@ class PlanService:
         from app.domain.planner.city_copy import is_city_tourism_trip
         if is_city_tourism_trip(context):
             hard_limit = min(hard_limit, 6)  # FIX #197: city tourism intensity cap
+        # FIX #253 (G12): honour the trip-wide fair share here too, otherwise
+        # gap-filling early days undoes the spread the engine just applied.
+        _fair253_gf = context.get("fair_share_attraction_cap")
+        if _fair253_gf:
+            hard_limit = min(hard_limit, int(_fair253_gf) + 1)
         _f194_mc = context.get("multi_city_density_mode", False)
         _daily_limit_gf = user.get("daily_limit")
         _daily_cost_gf = 0
@@ -7174,11 +7283,22 @@ class PlanService:
         )
 
         def _is_green(poi: dict) -> bool:
+            # FIX #253: "Park Rozrywki Loopy's World" passed the nature check on
+            # the strength of the word "Park" and was injected as green space for
+            # seniors and couples. Require the semantic category to agree.
+            from app.domain.planner.poi_copy import (
+                category_is_green,
+                classify_poi_category,
+            )
+
             nm = (poi.get("name") or "").lower()
+            if any(k in nm for k in _GREEN_HINTS):
+                return True
+            if not category_is_green(classify_poi_category(poi)):
+                return False
             return (
                 is_strong_nature_coverage_poi(poi)
                 or is_strong_relaxation_coverage_poi(poi)
-                or any(k in nm for k in _GREEN_HINTS)
             )
 
         used_ids = {
@@ -7206,8 +7326,10 @@ class PlanService:
             pid = poi.get("id")
             if not pid or pid in used_ids:
                 return False
-            # FIX #252: never re-inject a POI already used earlier in the trip
-            if pid in global_used:
+            # FIX #253: this pass bypassed the season filter, so Ogród Botaniczny
+            # and Ogród Japoński (spring/summer/autumn only) landed in February plans.
+            # Year-round urban greens (Wyspa/Pergola) stay available via seasonality.py.
+            if self._poi_out_of_season(poi, context):
                 return False
             if not _poi_ok_city(poi):
                 return False
@@ -7229,6 +7351,11 @@ class PlanService:
             if rk and rk in trip_repeat_keys:
                 return False
             if pn and pn in trip_names:
+                return False
+            # FIX #253: do not trust global_used alone — it accumulates ids that
+            # were considered then season-stripped, which starved reinjection of
+            # the only winter-walkable greens. Names/repeat-keys above are enough.
+            if pid in global_used and pn and pn in trip_names:
                 return False
             return True
 
@@ -8205,9 +8332,12 @@ class PlanService:
         *,
         day_num: int = 0,
     ) -> List[Any]:
-        """FIX #251: no duplicate POI id/name within a single day."""
+        """FIX #251/#253: no duplicate POI id/name/repeat-key within a day."""
+        from app.domain.scoring.profile_poi_rules import poi_trip_repeat_key
+
         seen_ids: set = set()
         seen_names: set = set()
+        seen_keys: set = set()
         out: List[Any] = []
         for it in items:
             if not _is_timeline_attraction(it):
@@ -8215,16 +8345,24 @@ class PlanService:
                 continue
             pid = getattr(it, "poi_id", None) or ""
             nm = (getattr(it, "name", "") or "").strip().lower()
-            if (pid and pid in seen_ids) or (nm and nm in seen_names):
+            rk = poi_trip_repeat_key(getattr(it, "name", "") or "")
+            if (
+                (pid and pid in seen_ids)
+                or (nm and nm in seen_names)
+                or (rk and rk in seen_keys)
+            ):
                 print(
                     f"[FIX #251] Day {day_num}: stripped duplicate "
                     f"{getattr(it, 'name', '?')}"
+                    + (f" ({rk})" if rk and rk in seen_keys else "")
                 )
                 continue
             if pid:
                 seen_ids.add(pid)
             if nm:
                 seen_names.add(nm)
+            if rk:
+                seen_keys.add(rk)
             out.append(it)
         return out
 
@@ -8388,37 +8526,15 @@ class PlanService:
         return working
 
     def _fallback_attraction_copy(self, poi_dict: Dict[str, Any]) -> tuple:
-        """FIX #251: generate PL description_short / pro_tip when Excel is empty."""
-        name = (poi_dict.get("name") or "Atrakcja").strip()
-        city = (poi_dict.get("city") or "").strip()
-        tags = poi_dict.get("tags") or []
-        if isinstance(tags, str):
-            tags_l = tags.lower()
-        else:
-            tags_l = ",".join(str(t).lower() for t in tags)
-        desc = (poi_dict.get("description_short") or "").strip()
-        tip = (poi_dict.get("pro_tip") or poi_dict.get("Pro_tip") or "").strip() or None
-        if not desc:
-            if any(k in tags_l for k in ("museum", "muzeum", "heritage", "history")):
-                desc = f"{name} — muzeum / dziedzictwo warte zobaczenia{(' w ' + city) if city else ''}."
-            elif any(k in tags_l for k in ("park", "nature", "garden", "scenic")):
-                desc = f"{name} — zielona przestrzeń na spacer i odpoczynek{(' w ' + city) if city else ''}."
-            elif any(k in tags_l for k in ("kids", "family", "playground", "zoo")):
-                desc = f"{name} — atrakcja przyjazna rodzinom z dziećmi{(' w ' + city) if city else ''}."
-            elif any(k in tags_l for k in ("viewpoint", "panoram", "tower", "widok")):
-                desc = f"{name} — punkt widokowy z panoramą okolicy."
-            else:
-                desc = f"{name} — polecana atrakcja{(' w ' + city) if city else ''} w Twoim planie."
-        if not tip:
-            if any(k in tags_l for k in ("museum", "muzeum")):
-                tip = "Sprawdź godziny otwarcia i ewentualną konieczność rezerwacji biletów."
-            elif any(k in tags_l for k in ("kids", "family", "zoo")):
-                tip = "Weź wygodne buty i zaplanuj przerwę na przekąskę dla dzieci."
-            elif any(k in tags_l for k in ("park", "nature", "scenic")):
-                tip = "Najlepiej odwiedzić przy dobrej pogodzie; weź wodę na spacer."
-            else:
-                tip = "Zaplanuj dojazd z buforem 10–15 min na parking / dojście."
-        return desc, tip
+        """FIX #251/#253: PL description_short / pro_tip when Excel copy is missing.
+
+        FIX #253: the old version matched tags as raw substrings, so `trampoline_park`
+        and `adventure_park` hit the "park" rule and every active venue was described
+        as a green space. Matching is now token-based and the POI category wins.
+        """
+        from app.domain.planner.poi_copy import build_fallback_copy
+
+        return build_fallback_copy(poi_dict)
 
     def _strip_weak_preference_fillers(
         self,
@@ -8685,6 +8801,10 @@ class PlanService:
                 pn = (poi.get("name") or "").strip().lower()
                 if not pn or pn in used_names:
                     continue
+                # FIX #253: the budget swap ignored seasonality, so a February plan
+                # could gain "Park Mamuta" (spring/summer only) as the cheap swap-in.
+                if self._poi_out_of_season(poi, context):
+                    continue
                 try:
                     if should_deny_poi_for_profile(poi, user):
                         continue
@@ -8759,6 +8879,9 @@ class PlanService:
         user: Optional[Dict[str, Any]] = None,
         global_used_pois: Optional[set] = None,
         ensure_green_coverage: bool = False,
+        trip_repeat_keys: Optional[set] = None,
+        trip_names_before_day: Optional[set] = None,
+        reclaimable_poi_ids: Optional[set] = None,
     ) -> List[Any]:
         """FIX #250/#251/#252: mandatory post-mutation timeline — heal, transits, meals, budget."""
         from app.application.services.plan_day_integrity import (
@@ -9052,6 +9175,126 @@ class PlanService:
                     items, day_num=day_num,
                 )
 
+        # FIX #253: fill the day before locking it down (G7/G9/G12), then make the
+        # car stop teleporting (G10) and clamp everything into the user's window
+        # (G11). These run after every other pass, because those passes are what
+        # left holes and pushed items out of bounds.
+        _poi_by_id_253 = {
+            p.get("id"): p for p in (all_pois_dict or []) if p.get("id")
+        }
+        items = self._strip_group_incompatible_attractions(
+            items, user, _poi_by_id_253, ctx, day_num=day_num,
+        )
+        items = self._strip_far_excursions_on_first_day(
+            items, _poi_by_id_253, ctx, day_num=day_num,
+        )
+        from app.domain.scoring.profile_poi_rules import (
+            poi_trip_repeat_key as _rk_before253,
+        )
+        _keys_before253 = set()
+        for _nm_b in (trip_names_before_day or set()):
+            _rk_b = _rk_before253(_nm_b or "")
+            if _rk_b:
+                _keys_before253.add(_rk_b)
+        items = self._strip_trip_duplicate_attractions(
+            items,
+            trip_names_before_day,
+            day_num=day_num,
+            trip_repeat_keys_before_day=_keys_before253,
+        )
+        items = self._strip_repeat_old_town_attractions(
+            items,
+            day_num=day_num,
+            trip_used_names=set(trip_names_before_day or set()),
+        )
+        items = self._strip_duplicate_zoo_same_day(items, day_num=day_num)
+        # The passes above (gap fill, sparse-day backfill, green reinjection) can
+        # all re-add a POI the earlier time-of-day filters had removed, so the
+        # rule is re-applied here, on the day as it will be served.
+        items = self._strip_misscheduled_evening_attractions(
+            items, all_pois_dict, day_num,
+        )
+        items = self._strip_misscheduled_afternoon_attractions(
+            items, all_pois_dict, day_num,
+        )
+        items = self._diversify_meal_suggestions(items, ctx, day_num=day_num)
+        items = self._complete_day_coverage(
+            items,
+            all_pois_dict,
+            ctx,
+            user,
+            global_used_pois,
+            trip_repeat_keys,
+            day_num=day_num,
+            reclaimable_poi_ids=reclaimable_poi_ids,
+            trip_names_before_day=trip_names_before_day,
+        )
+        # Gap-fill / reclaim can pull a fuzzy duplicate (same repeat key, new id).
+        items = self._strip_trip_duplicate_attractions(
+            items,
+            trip_names_before_day,
+            day_num=day_num,
+            trip_repeat_keys_before_day=_keys_before253,
+        )
+        items = self._strip_repeat_old_town_attractions(
+            items,
+            day_num=day_num,
+            trip_used_names=set(trip_names_before_day or set()),
+        )
+        items = self._strip_duplicate_zoo_same_day(items, day_num=day_num)
+        items = self._strip_same_day_duplicate_attractions(items, day_num=day_num)
+        # If the strip emptied a hole the filler had just closed with a repeat,
+        # try once more with earlier-day names locked (no reclaim of seen venues).
+        items = self._complete_day_coverage(
+            items,
+            all_pois_dict,
+            ctx,
+            user,
+            global_used_pois,
+            trip_repeat_keys,
+            day_num=day_num,
+            reclaimable_poi_ids=None,
+            trip_names_before_day=trip_names_before_day,
+        )
+        items = self._strip_trip_duplicate_attractions(
+            items,
+            trip_names_before_day,
+            day_num=day_num,
+            trip_repeat_keys_before_day=_keys_before253,
+        )
+        items = self._strip_same_day_duplicate_attractions(items, day_num=day_num)
+        items, _ = run_timeline_integrity_pass(items, day_num)
+        items = self._run_transit_routing_pass(items, poi_coords, ctx, day_num)
+        items = self._strip_transits_to_unscheduled_destinations(
+            items, day_num=day_num,
+        )
+        items = self._enforce_day_transport_consistency(
+            items, user, ctx, day_num=day_num,
+        )
+        # Routing runs after the integrity pass and can stretch a leg over the
+        # stop it leads to, so the timeline has to be squared up once more.
+        items = self._fit_transits_between_stops(items, day_num=day_num)
+        # Whatever the attraction passes could not fill is turned into longer
+        # visits before anything is labelled as free time.
+        items = self._absorb_idle_gaps(items, all_pois_dict, ctx, day_num=day_num)
+        items = self._clamp_items_to_day_end(items, ctx, day_num=day_num)
+        # Clamping can shorten or drop the stop a leg was heading to, so the
+        # legs are squared up once more against the day as it will be served.
+        items = self._fit_transits_between_stops(items, day_num=day_num)
+        items = self._strip_transits_to_unscheduled_destinations(
+            items, day_num=day_num,
+        )
+        items = self._remove_timeline_overlaps(items, day_num)
+        # Free time is labelled last, against the timeline the traveller gets:
+        # planned any earlier it ends up marking a slot that a later pass moves
+        # or empties, which is how a 20-minute break grew a two-hour shadow.
+        items = self._cover_open_slots_with_free_time(items, ctx, day_num=day_num)
+        items = self._trim_free_time_over_real_items(items, day_num=day_num)
+        # Last defence: free-time trim can drop a stop that a leg still names.
+        items = self._strip_transits_to_unscheduled_destinations(
+            items, day_num=day_num,
+        )
+
         return self._sort_items_by_time(items)
 
     def _apply_fix237_day_pipeline(
@@ -9175,6 +9418,1422 @@ class PlanService:
         items = self._apply_free_time_final_hygiene(items, context)
         items, _ = run_timeline_integrity_pass(items, day_num)
         return self._sort_items_by_time(items)
+
+    # Limity przyjęte wcześniej przez klientkę (audit_free_time w
+    # plan_client_audit): wolny czas to krótka przerwa, nie zapchajdziura.
+    _FT253_MAX_BLOCK = 35
+    _FT253_MAX_TOTAL = 45
+
+    _FT253_AFTERNOON = [
+        ("Popołudniowa przerwa", [
+            "Kawa i deser w lokalnej kawiarni",
+            "Spacer bez planu po okolicy",
+            "Chwila na zdjęcia i odpoczynek",
+        ]),
+        ("Czas dla siebie", [
+            "Przerwa na lody lub zimne napoje",
+            "Przegląd zdjęć z dzisiejszego dnia",
+            "Krótki odpoczynek przed kolejnym punktem",
+        ]),
+        ("Oddech w środku dnia", [
+            "Posiedzenie w parku lub na skwerze",
+            "Zakupy pamiątek w okolicy",
+            "Kawa na wynos i spacer",
+        ]),
+    ]
+    _FT253_EVENING = [
+        ("Wieczór do dyspozycji", [
+            "Spacer po oświetlonej starówce",
+            "Drink lub deser w lokalnym lokalu",
+            "Powrót do hotelu i odpoczynek",
+        ]),
+        ("Wieczorne zwiedzanie na luzie", [
+            "Podświetlone zabytki po zmroku",
+            "Wieczorna kawa na rynku",
+            "Krótki spacer nad wodą",
+        ]),
+        ("Swobodny wieczór", [
+            "Kolacja przy muzyce na żywo",
+            "Przegląd lokalnych sklepów i galerii",
+            "Wcześniejszy odpoczynek przed jutrem",
+        ]),
+    ]
+
+    def _strip_group_incompatible_attractions(
+        self,
+        items: List[Any],
+        user: Optional[Dict[str, Any]],
+        poi_by_id: Dict[str, Dict[str, Any]],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #253 (Wrocław): a kids-only venue must never reach an adult plan.
+
+        Target-group filtering was re-implemented in each injection path, and at
+        least one of them let "Park Rozrywki Loopy's World" through for couples
+        and seniors. This is a single safety net over the finished day, mirroring
+        `_strip_out_of_season_attractions`.
+
+        The FIX #252 exception stays intact: green POIs that Excel tags as
+        couples/friends only are still allowed for solo and seniors travellers
+        who asked for relaxation or nature.
+        """
+        if not user or not poi_by_id:
+            return items
+        from app.domain.scoring.family_fit import should_exclude_by_target_group
+        from app.domain.scoring.preference_coverage import (
+            is_strong_nature_coverage_poi,
+            is_strong_relaxation_coverage_poi,
+        )
+
+        target_group = str(user.get("target_group") or "").lower()
+        prefs = set(user.get("preferences") or [])
+        wants_green = bool({"relaxation", "nature_landscape"} & prefs)
+
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            poi = poi_by_id.get(getattr(it, "poi_id", None) or "")
+            if not poi:
+                out.append(it)
+                continue
+            try:
+                excluded = should_exclude_by_target_group(poi, user)
+            except Exception:
+                excluded = False
+            if not excluded:
+                out.append(it)
+                continue
+
+            kids_flag = poi.get("kids_only")
+            is_kids_only = kids_flag is True or (
+                isinstance(kids_flag, str) and kids_flag.lower() in ("true", "1", "yes")
+            )
+            is_green = False
+            try:
+                from app.domain.planner.poi_copy import (
+                    category_is_green,
+                    classify_poi_category,
+                )
+
+                is_green = category_is_green(classify_poi_category(poi)) and (
+                    is_strong_nature_coverage_poi(poi)
+                    or is_strong_relaxation_coverage_poi(poi)
+                )
+            except Exception:
+                pass
+            if (
+                not is_kids_only
+                and is_green
+                and wants_green
+                and target_group in ("solo", "seniors", "couples")
+            ):
+                out.append(it)
+                continue
+            print(
+                f"[FIX #253] Day {day_num}: stripped '{getattr(it, 'name', '')}' "
+                f"— niezgodna z grupą {target_group}"
+            )
+        return out
+
+    def _strip_trip_duplicate_attractions(
+        self,
+        items: List[Any],
+        trip_names_before_day: Optional[set],
+        *,
+        day_num: int = 0,
+        trip_repeat_keys_before_day: Optional[set] = None,
+    ) -> List[Any]:
+        """FIX #253 (G2): an attraction seen on an earlier day cannot come back.
+
+        Several rescue passes run with `cross_day_reuse=True`, which is how 5–7
+        day plans started repeating Panorama Racławicka and Muzeum Przyrodnicze.
+        A thinner day is better than a repeat — `_complete_day_coverage` then
+        fills whatever this removes.
+
+        Exact names alone are not enough: Excel often stores the same venue
+        under two spellings, and the client audits fuzzy keys such as
+        `kat_muzeum_hist` / `old town rynek główny`.
+        """
+        if not trip_names_before_day and not trip_repeat_keys_before_day:
+            return items
+        from app.domain.scoring.profile_poi_rules import poi_trip_repeat_key
+
+        prior_keys = set(trip_repeat_keys_before_day or set())
+        if trip_names_before_day:
+            for nm in trip_names_before_day:
+                rk = poi_trip_repeat_key(nm or "")
+                if rk:
+                    prior_keys.add(rk)
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            name = (getattr(it, "name", "") or "").strip().lower()
+            rk = poi_trip_repeat_key(getattr(it, "name", "") or "")
+            if name and trip_names_before_day and name in trip_names_before_day:
+                print(
+                    f"[FIX #253] Day {day_num}: stripped repeat "
+                    f"'{getattr(it, 'name', '')}' (była w poprzednim dniu)"
+                )
+                continue
+            if rk and rk in prior_keys:
+                print(
+                    f"[FIX #253] Day {day_num}: stripped repeat key {rk} "
+                    f"'{getattr(it, 'name', '')}'"
+                )
+                continue
+            out.append(it)
+        return out
+
+    def _strip_far_excursions_on_first_day(
+        self,
+        items: List[Any],
+        poi_by_id: Dict[str, Dict[str, Any]],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #253 (Wrocław): no out-of-town excursion on the arrival day.
+
+        The client found Arboretum Wojsławice (zone C, ~50 km out) opening day
+        one. Day one is an arrival day; far excursions belong later in the trip.
+
+        What she objected to is the excursion *opening* the trip. In a city
+        whose remaining POIs are all booked by later days, dropping a far stop
+        that merely closes day one leaves an emptier day than the one she
+        complained about, so a non-leading excursion survives when it is the
+        only thing keeping the day above a single attraction.
+        """
+        if day_num != 1 or int(context.get("num_days") or 1) < 2:
+            return items
+        attractions = [it for it in items if _is_timeline_attraction(it)]
+        first_attraction = attractions[0] if attractions else None
+        out: List[Any] = []
+        kept = len(attractions)
+        for it in items:
+            poi = poi_by_id.get(getattr(it, "poi_id", None) or "") if _is_timeline_attraction(it) else None
+            if poi and str(poi.get("zone") or "").strip().upper() == "C":
+                if it is not first_attraction and kept <= 2:
+                    print(
+                        f"[FIX #253] Day 1: kept far excursion "
+                        f"'{getattr(it, 'name', '')}' (dzień byłby pusty)"
+                    )
+                    out.append(it)
+                    continue
+                kept -= 1
+                print(
+                    f"[FIX #253] Day 1: stripped far excursion "
+                    f"'{getattr(it, 'name', '')}' (zone C)"
+                )
+                continue
+            out.append(it)
+        return out
+
+    def _diversify_meal_suggestions(
+        self,
+        items: List[Any],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #253 (G3): stop serving the same restaurant every single day.
+
+        Meal suggestions were picked purely by proximity to the previous
+        attraction, with no memory across days, so Wrocław plans kept landing on
+        Taste and House of Spices. A trip-level set of already-served venues is
+        carried in the context; a repeat is demoted in favour of the nearest
+        restaurant that has not been used yet.
+        """
+        used = context.get("trip_used_restaurants")
+        if used is None:
+            return items
+        restaurants = context.get("restaurants_available") or []
+
+        meal_types = {
+            ItemType.LUNCH_BREAK: "lunch",
+            ItemType.DINNER_BREAK: "dinner",
+        }
+        out: List[Any] = []
+        for idx, it in enumerate(items):
+            meal_type = meal_types.get(getattr(it, "type", None))
+            if not meal_type:
+                out.append(it)
+                continue
+            suggestions = list(getattr(it, "suggestions", None) or [])
+            if not suggestions:
+                out.append(it)
+                continue
+
+            fresh = [s for s in suggestions if (s.name or "").lower() not in used]
+            stale = [s for s in suggestions if (s.name or "").lower() in used]
+
+            if not fresh and restaurants:
+                # Every nearby suggestion is a repeat — widen the search.
+                anchor = None
+                for prev in reversed(items[:idx]):
+                    if _is_timeline_attraction(prev) and getattr(prev, "lat", None):
+                        anchor = {
+                            "lat": getattr(prev, "lat", 0),
+                            "lng": getattr(prev, "lng", 0),
+                        }
+                        break
+                if anchor:
+                    from app.domain.planner.engine import _tiered_nearby_restaurants
+
+                    try:
+                        nearby = _tiered_nearby_restaurants(
+                            restaurants, anchor, context, radii_km=(1.5, 3.0, 5.0),
+                            limit=8,
+                        )
+                    except Exception:
+                        nearby = []
+                    for cand in nearby:
+                        nm = (cand.get("name") or "").lower()
+                        if not nm or nm in used:
+                            continue
+                        fresh.append(
+                            _restaurant_dict_to_suggestion(cand, meal_type)
+                        )
+                        if len(fresh) >= 2:
+                            break
+
+            ordered = fresh + stale
+            if not ordered:
+                out.append(it)
+                continue
+            if ordered[0] is not suggestions[0]:
+                print(
+                    f"[FIX #253] Day {day_num}: {meal_type} swapped "
+                    f"{suggestions[0].name} -> {ordered[0].name} (już użyta)"
+                )
+                try:
+                    it = it.model_copy(update={"suggestions": ordered[:3]})
+                except Exception:
+                    pass
+            used.add((ordered[0].name or "").lower())
+            out.append(it)
+        return out
+
+    def _day_fill_candidate(
+        self,
+        pool: List[Dict[str, Any]],
+        *,
+        user: Dict[str, Any],
+        context: Dict[str, Any],
+        slot_start_min: int,
+        max_duration: int,
+        used_ids: set,
+        used_names: set,
+        repeat_keys: set,
+    ) -> Optional[Dict[str, Any]]:
+        """FIX #253: pick one admissible POI for a hole in the day.
+
+        Every existing injection path re-implemented its own (and slightly
+        different) admissibility rules, which is how out-of-season gardens and
+        kids-only venues slipped into adult plans. This gate applies all of them
+        in one place: season, profile, target group, intensity, opening hours,
+        city and trip-wide reuse.
+        """
+        from app.domain.planner.city_copy import poi_matches_city_filter
+        from app.domain.planner.engine import (
+            is_afternoon_only_poi,
+            is_evening_only_poi,
+        )
+        from app.domain.scoring.family_fit import should_exclude_by_target_group
+        from app.domain.scoring.intensity_scoring import should_exclude_by_intensity
+        from app.domain.scoring.preference_coverage import poi_covers_preference_report
+        from app.domain.scoring.profile_poi_rules import (
+            poi_trip_repeat_key,
+            profile_poi_score_delta,
+            should_deny_poi_for_profile,
+        )
+
+        req_city = context.get("requested_city") or ""
+        prefs = list(user.get("preferences") or [])
+        best = None
+        best_score = -1e9
+
+        for poi in pool:
+            pid = poi.get("id")
+            name = (poi.get("name") or "").strip()
+            if not pid or not name or pid in used_ids:
+                continue
+            if name.lower() in used_names:
+                continue
+            rk = poi_trip_repeat_key(name)
+            if rk and rk in repeat_keys:
+                continue
+            if req_city and not poi_matches_city_filter(poi, req_city):
+                continue
+            if context.get("exclude_zone_c_pois") and str(
+                poi.get("zone") or ""
+            ).strip().upper() == "C":
+                continue
+            if self._poi_out_of_season(poi, context):
+                continue
+            # A neon gallery or a light show is pointless at 09:49 — the gate
+            # applies the same time-of-day rules as the main planner.
+            if slot_start_min < 17 * 60 and (
+                is_evening_only_poi(poi) or is_evening_only_poi({"name": name})
+            ):
+                continue
+            if slot_start_min < 14 * 60 and (
+                is_afternoon_only_poi(poi) or is_afternoon_only_poi({"name": name})
+            ):
+                continue
+            try:
+                if should_deny_poi_for_profile(poi, user):
+                    continue
+                if should_exclude_by_target_group(poi, user):
+                    continue
+                if should_exclude_by_intensity(poi, user):
+                    continue
+            except Exception:
+                continue
+            duration = self._preferred_visit_minutes(poi)
+            if duration > max_duration:
+                continue
+            try:
+                if not is_open(
+                    poi, slot_start_min, duration, context.get("season", "all"), context
+                ):
+                    continue
+            except Exception:
+                continue
+            try:
+                score = float(
+                    profile_poi_score_delta(poi, user, context=context)
+                )
+            except Exception:
+                score = 0.0
+            for pref in prefs:
+                try:
+                    if poi_covers_preference_report(poi, pref):
+                        score += 60.0
+                except Exception:
+                    pass
+            if score > best_score:
+                best_score = score
+                best = poi
+        return best
+
+    # A paintball match, a karting session or an aquapark visit is a booked block
+    # of time — Excel's time_min is the ticket minimum, not a realistic stay.
+    # Client: "Zbyt krótki Paintball tylko 65 min i gokarty tylko 35 min,
+    # Grabowy Labirynt tylko 35 minut."
+    _BOOKED_ACTIVITY_FLOOR = {
+        "shooting": 120,
+        "motorsport": 90,
+        "escape_room": 90,
+        "maze": 60,
+        "climbing": 90,
+        "trampoline": 90,
+        "aquapark": 150,
+        "spa": 120,
+    }
+
+    def _booked_activity_floor(self, poi: Dict[str, Any]) -> int:
+        """FIX #253: minimum realistic slot for a booked activity (0 if n/a)."""
+        from app.domain.planner.poi_copy import classify_poi_category
+
+        try:
+            return int(
+                self._BOOKED_ACTIVITY_FLOOR.get(classify_poi_category(poi), 0)
+            )
+        except Exception:
+            return 0
+
+    def _count_available_pois(
+        self,
+        pool: List[Dict[str, Any]],
+        *,
+        user: Dict[str, Any],
+        context: Dict[str, Any],
+        used_ids: set,
+        used_names: set,
+        repeat_keys: set,
+    ) -> int:
+        """FIX #253: how many admissible POIs the trip still has left."""
+        from app.domain.planner.city_copy import poi_matches_city_filter
+        from app.domain.scoring.family_fit import should_exclude_by_target_group
+        from app.domain.scoring.profile_poi_rules import (
+            poi_trip_repeat_key,
+            should_deny_poi_for_profile,
+        )
+
+        req_city = context.get("requested_city") or ""
+        count = 0
+        for poi in pool:
+            pid = poi.get("id")
+            name = (poi.get("name") or "").strip()
+            if not pid or not name or pid in used_ids:
+                continue
+            if name.lower() in used_names:
+                continue
+            rk = poi_trip_repeat_key(name)
+            if rk and rk in repeat_keys:
+                continue
+            if req_city and not poi_matches_city_filter(poi, req_city):
+                continue
+            if self._poi_out_of_season(poi, context):
+                continue
+            try:
+                if should_deny_poi_for_profile(poi, user):
+                    continue
+                if should_exclude_by_target_group(poi, user):
+                    continue
+            except Exception:
+                continue
+            count += 1
+        return count
+
+    def _preferred_visit_minutes(self, poi: Dict[str, Any]) -> int:
+        """FIX #253: realistic visit length used when filling holes in a day."""
+        try:
+            tmin = int(float(poi.get("time_min") or poi.get("duration_min") or 60))
+        except (TypeError, ValueError):
+            tmin = 60
+        try:
+            tmax = int(float(poi.get("time_max") or poi.get("duration_max") or tmin))
+        except (TypeError, ValueError):
+            tmax = tmin
+        tmax = max(tmax, tmin)
+
+        floor = self._booked_activity_floor(poi)
+        if floor:
+            return max(tmin, min(tmax, floor))
+        # Otherwise lean slightly above the minimum so days are not artificially thin.
+        return max(tmin, min(tmax, tmin + (tmax - tmin) // 3))
+
+    def _complete_day_coverage(
+        self,
+        items: List[Any],
+        all_pois_dict: Optional[List[Dict[str, Any]]],
+        context: Dict[str, Any],
+        user: Optional[Dict[str, Any]],
+        global_used_pois: Optional[set],
+        trip_repeat_keys: Optional[set],
+        *,
+        day_num: int = 0,
+        reclaimable_poi_ids: Optional[set] = None,
+        trip_names_before_day: Optional[set] = None,
+    ) -> List[Any]:
+        """FIX #253 (G7/G9/G12): leave no unexplained hole in the day.
+
+        The client reported 2–4 hour blanks mid-day, sightseeing that stopped at
+        17:00 despite a 20:00 window, and days whose last attraction ended before
+        lunch. Holes appeared because free_time was capped hard for urban trips
+        while nothing replaced it. This pass walks the timeline and, for every
+        hole, first tries a real attraction and only then falls back to a
+        labelled free-time block, so the plan always accounts for the day.
+        """
+        if not items:
+            return items
+        day_end = context.get("day_end")
+        day_start = context.get("day_start")
+        if not day_end:
+            return items
+        try:
+            end_limit = time_to_minutes(day_end)
+            start_limit = time_to_minutes(day_start) if day_start else None
+        except Exception:
+            return items
+
+        pool = all_pois_dict or []
+        can_add_attractions = bool(pool and user)
+        used_ids = {
+            getattr(it, "poi_id", None)
+            for it in items
+            if getattr(it, "poi_id", None)
+        }
+        used_ids |= set(global_used_pois or set())
+        used_names = {
+            (getattr(it, "name", "") or "").strip().lower()
+            for it in items
+            if _is_timeline_attraction(it)
+        }
+        # Earlier days are an absolute ban — global_used alone is incomplete
+        # (considered-then-dropped ids pollute it, scheduled names sometimes
+        # missing), which is how fill→strip cycles emptied day 6/7 afternoons.
+        for _nm_prior in (trip_names_before_day or set()):
+            if _nm_prior:
+                used_names.add(str(_nm_prior).strip().lower())
+        repeat_keys = set(trip_repeat_keys or set())
+        # Ids alone are not enough: the same venue can appear under two ids in
+        # Excel, and the client explicitly asked for no repeats across 5–7 days.
+        if global_used_pois and pool:
+            _by_id = {p.get("id"): p for p in pool if p.get("id")}
+            for _pid in global_used_pois:
+                _p = _by_id.get(_pid)
+                if _p and _p.get("name"):
+                    used_names.add(str(_p["name"]).strip().lower())
+
+        n_attrs_now = sum(1 for it in items if _is_timeline_attraction(it))
+        # A thin day may take back what a later, still-unfinalized day can
+        # spare. The later day drops the duplicate on its own turn, so the trip
+        # keeps its variety and the empty afternoon disappears.
+        # Never reclaim a name already served on an earlier day.
+        _prior_lock = {
+            str(n).strip().lower() for n in (trip_names_before_day or set()) if n
+        }
+        if reclaimable_poi_ids and n_attrs_now < 3 and int(
+            context.get("num_days") or 1
+        ) >= 5:
+            _reclaim_names = {
+                str(p.get("name") or "").strip().lower()
+                for p in pool
+                if p.get("id") in reclaimable_poi_ids and p.get("name")
+            } - _prior_lock
+            used_ids -= set(reclaimable_poi_ids)
+            used_names -= _reclaim_names
+
+        # Hard ceiling so a long window does not turn into a death march.
+        max_attrs = 6 if (end_limit - (start_limit or 0)) < 600 else 7
+        _fair253 = context.get("fair_share_attraction_cap")
+        if _fair253:
+            max_attrs = min(max_attrs, int(_fair253) + 1)
+        n_attrs = sum(1 for it in items if _is_timeline_attraction(it))
+
+        # Fair share: filling day 1 greedily used to starve day 7 (the client saw
+        # a seventh day with a single attraction ending at 09:35). Spread what is
+        # left of the city across the days that still need it.
+        num_days = int(context.get("num_days") or 1)
+        remaining_days = max(1, num_days - max(day_num, 1) + 1)
+        adds_allowed = 4
+        if can_add_attractions and remaining_days > 1:
+            unused = self._count_available_pois(
+                pool, user=user, context=context, used_ids=used_ids,
+                used_names=used_names, repeat_keys=repeat_keys,
+            )
+            adds_allowed = max(2, unused // remaining_days)
+
+        # A day filled to the brim is still wrong if it blows the wallet, so the
+        # gap filler works within the same daily limit as the main planner.
+        from app.domain.planner.engine import calculate_poi_cost_for_group
+        daily_limit = (user or {}).get("daily_limit")
+        day_cost = 0.0
+        if daily_limit and pool:
+            _cost_by_id = {p.get("id"): p for p in pool if p.get("id")}
+            for it in items:
+                pid = getattr(it, "poi_id", None)
+                if not pid:
+                    continue
+                try:
+                    day_cost += calculate_poi_cost_for_group(
+                        _cost_by_id.get(pid, {}), user
+                    )
+                except Exception:
+                    pass
+
+        working = self._sort_items_by_time(items)
+        added_attraction = False
+
+        for _round in range(adds_allowed):
+            holes = self._find_day_holes(working, end_limit, start_limit)
+            big = [h for h in holes if h[1] - h[0] >= 75]
+            if not big or not can_add_attractions or n_attrs >= max_attrs:
+                break
+            hole_start, hole_end = max(big, key=lambda h: h[1] - h[0])
+            # Leave room on both sides for the legs the routing pass will add;
+            # a tighter margin made those legs overlap the new stop.
+            slot_start = hole_start + 20
+            budget = (hole_end - slot_start) - 20
+            if budget < 40:
+                break
+            poi = self._day_fill_candidate(
+                pool,
+                user=user,
+                context=context,
+                slot_start_min=slot_start,
+                max_duration=budget,
+                used_ids=used_ids,
+                used_names=used_names,
+                repeat_keys=repeat_keys,
+            )
+            if not poi:
+                print(
+                    f"[FIX #253] Day {day_num}: no candidate for "
+                    f"{minutes_to_time(hole_start)}-{minutes_to_time(hole_end)} "
+                    f"(pool={len(pool)}, used={len(used_ids)}, attrs={n_attrs})"
+                )
+                break
+            if daily_limit:
+                try:
+                    poi_cost = calculate_poi_cost_for_group(poi, user)
+                except Exception:
+                    poi_cost = 0.0
+                if day_cost + poi_cost > float(daily_limit):
+                    print(
+                        f"[FIX #253] Day {day_num}: skipped {poi.get('name')} "
+                        f"(budżet {day_cost + poi_cost:.0f} > {daily_limit})"
+                    )
+                    used_ids.add(poi.get("id"))
+                    continue
+                day_cost += poi_cost
+            new_item = self._generate_attraction_item(
+                poi,
+                minutes_to_time(slot_start),
+                user,
+                user.get("target_group", "solo"),
+                context,
+                None,
+            )
+            # _generate_attraction_item may stretch past the budget (booked
+            # activities have a floor), which would leave the routing pass no
+            # room for the leg into the next item.
+            try:
+                item_end = time_to_minutes(new_item.end_time)
+                if item_end > hole_end - 20:
+                    new_item.end_time = minutes_to_time(hole_end - 20)
+                    new_item.duration_min = (hole_end - 20) - slot_start
+            except Exception:
+                pass
+            working.append(new_item)
+            working = self._sort_items_by_time(working)
+            pid = poi.get("id")
+            if pid:
+                used_ids.add(pid)
+                if global_used_pois is not None:
+                    global_used_pois.add(pid)
+            used_names.add((poi.get("name") or "").strip().lower())
+            n_attrs += 1
+            added_attraction = True
+            print(
+                f"[FIX #253] Day {day_num}: filled {hole_end - hole_start}min hole "
+                f"with {poi.get('name')}"
+            )
+
+        working = self._stretch_attractions_into_empty_day(
+            working, pool, end_limit, day_num=day_num,
+        )
+        # Free time is added only after transit routing: a block wedged between
+        # two attractions makes the router treat them as non-adjacent, and the
+        # leg joining them is never created.
+        if added_attraction:
+            working = self._strip_same_day_duplicate_attractions(working, day_num=day_num)
+        return working
+
+    def _stretch_attractions_into_empty_day(
+        self,
+        items: List[Any],
+        pool: List[Dict[str, Any]],
+        end_limit: int,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #253 (G9/G12): give thin days longer visits instead of dead time.
+
+        When the city runs out of unused POIs, a day can end up with one 35-minute
+        stop and eight empty hours. Excel gives every POI a range, so the honest
+        answer is to spend the upper end of that range rather than to pad the
+        afternoon with nothing. Only slack that is already free is used, so no
+        item is pushed and no overlap is created.
+        """
+        attrs = [it for it in items if _is_timeline_attraction(it)]
+        if not attrs or len(attrs) > 3:
+            return items
+        try:
+            last_end = max(time_to_minutes(it.end_time) for it in attrs)
+        except Exception:
+            return items
+        if end_limit - last_end < 120:
+            return items
+
+        by_id = {p.get("id"): p for p in pool if p.get("id")}
+        ordered = self._sort_items_by_time(items)
+        stretched = 0
+        for idx, it in enumerate(ordered):
+            if not _is_timeline_attraction(it):
+                continue
+            poi = by_id.get(getattr(it, "poi_id", None) or "")
+            if not poi:
+                continue
+            try:
+                tmax = int(float(poi.get("time_max") or poi.get("duration_max") or 0))
+                start = time_to_minutes(it.start_time)
+                end = time_to_minutes(it.end_time)
+            except Exception:
+                continue
+            if tmax <= (end - start):
+                continue
+            next_start = end_limit
+            for nxt in ordered[idx + 1:]:
+                nst = getattr(nxt, "start_time", None)
+                if not nst:
+                    continue
+                try:
+                    next_start = time_to_minutes(nst)
+                except Exception:
+                    continue
+                break
+            new_end = min(start + tmax, next_start - 5, end_limit)
+            if new_end - end < 15:
+                continue
+            it.end_time = minutes_to_time(new_end)
+            it.duration_min = new_end - start
+            stretched += 1
+            print(
+                f"[FIX #253] Day {day_num}: extended {getattr(it, 'name', '')} "
+                f"to {it.end_time} (dzień był prawie pusty)"
+            )
+        return ordered if stretched else items
+
+    # Poniżej tego progu dziura mieści się w akceptowanym wolnym czasie.
+    _GAP253_MIN = 40
+
+    def _absorb_idle_gaps(
+        self,
+        items: List[Any],
+        all_pois_dict: Optional[List[Dict[str, Any]]],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #253 (G7/G9/G12): dead time next to a visit becomes more visiting.
+
+        Once the city has no unused POI left for a hole, the honest answer is a
+        longer stay at the stop already bordering it — not a two-hour blank and
+        not a token free-time block. A leg parked at the front of a hole is
+        first slid over to the stop it leads to, so the free minutes land next
+        to the visit that can use them. Nothing is ever pushed later, no visit
+        outgrows its Excel `time_max` or its closing time, so the rest of the
+        day is left exactly as the earlier passes built it.
+        """
+        day_end = context.get("day_end")
+        if not items or not day_end:
+            return items
+        try:
+            end_limit = time_to_minutes(day_end)
+            start_limit = (
+                time_to_minutes(context["day_start"])
+                if context.get("day_start")
+                else None
+            )
+        except Exception:
+            return items
+
+        by_id = {p.get("id"): p for p in (all_pois_dict or []) if p.get("id")}
+        by_name = {
+            (p.get("name") or "").strip().lower(): p
+            for p in (all_pois_dict or [])
+            if p.get("name")
+        }
+        working = self._sort_items_by_time(items)
+        absorbed = 0
+
+        for _step in range(12):
+            holes = [
+                h
+                for h in self._find_day_holes(working, end_limit, start_limit)
+                if h[1] - h[0] >= self._GAP253_MIN
+            ]
+            moved = False
+            for hole_start, hole_end in holes:
+                if (
+                    self._slide_transit_to_next_stop(
+                        working, hole_start, hole_end,
+                    )
+                    or self._extend_visit_into_hole(
+                        working, by_id, by_name, context, hole_start, hole_end,
+                    )
+                    or self._pull_next_visit_into_hole(
+                        working, by_id, by_name, context, hole_start, hole_end,
+                    )
+                ):
+                    moved = True
+                    absorbed += 1
+                    break
+            if not moved:
+                break
+            working = self._sort_items_by_time(working)
+
+        if absorbed:
+            print(
+                f"[FIX #253] Day {day_num}: absorbed {absorbed} idle gap(s) "
+                f"into the surrounding stops"
+            )
+        return working
+
+    def _slide_transit_to_next_stop(
+        self,
+        items: List[Any],
+        hole_start: int,
+        hole_end: int,
+    ) -> bool:
+        """FIX #253: park a leg next to the stop it leads to, not to the hole."""
+        leg = None
+        blockers: List[int] = []
+        for it in items:
+            st, en = getattr(it, "start_time", None), getattr(it, "end_time", None)
+            if not st or not en:
+                continue
+            try:
+                start, end = time_to_minutes(st), time_to_minutes(en)
+            except Exception:
+                continue
+            if (
+                getattr(it, "type", None) is ItemType.TRANSIT
+                and end == hole_start
+            ):
+                leg = (it, start, end)
+            elif end <= hole_start:
+                blockers.append(end)
+        if leg is None:
+            return False
+        it, start, end = leg
+        duration = end - start
+        new_start = hole_end - duration
+        if new_start <= start:
+            return False
+        if blockers and new_start < max(blockers):
+            return False
+        it.start_time = minutes_to_time(new_start)
+        it.end_time = minutes_to_time(hole_end)
+        it.duration_min = duration
+        return True
+
+    def _extend_visit_into_hole(
+        self,
+        items: List[Any],
+        by_id: Dict[str, Dict[str, Any]],
+        by_name: Dict[str, Dict[str, Any]],
+        context: Dict[str, Any],
+        hole_start: int,
+        hole_end: int,
+    ) -> bool:
+        """FIX #253: spend the empty minutes at the visit that borders them."""
+        target = None
+        for it in items:
+            if not _is_timeline_attraction(it):
+                continue
+            en = getattr(it, "end_time", None)
+            if not en:
+                continue
+            try:
+                if time_to_minutes(en) == hole_start:
+                    target = it
+                    break
+            except Exception:
+                continue
+        if target is None:
+            return False
+
+        poi = by_id.get(getattr(target, "poi_id", "") or "") or by_name.get(
+            (getattr(target, "name", "") or "").strip().lower(), {}
+        )
+        try:
+            start = time_to_minutes(target.start_time)
+            cur_dur = max(0, hole_start - start)
+            tmax = int(float(
+                (poi or {}).get("time_max")
+                or (poi or {}).get("duration_max")
+                or cur_dur
+                or 0
+            ))
+        except Exception:
+            return False
+        # FIX #253 G7: a 2–3 h blank after a visit that already hit time_max is
+        # worse than a longer stay. Soft-cap the extension so the hole closes
+        # without inventing an all-day museum marathon.
+        hole_span = hole_end - hole_start
+        soft_max = max(tmax, cur_dur)
+        if hole_span >= 90:
+            soft_max = max(soft_max, soft_max + min(hole_span, 150))
+        new_end = min(start + soft_max, hole_end)
+        if new_end - hole_start < 15:
+            return False
+        if poi and context.get("date") and (
+            poi.get("opening_hours") or poi.get("Opening hours")
+        ):
+            try:
+                if not is_open(
+                    poi, start, new_end - start,
+                    context.get("season", "all"), context,
+                ):
+                    return False
+            except Exception:
+                pass
+        target.end_time = minutes_to_time(new_end)
+        target.duration_min = new_end - start
+        return True
+
+    def _pull_next_visit_into_hole(
+        self,
+        items: List[Any],
+        by_id: Dict[str, Dict[str, Any]],
+        by_name: Dict[str, Dict[str, Any]],
+        context: Dict[str, Any],
+        hole_start: int,
+        hole_end: int,
+    ) -> bool:
+        """FIX #253 G7: grow the next visit backward into a blank before it."""
+        if hole_end - hole_start < 90:
+            return False
+        target = None
+        for it in items:
+            if not _is_timeline_attraction(it):
+                continue
+            st = getattr(it, "start_time", None)
+            if not st:
+                continue
+            try:
+                if time_to_minutes(st) == hole_end:
+                    target = it
+                    break
+            except Exception:
+                continue
+        if target is None:
+            return False
+        poi = by_id.get(getattr(target, "poi_id", "") or "") or by_name.get(
+            (getattr(target, "name", "") or "").strip().lower(), {}
+        )
+        try:
+            end = time_to_minutes(target.end_time)
+        except Exception:
+            return False
+        new_start = hole_start
+        new_end = end
+        if new_end - new_start < 15:
+            return False
+        if context.get("date") and poi:
+            try:
+                if not is_open(
+                    poi, new_start, new_end - new_start,
+                    context.get("season", "all"), context,
+                ):
+                    return False
+            except Exception:
+                pass
+        target.start_time = minutes_to_time(new_start)
+        target.end_time = minutes_to_time(new_end)
+        target.duration_min = new_end - new_start
+        return True
+
+    def _cover_open_slots_with_free_time(
+        self,
+        items: List[Any],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #253: label short open slots — never turn a hole into dead time.
+
+        Free time stays inside the limits the client already accepted (max 35 min
+        per block, 45 min a day, see audit_free_time). A four-hour blank is a
+        missing attraction, not a "wolny czas" block, so anything longer than the
+        budget is left for the attraction passes rather than papered over.
+        """
+        day_end = context.get("day_end")
+        day_start = context.get("day_start")
+        if not day_end or not items:
+            return items
+        try:
+            end_limit = time_to_minutes(day_end)
+            start_limit = time_to_minutes(day_start) if day_start else None
+        except Exception:
+            return items
+
+        budget = self._FT253_MAX_TOTAL - sum(
+            int(getattr(it, "duration_min", 0) or 0)
+            for it in items
+            if getattr(it, "type", None) is ItemType.FREE_TIME
+        )
+        if budget < 20:
+            return items
+
+        filler: List[Any] = []
+        for idx, (hole_start, hole_end) in enumerate(
+            self._find_day_holes(items, end_limit, start_limit)
+        ):
+            span = min(hole_end - hole_start, self._FT253_MAX_BLOCK, budget)
+            if span < 20:
+                continue
+            # A block that only nibbles at the hole is the worst of both worlds:
+            # the client still sees three dead hours, now labelled "wolny czas".
+            # Leave such a hole alone — it belongs to the attraction passes.
+            if (hole_end - hole_start) - span > 20:
+                continue
+            evening = hole_start >= 17 * 60
+            table = self._FT253_EVENING if evening else self._FT253_AFTERNOON
+            label, suggestions = table[(day_num + idx) % len(table)]
+            filler.append(
+                FreeTimeItem(
+                    type=ItemType.FREE_TIME,
+                    start_time=minutes_to_time(hole_start),
+                    end_time=minutes_to_time(hole_start + span),
+                    duration_min=span,
+                    label=label,
+                    suggestions=list(suggestions),
+                    is_technical_buffer=False,
+                )
+            )
+            budget -= span
+            if budget < 20:
+                break
+        if not filler:
+            return items
+        print(
+            f"[FIX #253] Day {day_num}: covered {len(filler)} open slot(s) "
+            f"with labelled free time"
+        )
+        return self._sort_items_by_time(items + filler)
+
+    def _fit_transits_between_stops(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #253: keep every leg inside the gap between the two stops it joins.
+
+        Filling a hole with a new attraction makes the routing pass re-time the
+        surrounding legs, and a re-timed leg could run past the stop it leads to
+        ("przejazd 15:06-15:27" against an attraction starting 15:21). Shift the
+        leg earlier when there is room, shorten it when there is not, and only
+        drop it when the two stops are back to back.
+        """
+        ordered = self._sort_items_by_time(items)
+        anchor_items: List[tuple] = []
+        for it in ordered:
+            if getattr(it, "type", None) in (
+                ItemType.TRANSIT, ItemType.DAY_START, ItemType.DAY_END,
+            ):
+                continue
+            st, en = getattr(it, "start_time", None), getattr(it, "end_time", None)
+            if not st or not en:
+                continue
+            try:
+                anchor_items.append((time_to_minutes(st), time_to_minutes(en), it))
+            except Exception:
+                continue
+        if not anchor_items:
+            return items
+        anchors = [(a, b) for a, b, _ in anchor_items]
+
+        out: List[Any] = []
+        fitted = 0
+        for it in ordered:
+            if getattr(it, "type", None) is not ItemType.TRANSIT:
+                out.append(it)
+                continue
+            try:
+                start = time_to_minutes(it.start_time)
+                end = time_to_minutes(it.end_time)
+            except Exception:
+                out.append(it)
+                continue
+            low = max(
+                (a_end for a_start, a_end in anchors if a_end <= start), default=0
+            )
+            high = min(
+                (a_start for a_start, a_end in anchors if a_start >= end),
+                default=24 * 60,
+            )
+            # Anchors that straddle the leg decide the real room available.
+            for a_start, a_end in anchors:
+                if a_start < end and a_end > start:
+                    if a_end <= end:
+                        low = max(low, a_end)
+                    if a_start >= start:
+                        high = min(high, a_start)
+            if high - low <= 0:
+                # Back-to-back stops leave the leg nowhere to sit. Give it room
+                # by ending the preceding visit a little earlier — dropping the
+                # leg would leave two distant points with no way between them.
+                need = max(1, end - start)
+                prev = next(
+                    (
+                        item for a_start, a_end, item in anchor_items
+                        if a_end == low and _is_timeline_attraction(item)
+                        and (a_end - a_start) - need >= 30
+                    ),
+                    None,
+                )
+                if prev is None:
+                    out.append(it)
+                    continue
+                new_prev_end = low - need
+                prev.end_time = minutes_to_time(new_prev_end)
+                prev.duration_min = new_prev_end - time_to_minutes(prev.start_time)
+                low = new_prev_end
+                high = low + need
+            span = min(end - start, high - low)
+            new_start = min(max(start, low), high - span)
+            new_end = new_start + span
+            if (new_start, new_end) != (start, end):
+                it.start_time = minutes_to_time(new_start)
+                it.end_time = minutes_to_time(new_end)
+                it.duration_min = span
+                fitted += 1
+            out.append(it)
+        if fitted:
+            print(f"[FIX #253] Day {day_num}: refitted {fitted} transit leg(s)")
+        return self._sort_items_by_time(out)
+
+    def _trim_free_time_over_real_items(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #253: a free block must never sit on top of a real item.
+
+        Free time is planned from the holes found before transits are re-routed,
+        so a re-added leg can end up inside a block that already covers it — the
+        day then shows "10:49-12:39 wolny czas" next to "10:49-11:03 przejazd".
+        Trim the block to the free remainder, or drop it if nothing is left.
+
+        A block that starts long after the previous activity ended is dropped
+        outright: it is not a break between two things, it is a label pinned in
+        the middle of dead time, and it made a single 107-minute blank read as
+        "wolny czas" plus a blank on either side.
+        """
+        busy: List[tuple] = []
+        for it in items:
+            if getattr(it, "type", None) in (
+                ItemType.FREE_TIME, ItemType.DAY_START, ItemType.DAY_END,
+            ):
+                continue
+            st, en = getattr(it, "start_time", None), getattr(it, "end_time", None)
+            if not st or not en:
+                continue
+            try:
+                busy.append((time_to_minutes(st), time_to_minutes(en)))
+            except Exception:
+                continue
+        if not busy:
+            return items
+
+        out: List[Any] = []
+        trimmed = 0
+        for it in items:
+            if getattr(it, "type", None) is not ItemType.FREE_TIME:
+                out.append(it)
+                continue
+            try:
+                start = time_to_minutes(it.start_time)
+                end = time_to_minutes(it.end_time)
+            except Exception:
+                out.append(it)
+                continue
+            for b_start, b_end in busy:
+                if b_end <= start or b_start >= end:
+                    continue
+                if b_start <= start:
+                    start = max(start, b_end)
+                else:
+                    end = min(end, b_start)
+            if end - start < 15:
+                trimmed += 1
+                continue
+            prev_end = max(
+                (b_end for _b_start, b_end in busy if b_end <= start),
+                default=None,
+            )
+            if prev_end is not None and start - prev_end > 45:
+                trimmed += 1
+                continue
+            if (start, end) != (
+                time_to_minutes(it.start_time), time_to_minutes(it.end_time)
+            ):
+                it.start_time = minutes_to_time(start)
+                it.end_time = minutes_to_time(end)
+                it.duration_min = end - start
+                trimmed += 1
+            out.append(it)
+        if trimmed:
+            print(
+                f"[FIX #253] Day {day_num}: trimmed {trimmed} overlapping "
+                f"free-time block(s)"
+            )
+        return self._sort_items_by_time(out)
+
+    def _find_day_holes(
+        self,
+        items: List[Any],
+        end_limit: int,
+        start_limit: Optional[int],
+    ) -> List[tuple]:
+        """FIX #253: uncovered [start, end] minute spans inside the day window."""
+        spans: List[tuple] = []
+        for it in items:
+            if getattr(it, "type", None) in (ItemType.DAY_START, ItemType.DAY_END):
+                continue
+            st = getattr(it, "start_time", None)
+            en = getattr(it, "end_time", None)
+            if not st or not en:
+                continue
+            try:
+                spans.append((time_to_minutes(st), time_to_minutes(en)))
+            except Exception:
+                continue
+        if not spans:
+            return []
+        spans.sort()
+
+        holes: List[tuple] = []
+        cursor = spans[0][0] if start_limit is None else max(start_limit, spans[0][0])
+        for s, e in spans:
+            if s > cursor:
+                holes.append((cursor, min(s, end_limit)))
+            cursor = max(cursor, e)
+            if cursor >= end_limit:
+                break
+        if cursor < end_limit:
+            holes.append((cursor, end_limit))
+        return [(a, b) for a, b in holes if b - a >= 20]
+
+    def _enforce_day_transport_consistency(
+        self,
+        items: List[Any],
+        user: Optional[Dict[str, Any]],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #253 (G10): the car cannot teleport across a day.
+
+        Every leg was previously routed on its own, so a day could read
+        "car Pergola→Most Tumski", "walk Most Tumski→restauracja",
+        "car restauracja→Hydropolis" — the car was left behind and reappeared.
+        Once travellers pick the car up, every later leg of that day is a drive;
+        legs before the first drive stay as they are (they happen on foot from
+        the hotel). Durations are re-derived so a converted leg is never an
+        absurd "10 min spacerem over 11 km".
+        """
+        if not items:
+            return items
+
+        transport_modes = list(
+            (user or {}).get("transport_modes")
+            or context.get("transport_modes")
+            or []
+        )
+        has_car = context.get("has_car")
+        if has_car is None:
+            # transport_modes holds enum members, so compare on their value —
+            # str(TransportMode.CAR) is "TransportMode.CAR", never "car".
+            has_car = any(
+                "car" in str(getattr(m, "value", m)).lower() for m in transport_modes
+            )
+            if not has_car:
+                has_car = "car" in str(context.get("transport") or "").lower()
+        if not has_car:
+            return items
+
+        transit_idx = [
+            i for i, it in enumerate(items)
+            if getattr(it, "type", None) == ItemType.TRANSIT
+        ]
+        if len(transit_idx) < 2:
+            return items
+
+        def _is_car(it: Any) -> bool:
+            mode = getattr(it, "mode", None)
+            return mode == TransitMode.CAR or str(
+                getattr(mode, "value", mode)
+            ).lower() == "car"
+
+        first_car = next((i for i in transit_idx if _is_car(items[i])), None)
+        if first_car is None:
+            return items
+
+        converted = 0
+        for i in transit_idx:
+            if i <= first_car:
+                continue
+            leg = items[i]
+            if _is_car(leg):
+                continue
+            old_mode = getattr(leg, "mode", None)
+            leg.mode = TransitMode.CAR
+            # A drive over the same distance is never slower than the walk it
+            # replaces; keep the slot length and let the integrity pass re-flow.
+            try:
+                dist_km = float(getattr(leg, "distance_km", None) or 0)
+            except (TypeError, ValueError):
+                dist_km = 0.0
+            if dist_km > 0:
+                drive_min = max(5, int(round(dist_km / 30.0 * 60)) + 5)
+                cur = int(getattr(leg, "duration_min", 0) or 0)
+                if cur > drive_min:
+                    try:
+                        start = time_to_minutes(leg.start_time)
+                        leg.end_time = minutes_to_time(start + drive_min)
+                        leg.duration_min = drive_min
+                    except Exception:
+                        pass
+            converted += 1
+            print(
+                f"[FIX #253] Day {day_num}: transport consistency "
+                f"{getattr(leg, 'from_location', '?')} -> "
+                f"{getattr(leg, 'to_location', '?')}: {old_mode} -> car"
+            )
+        if converted:
+            return self._sort_items_by_time(items)
+        return items
+
+    def _clamp_items_to_day_end(
+        self,
+        items: List[Any],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #253 (G11): nothing may run past the user's daily_time_window.end.
+
+        Earlier day-end enforcers run *before* the final quality pass, which can
+        still insert or shift items. The client saw "Wyspa do 16:52, free time do
+        17:04" while day_end said 16:00. This is the last word: truncate what can
+        be shortened, drop what cannot.
+        """
+        day_end = context.get("day_end")
+        if not day_end or not items:
+            return items
+        try:
+            limit = time_to_minutes(day_end)
+        except Exception:
+            return items
+
+        out: List[Any] = []
+        for it in items:
+            itype = getattr(it, "type", None)
+            if itype == ItemType.DAY_END:
+                out.append(it)
+                continue
+            end_time = getattr(it, "end_time", None)
+            if not end_time:
+                out.append(it)
+                continue
+            try:
+                end_min = time_to_minutes(end_time)
+                start_min = time_to_minutes(getattr(it, "start_time", end_time))
+            except Exception:
+                out.append(it)
+                continue
+            if end_min <= limit:
+                out.append(it)
+                continue
+            # Free time never justifies overrunning the window.
+            if itype == ItemType.FREE_TIME or start_min >= limit - 5:
+                print(
+                    f"[FIX #253] Day {day_num}: dropped {itype} "
+                    f"{getattr(it, 'name', '')} ({start_min}→{end_min} > {day_end})"
+                )
+                continue
+            it.end_time = minutes_to_time(limit)
+            it.duration_min = max(5, limit - start_min)
+            print(
+                f"[FIX #253] Day {day_num}: truncated {itype} "
+                f"{getattr(it, 'name', '')} to {day_end}"
+            )
+            out.append(it)
+        return out
 
     def _recompute_transit_leg(self, item, items, idx, poi_coords):
         """Correct one transit's transport_mode/duration from endpoint coords.

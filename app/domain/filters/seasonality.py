@@ -74,6 +74,9 @@ def filter_by_season(pois, current_date):
                 # FIX #240 Wrocław: fontanna multimedialna + arboretum sezonowe
                 "fontanna multimedialna", "fontanna multimedial",
                 "arboretum wojsławice", "arboretum wojslawice",
+                # FIX #253: client — Ogród Botaniczny / Japoński closed in February.
+                "ogród botaniczny", "ogrod botaniczny",
+                "ogród japoński", "ogrod japonski",
             )
         ):
             continue
@@ -86,6 +89,19 @@ def filter_by_season(pois, current_date):
         season_fit = poi.get("season_fit")
         if isinstance(season_fit, dict) and season_fit:
             if season_fit.get(season_key, 0):
+                filtered_pois.append(poi)
+                continue
+            # FIX #253: Excel tags outdoor urban greens as spring–autumn only, which
+            # starved February relax/nature trips of Wyspa/Pergola. Those walks stay
+            # open in winter; only the gardens named above are truly closed.
+            if current_season == "winter" and any(
+                m in _pname for m in (
+                    "wyspa słodowa", "wyspa slodowa", "pergola",
+                    "park szczytnicki", "bulwar", "lasek", "las strzeli",
+                    "planty", "park cytadela", "park sołacki", "park solacki",
+                    "wartostrada", "jezioro malta", "dolina trzech",
+                )
+            ):
                 filtered_pois.append(poi)
             # else: HARD FILTER — POI not available in the current season
             continue

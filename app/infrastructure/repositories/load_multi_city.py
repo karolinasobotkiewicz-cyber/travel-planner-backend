@@ -327,8 +327,11 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
     merged = []
     for orig, norm in zip(poi_list, normalized):
         m = {**orig, **norm}
-        # FIX #198: preserve loader GPS/address if merge zeroed them (defensive)
-        for _k in ("lat", "lng", "address", "city"):
+        # FIX #198/#253: preserve loader GPS/address/copy if merge zeroed them (defensive)
+        for _k in (
+            "lat", "lng", "address", "city",
+            "description_short", "description_long", "pro_tip",
+        ):
             _ov = orig.get(_k)
             if _ov and (not m.get(_k) or m.get(_k) == 0.0):
                 m[_k] = _ov
