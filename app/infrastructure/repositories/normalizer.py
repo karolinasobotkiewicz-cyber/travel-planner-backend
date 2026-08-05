@@ -623,14 +623,45 @@ def normalize_poi(p, index):
             "dla rodzin i grup przyjaciół."
         )
     if "pijalnia czekolady" in _nm234 and "wedel" in _nm234:
+        _city234 = (_norm_result.get("city") or "").lower()
+        if "katowice" in _city234:
+            _norm_result["description_short"] = (
+                "Degustacja czekolady Wedel w pijalni w Katowicach."
+            )
+            _norm_result["description_long"] = (
+                "Pijalnia Czekolady E. Wedel w Katowicach to miejsce degustacji wyrobów "
+                "czekoladowych marki Wedel w stylowym wnętrzu — lokalna pijalnia, nie mylić "
+                "z warszawską przy ulicy Szpitalnej."
+            )
+        elif "warszawa" in _city234 or "warsaw" in _city234 or not _city234:
+            _norm_result["description_short"] = (
+                "Degustacja czekolady Wedel w historycznej pijalni przy ulicy Szpitalnej."
+            )
+            _norm_result["description_long"] = (
+                "Pijalnia Czekolady E. Wedel w Warszawie to miejsce degustacji wyrobów czekoladowych "
+                "marki Wedel w stylowym wnętrzu przy ulicy Szpitalnej — nie mylić z Muzeum "
+                "Fabryki Czekolady."
+            )
+        else:
+            _norm_result["description_short"] = (
+                f"Degustacja czekolady Wedel w pijalni w {_norm_result.get('city') or 'mieście'}."
+            )
+            _norm_result["description_long"] = (
+                f"Pijalnia Czekolady E. Wedel w {_norm_result.get('city') or 'mieście'} to miejsce "
+                "degustacji wyrobów czekoladowych marki Wedel w stylowym wnętrzu."
+            )
+    if "obwarzank" in _nm234:
         _norm_result["description_short"] = (
-            "Degustacja czekolady Wedel w historycznej pijalni przy ulicy Szpitalnej."
+            "Muzeum Obwarzanka Krakowskiego — historia i wypiek symbolu Krakowa."
         )
         _norm_result["description_long"] = (
-            "Pijalnia Czekolady E. Wedel w Warszawie to miejsce degustacji wyrobów czekoladowych "
-            "marki Wedel w stylowym wnętrzu przy ulicy Szpitalnej — nie mylić z Muzeum "
-            "Fabryki Czekolady."
+            "Muzeum Obwarzanka Krakowskiego przybliża historię obwarzanka, tradycyjnego "
+            "wypieku z Krakowa (nie mylić z bajglami)."
         )
+        if "bajgl" in str(_norm_result.get("pro_tip") or "").lower() or not _norm_result.get("pro_tip"):
+            _norm_result["pro_tip"] = (
+                "Spróbuj świeżego obwarzanka na miejscu — to lokalny smak Krakowa."
+            )
     if "browary warszawskie" in _nm234:
         _norm_result["description_short"] = (
             "Kompakt browarniany z restauracjami, piwem rzemieślniczym i przestrzenią eventową."

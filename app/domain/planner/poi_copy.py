@@ -114,12 +114,55 @@ def poi_name_tokens(poi: Dict[str, Any]) -> set:
 
 def classify_poi_category(poi: Dict[str, Any]) -> str:
     """Semantic category used for copy + explainability. Never raises."""
+    name = str(poi.get("name") or poi.get("Name") or "").lower()
+    # FIX #254: name overrides before token rules (wrong Excel tags / false positives).
+    if "obwarzank" in name:
+        return "museum"
+    if any(k in name for k in ("skałki twardowskiego", "skalki twardowskiego")):
+        return "park"
+    if "park jordana" in name:
+        return "park"
+    if any(k in name for k in ("jeziorko czerniakowskie", "jezioro czerniak")):
+        return "water_nature"
+    if "kampinos" in name:
+        return "hiking"
+    if "wyspa" in name and ("słodow" in name or "slodow" in name):
+        return "water_nature"
+    if "pergola" in name:
+        return "park"
+    if any(k in name for k in ("sky tower", "punkt widokowy")):
+        return "viewpoint"
+    if any(k in name for k in ("park linowy", "rope park")) or (
+        "linowy" in name and "park" in name
+    ):
+        return "climbing"
+
+    _PLAYGROUND_SAFE = frozenset({
+        "playground", "indoor", "softplay", "soft", "zabaw",
+    })
+    _CLIMB_NAME = ("linowy", "rope", "wspin", "boulder", "climbing", "park linowy")
+
     primary = _primary_tokens(poi)
     for label, keys in _CATEGORY_RULES:
+        if label == "climbing":
+            if not any(k in name for k in _CLIMB_NAME):
+                continue
+        if label == "playground":
+            # "plac" alone matches Plac Bohaterów Getta / Plac Europejski.
+            if primary.intersection(_PLAYGROUND_SAFE):
+                return label
+            if any(k in name for k in ("plac zabaw", "softplay", "playground", "zabaw dla")):
+                return label
+            continue
         if primary.intersection(keys):
             return label
     mapped = _mapped_tokens(poi)
     for label, keys in _CATEGORY_RULES:
+        if label == "climbing" and not any(k in name for k in _CLIMB_NAME):
+            continue
+        if label == "playground":
+            if not mapped.intersection(_PLAYGROUND_SAFE) and "zabaw" not in name:
+                continue
         if mapped.intersection(keys):
             return label
     return "attraction"
@@ -191,12 +234,33 @@ def build_fallback_copy(poi: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     """Return (description_short, pro_tip), preferring the values from Excel."""
     name = str(poi.get("name") or poi.get("Name") or "Atrakcja").strip()
     city = str(poi.get("city") or "").strip()
-    loc = f" w {city}" if city else ""
+    try:
+        from app.domain.planner.city_copy import city_locative_pl
+        loc = f" {city_locative_pl(city)}" if city else ""
+    except Exception:
+        loc = f" w {city}" if city else ""
 
     desc = str(
         poi.get("description_short") or poi.get("Description_short") or ""
     ).strip()
     tip = str(poi.get("pro_tip") or poi.get("Pro_tip") or "").strip() or None
+    name_l = name.lower()
+
+    # FIX #254: hard overrides for known bad Excel / generic copy.
+    if "obwarzank" in name_l:
+        desc = "Muzeum Obwarzanka Krakowskiego — historia i wypiek symbolu Krakowa."
+        tip = "Spróbuj świeżego obwarzanka na miejscu — to lokalny smak Krakowa."
+        return desc, tip
+    if "bajgl" in (desc or "").lower() and "obwarzank" in name_l:
+        desc = "Muzeum Obwarzanka Krakowskiego — historia i wypiek symbolu Krakowa."
+    if tip and "koronach drzew" in tip.lower() and "linowy" not in name_l:
+        tip = None
+    if tip and any(k in tip.lower() for k in ("promocji rodzinnych", "dla rodzin", "z dziećmi")):
+        # Couples / adult aquaparks should not get family promo tips.
+        tip = None
+    if tip and any(k in tip.lower() for k in ("pokaz", "fontann")) and "pergola" in name_l:
+        # Winter callers strip season elsewhere; keep tip neutral year-round.
+        tip = "Spacer wokół Hali Stulecia — Pergola jest ładna o każdej porze dnia."
 
     if desc and tip:
         return desc, tip
@@ -208,6 +272,8 @@ def build_fallback_copy(poi: Dict[str, Any]) -> Tuple[str, Optional[str]]:
         )
     if not tip:
         tip = _TIP_BY_CATEGORY.get(category, _TIP_BY_CATEGORY["attraction"])
+        if category == "aquapark":
+            tip = "Zabierz klapki i ręcznik — wejściówki czasowe warto kupić online."
     return desc, tip
 
 

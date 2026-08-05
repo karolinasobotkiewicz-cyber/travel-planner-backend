@@ -27,6 +27,42 @@ def normalize_city_name(name: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
+# FIX #254: Polish locative for "Must-see w/we …" (client: "Must-see w Wrocław").
+_CITY_LOCATIVE_PL = {
+    "wroclaw": "we Wrocławiu",
+    "krakow": "w Krakowie",
+    "warszawa": "w Warszawie",
+    "warsaw": "w Warszawie",
+    "katowice": "w Katowicach",
+    "poznan": "w Poznaniu",
+    "gdansk": "w Gdańsku",
+    "gdynia": "w Gdyni",
+    "sopot": "w Sopocie",
+    "zakopane": "w Zakopanem",
+    "karpacz": "w Karpaczu",
+    "szklarska poreba": "w Szklarskiej Porębie",
+    "jelenia gora": "w Jeleniej Górze",
+    "kudowa-zdroj": "w Kudowie-Zdroju",
+    "klodzko": "w Kłodzku",
+    "polanica-zdroj": "w Polanicy-Zdroju",
+}
+
+
+def city_locative_pl(city: str) -> str:
+    """Return 'we Wrocławiu' / 'w Krakowie' etc.; fallback 'w {city}'."""
+    raw = (city or "").strip()
+    if not raw:
+        return "w Twojej destynacji"
+    # NFKD does not fold Polish ł → l; do it explicitly for dict lookup.
+    key = normalize_city_name(raw).replace("\u0142", "l")
+    if key in _CITY_LOCATIVE_PL:
+        return _CITY_LOCATIVE_PL[key]
+    # Cities starting with W/F often take "we" in Polish — keep it simple.
+    if raw[:1].lower() in ("w", "f"):
+        return f"we {raw}"
+    return f"w {raw}"
+
+
 ZAKOPANE_REGION_NORM = frozenset(normalize_city_name(c) for c in ZAKOPANE_REGION_RAW)
 
 

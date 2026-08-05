@@ -87,6 +87,15 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("domy kupieckie", "poz_domy_kupieckie"),
         ("okrąglak", "poz_okraglak"),
         ("okraglak", "poz_okraglak"),
+        # FIX #254: treat similar forts / trampoline parks as one trip slot.
+        ("fort iii", "poz_fort_cluster"),
+        ("fort va", "poz_fort_cluster"),
+        ("fort v ", "poz_fort_cluster"),
+        ("jump arena", "poz_trampoline_cluster"),
+        ("flypark", "poz_trampoline_cluster"),
+        ("fly park", "poz_trampoline_cluster"),
+        ("park jordana", "krk_park_jordana"),
+        ("city golf", "wro_city_golf"),
     )
     for marker, key in _markers:
         if marker in n:
@@ -177,6 +186,17 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
 
     # FIX #231 — cultural: Lustrzany Labirynt off
     if style == "cultural" and "lustrzany labirynt" in name:
+        return True
+
+    # FIX #254: City Golf — remove from plans (client: does not fit preferences).
+    if "city golf" in name:
+        return True
+
+    # FIX #254: adventure — no Pergola / Wyspa / Japanese garden filler.
+    if adv and any(k in name for k in (
+        "pergola", "wyspa słodowa", "wyspa slodowa",
+        "ogród japoński", "ogrod japonski",
+    )):
         return True
 
     # FIX #233 couples+cultural — misfit attractions

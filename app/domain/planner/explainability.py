@@ -275,23 +275,42 @@ _CATEGORY_HIGHLIGHT_PL = {
 }
 
 
-def _explain_category_highlight(poi: Dict[str, Any]) -> Optional[str]:
-    """FIX #253: category-specific reason so why_selected is not always generic."""
+def _explain_category_highlight(
+    poi: Dict[str, Any], user: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """FIX #253/#254: category reason — skip kids/playground copy for non-family."""
     from app.domain.planner.poi_copy import classify_poi_category
 
-    return _CATEGORY_HIGHLIGHT_PL.get(classify_poi_category(poi))
+    cat = classify_poi_category(poi)
+    tg = (user or {}).get("target_group") or ""
+    # Client: "Bezpieczna strefa zabaw…" on Park Jordana / Wedel / Plac for couples.
+    if cat == "playground" and tg not in ("family_kids", "family"):
+        return None
+    if cat in ("amusement", "escape_room", "maze") and tg in (
+        "seniors", "couples",
+    ):
+        # Soften: still allow for couples adventure, but not cultural strolls.
+        style = (user or {}).get("travel_style") or ""
+        if style in ("cultural", "relax", "balanced") and cat != "maze":
+            return None
+    return _CATEGORY_HIGHLIGHT_PL.get(cat)
 
 
 def _explain_rating(poi: Dict[str, Any]) -> Optional[str]:
-    """FIX #253: surface the rating when it is genuinely high."""
+    """FIX #254: popularity_score is 0–10 in Excel — never print it as /5 raw."""
     try:
-        rating = float(str(poi.get("popularity_score") or poi.get("popularity") or 0))
+        raw = float(str(poi.get("popularity_score") or poi.get("popularity") or 0))
     except (TypeError, ValueError):
         return None
-    if rating >= 4.6:
-        return f"Bardzo wysoko oceniana ({rating:.1f}/5)"
-    if rating >= 4.3:
-        return f"Wysoko oceniana przez odwiedzających ({rating:.1f}/5)"
+    # Normalize 0–10 → 0–5; leave values already on a 0–5 scale alone.
+    stars = raw / 2.0 if raw > 5.0 else raw
+    if stars < 0.1:
+        return None
+    stars = min(5.0, max(0.0, stars))
+    if stars >= 4.6:
+        return f"Bardzo wysoko oceniana ({stars:.1f}/5)"
+    if stars >= 4.3:
+        return f"Wysoko oceniana przez odwiedzających ({stars:.1f}/5)"
     return None
 
 
@@ -324,8 +343,15 @@ def explain_poi_selection(
     else:
         priority = int(priority_val) if priority_val else 0
     if priority == 12:
-        _poi_city = poi.get("city") or poi.get("City") or context.get("city") or "Twojej destynacji"
-        reasons.append(f"Must-see w {_poi_city}")
+        from app.domain.planner.city_copy import city_locative_pl
+
+        _poi_city = (
+            poi.get("city") or poi.get("City")
+            or context.get("city") or context.get("requested_city")
+            or "Twojej destynacji"
+        )
+        # FIX #254: "Must-see we Wrocławiu", not "Must-see w Wrocław".
+        reasons.append(f"Must-see {city_locative_pl(str(_poi_city))}")
     elif priority >= 11:
         reasons.append("Wysoko polecane przez lokalnych")
 
@@ -343,7 +369,7 @@ def explain_poi_selection(
 
     # FIX #253: category highlight before the generic crowd/budget lines so the
     # client stops seeing only "Must-see / Pasuje do preferencji".
-    category_reason = _explain_category_highlight(poi)
+    category_reason = _explain_category_highlight(poi, user)
     if category_reason:
         reasons.append(category_reason)
 

@@ -91,15 +91,28 @@ def filter_by_season(pois, current_date):
             if season_fit.get(season_key, 0):
                 filtered_pois.append(poi)
                 continue
-            # FIX #253: Excel tags outdoor urban greens as spring–autumn only, which
-            # starved February relax/nature trips of Wyspa/Pergola. Those walks stay
-            # open in winter; only the gardens named above are truly closed.
+            # FIX #253/#254: Excel tags outdoor urban greens as spring–autumn only.
+            # Keep year-round urban parks open in winter. Block Wyspa Słodowa (client:
+            # 2.5h winter opener) and Fontanna; Pergola stays as a short winter walk
+            # with a non-fountain tip (poi_copy override).
             if current_season == "winter" and any(
                 m in _pname for m in (
-                    "wyspa słodowa", "wyspa slodowa", "pergola",
                     "park szczytnicki", "bulwar", "lasek", "las strzeli",
                     "planty", "park cytadela", "park sołacki", "park solacki",
                     "wartostrada", "jezioro malta", "dolina trzech",
+                    "pergola",
+                    "ostrów tumski", "ostrow tumski", "park wschodni",
+                    "park południowy", "park poludniowy", "park grabiszyński",
+                    "park grabiszynski", "łazienki", "lazienki", "park skaryszewski",
+                    "park wilsona", "zakrzówek", "zakrzowek",
+                    "las wolski", "błonia", "blonia",
+                )
+            ) and not any(
+                m in _pname for m in (
+                    "wyspa słodowa", "wyspa slodowa",
+                    "fontanna multimedialna", "fontanna multimedial",
+                    "ogród japoński", "ogrod japonski",
+                    "ogród botaniczny", "ogrod botaniczny",
                 )
             ):
                 filtered_pois.append(poi)

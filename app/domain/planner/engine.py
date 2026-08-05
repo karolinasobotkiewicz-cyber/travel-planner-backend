@@ -907,7 +907,8 @@ _HARD_QUICK_STOP_MARKERS = (
     "złota brama", "zlota brama", "zuraw", "żuraw", "brama wyżynna", "brama wyzynna",
     "zielona brama", "ulica mariacka", "wielki młyn", "wielki mlyn",
     # FIX #222 (28.06.2026): micro-POI over-ranked vs city icons.
-    "grabowy labirynt", "city golf", "dworzec świebodzki", "dworzec swiebodzki",
+    # FIX #254: Grabowy Labirynt / laser tag are booked sessions (not photo stops).
+    "city golf", "dworzec świebodzki", "dworzec swiebodzki",
     "most grunwaldzki", "hala targowa", "browar stu mostów", "browar stu mostow",
     "kładka bernatka", "kladka bernatka", "kościół św. wojciecha", "sw. wojciecha",
     "neon side", "galeria neon", "bastion sakwowy", "rynek jeżycki", "rynek jezycki",
@@ -915,7 +916,7 @@ _HARD_QUICK_STOP_MARKERS = (
     "plac europejski", "muzeum fabryki norblina", "norblin",
     "nikiszowiec", "spodek", "browar mariacki",
     "domy kupieckie", "pomnik ofiar czerwca", "holiday park",
-    "laser tag", "city golf",
+    "city golf",
     # FIX #223 (29.06.2026): client — Most Tumski still over-ranked (already caught by
     # the "most " prefix above). NOTE: "hala stulecia" intentionally removed — it is a
     # must=9 UNESCO flagship + Szczytnicki cluster anchor the client wants kept with the
@@ -1484,10 +1485,16 @@ def get_transport_mode(a, b, context=None):
     _walk_thresh = (
         CITY_TOURISM_WALK_THRESHOLD_KM if _city_trip else _walk_threshold(a, b)
     )
-    # FIX #240: user explicitly chose car — prefer driving for >=600 m (family/tired legs)
+    # FIX #254: in dense city tourism, short hops stay on foot (client: car on
+    # 50–500 m + estimated_walk). Prefer car only for longer urban legs.
+    if _city_trip and distance_km < 1.0:
+        return "walking"
+    # FIX #240: user explicitly chose car — prefer driving for longer legs.
+    # City tourism: raise floor to 1.2 km so old-town hops stay walkable.
     _modes = context.get("transport_modes") if context else None
     if context and context.get("has_car", True) and _modes and "car" in _modes:
-        if distance_km >= 0.6:
+        _car_floor = 1.2 if _city_trip else 0.6
+        if distance_km >= _car_floor:
             return "car"
     return "walking" if distance_km < _walk_thresh else "car"
 
@@ -1652,13 +1659,18 @@ _CITY_FLAGSHIP_NAME_MARKERS = (
     "centrum nauki", "hala stulecia", "ogród botaniczny", "ogrod botaniczny",
     "muzeum narodowe", "zamek królewski", "zamek krolewski",
     "planty", "bulwary wiślane", "bulwary wislane",
+    # FIX #254: Wrocław Zoo + Katowice underground icons under-ranked.
+    "zoo wrocław", "zoo wroclaw", "ogród zoologiczny we wrocławiu",
+    "kopalnia guido", "sztolnia królew", "sztolnia krolew", "królowa luiza", "krolowa luiza",
+    "termy maltańskie", "termy maltanskie", "muzeum iluzji",
 )
 
 # FIX #225: family-defining icons that must appear in family_kids plans
 # (client: Kraków family plans missed Smok/Wawel/Ogród Doświadczeń/Park Jordana/Zoo).
 _FAMILY_ICON_MARKERS = (
     "smok wawelski", "wawel", "ogród doświadczeń", "ogrod doswiadczen",
-    "park jordana", "park lotników", "park lotnikow",
+    # FIX #254: Park Jordana demoted (overused in every Kraków plan).
+    "park lotników", "park lotnikow",
     "ogród zoologiczny", "ogrod zoologiczny", "zoo",
     # FIX #227 (30.06.2026): Poznań family icons under-used by family_kids plans.
     "brama poznania", "rogalowe muzeum", "termy maltańskie", "termy maltanskie",
@@ -1673,7 +1685,7 @@ _FAR_GEO_REGIONS = frozenset({
     "region_pieniny", "region_spisz_bukowina", "region_slowacja",
     "region_ojcow", "region_wieliczka",
     "region_gniezno", "region_gliwice", "region_suntago", "region_modlin",
-    "region_zabrze", "region_olawa", "region_kampinos",
+    "region_zabrze", "region_olawa", "region_kampinos", "region_czersk",
 })
 
 
@@ -1722,6 +1734,9 @@ def poi_geo_region_key(p: dict) -> str | None:
         return "region_modlin"
     if any(k in blob for k in ("kampinos", "łomna", "lomna", "palmiry")):
         return "region_kampinos"
+    # FIX #254: Warszawa day-trip — Zamek w Czersku.
+    if any(k in blob for k in ("czersk", "zamek w czersku")):
+        return "region_czersk"
     # FIX #234: Katowice day-trips — Zabrze underground cluster, Oława (Wrocław).
     if "zabrze" in blob and any(k in blob for k in ("podziem", "szyb", "guido", "kopalnia")):
         return "region_zabrze"
@@ -1732,7 +1747,7 @@ def poi_geo_region_key(p: dict) -> str | None:
 
 
 def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: dict | None) -> bool:
-    """FIX #234: don't suggest Wieliczka/Ojców restaurants when touring city centre."""
+    """FIX #234/#254: keep meal suggestions in the same excursion / city area."""
     if not last_poi:
         return True
     poi_reg = poi_geo_region_key(last_poi)
@@ -1743,9 +1758,25 @@ def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: di
         return False
     if poi_reg != "region_ojcow" and any(k in blob for k in ("ojców", "ojcow", "ojcówie")):
         return False
+    # FIX #254: Czersk day-trip must not pull Śródmieście Warsaw restaurants.
+    if poi_reg != "region_czersk" and any(k in blob for k in ("czersk", "zamek w czersku")):
+        return False
+    if poi_reg == "region_czersk" and any(
+        k in blob for k in ("warszawa", "warsaw", "śródmieście", "srodmiescie")
+    ) and "czersk" not in blob:
+        return False
     day_reg = (context or {}).get("day_geo_region")
     if day_reg == "region_wieliczka" and not any(k in blob for k in ("wieliczka", "bochnia", "krak")):
         return False
+    if day_reg == "region_czersk" and not any(k in blob for k in ("czersk", "góra kalwaria", "gora kalwaria")):
+        if any(k in blob for k in ("warszawa", "warsaw")):
+            return False
+    # When last POI has no GPS, still refuse obvious distant towns.
+    if not last_poi.get("lat") or not last_poi.get("lng"):
+        req = str((context or {}).get("requested_city") or "").lower()
+        if req and r_city and req[:4] not in r_city and r_city[:4] not in req:
+            if any(k in blob for k in ("wieliczka", "bochnia", "czersk", "ojców", "ojcow")):
+                return False
     return True
 
 
@@ -1762,12 +1793,13 @@ def _tiered_nearby_restaurants(
         return []
     lat = last_poi.get("lat")
     lng = last_poi.get("lng")
-    if not lat or not lng:
-        return [{**r} for r in restaurants[:limit]]
     candidates = [
         r for r in restaurants
         if _meal_restaurant_geo_ok(r, last_poi, context)
     ]
+    # FIX #254: missing GPS must still respect geo filter (no Wieliczka after Wawel).
+    if not lat or not lng:
+        return [{**r} for r in candidates[:limit]]
     for radius in radii_km:
         nearby = []
         for r in candidates:
@@ -2375,11 +2407,15 @@ def is_open(p, now, duration, season, context=None):
     # dusk so the visit happens in daylight. Indoor POIs and non-viewpoints are
     # unaffected. Trails are handled by their own difficulty/return logic.
     try:
-        if is_viewpoint_poi(p):
-            # Latest acceptable START for an outdoor viewpoint = ~sunset minus a short
-            # visit. Tuned to real Tatra sunset so we only block genuinely dark slots
-            # (the client's complaint was a viewpoint at 20:46 in February) without
-            # over-restricting daytime selection.
+        _pname_open = safe_str(p.get("name", "")).lower()
+        _dusk_outdoor = is_viewpoint_poi(p) or any(
+            k in _pname_open for k in (
+                "paintball", "quad", "quady", "atv", "fort przygody",
+            )
+        )
+        if _dusk_outdoor:
+            # Latest acceptable START for outdoor activities = ~sunset.
+            # FIX #254: winter paintball/quads after dark must not appear.
             _dusk_by_season = {
                 "winter": 16 * 60 + 40,   # ~16:40 (Feb sunset ~16:50)
                 "autumn": 17 * 60 + 30,   # ~17:30
@@ -2468,6 +2504,65 @@ def energy_cost(p, duration, context):
 # =========================
 
 
+def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
+    """FIX #254: absolute visit length caps (client: cathedrals/parks stretched to 3–4h).
+
+    `for_scheduling=True` applies named + category caps used by choose_duration /
+    stretch. Gap-absorb passes use `for_scheduling=False` so only extreme named
+    caps block filling a 2 h blank (otherwise every park stuck at 90 min leaves
+    unexplained holes — regression vs FIX #253 G7).
+    """
+    name = safe_str(p.get("name", "")).lower()
+    poi_type = safe_str(p.get("type", "")).lower()
+    _named_caps = (
+        ("sky tower", 60),
+        ("punkt widokowy", 60),
+        ("zatoka gondoli", 75),
+        ("pergola", 75),
+        ("laser tag", 120),
+        ("paintball", 120),
+        ("quad", 120),
+        ("manufaktura czekolady", 75),
+        ("pijalnia czekolady", 75),
+        ("pijalnia wedla", 75),
+        ("grób nieznanego", 45),
+        ("grob nieznanego", 45),
+        ("planty", 75),
+        ("wartostrada", 60),
+        ("park wilsona", 60),
+        ("park sołacki", 60),
+        ("park solacki", 60),
+        ("park wodziczki", 60),
+        ("park adama wodziczki", 60),
+        ("park szelągowski", 60),
+        ("park szelagowski", 60),
+        ("park skaryszewski", 90),
+        ("park jordana", 75),
+        ("wyspa słodowa", 75),
+        ("wyspa slodowa", 75),
+        ("katedra", 90),
+        ("ostrów tumski", 120),
+        ("ostrow tumski", 120),
+        ("muzeum uniwersytetu", 90),
+        ("muzeum narodowe", 150),
+        ("hala stulecia", 120),
+    )
+    for marker, cap in _named_caps:
+        if marker in name:
+            return cap
+    if not for_scheduling:
+        return None
+    if any(k in name or k in poi_type for k in ("viewpoint", "widokowy", "wieża", "wieza", "tower")):
+        return 60
+    if any(k in name for k in ("katedra", "bazylika", "kościół", "kosciol")):
+        return 90
+    if any(k in name for k in ("park ", "ogród", "ogrod", "bulwar", "planty", "wyspa")):
+        return 90
+    if "muzeum" in name or "museum" in poi_type:
+        return 150
+    return None
+
+
 def choose_duration(p, now, end, lunch_done, user=None):
     tmin = safe_int(p.get("time_min"), 30)
     tmax = safe_int(p.get("time_max"), 60)
@@ -2519,11 +2614,22 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("górnośląski park etnograficzny", 90),
         ("gornoslaski park etnograficzny", 90),
         ("muzeum powstania wielkopolskiego", 45),
+        # FIX #254 / #253: booked active blocks need a real session length.
+        ("labirynt", 60),
+        ("paintball", 60),
+        ("gokart", 60),
+        ("karting", 60),
+        ("laser tag", 60),
     )
     for _marker, _nmin in _named_mins:
         if _marker in _poi_name_lower:
             tmin = max(tmin, _nmin)
             break
+    # FIX #254: clamp absurd Excel time_max before preferred_duration uses it.
+    _hard_cap = visit_duration_hard_cap(p)
+    if _hard_cap is not None:
+        tmax = min(tmax, _hard_cap)
+        tmin = min(tmin, tmax)
     tmax = max(tmax, tmin)
 
     # Use the HIGHER of: POI's time_min OR type-based minimum
@@ -2574,10 +2680,11 @@ def choose_duration(p, now, end, lunch_done, user=None):
         if max_before_lunch < tmin:
             return 0
 
-    # Wybierz rozsądny duration: około 70% zakresu (tmin → tmax)
-    # Przykład: tmin=60, tmax=150 → preferred = 60 + 0.7*(90) = 123
-    # To daje bardziej realistyczne czasy niż zawsze max
-    preferred_duration = tmin + int(0.7 * (tmax - tmin))
+    # Wybierz rozsądny duration: około 55% zakresu (tmin → tmax)
+    # FIX #254: 0.7 stretched too many museums/parks into multi-hour stops.
+    preferred_duration = tmin + int(0.55 * (tmax - tmin))
+    if _hard_cap is not None:
+        preferred_duration = min(preferred_duration, _hard_cap)
     
     # FIX #Problem9 (14.05.2026): CAP duration at max_before_lunch to prevent pushing lunch late
     # BUG: Even if POI is allowed (tmin < max_before_lunch), preferred_duration could be much longer
@@ -4502,14 +4609,39 @@ def score_poi(
             if must_see_value >= 9:
                 score += 40.0
 
-    # FIX #225: family-defining icons (Smok, Wawel, Ogród Doświadczeń, Park Jordana,
-    # Zoo) must reliably enter family_kids plans.
+    # FIX #225: family-defining icons (Smok, Wawel, Ogród Doświadczeń, Zoo)
+    # must reliably enter family_kids plans.
     if (
         _is_city_221(context)
         and user.get("target_group") == "family_kids"
         and any(m in _name221 for m in _FAMILY_ICON_MARKERS)
     ):
         score += 80.0 if _day221 <= 3 else 50.0
+
+    # FIX #254: Zoo Wrocław — raise ranking (client json1: must appear).
+    if _is_city_221(context) and any(
+        m in _name221 for m in ("zoo wrocław", "zoo wroclaw", "ogród zoologiczny")
+    ) and (
+        "wrocław" in str(context.get("requested_city") or "").lower()
+        or "wroclaw" in str(context.get("requested_city") or "").lower()
+        or "wrocław" in _name221
+        or "wroclaw" in _name221
+    ):
+        score += 120.0 if user.get("target_group") == "family_kids" else 70.0
+
+    # FIX #254: winter urban greens after Wyspa/Pergola were removed from season whitelist.
+    if str((context or {}).get("season") or "").lower() == "winter" and any(
+        m in _name221 for m in (
+            "park szczytnicki", "bulwar", "lasek", "las strzeli",
+            "ostrów tumski", "ostrow tumski",
+        )
+    ):
+        if {"relaxation", "nature_landscape"} & set(_prefs221):
+            score += 95.0
+
+    # FIX #254: Park Jordana overused — demote vs Zakrzówek / Botaniczny / Las Wolski.
+    if "park jordana" in _name221:
+        score -= 55.0
 
     # Wrocław Szczytnicki cluster — keep botanic/pergola/japanese/hala together.
     _ck222 = poi_repeat_cluster_key(p.get("name", ""))
@@ -4709,8 +4841,30 @@ def score_poi(
             score -= 80.0
 
     # Ojców/Maczuga Herkulesa — boost cluster POIs when planning that area.
-    if any(n in _name221 for n in ("maczuga herkulesa", "pieskowa skała", "jaskinia łokietka", "jaskinia lokietka", "zamek w ojcowie")):
+    # FIX #254: when OPN day is active, need 2–3 attractions (not just Maczuga 50 min).
+    if any(n in _name221 for n in (
+        "maczuga herkulesa", "pieskowa skała", "pieskowa skala",
+        "jaskinia łokietka", "jaskinia lokietka", "jaskinia ciemna",
+        "zamek w ojcowie", "zamek ojcow",
+    )):
         score += 55.0
+        if (context or {}).get("day_geo_region") == "region_ojcow" or (
+            (context or {}).get("excursion_day_active") == "region_ojcow"
+        ):
+            score += 90.0
+
+    # FIX #254: adventure ≠ urban greens (Pergola / Wyspa / Japanese garden).
+    if travel_style == "adventure" or "adventure" in _prefs221:
+        if any(n in _name221 for n in (
+            "pergola", "wyspa słodowa", "wyspa slodowa",
+            "ogród japoński", "ogrod japonski",
+        )):
+            score -= 140.0
+        if any(n in _name221 for n in (
+            "hydropolis", "centrum historii zajezdnia", "muzeum iluzji",
+            "kopalnia guido", "królowa luiza", "krolowa luiza",
+        )):
+            score += 85.0
 
     # FIX #233: city day 1 — don't open with far excursion / Arboretum Wojsławice
     from app.domain.planner.city_copy import is_city_tourism_trip as _city233

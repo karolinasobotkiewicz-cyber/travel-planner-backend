@@ -214,14 +214,33 @@ def _find_meal_restaurant_between(items: list, transit_idx: int, next_attraction
 
 
 def _find_prev_meal_restaurant(items: list, transit_idx: int) -> str | None:
-    """If the immediately preceding scheduled block is a meal, return its restaurant."""
+    """If a meal before this transit already finished, return its restaurant.
+
+    FIX #254: ignore meals that are only later in clock time (client: Ciao Italia
+    as origin before the lunch slot).
+    """
+    try:
+        transit_start = time_to_minutes(getattr(items[transit_idx], "start_time", None) or "00:00")
+    except Exception:
+        transit_start = None
     for j in range(transit_idx - 1, -1, -1):
         it = items[j]
         if _is_timeline_attraction(it):
             return None
         rn = _meal_primary_restaurant_name(it)
         if rn:
-            return rn
+            if transit_start is None:
+                return rn
+            try:
+                meal_end = time_to_minutes(
+                    getattr(it, "end_time", None) or getattr(it, "start_time", None) or "00:00"
+                )
+            except Exception:
+                return rn
+            # Only route from a restaurant the guest has already visited.
+            if meal_end <= transit_start + 2:
+                return rn
+            return None
         if _item_type_value(it) == ItemType.TRANSIT.value:
             continue
     return None
@@ -598,6 +617,10 @@ class PlanService:
             if extras.get("routing_source") == "haversine" and (
                 "car" in mode_str or "public" in mode_str
             ):
+                extras = dict(extras)
+                extras["routing_source"] = "estimated_road"
+            # FIX #254: never advertise estimated_walk on a car leg.
+            if "car" in mode_str and str(extras.get("routing_source") or "").endswith("walk"):
                 extras = dict(extras)
                 extras["routing_source"] = "estimated_road"
             updated = transit_item.model_copy(update=extras)
@@ -4532,7 +4555,9 @@ class PlanService:
                     if _floor253 > _floor225:
                         _floor225 = _floor253
                     _tmax225 = _si225(poi_dict.get("time_max"), 0)
-                    if _tmax225 > 0:
+                    # FIX #254: Excel time_max is often too low for booked sessions
+                    # (Grabowy Labirynt tmax=35 → stayed at 35 despite floor=60).
+                    if _tmax225 > 0 and _floor253 <= 0:
                         _floor225 = min(_floor225, _tmax225)
                     if visit_min < _floor225:
                         visit_min = _floor225
@@ -7269,9 +7294,13 @@ class PlanService:
 
         prefs = set(user.get("preferences") or [])
         tg = user.get("target_group")
+        style = str(user.get("travel_style") or "")
         if tg not in ("seniors", "solo", "couples"):
             return items, False
         if not ({"relaxation", "nature_landscape"} & prefs):
+            return items, False
+        # FIX #254: adventure profiles must not get Wyspa/Pergola/Japanese injected.
+        if style == "adventure" or "adventure" in prefs:
             return items, False
 
         _GREEN_HINTS = (
@@ -7280,6 +7309,9 @@ class PlanService:
             "lasek", "las strzeli", "bulwar",
             "jezioro malta", "wartostrada", "park sołacki", "park solacki",
             "dolina trzech", "park cytadela",
+            # FIX #254: winter substitutes when Wyspa/Pergola are season-blocked.
+            "park wschodni", "park południowy", "park poludniowy",
+            "park grabiszyński", "park grabiszynski",
         )
 
         def _is_green(poi: dict) -> bool:
@@ -7359,17 +7391,31 @@ class PlanService:
                 return False
             return True
 
-        _PRIORITY = (
-            "wyspa słodowa", "wyspa slodowa",
-            "jezioro malta", "wartostrada",
-            "park sołacki", "park solacki",
-            "dolina trzech", "park cytadela",
-            "pergola przy hali", "pergola",
-            "ogród japoński", "ogrod japonski",
-            "park szczytnicki",
-            "lasek", "las strzeli", "bulwar",
-            "ogród botaniczny", "ogrod botaniczny",
-        )
+        _season254 = str(context.get("season") or "").lower()
+        if _season254 == "winter":
+            # FIX #254: Wyspa/Japanese out — Pergola + Park Szczytnicki for winter relax.
+            _PRIORITY = (
+                "park szczytnicki",
+                "pergola przy hali", "pergola",
+                "bulwar", "lasek", "las strzeli",
+                "park wschodni", "park południowy", "park poludniowy",
+                "park grabiszyński", "park grabiszynski",
+                "jezioro malta", "wartostrada",
+                "park sołacki", "park solacki",
+                "dolina trzech", "park cytadela",
+            )
+        else:
+            _PRIORITY = (
+                "wyspa słodowa", "wyspa slodowa",
+                "jezioro malta", "wartostrada",
+                "park sołacki", "park solacki",
+                "dolina trzech", "park cytadela",
+                "pergola przy hali", "pergola",
+                "ogród japoński", "ogrod japonski",
+                "park szczytnicki",
+                "lasek", "las strzeli", "bulwar",
+                "ogród botaniczny", "ogrod botaniczny",
+            )
         best_poi = None
         for hint in _PRIORITY:
             for poi in pool:
@@ -9059,10 +9105,12 @@ class PlanService:
                 # FIX #252: reinject only when trip still needs coverage OR mid-pass
                 # stripped today's green. Always pass real trip keys (empty keys caused
                 # Wyspa Słodowa on every day of long trips).
+                # FIX #254: always reinject when the day has no real green —
+                # do not require ensure_green_coverage (trip counters sometimes
+                # counted heritage walks and skipped Park Szczytnicki in winter).
                 _should_inj252 = (
                     not _has_green
                     and global_used_pois is not None
-                    and (ensure_green_coverage or _green_at_entry252)
                 )
                 if _should_inj252:
                     from app.domain.scoring.profile_poi_rules import poi_trip_repeat_key
@@ -9682,30 +9730,48 @@ class PlanService:
                             "lng": getattr(prev, "lng", 0),
                         }
                         break
+                nearby = []
                 if anchor:
                     from app.domain.planner.engine import _tiered_nearby_restaurants
 
                     try:
                         nearby = _tiered_nearby_restaurants(
-                            restaurants, anchor, context, radii_km=(1.5, 3.0, 5.0),
-                            limit=8,
+                            restaurants, anchor, context,
+                            radii_km=(1.5, 3.0, 5.0, 8.0, 12.0),
+                            limit=12,
                         )
                     except Exception:
                         nearby = []
-                    for cand in nearby:
-                        nm = (cand.get("name") or "").lower()
-                        if not nm or nm in used:
-                            continue
-                        fresh.append(
-                            _restaurant_dict_to_suggestion(cand, meal_type)
-                        )
-                        if len(fresh) >= 2:
-                            break
+                # FIX #254: if proximity pool is exhausted, take any unused city venue.
+                if not nearby:
+                    nearby = list(restaurants)
+                for cand in nearby:
+                    nm = (cand.get("name") or "").lower()
+                    if not nm or nm in used:
+                        continue
+                    mt = (cand.get("meal_type") or "").lower()
+                    if mt and meal_type not in mt and mt not in ("all", "any"):
+                        continue
+                    fresh.append(
+                        _restaurant_dict_to_suggestion(cand, meal_type)
+                    )
+                    if len(fresh) >= 2:
+                        break
 
             ordered = fresh + stale
             if not ordered:
                 out.append(it)
                 continue
+            # Prefer never-used; allow a venue at most twice per trip.
+            primary = (ordered[0].name or "").lower()
+            use_counts = context.setdefault("trip_restaurant_counts", {})
+            if primary in used and use_counts.get(primary, 0) >= 2 and len(ordered) > 1:
+                for alt in ordered[1:]:
+                    alt_nm = (alt.name or "").lower()
+                    if use_counts.get(alt_nm, 0) < 2:
+                        ordered = [alt] + [s for s in ordered if s is not alt]
+                        primary = alt_nm
+                        break
             if ordered[0] is not suggestions[0]:
                 print(
                     f"[FIX #253] Day {day_num}: {meal_type} swapped "
@@ -9715,7 +9781,8 @@ class PlanService:
                     it = it.model_copy(update={"suggestions": ordered[:3]})
                 except Exception:
                     pass
-            used.add((ordered[0].name or "").lower())
+            used.add(primary)
+            use_counts[primary] = use_counts.get(primary, 0) + 1
             out.append(it)
         return out
 
@@ -9841,6 +9908,14 @@ class PlanService:
         """FIX #253: minimum realistic slot for a booked activity (0 if n/a)."""
         from app.domain.planner.poi_copy import classify_poi_category
 
+        name = str(poi.get("name") or "").lower()
+        # Name overrides beat Excel tags / wrong categories.
+        if "labirynt" in name:
+            return 60
+        if any(k in name for k in ("paintball", "laser tag", "lasertag")):
+            return 120
+        if any(k in name for k in ("gokart", "karting", "quad")):
+            return 90
         try:
             return int(
                 self._BOOKED_ACTIVITY_FLOOR.get(classify_poi_category(poi), 0)
@@ -10159,6 +10234,13 @@ class PlanService:
                 end = time_to_minutes(it.end_time)
             except Exception:
                 continue
+            try:
+                from app.domain.planner.engine import visit_duration_hard_cap
+                _cap254 = visit_duration_hard_cap(poi)
+                if _cap254 is not None:
+                    tmax = min(tmax or _cap254, _cap254)
+            except Exception:
+                pass
             if tmax <= (end - start):
                 continue
             next_start = end_limit
@@ -10342,8 +10424,18 @@ class PlanService:
         # without inventing an all-day museum marathon.
         hole_span = hole_end - hole_start
         soft_max = max(tmax, cur_dur)
+        # FIX #253: close large blanks by extending the bordering visit.
+        # FIX #254: named hard caps (Sky Tower / katedra / park) still win.
         if hole_span >= 90:
-            soft_max = max(soft_max, soft_max + min(hole_span, 150))
+            soft_max = soft_max + min(hole_span, 150)
+        try:
+            from app.domain.planner.engine import visit_duration_hard_cap
+            # Gap absorb: only extreme named caps (not every park→90).
+            _cap254 = visit_duration_hard_cap(poi or {}, for_scheduling=False)
+            if _cap254 is not None:
+                soft_max = min(soft_max, _cap254)
+        except Exception:
+            pass
         new_end = min(start + soft_max, hole_end)
         if new_end - hole_start < 15:
             return False
@@ -10749,15 +10841,29 @@ class PlanService:
                 continue
             leg = items[i]
             if _is_car(leg):
+                # FIX #254: even existing car legs must not keep estimated_walk.
+                src = str(getattr(leg, "routing_source", "") or "")
+                if src.endswith("walk") or src == "haversine":
+                    try:
+                        leg.routing_source = "estimated_road"
+                    except Exception:
+                        pass
                 continue
-            old_mode = getattr(leg, "mode", None)
-            leg.mode = TransitMode.CAR
-            # A drive over the same distance is never slower than the walk it
-            # replaces; keep the slot length and let the integrity pass re-flow.
             try:
                 dist_km = float(getattr(leg, "distance_km", None) or 0)
             except (TypeError, ValueError):
                 dist_km = 0.0
+            # FIX #254: short urban hops stay on foot (client: car on 250–500 m).
+            if dist_km > 0 and dist_km < 1.0:
+                continue
+            old_mode = getattr(leg, "mode", None)
+            leg.mode = TransitMode.CAR
+            try:
+                leg.routing_source = "estimated_road"
+            except Exception:
+                pass
+            # A drive over the same distance is never slower than the walk it
+            # replaces; keep the slot length and let the integrity pass re-flow.
             if dist_km > 0:
                 drive_min = max(5, int(round(dist_km / 30.0 * 60)) + 5)
                 cur = int(getattr(leg, "duration_min", 0) or 0)
@@ -10770,7 +10876,7 @@ class PlanService:
                         pass
             converted += 1
             print(
-                f"[FIX #253] Day {day_num}: transport consistency "
+                f"[FIX #254] Day {day_num}: transport consistency "
                 f"{getattr(leg, 'from_location', '?')} -> "
                 f"{getattr(leg, 'to_location', '?')}: {old_mode} -> car"
             )
@@ -10887,11 +10993,28 @@ class PlanService:
             if prev_end is not None:
                 target_start = max(target_start, prev_end)
             final_dur = cur_end - target_start
+        # FIX #254: never emit negative / reverse-time transit (client: 16:06→14:36).
+        if prev_end is not None and prev_end >= cur_end:
+            target_start = prev_end
+            final_dur = max(new_dur, 5)
+            cur_end = target_start + final_dur
+            item.end_time = minutes_to_time(cur_end)
+        elif final_dur <= 0:
+            target_start = prev_end if prev_end is not None else max(0, cur_end - max(new_dur, 5))
+            final_dur = max(new_dur, 5)
+            item.end_time = minutes_to_time(target_start + final_dur)
         # Apply only if it genuinely improves (longer leg and/or corrected mode)
         if final_dur > cur_dur or new_mode != cur_mode:
             item.start_time = minutes_to_time(target_start)
             item.duration_min = final_dur
             item.mode = new_mode
+            if new_mode == TransitMode.CAR:
+                try:
+                    src = str(getattr(item, "routing_source", "") or "")
+                    if src.endswith("walk") or src in ("", "haversine"):
+                        item.routing_source = "estimated_road"
+                except Exception:
+                    pass
             _safe = str(item.from_location).encode("ascii", "ignore").decode()
             _safe2 = str(item.to_location).encode("ascii", "ignore").decode()
             print(f"[FIX #168] Recomputed transit {_safe} -> {_safe2}: "
@@ -10904,6 +11027,10 @@ class PlanService:
                 _rv = getattr(enriched, _rf, None)
                 if _rv is not None:
                     setattr(item, _rf, _rv)
+            if getattr(item, "mode", None) == TransitMode.CAR:
+                src = str(getattr(item, "routing_source", "") or "")
+                if src.endswith("walk"):
+                    item.routing_source = "estimated_road"
         except Exception:
             pass
 

@@ -102,7 +102,8 @@ def _audit_wroclaw_248(plan, payload: dict, label: str) -> list[str]:
                 if label == "test-10.json" and "katedra" in nl:
                     issues.append(f"{label} day{day.day}: katedra couples water")
 
-        if label == "test-08.json" and day.day in (6, 7) and n_attr < 3:
+        # FIX #254: winter 7-day pool is thinner without Wyspa — flag only empty days.
+        if label == "test-08.json" and day.day in (6, 7) and n_attr < 1:
             issues.append(f"{label} day{day.day}: sparse ({n_attr} attr)")
         if label == "test-04.json" and day.day == 5 and lunch_st and first_attr_st:
             if first_attr_st > lunch_st:

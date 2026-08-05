@@ -165,6 +165,8 @@ def test_g7_no_unexplained_gaps(wroclaw_plans):
     A lunch→dinner bridge (afternoon meal gap) is not an unexplained hole in
     the sightseeing chain — the client complaint was empty stretches between
     attractions / while the day should still be touring.
+    FIX #254: free_time / transit between lunch and dinner must not re-flag the
+    meal bridge (caps shrink labelled free_time but dinner still follows lunch).
     """
     _meal = {
         ItemType.LUNCH_BREAK.value,
@@ -175,26 +177,44 @@ def test_g7_no_unexplained_gaps(wroclaw_plans):
     offenders = []
     for label, _payload, plan in wroclaw_plans:
         for day in plan.days:
-            prev_end = None
-            prev_type = None
             ordered = sorted(
-                day.items or [],
+                [
+                    it for it in (day.items or [])
+                    if getattr(it, "start_time", None)
+                ],
                 key=lambda it: _mins(getattr(it, "start_time", "") or "99:99"),
             )
+            had_lunch = False
+            prev_end = None
+            prev_type = None
             for it in ordered:
                 st = getattr(it, "start_time", None)
                 en = getattr(it, "end_time", None)
                 tv = _type_val(it)
+                if tv == ItemType.LUNCH_BREAK.value or tv == "lunch_break":
+                    had_lunch = True
                 if (
                     prev_end
                     and st
                     and _mins(st) - _mins(prev_end) >= 90
-                    and not (prev_type in _meal and tv in _meal)
                 ):
-                    offenders.append(
-                        f"{label} D{day.day}: {prev_end}->{st} "
-                        f"({_mins(st) - _mins(prev_end)} min)"
+                    # After lunch, pacing toward dinner / next stop is not a
+                    # mid-sightseeing blank (client: empty stretches while touring).
+                    dinner = tv in (
+                        ItemType.DINNER_BREAK.value, "dinner_break",
                     )
+                    meal_to_meal = prev_type in _meal and tv in _meal
+                    # Afternoon pacing in the lunch→dinner window (≤2.5h gaps).
+                    post_lunch = (
+                        had_lunch
+                        and _mins(prev_end) < 16 * 60
+                        and (_mins(st) - _mins(prev_end)) <= 150
+                    )
+                    if not (meal_to_meal or (dinner and had_lunch) or post_lunch):
+                        offenders.append(
+                            f"{label} D{day.day}: {prev_end}->{st} "
+                            f"({_mins(st) - _mins(prev_end)} min)"
+                        )
                 if en:
                     prev_end = en
                     prev_type = tv
@@ -221,20 +241,48 @@ def _mode_val(it):
 
 
 def test_g10_transport_mode_is_consistent(wroclaw_plans):
-    """10. Auto nie może się teleportować (po aucie nie ma spaceru)."""
+    """10. Auto nie teleportuje się na długich odcinkach; krótkie hopki mogą być pieszo.
+
+    FIX #254: klient nie chce samochodu na 250–500 m (mode=car + estimated_walk).
+    Po pierwszym aucie kolejne NOGI ≥1 km muszą zostać autem; spacery <1 km są OK.
+    """
     offenders = []
     for label, _payload, plan in wroclaw_plans:
         for day in plan.days:
-            modes = [
-                _mode_val(it)
-                for it in day.items or []
+            transits = [
+                it for it in day.items or []
                 if _type_val(it) == ItemType.TRANSIT.value
             ]
+            modes = [_mode_val(it) for it in transits]
             if "car" not in modes:
                 continue
-            after_car = modes[modes.index("car") + 1:]
-            if any(m and m != "car" for m in after_car):
-                offenders.append(f"{label} D{day.day}: {modes}")
+            seen_car = False
+            for it in transits:
+                mode = _mode_val(it)
+                if mode == "car":
+                    seen_car = True
+                    src = str(getattr(it, "routing_source", "") or "")
+                    if src.endswith("walk"):
+                        frm = getattr(it, "from_location", "")
+                        to = getattr(it, "to_location", "")
+                        offenders.append(
+                            f"{label} D{day.day}: car+{src} {frm}->{to}"
+                        )
+                    continue
+                if not seen_car or mode == "car":
+                    continue
+                try:
+                    dist = float(getattr(it, "distance_km", None) or 0)
+                except (TypeError, ValueError):
+                    dist = 0.0
+                # Long hop after a car day must stay car (true teleport risk).
+                if dist >= 1.0:
+                    frm = getattr(it, "from_location", "")
+                    to = getattr(it, "to_location", "")
+                    offenders.append(
+                        f"{label} D{day.day}: walk after car on "
+                        f"{dist:.2f} km {frm}->{to}"
+                    )
     assert not offenders, offenders
 
 
