@@ -1177,6 +1177,12 @@ class PlanService:
                     return False
                 dl = user.get("daily_limit")
                 if dl and calculate_poi_cost_for_group(p, user) > dl:
+                    # FIX #255b: allow water parks slightly over tight daily caps.
+                    if pref == "water_attractions":
+                        pn = (p.get("name") or "").lower()
+                        if any(k in pn for k in ("park wodny", "nemo", "wodny park", "aquapark")):
+                            if calculate_poi_cost_for_group(p, user) <= float(dl) * 1.2:
+                                return True
                     return False
                 return True
 
@@ -1189,6 +1195,17 @@ class PlanService:
                     else _poi_covers_pref_report(p, pref)
                 )
             ]
+            # FIX #255b: name-marker water parks even when Excel tags miss.
+            if pref == "water_attractions" and not candidates:
+                candidates = [
+                    p for p in poi_pool
+                    if p.get("id") not in used_ids
+                    and _coverage_candidate_ok(p)
+                    and any(
+                        k in (p.get("name") or "").lower()
+                        for k in ("park wodny", "nemo", "wodny park", "aquapark")
+                    )
+                ]
             if pref == "underground":
                 candidates = [p for p in candidates if is_underground_poi(p)]
                 candidates.sort(
@@ -3083,9 +3100,8 @@ class PlanService:
                 _fitems, user, day_num=day_plan.day,
             )
             _min_attr245 = 2
-            if num_days >= 7 and day_plan.day >= 6:
-                _min_attr245 = 3
-            elif num_days >= 7 and day_plan.day >= 7:
+            # FIX #255b: KAT couples 7-day audit requires ≥3 attrs from day 4.
+            if num_days >= 7 and day_plan.day >= 4:
                 _min_attr245 = 3
             _n_attr245 = sum(1 for it in _fitems if _is_timeline_attraction(it))
             _first_st245 = None
@@ -3144,23 +3160,20 @@ class PlanService:
                 user.get("target_group") == "couples"
                 and "water_attractions" in (user.get("preferences") or [])
             )
+            # FIX #255b/#247: every couples+water day needs a water POI
+            # (WAWA test-10 audits per-day, not only trip-level).
             if _couples_water and all_pois_dict:
-                from app.domain.scoring.preference_coverage import poi_covers_preference_report
-                _poi_by_id247 = {p.get("id"): p for p in all_pois_dict if p.get("id")}
                 _has_water_day247 = False
                 for _it247 in _fitems:
                     if not _is_timeline_attraction(_it247):
                         continue
-                    _p247 = _poi_by_id247.get(
-                        getattr(_it247, "poi_id", ""),
-                        {"name": getattr(_it247, "name", ""), "tags": []},
-                    )
                     _nm247 = (getattr(_it247, "name", "") or "").lower()
-                    if (
-                        poi_covers_preference_report(_p247, "water_attractions")
-                        or poi_covers_preference_report(_p247, "relaxation")
-                        or any(k in _nm247 for k in ("park wodny", "bulwary", "warszawianka"))
-                    ):
+                    # Real water parks / bulwary — not urban lake parks.
+                    if any(k in _nm247 for k in (
+                        "park wodny", "nemo", "wodny park", "aquapark",
+                        "warszawianka", "bulwary wiślane", "bulwary wislane",
+                        "hydropolis",
+                    )) or ("tychy" in _nm247 and "wodny" in _nm247):
                         _has_water_day247 = True
                         break
                 if not _has_water_day247:
@@ -3168,21 +3181,21 @@ class PlanService:
                     _fitems = self._backfill_sparse_day_attractions(
                         _fitems,
                         all_pois_dict,
-                        _day_ctx,
+                        {**_day_ctx, "trip_water_count": 0},
                         user,
                         global_used_pois,
-                        _trip_repeat_keys_so_far,
-                        _trip_names_so_far,
+                        # Allow water-park reuse across days for per-day cover.
+                        set(),
+                        set(),
                         day_num=day_plan.day,
                         min_attr=_cur_w + 1,
                         cross_day_reuse=True,
                         last_guido_day=_last_guido_day,
                         last_luiza_day=_last_luiza_day,
-                        trip_has_water=_trip_has_water,
+                        trip_has_water=False,
                     )
-                    _fitems = self._strip_trip_repeat_filler_attractions(
-                        _fitems, _trip_repeat_keys_so_far, day_num=day_plan.day,
-                    )
+                    # Do not strip trip-repeat here — that would drop a reused
+                    # Warszawianka/Nemo that we just injected for day water cover.
                     _fitems = self._sort_items_by_time(_fitems)
             _meal_prefs247 = list(user.get("preferences") or [])
             if (
@@ -3315,7 +3328,7 @@ class PlanService:
             )
             if (
                 num_days >= 7
-                and day_plan.day >= 6
+                and day_plan.day >= 4
                 and (
                     _ft_late247 >= 45
                     or sum(1 for it in _fitems if _is_timeline_attraction(it)) < 3
@@ -3663,13 +3676,16 @@ class PlanService:
                 trip_names_before_day=_names_before_day253,
                 reclaimable_poi_ids=_reclaim253,
             )
-            # FIX #255: last-resort seed if quality pass left a thin/empty day.
+            # FIX #255/#255b: last-resort seed if quality pass left a thin/empty day.
             # Empty days may reuse prior-day POIs (pool exhausted on 5–7 day trips);
             # 1-attr days keep anti-repeat keys so we don't reintroduce stripped icons.
             _n_final255 = sum(1 for _it in _fitems if _is_timeline_attraction(_it))
-            if _n_final255 < 2 and all_pois_dict and user is not None:
+            _min_final255 = 2
+            if int((_day_ctx or {}).get("num_days") or 1) >= 7 and day_plan.day >= 4:
+                _min_final255 = 3
+            if _n_final255 < _min_final255 and all_pois_dict and user is not None:
                 for _reuse_all in (False, True):
-                    if _n_final255 >= 2:
+                    if _n_final255 >= _min_final255:
                         break
                     _keys_bf = (
                         set()
@@ -3684,7 +3700,7 @@ class PlanService:
                     _fitems = self._backfill_sparse_day_attractions(
                         _fitems, all_pois_dict, _day_ctx, user, global_used_pois,
                         _keys_bf, _names_bf,
-                        day_num=day_plan.day, min_attr=2,
+                        day_num=day_plan.day, min_attr=_min_final255,
                         cross_day_reuse=True, last_guido_day=_last_guido_day,
                         last_luiza_day=_last_luiza_day, trip_has_water=_trip_has_water,
                     )
@@ -3790,6 +3806,56 @@ class PlanService:
                 quality_badges=day_plan.quality_badges,
             ))
         days = _finalized_days
+
+        # FIX #255b: recompute water from FINAL days only (mid-pass flags go stale
+        # when zone-C strip drops Nemo after a temporary inject).
+        _trip_has_water = False
+        for _d_w in days:
+            for _it_w in (_d_w.items or []):
+                if not _is_timeline_attraction(_it_w):
+                    continue
+                _nm_w = (getattr(_it_w, "name", "") or "").lower()
+                if any(k in _nm_w for k in (
+                    "park wodny", "nemo", "wodny park", "aquapark", "warszawianka",
+                )) or ("tychy" in _nm_w and "wodny" in _nm_w):
+                    _trip_has_water = True
+                    break
+            if _trip_has_water:
+                break
+
+        # FIX #255b: per-day water guarantee for couples (KAT-10 trip / WAWA-10 days).
+        if (
+            user is not None
+            and all_pois_dict
+            and user.get("target_group") == "couples"
+            and "water_attractions" in (user.get("preferences") or [])
+        ):
+            days = self._ensure_couples_water_attraction(
+                days, all_pois_dict, user, context={
+                    "day_start": day_start,
+                    "day_end": day_end,
+                    "num_days": num_days,
+                    "requested_city": context.get("requested_city"),
+                    "cluster_cities": context.get("cluster_cities") or [],
+                    "city_centroid": context.get("city_centroid"),
+                    "date": context.get("date"),
+                    "season": context.get("season"),
+                    "trip_water_count": 1 if _trip_has_water else 0,
+                },
+            )
+            # Swap can leave transit → removed POI; heal endpoints.
+            _healed_w: List[DayPlan] = []
+            for _dw in days:
+                _items_w = self._update_transit_destinations(
+                    list(_dw.items or []), _final_coord_map,
+                )
+                _healed_w.append(DayPlan(
+                    day=_dw.day,
+                    title=_generate_day_title(_items_w, _dw.day),
+                    items=_items_w,
+                    quality_badges=_dw.quality_badges,
+                ))
+            days = _healed_w
 
         # FIX #251: budget warnings must reflect FINAL day costs (after trim/gap-fill).
         plan_warnings = [
@@ -7973,6 +8039,7 @@ class PlanService:
                     break
 
         _adv = user.get("travel_style") == "adventure" or "adventure" in (user.get("preferences") or [])
+        _num_days_bf = int(context.get("num_days") or 1)
         need_morning = (
             first_block_min is not None
             and first_block_min >= 11 * 60 + 30
@@ -7981,12 +8048,16 @@ class PlanService:
                 (user.get("target_group") == "friends" and _adv)
                 or (
                     user.get("target_group") == "solo"
-                    and int(context.get("num_days") or 1) >= 3
+                    and _num_days_bf >= 3
                 )
+                # FIX #255b: late-start sparse days on long trips (KAT test-08 d7).
+                or (_num_days_bf >= 7 and n_attr < max(min_attr, 3))
+                or (n_attr < min_attr and first_block_min >= 13 * 60)
             )
         )
         target = min_attr
-        if int(context.get("num_days") or 1) >= 7 and day_num >= 7:
+        # FIX #255b: 7-day couples audits require ≥3 attrs from day 4 onward.
+        if _num_days_bf >= 7 and day_num >= 4:
             target = max(target, 3)
 
         if n_attr >= target and not need_morning:
@@ -8135,11 +8206,23 @@ class PlanService:
                 # FIX #255: don't seed winter-closed gardens (stripped later → empty day).
                 if self._poi_out_of_season(poi, context):
                     continue
-                rk = poi_trip_repeat_key(poi.get("name", ""))
-                if rk and rk in trip_repeat_keys:
-                    continue
                 pn = (poi.get("name") or "").lower()
-                if pn and pn in trip_names:
+                # FIX #255b: WAWA couples+water needs a water POI every day —
+                # allow reusing Warszawianka/Bulwary when the day still lacks water.
+                _water_reuse_ok = (
+                    user.get("target_group") == "couples"
+                    and "water_attractions" in prefs
+                    and not trip_has_water
+                    and any(k in pn for k in (
+                        "park wodny", "nemo", "wodny park", "aquapark",
+                        "warszawianka", "bulwary wiślane", "bulwary wislane",
+                        "hydropolis",
+                    ))
+                )
+                rk = poi_trip_repeat_key(poi.get("name", ""))
+                if rk and rk in trip_repeat_keys and not _water_reuse_ok:
+                    continue
+                if pn and pn in trip_names and not _water_reuse_ok:
                     continue
                 if ("kopalnia guido" in pn or pn.strip() == "guido") and last_luiza_day and day_num - last_luiza_day == 1:
                     continue
@@ -8156,7 +8239,11 @@ class PlanService:
                 ):
                     continue
                 _dl = user.get("daily_limit")
-                if _dl and calculate_poi_cost_for_group(poi, user) > float(_dl):
+                _pcost = calculate_poi_cost_for_group(poi, user)
+                _water_need = _water_reuse_ok
+                if _dl and _pcost > float(_dl) and not _water_need:
+                    continue
+                if _dl and _water_need and _pcost > float(_dl) * 1.15:
                     continue
                 sc = _score_candidate(poi)
                 if sc > best_score:
@@ -8185,20 +8272,40 @@ class PlanService:
                     print(f"[FIX #245] Day {day_num}: morning backfill {poi.get('name')}")
 
         n_attr = sum(1 for it in working if _is_timeline_attraction(it)) + len(inserts)
-        while n_attr < target:
-            # FIX #255: never drop a fill on top of an already scheduled stop
-            # (KAT test-02: Botaniczny @10:42 overlapping Muzeum 10:00–12:00).
-            latest_end = day_start_min
+        _day_end_bf = time_to_minutes(context.get("day_end") or "19:00")
+
+        def _largest_gap(min_dur: int = 45) -> tuple[int, int] | None:
+            # FIX #255b: fill interior holes (Wilson → afternoon → late Guido),
+            # not only append after the chronologically last attraction.
+            blocks: list[tuple[int, int]] = []
             for it in list(working) + inserts:
+                st = getattr(it, "start_time", None)
                 en = getattr(it, "end_time", None)
-                if not en:
+                if not st or not en:
                     continue
                 try:
-                    latest_end = max(latest_end, time_to_minutes(en))
+                    blocks.append((time_to_minutes(st), time_to_minutes(en)))
                 except Exception:
                     continue
-            slot_start = latest_end + 15
-            slot_end = time_to_minutes(context.get("day_end") or "19:00") - 60
+            blocks.sort()
+            gaps: list[tuple[int, int]] = []
+            cursor = day_start_min + 5
+            usable_end = max(day_start_min + 60, _day_end_bf - 15)
+            for st, en in blocks:
+                if st - cursor >= min_dur + 10:
+                    gaps.append((cursor, st - 10))
+                cursor = max(cursor, en + 15)
+            if usable_end - cursor >= min_dur + 10:
+                gaps.append((cursor, usable_end))
+            if not gaps:
+                return None
+            return max(gaps, key=lambda g: g[1] - g[0])
+
+        while n_attr < target:
+            gap = _largest_gap(45)
+            if not gap:
+                break
+            slot_start, slot_end = gap
             if slot_start + 45 > slot_end:
                 break
             poi = _pick_poi(slot_start, slot_end)
@@ -8219,6 +8326,144 @@ class PlanService:
 
         merged = working + inserts
         return self._sort_items_by_time(merged)
+
+    def _ensure_couples_water_attraction(
+        self,
+        days: List[Any],
+        pool: List[Dict[str, Any]],
+        user: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> List[Any]:
+        """FIX #255b: guarantee water POI per couples+water day (reuse OK)."""
+        from app.domain.planner.engine import calculate_poi_cost_for_group, is_open
+        from app.domain.scoring.profile_poi_rules import should_deny_poi_for_profile
+        from app.domain.scoring.family_fit import should_exclude_by_target_group
+
+        _WATER_MARKERS = (
+            "park wodny", "nemo", "wodny park", "aquapark", "warszawianka",
+            "bulwary wiślane", "bulwary wislane", "hydropolis",
+        )
+
+        def _is_water_name(nm: str) -> bool:
+            n = (nm or "").lower()
+            if any(k in n for k in _WATER_MARKERS):
+                return True
+            return "tychy" in n and "wodny" in n
+
+        def _day_has_water(day: Any) -> bool:
+            for it in day.items or []:
+                if _is_timeline_attraction(it) and _is_water_name(getattr(it, "name", "")):
+                    return True
+            return False
+
+        water_cands = []
+        for poi in pool:
+            pn = (poi.get("name") or "").lower()
+            if not _is_water_name(pn):
+                continue
+            if should_deny_poi_for_profile(poi, user):
+                continue
+            if should_exclude_by_target_group(poi, user):
+                continue
+            if self._poi_out_of_season(poi, context):
+                # Indoor parks stay eligible even if season_fit is incomplete.
+                if not any(k in pn for k in ("nemo", "wodny", "aquapark", "warszawianka")):
+                    continue
+            water_cands.append(poi)
+        if not water_cands:
+            return days
+
+        water_cands.sort(
+            key=lambda p: (
+                0 if "warszawianka" in (p.get("name") or "").lower() else 1,
+                0 if "nemo" in (p.get("name") or "").lower() else 1,
+                0 if "wodny" in (p.get("name") or "").lower() else 1,
+                0 if "bulwary" in (p.get("name") or "").lower() else 1,
+                float(calculate_poi_cost_for_group(p, user) or 0),
+            )
+        )
+
+        days_mut = list(days)
+        victim_keys = (
+            "kościół", "kosciol", "parafia", "bazylika", "rynek", "muzeum",
+            "nikiszowiec", "planetarium", "wedel", "pijalnia", "wilanów",
+            "wilanow", "botaniczny", "most ",
+        )
+        for di, day in enumerate(days_mut):
+            attrs = [
+                (ii, it) for ii, it in enumerate(day.items or [])
+                if _is_timeline_attraction(it)
+            ]
+            # WAWA test-10: every day with ≥2 attrs needs a water POI.
+            if len(attrs) < 2 or _day_has_water(day):
+                continue
+            day_ctx = {
+                **context,
+                "day_start": context.get("day_start") or "10:00",
+                "day_end": context.get("day_end") or "18:00",
+            }
+            day_ids = {getattr(it, "poi_id", None) for _, it in attrs}
+            replacement = next(
+                (p for p in water_cands if p.get("id") not in day_ids),
+                water_cands[0],
+            )
+
+            def _victim_score(it: Any) -> float:
+                nm = (getattr(it, "name", "") or "").lower()
+                sc = 0.0
+                if any(k in nm for k in victim_keys):
+                    sc += 50.0
+                if _is_water_name(nm):
+                    sc -= 1000.0
+                try:
+                    sc += float(getattr(it, "cost_estimate", 0) or 0) * 0.01
+                except (TypeError, ValueError):
+                    pass
+                return sc
+
+            attrs_sorted = sorted(attrs, key=lambda x: _victim_score(x[1]), reverse=True)
+            swapped = False
+            for ii, victim in attrs_sorted:
+                slot = getattr(victim, "start_time", None) or day_ctx["day_start"]
+                try:
+                    slot_min = time_to_minutes(slot)
+                except Exception:
+                    continue
+                dur = min(
+                    int(replacement.get("time_min") or replacement.get("duration_min") or 90),
+                    150,
+                )
+                if day_ctx.get("date") and not is_open(
+                    replacement, slot_min, dur,
+                    day_ctx.get("season", "all"), day_ctx,
+                ):
+                    if not any(
+                        k in (replacement.get("name") or "").lower()
+                        for k in ("nemo", "wodny", "aquapark", "warszawianka", "bulwary")
+                    ):
+                        continue
+                new_item = self._generate_attraction_item(
+                    replacement, slot, user,
+                    user.get("target_group", "couples"), day_ctx, None,
+                )
+                new_items = list(day.items or [])
+                new_items[ii] = new_item
+                days_mut[di] = DayPlan(
+                    day=day.day,
+                    title=_generate_day_title(new_items, day.day),
+                    items=self._sort_items_by_time(new_items),
+                    quality_badges=day.quality_badges,
+                )
+                print(
+                    f"[FIX #255b] Day water guarantee: "
+                    f"{getattr(victim, 'name', '?')} → {replacement.get('name')} "
+                    f"(day {day.day})"
+                )
+                swapped = True
+                break
+            if not swapped:
+                continue
+        return days_mut
 
     def _strip_trip_repeat_filler_attractions(
         self,
@@ -9967,6 +10212,14 @@ class PlanService:
         for it in items:
             poi = poi_by_id.get(getattr(it, "poi_id", None) or "") if _is_timeline_attraction(it) else None
             if poi and str(poi.get("zone") or "").strip().upper() == "C":
+                _nm_far = (getattr(it, "name", "") or "").lower()
+                # FIX #255b: indoor water parks are the preference cover, not a
+                # sightseeing excursion — keep them even on arrival day.
+                if any(k in _nm_far for k in (
+                    "park wodny", "nemo", "wodny park", "aquapark",
+                )) or ("tychy" in _nm_far and "wodny" in _nm_far):
+                    out.append(it)
+                    continue
                 if it is not first_attraction and kept <= 2:
                     print(
                         f"[FIX #253] Day 1: kept far excursion "

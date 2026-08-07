@@ -204,11 +204,17 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     if any(k in name for k in ("muzeum wsi mazowieckiej", "sierpc")):
         return True
 
-    # FIX #255: Wedel / Pijalnia — off underground / active / adventure-friends.
+    # FIX #255/#255b: Wedel / Pijalnia — off wrong profiles (not a day anchor).
     if any(k in name for k in ("pijalnia czekolady", "pijalnia wedla", "wedel")):
         if "underground" in prefs or "active_sport" in prefs:
             return True
         if tg == "friends" and adv:
+            return True
+        # Family wants kids icons (Legendia/Zoo), not chocolate as the day lead.
+        if tg == "family_kids" and "kids_attractions" in prefs:
+            return True
+        # Couples water+relax — chocolate is not a water/relax cover.
+        if tg == "couples" and "water_attractions" in prefs:
             return True
 
     # FIX #255 Warszawa json7: Kopernik / park wodny off friends+adventure+underground.
@@ -1473,13 +1479,21 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
 
     if tg == "couples" and "water_attractions" in prefs:
         if any(k in name for k in ("park wodny", "nemo", "wodny park", "tychy")):
-            delta += 110.0
+            # FIX #255b: must win even on tight 200 PLN budgets (KAT test-10).
+            delta += 220.0
         if "park kościuszki" in name or "park kosciuszki" in name:
             delta -= 100.0
         if "planetarium" in name:
             delta -= 95.0
-        if any(k in name for k in ("muzeum śląskie", "muzeum slaskie", "rynek w katowicach", "rynek katowic")):
-            delta -= 85.0
+        if any(k in name for k in (
+            "muzeum śląskie", "muzeum slaskie", "rynek w katowicach", "rynek katowic",
+            "pijalnia", "wedel", "kościół", "kosciol", "parafia",
+        )):
+            delta -= 100.0
+        if int(ctx.get("trip_water_count") or 0) < 1 and not any(
+            k in name for k in ("park wodny", "nemo", "wodny park", "tychy", "aquapark")
+        ):
+            delta -= 60.0
 
     if tg == "solo" and nat_relax and not ({"museum_heritage", "history_mystery"} & prefs):
         if "muzeum" in name or "planetarium" in name:

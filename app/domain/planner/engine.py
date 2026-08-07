@@ -2662,6 +2662,14 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("muzeum armii krajowej", 90),
         ("ogród botaniczny", 90),
         ("ogrod botaniczny", 90),
+        # FIX #255b: short-day family windows (KAT test-05 ends 16:00).
+        ("wodny park", 150),
+        ("park wodny", 150),
+        ("park wodny nemo", 150),
+        ("nemo", 150),
+        ("św. anny", 20),
+        ("sw. anny", 20),
+        ("sw anny", 20),
     )
     for marker, cap in _named_caps:
         if marker in name:

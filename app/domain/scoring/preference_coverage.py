@@ -572,6 +572,9 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "fabryka wódki", "fabryka wodki", "kopiec powstania", "muzeum śląskie", "muzeum slaskie",
         # FIX #225: socialist district tour ≠ water attraction.
         "nowa huta",
+        # FIX #255b: urban recreation lakes ≠ water park (KAT couples audit).
+        "dolina trzech", "park kościuszki", "park kosciuszki",
+        "park śląski", "park slaski",
     ),
     # FIX #204: Katowice marked urban recreation parks as mountain trails.
     "mountain_trails": (
@@ -723,7 +726,8 @@ _STRONG_ACTIVE_NAME_MARKERS = (
 )
 
 _STRONG_WATER_NAME_MARKERS = (
-    "park wodny", "warszawianka", "aquapark", "hydropolis", "nemo",
+    "park wodny", "wodny park", "warszawianka", "aquapark", "hydropolis",
+    "nemo", "wodny park tychy",
     "bulwary wiślane", "bulwary wislane", "kajak",
 )
 
