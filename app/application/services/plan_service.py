@@ -389,6 +389,51 @@ def _fix_late_lunch(items: list, *, latest_min: int = 840) -> list:
     return out
 
 
+def _reorder_leading_lunch(items: list) -> list:
+    """FIX #255: day must not open with lunch — park it after the first attraction.
+
+    Only acts when lunch starts before 11:00 (true leading-lunch smell). Later
+    lunches that happen to be listed before an attraction in the array are left
+    alone so we don't invent 90-minute phantom transit gaps.
+    """
+    if not items:
+        return items
+    from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+    lunch_idx = None
+    first_attr_idx = None
+    for i, it in enumerate(items):
+        t = getattr(it, "type", None)
+        if lunch_idx is None and t == ItemType.LUNCH_BREAK:
+            lunch_idx = i
+        if first_attr_idx is None and t == ItemType.ATTRACTION:
+            first_attr_idx = i
+    if lunch_idx is None or first_attr_idx is None or lunch_idx >= first_attr_idx:
+        return items
+    lunch = items[lunch_idx]
+    st = getattr(lunch, "start_time", None)
+    try:
+        if not st or time_to_minutes(st) >= 11 * 60:
+            return items
+    except Exception:
+        return items
+    out = [it for i, it in enumerate(items) if i != lunch_idx]
+    attr_idx = first_attr_idx - 1
+    attr = out[attr_idx]
+    end_t = getattr(attr, "end_time", None) or getattr(attr, "start_time", None)
+    if end_t:
+        try:
+            start_m = time_to_minutes(end_t) + 5
+            dur = int(getattr(lunch, "duration_min", 0) or 45)
+            setattr(lunch, "start_time", minutes_to_time(start_m))
+            setattr(lunch, "end_time", minutes_to_time(start_m + dur))
+            if hasattr(lunch, "duration_min"):
+                setattr(lunch, "duration_min", dur)
+        except Exception:
+            pass
+    out.insert(attr_idx + 1, lunch)
+    return out
+
+
 def _max_merged_free_time_cap(context: Dict[str, Any]) -> int:
     """FIX #221/#229/#230/#231/#233/#234: cap merged free_time — 12 min cities, 180 default, 300 Zakopane."""
     if context.get("is_zakopane_trip"):
@@ -2673,6 +2718,11 @@ class PlanService:
             )
             day_items = self._update_transit_destinations(day_items, _poi_coord_map)
             day_items = self._validate_transit_endpoints(day_items)
+            # FIX #255: validate may drop meal legs — reinject attraction↔attraction hops.
+            day_items = self._ensure_transits_between_attractions(
+                day_items, _poi_coord_map, day_context,
+            )
+            day_items = self._update_transit_destinations(day_items, _poi_coord_map)
             day_items = self._enrich_transits_with_routing(
                 day_items, _poi_coord_map, day_context,
             )
@@ -2742,6 +2792,7 @@ class PlanService:
             if _is_urban_trip(day_context):
                 day_items = _cap_total_day_free_time(day_items, max_total=25)
             day_items = _fix_late_lunch(day_items)
+            day_items = _reorder_leading_lunch(day_items)
             day_items = self._ensure_dinner_present(day_items, day_end, day_context)
 
             # FIX #4 (22.02.2026): Add day_end LAST - after ALL operations
@@ -3206,8 +3257,13 @@ class PlanService:
             _fitems = self._run_transit_routing_pass(
                 _fitems, _final_coord_map, _day_ctx, day_plan.day,
             )
+            _lt_max255 = (
+                55
+                if str((_day_ctx or {}).get("region_type") or "").lower() == "cluster"
+                else 35
+            )
             _fitems = self._strip_long_transit_destinations(
-                _fitems, max_min=35, day_num=day_plan.day,
+                _fitems, max_min=_lt_max255, day_num=day_plan.day,
             )
             _fitems = self._strip_transits_to_unscheduled_destinations(
                 _fitems, day_num=day_plan.day,
@@ -3362,7 +3418,14 @@ class PlanService:
                     _fitems, user, all_pois_dict, day_num=day_plan.day,
                 )
                 _fitems = self._strip_long_transit_destinations(
-                    _fitems, max_min=35, day_num=day_plan.day,
+                    _fitems,
+                    max_min=(
+                        55
+                        if str((_day_ctx or {}).get("region_type") or "").lower()
+                        == "cluster"
+                        else 35
+                    ),
+                    day_num=day_plan.day,
                 )
                 _fitems = self._sort_items_by_time(_fitems)
             _couples_relax246 = (
@@ -3404,7 +3467,14 @@ class PlanService:
                         trip_has_water=_trip_has_water,
                     )
                     _fitems = self._strip_long_transit_destinations(
-                        _fitems, max_min=35, day_num=day_plan.day,
+                        _fitems,
+                        max_min=(
+                            55
+                            if str((_day_ctx or {}).get("region_type") or "").lower()
+                            == "cluster"
+                            else 35
+                        ),
+                        day_num=day_plan.day,
                     )
                     _fitems = self._sort_items_by_time(_fitems)
             _relax_nat248 = (
@@ -3453,6 +3523,9 @@ class PlanService:
                             "bulwar",
                             "jezioro malta", "wartostrada", "park sołacki", "park solacki",
                             "dolina trzech", "park cytadela",
+                            # FIX #255: Katowice green fills count as nature/relax.
+                            "ogród botaniczny", "ogrod botaniczny", "botaniczny",
+                            "park kościuszki", "park kosciuszki", "park chopina",
                         ))
                     ):
                         _has_rn_day = True
@@ -3467,7 +3540,9 @@ class PlanService:
                 _need_inj248 = _trip_relax_nat_count < 1 or (
                     _solo_relax249 and _trip_relax_nat_count < 2
                 )
-                if _solo_relax249 and _need_inj248:
+                # FIX #255: don't strip the only green stop on a thin solo day.
+                _n_attr248 = sum(1 for it in _fitems if _is_timeline_attraction(it))
+                if _solo_relax249 and _need_inj248 and _n_attr248 >= 2:
                     _fitems = self._strip_one_sightsee_for_solo_relax(
                         _fitems, day_num=day_plan.day,
                     )
@@ -3569,44 +3644,12 @@ class PlanService:
             _fitems = self._strip_transits_to_unscheduled_destinations(
                 _fitems, day_num=day_plan.day,
             )
-            # FIX #253 (G2): snapshot before this day registers its own names, so
-            # the quality pass can tell "already seen on an earlier day" apart
-            # from "scheduled today".
+            # FIX #253/#255: snapshot PRIOR-day names/keys only. Registering today's
+            # attractions before the quality pass made backfills look like trip
+            # repeats (self-strip) and left phantom names after strips emptied a day
+            # (Wrocław day 7 → lunch-only).
             _names_before_day253 = set(_trip_names_so_far)
-            for _it in _fitems:
-                if _is_timeline_attraction(_it):
-                    _nm = (getattr(_it, "name", "") or "").lower()
-                    if _nm:
-                        _trip_names_so_far.add(_nm)
-                    from app.domain.scoring.profile_poi_rules import poi_trip_repeat_key
-                    from app.domain.scoring.family_fit import is_child_oriented_attraction
-                    _rk = poi_trip_repeat_key(getattr(_it, "name", "") or "")
-                    if _rk:
-                        _trip_repeat_keys_so_far.add(_rk)
-                    if is_child_oriented_attraction(
-                        {"name": getattr(_it, "name", ""), "tags": []}
-                    ):
-                        _trip_kids_count += 1
-                    if "kopalnia guido" in _nm or _nm.strip() == "guido":
-                        _last_guido_day = day_plan.day
-                    if "królowa luiza" in _nm or "krolowa luiza" in _nm:
-                        _last_luiza_day = day_plan.day
-                    if any(k in _nm for k in ("park wodny", "nemo", "wodny park", "tychy", "warszawianka")):
-                        _trip_has_water = True
-                    from app.domain.scoring.profile_poi_rules import is_active_city_poi
-                    from app.domain.scoring.preference_coverage import poi_covers_preference_report
-                    _poi_act: dict = {"name": getattr(_it, "name", ""), "tags": []}
-                    _pid_act = getattr(_it, "poi_id", "") or ""
-                    if _pid_act and all_pois_dict:
-                        for _pp in all_pois_dict:
-                            if _pp.get("id") == _pid_act:
-                                _poi_act = _pp
-                                break
-                    if (
-                        poi_covers_preference_report(_poi_act, "active_sport")
-                        or is_active_city_poi(_poi_act)
-                    ):
-                        _trip_active_count += 1
+            _keys_before_day253 = set(_trip_repeat_keys_so_far)
             _fitems = self._apply_fix250_timeline_quality_pass(
                 _fitems,
                 _final_coord_map,
@@ -3616,15 +3659,74 @@ class PlanService:
                 user=user,
                 global_used_pois=global_used_pois,
                 ensure_green_coverage=(_trip_relax_nat_count < 1),
-                trip_repeat_keys=_trip_repeat_keys_so_far,
+                trip_repeat_keys=_keys_before_day253,
                 trip_names_before_day=_names_before_day253,
                 reclaimable_poi_ids=_reclaim253,
             )
-            # FIX #253 (G2): the quality pass can still add attractions, and those
-            # were never registered trip-wide — which is how 5–7 day plans started
-            # repeating the same museum. Re-scan after the pass, not only before.
+            # FIX #255: last-resort seed if quality pass left a thin/empty day.
+            # Empty days may reuse prior-day POIs (pool exhausted on 5–7 day trips);
+            # 1-attr days keep anti-repeat keys so we don't reintroduce stripped icons.
+            _n_final255 = sum(1 for _it in _fitems if _is_timeline_attraction(_it))
+            if _n_final255 < 2 and all_pois_dict and user is not None:
+                for _reuse_all in (False, True):
+                    if _n_final255 >= 2:
+                        break
+                    _keys_bf = (
+                        set()
+                        if (_n_final255 < 1 or _reuse_all)
+                        else _keys_before_day253
+                    )
+                    _names_bf = (
+                        set()
+                        if (_n_final255 < 1 or _reuse_all)
+                        else _names_before_day253
+                    )
+                    _fitems = self._backfill_sparse_day_attractions(
+                        _fitems, all_pois_dict, _day_ctx, user, global_used_pois,
+                        _keys_bf, _names_bf,
+                        day_num=day_plan.day, min_attr=2,
+                        cross_day_reuse=True, last_guido_day=_last_guido_day,
+                        last_luiza_day=_last_luiza_day, trip_has_water=_trip_has_water,
+                    )
+                    _fitems = self._strip_profile_denied_attractions(
+                        _fitems, user, all_pois_dict, day_num=day_plan.day,
+                    )
+                    _fitems = self._remove_timeline_overlaps(_fitems, day_plan.day)
+                    _n_final255 = sum(
+                        1 for _it in _fitems if _is_timeline_attraction(_it)
+                    )
+                from app.application.services.plan_day_integrity import (
+                    run_timeline_integrity_pass as _integrity255,
+                )
+                _fitems = self._ensure_transits_between_attractions(
+                    _fitems, _final_coord_map, _day_ctx,
+                )
+                _fitems = self._update_transit_destinations(
+                    _fitems, _final_coord_map,
+                )
+                _fitems, _ = _integrity255(_fitems, day_plan.day)
+                _fitems = self._fit_transits_between_stops(
+                    _fitems, day_num=day_plan.day,
+                )
+                _fitems = self._absorb_idle_gaps(
+                    _fitems, all_pois_dict, _day_ctx, day_num=day_plan.day,
+                )
+                _fitems = self._cover_open_slots_with_free_time(
+                    _fitems, _day_ctx, day_num=day_plan.day,
+                )
+                _fitems = self._trim_free_time_over_real_items(
+                    _fitems, day_num=day_plan.day,
+                )
+                _fitems = self._remove_timeline_overlaps(_fitems, day_plan.day)
+                _fitems = self._sort_items_by_time(_fitems)
+            # Register trip-wide state from the FINAL day only.
             from app.domain.scoring.profile_poi_rules import (
                 poi_trip_repeat_key as _rk_fn253,
+                is_active_city_poi as _is_act253,
+            )
+            from app.domain.scoring.family_fit import is_child_oriented_attraction as _kids253
+            from app.domain.scoring.preference_coverage import (
+                poi_covers_preference_report as _cov253,
             )
             for _it253 in _fitems:
                 if not _is_timeline_attraction(_it253):
@@ -3638,6 +3740,22 @@ class PlanService:
                 _pid253 = getattr(_it253, "poi_id", None)
                 if _pid253 and global_used_pois is not None:
                     global_used_pois.add(_pid253)
+                if _kids253({"name": getattr(_it253, "name", ""), "tags": []}):
+                    _trip_kids_count += 1
+                if "kopalnia guido" in _nm253 or _nm253.strip() == "guido":
+                    _last_guido_day = day_plan.day
+                if "królowa luiza" in _nm253 or "krolowa luiza" in _nm253:
+                    _last_luiza_day = day_plan.day
+                if any(k in _nm253 for k in ("park wodny", "nemo", "wodny park", "tychy", "warszawianka")):
+                    _trip_has_water = True
+                _poi_act: dict = {"name": getattr(_it253, "name", ""), "tags": []}
+                if _pid253 and all_pois_dict:
+                    for _pp in all_pois_dict:
+                        if _pp.get("id") == _pid253:
+                            _poi_act = _pp
+                            break
+                if _cov253(_poi_act, "active_sport") or _is_act253(_poi_act):
+                    _trip_active_count += 1
             # FIX #252: refresh trip green count after quality pass (may reinject / strip)
             if user is not None and all_pois_dict is not None:
                 from app.domain.scoring.preference_coverage import (
@@ -6616,7 +6734,8 @@ class PlanService:
             to_d = {"lat": float(lat2), "lng": float(lng2)}
             ctx = {**context, "has_car": context.get("has_car", True)}
             try:
-                mode_str = get_transport_mode(from_d, to_d)
+                # FIX #255: pass city-tourism context so <1 km hops stay walk.
+                mode_str = get_transport_mode(from_d, to_d, ctx)
                 ideal_min = travel_time_minutes(from_d, to_d, ctx)
             except Exception:
                 mode_str = "walking"
@@ -6728,8 +6847,10 @@ class PlanService:
                 continue
 
             meal_rest = _find_meal_restaurant_between(items, i, next_attraction)
+            via_meal = False
             if meal_rest:
                 item.to_location = meal_rest
+                via_meal = True
                 print(
                     f"[FIX #251] Transit via restaurant: "
                     f"'{item.from_location}' -> '{meal_rest}'"
@@ -6745,25 +6866,75 @@ class PlanService:
             prev_meal_rest = _find_prev_meal_restaurant(items, i)
             if prev_meal_rest:
                 item.from_location = prev_meal_rest
+                via_meal = True
                 print(f"[FIX #251] Transit origin from restaurant: '{prev_meal_rest}'")
             elif prev_attraction:
                 item.from_location = prev_attraction.name
                 print(f"[TRANSIT FIX] Updated transit origin: -> '{prev_attraction.name}'")
 
-            # FIX #168 (06.06.2026 - CLIENT FEEDBACK): recompute the transit's MODE and
-            # DURATION from the real coordinates of its (possibly rewritten) endpoints.
-            # Before this, relabeling left the engine's original duration/mode in place,
-            # so an 11 km leg could still read "10 min walk" (Chochołowskie Termy →
-            # Krupówki). We only correct (a) when coords are known for BOTH endpoints and
-            # (b) when the result is an UNDER-estimate or the mode is wrong. To stay
-            # zero-risk for the rest of the timeline we keep the transit's END fixed and
-            # move its START earlier into the preceding slack only (clamped so it never
-            # overlaps the previous item) — no downstream item is shifted.
-            self._recompute_transit_leg(item, items, i, poi_coords)
+            # FIX #168/#255: recompute MODE/DURATION from rewritten endpoints.
+            # Merge meal restaurant coords first — otherwise recompute no-ops and
+            # a gap-inflated attraction→attraction duration stays on the lunch leg.
+            _coords255 = self._merge_coord_map(poi_coords or {}, items)
+            self._recompute_transit_leg(item, items, i, _coords255)
+            self._clamp_inflated_transit_leg(item, _coords255)
+            # FIX #255: meal legs without restaurant GPS still inherit inflated gaps.
+            # Park the capped leg right after the previous attraction (not on top of the next).
+            if via_meal and int(getattr(item, "duration_min", 0) or 0) > 35:
+                try:
+                    _anchor = prev_attraction or _find_prev_attraction(items, i)
+                    if _anchor and getattr(_anchor, "end_time", None):
+                        _st = time_to_minutes(_anchor.end_time)
+                    else:
+                        _st = time_to_minutes(item.start_time)
+                    item.start_time = minutes_to_time(_st)
+                    item.end_time = minutes_to_time(_st + 20)
+                    item.duration_min = 20
+                    item.mode = TransitMode.CAR
+                    item.routing_source = "estimated_road"
+                    print(
+                        f"[FIX #255] Capped meal transit to 20min: "
+                        f"{item.from_location} -> {item.to_location}"
+                    )
+                except Exception:
+                    pass
 
             result.append(item)
         
         return result
+
+    def _clamp_inflated_transit_leg(self, item, poi_coords: Dict[str, Any]) -> None:
+        """FIX #255: shrink gap-inflated urban legs (≤8 km) to a realistic drive time."""
+        if _item_type_value(item) != ItemType.TRANSIT.value:
+            return
+        cur = int(getattr(item, "duration_min", 0) or 0)
+        if cur <= 40:
+            return
+        fp = (poi_coords or {}).get(getattr(item, "from_location", None))
+        tp = (poi_coords or {}).get(getattr(item, "to_location", None))
+        if not fp or not tp:
+            return
+        try:
+            dist = haversine_distance(
+                float(fp["lat"]), float(fp["lng"]),
+                float(tp["lat"]), float(tp["lng"]),
+            )
+        except Exception:
+            return
+        if dist <= 0 or dist > 8.0:
+            return
+        drive = max(8, int((dist * 1.45 / 45.0) * 60) + 5)
+        if cur <= drive + 5:
+            return
+        try:
+            end = time_to_minutes(item.end_time)
+            start = end - drive
+            item.start_time = minutes_to_time(start)
+            item.duration_min = drive
+            item.mode = TransitMode.CAR
+            item.routing_source = "estimated_road"
+        except Exception:
+            return
 
     def _validate_transit_endpoints(self, items: List[Any]) -> List[Any]:
         """FIX #200/#251: drop transits whose from/to don't match scheduled attractions/restaurants."""
@@ -6887,7 +7058,63 @@ class PlanService:
         for it in items:
             fixed = self._normalize_transit_routing_item(it, coord_map, context)
             out.append(self._fix_implausible_transit_duration(fixed, coord_map, context))
+        out = self._enforce_sticky_car_modes(out, coord_map)
         return self._sort_items_by_time(out)
+
+    def _enforce_sticky_car_modes(
+        self,
+        items: List[Any],
+        coord_map: Dict[str, dict],
+    ) -> List[Any]:
+        """FIX #255: once a day uses car, later hops ≥1 km stay car (test G10)."""
+        seen_car = False
+        out: List[Any] = []
+        for it in items:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            mode = str(getattr(it, "mode", "") or "").lower()
+            is_car = "car" in mode and "walk" not in mode
+            dist = 0.0
+            try:
+                dist = float(getattr(it, "distance_km", None) or 0)
+            except (TypeError, ValueError):
+                dist = 0.0
+            if dist <= 0:
+                frm = getattr(it, "from_location", "") or ""
+                to = getattr(it, "to_location", "") or ""
+                fp, tp = coord_map.get(frm), coord_map.get(to)
+                if fp and tp:
+                    lat1, lng1 = _poi_lat_lng(fp)
+                    lat2, lng2 = _poi_lat_lng(tp)
+                    if lat1 is not None and lat2 is not None:
+                        dist = haversine_distance(
+                            float(lat1), float(lng1), float(lat2), float(lng2),
+                        )
+            if is_car:
+                seen_car = True
+                out.append(it)
+                continue
+            if seen_car and dist >= 1.0:
+                try:
+                    it = it.model_copy(update={
+                        "mode": TransitMode.CAR,
+                        "routing_source": "estimated_road",
+                        "distance_km": dist or getattr(it, "distance_km", None),
+                    })
+                except Exception:
+                    it.mode = TransitMode.CAR
+                    try:
+                        it.routing_source = "estimated_road"
+                    except Exception:
+                        pass
+                print(
+                    f"[FIX #255] Sticky car after earlier drive: "
+                    f"{getattr(it, 'from_location', '')}->{getattr(it, 'to_location', '')} "
+                    f"({dist:.2f} km)"
+                )
+            out.append(it)
+        return out
 
     def _fix_implausible_transit_duration(
         self,
@@ -7193,11 +7420,24 @@ class PlanService:
                     f"[FIX #248] Day {day_num}: stripped transit to unscheduled {to!r}"
                 )
                 continue
-            if fr and not _matches(fr) and not to:
-                print(
-                    f"[FIX #248] Day {day_num}: stripped transit from unscheduled {fr!r}"
+            # FIX #255: also strip phantom legs FROM an unscheduled POI
+            # (client: Pieskowa Skała → Ojców without Pieskowa on the day).
+            # Keep hotel / city-centre / parking origins.
+            if fr and not _matches(fr):
+                fl = fr.lower()
+                _keep_origin = any(
+                    m in fl for m in (
+                        "hotel", "centrum", "nocleg", "apartament", "parking",
+                        "start", "baza", "zakwater",
+                        "kraków", "krakow", "wrocław", "wroclaw", "warszawa",
+                        "warsaw", "katowice", "poznań", "poznan",
+                    )
                 )
-                continue
+                if not _keep_origin:
+                    print(
+                        f"[FIX #255] Day {day_num}: stripped transit from unscheduled {fr!r}"
+                    )
+                    continue
             out.append(it)
         return out
 
@@ -7590,6 +7830,16 @@ class PlanService:
             if _is_timeline_attraction(it) and getattr(it, "name", "") in drop_names:
                 continue
             out.append(it)
+        # FIX #255: never gut an already-thin day for a long hop
+        # (KAT test-09 day3 lost Botaniczny / second park to FIX #246).
+        n_after = sum(1 for it in out if _is_timeline_attraction(it))
+        n_before = sum(1 for it in items if _is_timeline_attraction(it))
+        if n_before <= 2 and n_after < n_before:
+            print(
+                f"[FIX #246/#255] Day {day_num}: keep long-hop destination "
+                f"(thin day {n_before}→{n_after})"
+            )
+            return items
         return out
 
     def _strip_couples_heritage_for_relax(
@@ -7731,7 +7981,7 @@ class PlanService:
                 (user.get("target_group") == "friends" and _adv)
                 or (
                     user.get("target_group") == "solo"
-                    and int(context.get("num_days") or 1) >= 5
+                    and int(context.get("num_days") or 1) >= 3
                 )
             )
         )
@@ -7782,6 +8032,21 @@ class PlanService:
                     "trip_kids_attraction_count": context.get("trip_kids_attraction_count", 0),
                 },
             )
+            # FIX #255: prefer in-hub fills — far Zone C hops get dropped later
+            # as "long transit" and can empty the day (KAT Botaniczny / Zabrze).
+            _cent = context.get("city_centroid")
+            if _cent and poi.get("lat") and poi.get("lng"):
+                try:
+                    _d = haversine_distance(
+                        float(_cent[0]), float(_cent[1]),
+                        float(poi.get("lat")), float(poi.get("lng")),
+                    )
+                    if _d >= 12.0:
+                        sc -= 80.0
+                    elif _d >= 8.0:
+                        sc -= 40.0
+                except (TypeError, ValueError):
+                    pass
             for pref in prefs:
                 if poi_covers_preference_report(poi, pref):
                     sc += 40.0
@@ -7867,6 +8132,9 @@ class PlanService:
                     continue
                 if should_exclude_by_intensity(poi, user):
                     continue
+                # FIX #255: don't seed winter-closed gardens (stripped later → empty day).
+                if self._poi_out_of_season(poi, context):
+                    continue
                 rk = poi_trip_repeat_key(poi.get("name", ""))
                 if rk and rk in trip_repeat_keys:
                     continue
@@ -7878,8 +8146,11 @@ class PlanService:
                 if ("królowa luiza" in pn or "krolowa luiza" in pn) and last_guido_day and day_num - last_guido_day == 1:
                     continue
                 dur = int(poi.get("time_min") or poi.get("duration_min") or 60)
+                # FIX #255: allow a shorter fill when the afternoon slot is tight.
                 if slot_start_min + dur > slot_end_min:
-                    continue
+                    dur = min(dur, max(40, slot_end_min - slot_start_min - 5))
+                    if dur < 40 or slot_start_min + dur > slot_end_min:
+                        continue
                 if context.get("date") and not is_open(
                     poi, slot_start_min, dur, context.get("season", "all"), context
                 ):
@@ -7915,8 +8186,21 @@ class PlanService:
 
         n_attr = sum(1 for it in working if _is_timeline_attraction(it)) + len(inserts)
         while n_attr < target:
-            slot_start = day_start_min + 10
-            slot_end = time_to_minutes(context.get("day_end") or "19:00") - 90
+            # FIX #255: never drop a fill on top of an already scheduled stop
+            # (KAT test-02: Botaniczny @10:42 overlapping Muzeum 10:00–12:00).
+            latest_end = day_start_min
+            for it in list(working) + inserts:
+                en = getattr(it, "end_time", None)
+                if not en:
+                    continue
+                try:
+                    latest_end = max(latest_end, time_to_minutes(en))
+                except Exception:
+                    continue
+            slot_start = latest_end + 15
+            slot_end = time_to_minutes(context.get("day_end") or "19:00") - 60
+            if slot_start + 45 > slot_end:
+                break
             poi = _pick_poi(slot_start, slot_end)
             if not poi:
                 break
@@ -7927,8 +8211,6 @@ class PlanService:
                 )
             )
             used_ids.add(poi.get("id"))
-            dur = int(poi.get("time_min") or 60)
-            day_start_min = slot_start + dur + 15
             n_attr += 1
             print(f"[FIX #245] Day {day_num}: sparse backfill {poi.get('name')}")
 
@@ -8601,7 +8883,8 @@ class PlanService:
 
         by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
         attrs = [it for it in items if _is_timeline_attraction(it)]
-        if len(attrs) <= min_attrs:
+        # FIX #255: never strip the last attraction(s) off a thin day.
+        if len(attrs) <= max(1, min_attrs):
             return items
 
         def _covers(it: Any) -> bool:
@@ -9342,6 +9625,23 @@ class PlanService:
         items = self._strip_transits_to_unscheduled_destinations(
             items, day_num=day_num,
         )
+        # FIX #255: stripping meal-via legs can leave attraction gaps — reinject.
+        items = self._ensure_transits_between_attractions(items, poi_coords, ctx)
+        items = self._update_transit_destinations(items, poi_coords)
+        items = self._strip_transits_to_unscheduled_destinations(
+            items, day_num=day_num,
+        )
+        # Reinject can place a transit inside a labelled free block (KAT json1).
+        items = self._trim_free_time_over_real_items(items, day_num=day_num)
+        items = self._fit_transits_between_stops(items, day_num=day_num)
+        items = self._remove_timeline_overlaps(items, day_num)
+        # FIX #255: free_time that still leaves >90 min dead air beside it is worse
+        # than no label — drop it and re-absorb into the bordering visit (KAT-09).
+        items = self._drop_free_time_with_large_adjacent_gaps(
+            items, max_adjacent=90, day_num=day_num,
+        )
+        items = self._absorb_idle_gaps(items, all_pois_dict, ctx, day_num=day_num)
+        items = self._remove_timeline_overlaps(items, day_num)
 
         return self._sort_items_by_time(items)
 
@@ -9470,7 +9770,8 @@ class PlanService:
     # Limity przyjęte wcześniej przez klientkę (audit_free_time w
     # plan_client_audit): wolny czas to krótka przerwa, nie zapchajdziura.
     _FT253_MAX_BLOCK = 35
-    _FT253_MAX_TOTAL = 45
+    # FIX #255: keep under audit/client 45-min daily free_time ceiling (WAWA test-08).
+    _FT253_MAX_TOTAL = 44
 
     _FT253_AFTERNOON = [
         ("Popołudniowa przerwa", [
@@ -9732,7 +10033,10 @@ class PlanService:
                         break
                 nearby = []
                 if anchor:
-                    from app.domain.planner.engine import _tiered_nearby_restaurants
+                    from app.domain.planner.engine import (
+                        _meal_restaurant_geo_ok,
+                        _tiered_nearby_restaurants,
+                    )
 
                     try:
                         nearby = _tiered_nearby_restaurants(
@@ -9742,9 +10046,13 @@ class PlanService:
                         )
                     except Exception:
                         nearby = []
-                # FIX #254: if proximity pool is exhausted, take any unused city venue.
+                # FIX #254/#255: if proximity pool is exhausted, take unused geo-ok venues.
                 if not nearby:
-                    nearby = list(restaurants)
+                    from app.domain.planner.engine import _meal_restaurant_geo_ok as _geo_ok255
+                    nearby = [
+                        r for r in restaurants
+                        if _geo_ok255(r, anchor, context)
+                    ] if anchor else list(restaurants)
                 for cand in nearby:
                     nm = (cand.get("name") or "").lower()
                     if not nm or nm in used:
@@ -10266,7 +10574,9 @@ class PlanService:
         return ordered if stretched else items
 
     # Poniżej tego progu dziura mieści się w akceptowanym wolnym czasie.
-    _GAP253_MIN = 40
+    # FIX #255: absorb mid-size holes (client: 25–40 min unexplained gaps) without
+    # over-stretching meal/transit legs (regression at 18 → 90 min phantom travels).
+    _GAP253_MIN = 25
 
     def _absorb_idle_gaps(
         self,
@@ -10325,6 +10635,9 @@ class PlanService:
                     )
                     or self._pull_next_visit_into_hole(
                         working, by_id, by_name, context, hole_start, hole_end,
+                    )
+                    or self._pull_next_meal_into_hole(
+                        working, hole_start, hole_end,
                     )
                 ):
                     moved = True
@@ -10452,6 +10765,58 @@ class PlanService:
                 pass
         target.end_time = minutes_to_time(new_end)
         target.duration_min = new_end - start
+        return True
+
+    def _pull_next_meal_into_hole(
+        self,
+        items: List[Any],
+        hole_start: int,
+        hole_end: int,
+    ) -> bool:
+        """FIX #255: close attr→meal blanks by starting lunch/dinner earlier."""
+        if hole_end - hole_start < 40:
+            return False
+        target = None
+        for it in items:
+            tv = _item_type_value(it)
+            if tv not in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                continue
+            st = getattr(it, "start_time", None)
+            if not st:
+                continue
+            try:
+                if time_to_minutes(st) == hole_end:
+                    target = it
+                    break
+            except Exception:
+                continue
+        if target is None:
+            return False
+        try:
+            dur = int(getattr(target, "duration_min", 0) or 0)
+            if dur <= 0:
+                dur = time_to_minutes(target.end_time) - time_to_minutes(target.start_time)
+        except Exception:
+            return False
+        if dur < 20:
+            return False
+        # Keep lunch roughly in the 11:30–15:00 window; dinner after 16:30.
+        tv = _item_type_value(target)
+        new_start = hole_start
+        if tv == ItemType.LUNCH_BREAK.value:
+            new_start = max(hole_start, 11 * 60 + 30)
+            if new_start >= 15 * 60:
+                return False
+        elif tv == ItemType.DINNER_BREAK.value:
+            # Keep dinner in the evening window (FIX #240 pushes earlier dinners back).
+            new_start = max(hole_start, 17 * 60)
+            if new_start >= 19 * 60 + 30:
+                return False
+        if hole_end - new_start < 25:
+            return False
+        target.start_time = minutes_to_time(new_start)
+        target.end_time = minutes_to_time(new_start + dur)
+        target.duration_min = dur
         return True
 
     def _pull_next_visit_into_hole(
@@ -10666,6 +11031,42 @@ class PlanService:
         if fitted:
             print(f"[FIX #253] Day {day_num}: refitted {fitted} transit leg(s)")
         return self._sort_items_by_time(out)
+
+    def _drop_free_time_with_large_adjacent_gaps(
+        self,
+        items: List[Any],
+        *,
+        max_adjacent: int = 90,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #255: remove free_time that still leaves a large idle neighbour gap."""
+        timed = []
+        for it in items:
+            st, en = getattr(it, "start_time", None), getattr(it, "end_time", None)
+            if not st or not en:
+                continue
+            try:
+                timed.append((time_to_minutes(st), time_to_minutes(en), it))
+            except Exception:
+                continue
+        timed.sort(key=lambda x: x[0])
+        drop: set[int] = set()
+        for i, (st, en, it) in enumerate(timed):
+            if getattr(it, "type", None) is not ItemType.FREE_TIME:
+                continue
+            prev_end = timed[i - 1][1] if i > 0 else st
+            next_start = timed[i + 1][0] if i + 1 < len(timed) else en
+            gap_before = st - prev_end
+            gap_after = next_start - en
+            if gap_before > max_adjacent or gap_after > max_adjacent:
+                drop.add(id(it))
+                print(
+                    f"[FIX #255] Day {day_num}: dropped free_time with adjacent "
+                    f"idle {max(gap_before, gap_after)}m"
+                )
+        if not drop:
+            return items
+        return [it for it in items if id(it) not in drop]
 
     def _trim_free_time_over_real_items(
         self,
@@ -10952,16 +11353,40 @@ class PlanService:
         if not from_poi or not to_poi:
             return  # unknown endpoint (e.g. "Zakopane (Hotel)") → leave engine value
         try:
-            ctx = {"has_car": True, "signals": {"cluster_type": "standalone_city"}}
-            new_mode_str = get_transport_mode(from_poi, to_poi)
+            ctx = {
+                "has_car": True,
+                "transport_modes": ["car", "walking"],
+                "trip_type": "city_tourism",
+                "signals": {"cluster_type": "standalone_city"},
+                "region_type": "city",
+            }
+            # FIX #255: pass context so short urban legs stay walk (not car).
+            new_mode_str = get_transport_mode(from_poi, to_poi, ctx)
             new_dur = travel_time_minutes(from_poi, to_poi, ctx)
+            try:
+                _d255 = haversine_distance(
+                    float(from_poi["lat"]), float(from_poi["lng"]),
+                    float(to_poi["lat"]), float(to_poi["lng"]),
+                )
+            except Exception:
+                _d255 = 0.0
+            # Safety: urban car hop inside 8 km must not stay a 90+ min walk slot.
+            if _d255 > 0 and _d255 <= 8.0 and new_dur > 40:
+                _road = _d255 * 1.45
+                new_dur = max(8, int((_road / 45.0) * 60) + 5)
+                new_mode_str = "car"
         except Exception:
             return
         new_mode = TransitMode.WALK if new_mode_str == "walking" else TransitMode.CAR
         cur_dur = getattr(item, "duration_min", 0) or 0
         cur_mode = getattr(item, "mode", None)
-        # Only act on an under-estimate or a wrong mode (avoid pointless churn / shrinking)
-        if new_dur <= cur_dur and new_mode == cur_mode:
+        # FIX #255: also shrink absurd over-estimates (gap-inflated legs).
+        if new_dur <= cur_dur and new_mode == cur_mode and cur_dur <= new_dur + 10:
+            return
+        if cur_dur > new_dur + 10:
+            # Force shrink path below even when mode matches.
+            pass
+        elif new_dur <= cur_dur and new_mode == cur_mode:
             return
         try:
             cur_end = time_to_minutes(item.end_time)
@@ -10982,29 +11407,44 @@ class PlanService:
         _mode_was_walk = (cur_mode == TransitMode.WALK
                           or str(cur_mode).lower() in ("walk", "walking"))
         _mode_now_car = (new_mode == TransitMode.CAR)
-        if _mode_was_walk and _mode_now_car and new_dur > cur_dur:
-            final_dur = new_dur
+        # FIX #255: never inflate duration to fill the whole preceding gap
+        # (client/tests: 90+ min "transit" to a nearby Kraków lunch).
+        # Keep END fixed; START moves earlier only up to modelled travel time.
+        ideal_dur = max(int(new_dur), 5)
+        target_start = cur_end - ideal_dur
+        if prev_end is not None:
+            target_start = max(target_start, prev_end)
+        final_dur = cur_end - target_start
+        if final_dur > ideal_dur + 5:
+            # Slack larger than travel — park the leg next to the destination.
+            final_dur = ideal_dur
             target_start = cur_end - final_dur
-            if prev_end is not None:
-                target_start = max(target_start, prev_end)
-                final_dur = cur_end - target_start
-        else:
-            target_start = cur_end - new_dur
-            if prev_end is not None:
-                target_start = max(target_start, prev_end)
-            final_dur = cur_end - target_start
+            if prev_end is not None and target_start < prev_end:
+                target_start = prev_end
+                final_dur = max(5, cur_end - target_start)
+                # Still oversized → keep modelled dur, nudge end forward slightly.
+                if final_dur > ideal_dur + 5 and _mode_was_walk and _mode_now_car:
+                    final_dur = ideal_dur
+                    target_start = prev_end
+                    cur_end = target_start + final_dur
+                    item.end_time = minutes_to_time(cur_end)
         # FIX #254: never emit negative / reverse-time transit (client: 16:06→14:36).
         if prev_end is not None and prev_end >= cur_end:
             target_start = prev_end
-            final_dur = max(new_dur, 5)
+            final_dur = max(ideal_dur, 5)
             cur_end = target_start + final_dur
             item.end_time = minutes_to_time(cur_end)
         elif final_dur <= 0:
-            target_start = prev_end if prev_end is not None else max(0, cur_end - max(new_dur, 5))
-            final_dur = max(new_dur, 5)
+            target_start = prev_end if prev_end is not None else max(0, cur_end - ideal_dur)
+            final_dur = ideal_dur
             item.end_time = minutes_to_time(target_start + final_dur)
-        # Apply only if it genuinely improves (longer leg and/or corrected mode)
-        if final_dur > cur_dur or new_mode != cur_mode:
+        # Apply when longer, mode-corrected, OR shrunk from a gap-inflated over-estimate.
+        _should_apply = (
+            final_dur > cur_dur
+            or new_mode != cur_mode
+            or final_dur < cur_dur - 10
+        )
+        if _should_apply:
             item.start_time = minutes_to_time(target_start)
             item.duration_min = final_dur
             item.mode = new_mode

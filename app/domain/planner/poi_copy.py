@@ -136,6 +136,11 @@ def classify_poi_category(poi: Dict[str, Any]) -> str:
         "linowy" in name and "park" in name
     ):
         return "climbing"
+    # FIX #255: Lustrzany Labirynt is indoor — not "na świeżym powietrzu".
+    if "lustrzan" in name or ("mirror" in name and "labirynt" in name):
+        return "mirror_maze"
+    if "park lotników" in name or "park lotnikow" in name:
+        return "park"
 
     _PLAYGROUND_SAFE = frozenset({
         "playground", "indoor", "softplay", "soft", "zabaw",
@@ -154,6 +159,8 @@ def classify_poi_category(poi: Dict[str, Any]) -> str:
             if any(k in name for k in ("plac zabaw", "softplay", "playground", "zabaw dla")):
                 return label
             continue
+        if label == "maze" and ("lustrzan" in name or "mirror" in name):
+            return "mirror_maze"
         if primary.intersection(keys):
             return label
     mapped = _mapped_tokens(poi)
@@ -163,6 +170,8 @@ def classify_poi_category(poi: Dict[str, Any]) -> str:
         if label == "playground":
             if not mapped.intersection(_PLAYGROUND_SAFE) and "zabaw" not in name:
                 continue
+        if label == "maze" and ("lustrzan" in name or "mirror" in name):
+            return "mirror_maze"
         if mapped.intersection(keys):
             return label
     return "attraction"
@@ -177,6 +186,7 @@ _DESC_BY_CATEGORY: Dict[str, str] = {
     "shooting": "{name} — arena gier zespołowych z adrenaliną{loc}.",
     "escape_room": "{name} — escape room z zagadkami do rozwiązania w grupie{loc}.",
     "maze": "{name} — labirynt na świeżym powietrzu, świetna zabawa na orientację{loc}.",
+    "mirror_maze": "{name} — lustrzany labirynt w budynku, zabawa na orientację{loc}.",
     "amusement": "{name} — park tematyczny pełen atrakcji i rozrywki{loc}.",
     "playground": "{name} — kryta strefa zabaw dla dzieci{loc}.",
     "zoo": "{name} — świat zwierząt z bliska, atrakcja dla całej rodziny{loc}.",
@@ -208,6 +218,7 @@ _TIP_BY_CATEGORY: Dict[str, str] = {
     "shooting": "Rezerwacja jest obowiązkowa; ubierz się na warstwy i nie żałuj wygodnych butów.",
     "escape_room": "Zarezerwuj slot z wyprzedzeniem — pokoje schodzą na kilka dni naprzód.",
     "maze": "Weź wodę i nakrycie głowy — trasa prowadzi głównie w pełnym słońcu.",
+    "mirror_maze": "Kup bilet online; w środku bywa chłodniej — warto mieć lekką bluzę.",
     "amusement": "Kup bilet online i zacznij od najpopularniejszych atrakcji, zanim zrobi się tłoczno.",
     "playground": "Skarpetki antypoślizgowe są obowiązkowe, a strefa zwykle pustoszeje przed południem.",
     "zoo": "Zacznij od najdalszych wybiegów i sprawdź godziny karmienia zwierząt.",

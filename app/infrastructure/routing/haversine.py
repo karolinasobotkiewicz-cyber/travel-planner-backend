@@ -52,6 +52,18 @@ def resolve_profile(a: dict, b: dict, context: Optional[dict]) -> str:
     if not all(v is not None for v in (lat1, lng1, lat2, lng2)):
         return "driving-car"
     dist = haversine_km(float(lat1), float(lng1), float(lat2), float(lng2))
+    ctx = context or {}
+    # FIX #255: align with get_transport_mode — car users drive urban legs ≥1.2 km
+    # (previously foot-walking up to 3.5 km produced 40–90 min "walks" to lunch).
+    from app.domain.planner.city_copy import is_city_tourism_trip
+    modes = ctx.get("transport_modes") or []
+    if ctx.get("has_car", True) and ("car" in modes or not modes):
+        city = is_city_tourism_trip(ctx)
+        floor = 1.2 if city else 0.6
+        if dist >= floor:
+            return "driving-car"
+        if city and dist < 1.0:
+            return "foot-walking"
     thresh = _walk_threshold_km(a, b, context)
     return "foot-walking" if dist < thresh else "driving-car"
 
@@ -72,8 +84,17 @@ def haversine_route(a: dict, b: dict, context: Optional[dict] = None) -> RouteRe
 
     city_trip = is_city_tourism_trip(ctx)
     walk_thresh = _walk_threshold_km(a, b, ctx)
+    # FIX #255: same car preference as resolve_profile / get_transport_mode.
+    modes = ctx.get("transport_modes") or []
+    prefer_car = ctx.get("has_car", True) and ("car" in modes or not modes)
+    car_floor = 1.2 if city_trip else 0.6
+    use_walk = distance_km < walk_thresh
+    if prefer_car and distance_km >= car_floor:
+        use_walk = False
+    if city_trip and prefer_car and distance_km < 1.0:
+        use_walk = True
 
-    if distance_km < walk_thresh:
+    if use_walk:
         speed = CITY_TOURISM_WALK_SPEED_KMH if city_trip else 5.0
         mins = max(int((distance_km / speed) * 60), 5)
         profile = "foot-walking"

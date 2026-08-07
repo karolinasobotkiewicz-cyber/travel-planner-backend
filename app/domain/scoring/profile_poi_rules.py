@@ -96,6 +96,14 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("fly park", "poz_trampoline_cluster"),
         ("park jordana", "krk_park_jordana"),
         ("city golf", "wro_city_golf"),
+        # FIX #255: LEGO / bricks cluster — one slot per trip day.
+        ("bricks & figs", "krk_lego_cluster"),
+        ("bricks and figs", "krk_lego_cluster"),
+        ("bricks &figs", "krk_lego_cluster"),
+        ("świat w budowie", "krk_lego_cluster"),
+        ("swiat w budowie", "krk_lego_cluster"),
+        ("legoland", "krk_lego_cluster"),
+        ("wielka wystawa klock", "krk_lego_cluster"),
     )
     for marker, key in _markers:
         if marker in n:
@@ -192,6 +200,36 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     if "city golf" in name:
         return True
 
+    # FIX #255: Muzeum Wsi Mazowieckiej w Sierpcu — too far / not Warsaw trip.
+    if any(k in name for k in ("muzeum wsi mazowieckiej", "sierpc")):
+        return True
+
+    # FIX #255: Wedel / Pijalnia — off underground / active / adventure-friends.
+    if any(k in name for k in ("pijalnia czekolady", "pijalnia wedla", "wedel")):
+        if "underground" in prefs or "active_sport" in prefs:
+            return True
+        if tg == "friends" and adv:
+            return True
+
+    # FIX #255 Warszawa json7: Kopernik / park wodny off friends+adventure+underground.
+    if tg == "friends" and adv and "underground" in prefs:
+        if any(k in name for k in (
+            "centrum nauki kopernik", "kopernik",
+        )):
+            return True
+        if "water_attractions" not in prefs and any(
+            k in name for k in ("park wodny", "warszawianka")
+        ):
+            return True
+
+    # FIX #255: House of Air — not for non-active profiles (Katowice).
+    if "house of air" in name and "active_sport" not in prefs and not adv:
+        return True
+
+    # FIX #255: House of Spices — poor family+young-kids fit (Wrocław).
+    if "house of spices" in name and tg == "family_kids":
+        return True
+
     # FIX #254: adventure — no Pergola / Wyspa / Japanese garden filler.
     if adv and any(k in name for k in (
         "pergola", "wyspa słodowa", "wyspa slodowa",
@@ -223,9 +261,15 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     if tg == "family_kids" and "hala targowa" in name:
         return True
 
-    # FIX #248 Wrocław — Pigcasso off couples museum+relax (json2)
+    # FIX #248/#255 Wrocław — Pigcasso off non-kids / wrong-profile trips.
     if "pigcasso" in name:
         if tg == "couples" and {"museum_heritage", "relaxation"} <= prefs:
+            return True
+        if tg == "friends" and adv and "kids_attractions" not in prefs:
+            return True
+        if "nature_landscape" in prefs and "kids_attractions" not in prefs:
+            return True
+        if tg in ("seniors", "solo") and "kids_attractions" not in prefs:
             return True
 
     # FIX #248 Wrocław — Hala Targowa off seniors relax (json6)
@@ -1518,13 +1562,19 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
     if tg == "friends" and adv and {"underground", "history_mystery"} <= prefs:
         if any(k in name for k in (
             "podziemia", "schron", "krypta", "bunkier", "fort ", "katakumby",
-            "muzeum powstania", "warszawskiego",
+            "muzeum powstania", "kopiec powstania", "cytadela", "zamek królewski",
+            "zamek krolewski", "norblin", "muzeum gazowni", "x pawilon",
         )):
-            delta += 110.0
+            delta += 160.0
         if any(k in name for k in (
-            "tepfactor", "park linowy", "grawitacja", "gazowni", "kajak",
+            "tepfactor", "park linowy", "grawitacja", "gazowni", "kajak", "escape",
         )):
-            delta += 115.0
+            delta += 140.0
+        if any(k in name for k in (
+            "pałac kultury", "palac kultury", "pkin", "polin",
+            "centrum nauki kopernik", "park wodny", "warszawianka",
+        )):
+            delta -= 140.0
         if any(k in name for k in ("pałac kultury", "palac kultury", "pkin")):
             if int(ctx.get("day_museum_count") or 0) >= 1:
                 delta -= 95.0

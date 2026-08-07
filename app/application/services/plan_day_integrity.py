@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.domain.models.plan import ItemType, RestaurantSuggestion
-from app.domain.planner.engine import _tiered_nearby_restaurants
+from app.domain.planner.engine import _meal_restaurant_geo_ok, _tiered_nearby_restaurants
 from app.domain.planner.time_utils import minutes_to_time, time_to_minutes
 from app.domain.validators import validate_and_heal_timeline, validate_timeline_integrity
 
@@ -139,24 +139,62 @@ def ensure_meal_suggestions(
             for s in raw_sug
         ] if raw_sug else []
         filtered = filter_fn(parsed) if parsed else []
-        if filtered and len(filtered) == len(parsed):
+        prev = _last_attraction_before(items, idx)
+        last_poi = _poi_dict_from_attraction(prev, poi_coords) if prev else {}
+        # FIX #255: drop stale mine-town suggestions after a city POI.
+        if last_poi.get("lat") and (filtered or parsed):
+            geo_ok_existing = []
+            for s in filtered or parsed:
+                blob = {
+                    "name": getattr(s, "name", "") or "",
+                    "city": getattr(s, "city", "") or "",
+                    "lat": getattr(s, "lat", None),
+                    "lng": getattr(s, "lng", None),
+                }
+                if _meal_restaurant_geo_ok(blob, last_poi, context):
+                    geo_ok_existing.append(s)
+            if geo_ok_existing and len(geo_ok_existing) == len(parsed):
+                if filtered and len(filtered) == len(parsed):
+                    out.append(it)
+                else:
+                    try:
+                        out.append(it.model_copy(update={"suggestions": geo_ok_existing}))
+                    except Exception:
+                        out.append(it)
+                continue
+            filtered = geo_ok_existing
+        elif filtered and len(filtered) == len(parsed):
             out.append(it)
             continue
-        if filtered:
+        elif filtered:
             try:
                 out.append(it.model_copy(update={"suggestions": filtered}))
             except Exception:
                 out.append(it)
             continue
-        prev = _last_attraction_before(items, idx)
-        if not prev:
-            out.append(it)
-            continue
-        last_poi = _poi_dict_from_attraction(prev, poi_coords)
-        if not last_poi.get("lat"):
-            out.append(it)
+        if not prev or not last_poi.get("lat"):
+            if filtered:
+                try:
+                    out.append(it.model_copy(update={"suggestions": filtered}))
+                except Exception:
+                    out.append(it)
+            else:
+                out.append(it)
             continue
         nearby = _tiered_nearby_restaurants(restaurants, last_poi, context, limit=3)
+        if not nearby:
+            # FIX #255: widen once more before giving up (geo filter can empty the 5 km pool).
+            nearby = _tiered_nearby_restaurants(
+                restaurants, last_poi, context,
+                radii_km=(2.0, 4.0, 7.0, 10.0),
+                limit=3,
+            )
+        if not nearby and filtered:
+            try:
+                out.append(it.model_copy(update={"suggestions": filtered}))
+            except Exception:
+                out.append(it)
+            continue
         if not nearby:
             out.append(it)
             continue
@@ -172,7 +210,7 @@ def ensure_meal_suggestions(
         except Exception:
             out.append(it)
         print(
-            f"[FIX #237] Filled {meal_type} suggestions near "
+            f"[FIX #237/#255] Filled {meal_type} suggestions near "
             f"{getattr(prev, 'name', '?')}: {[s.name for s in suggestions]}"
         )
     return out

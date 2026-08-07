@@ -1368,6 +1368,20 @@ def should_exclude_kids_poi_for_adults(poi, user):
             print(f"   [KIDS FILTER] DECISION: EXCLUDE - Kids-only POI for adult group")
         else:
             print(f"   DECISION: ALLOW - Not a kids POI")
+
+    # FIX #255: friends+adventure adult group activities (Grawitacja/Tepfactor/escape)
+    # are often mistagged kids_attractions — keep them for adventure profiles.
+    if should_exclude and group_type == "friends":
+        _prefs_kids = user.get("preferences") or []
+        _style_kids = str(user.get("travel_style") or "")
+        if _style_kids == "adventure" or "adventure" in _prefs_kids or "active_sport" in _prefs_kids:
+            _nm_kids = str(poi.get("name") or "").lower()
+            if any(k in _nm_kids for k in (
+                "grawitacja", "tepfactor", "escape room", "escape rooms",
+                "park linowy", "park linow",
+            )):
+                print(f"   [FIX #255] DECISION: ALLOW - adventure adult activity {_nm_kids}")
+                should_exclude = False
     
     return should_exclude
 
@@ -1449,8 +1463,17 @@ def travel_time_minutes(a, b, context):
     _walk_thresh = (
         CITY_TOURISM_WALK_THRESHOLD_KM if _city_trip else _walk_threshold(a, b)
     )
+    # FIX #255: keep travel_time consistent with get_transport_mode (car ≥1.2 km).
+    _modes = context.get("transport_modes") or []
+    _prefer_car = context.get("has_car", True) and ("car" in _modes or not _modes)
+    _car_floor = 1.2 if _city_trip else 0.6
+    _use_walk = distance_km < _walk_thresh
+    if _prefer_car and distance_km >= _car_floor:
+        _use_walk = False
+    if _city_trip and _prefer_car and distance_km < 1.0:
+        _use_walk = True
 
-    if distance_km < _walk_thresh:
+    if _use_walk:
         _walk_speed = CITY_TOURISM_WALK_SPEED_KMH if _city_trip else 5.0
         walk_time = (distance_km / _walk_speed) * 60
         return max(int(walk_time), 5)
@@ -1489,6 +1512,15 @@ def get_transport_mode(a, b, context=None):
     # 50–500 m + estimated_walk). Prefer car only for longer urban legs.
     if _city_trip and distance_km < 1.0:
         return "walking"
+    # FIX #255: after the day already used a car, keep ≥1 km legs on car
+    # (G10: no walk-after-car teleport on 1+ km hops).
+    if (
+        context
+        and context.get("day_used_car")
+        and context.get("has_car", True)
+        and distance_km >= 1.0
+    ):
+        return "car"
     # FIX #240: user explicitly chose car — prefer driving for longer legs.
     # City tourism: raise floor to 1.2 km so old-town hops stay walkable.
     _modes = context.get("transport_modes") if context else None
@@ -1631,6 +1663,12 @@ def poi_repeat_cluster_key(name: str) -> str:
         "ogrod japonski", "japoński", "hala stulecia",
     )):
         return "cluster_wroclaw_szczytnicki"
+    # FIX #255: Kraków LEGO / bricks — one slot per day (Bricks & Figs + Świat w Budowie).
+    if any(k in n for k in (
+        "bricks", "świat w budowie", "swiat w budowie", "legoland",
+        "wielka wystawa klock",
+    )):
+        return "cluster_lego_bricks"
     return n
 
 
@@ -1639,6 +1677,7 @@ _HIGH_REPEAT_CLUSTERS = frozenset({
     "cluster_krakow_core", "cluster_wroclaw_tumski",
     "cluster_warsaw_pkin", "cluster_warsaw_wilanow", "cluster_warsaw_wodka",
     "cluster_warsaw_taras", "cluster_warsaw_msn", "cluster_wroclaw_szczytnicki",
+    "cluster_lego_bricks",
 })
 
 # FIX #221: niche / filler museums — rank below city icons in long urban trips.
@@ -1686,6 +1725,7 @@ _FAR_GEO_REGIONS = frozenset({
     "region_ojcow", "region_wieliczka",
     "region_gniezno", "region_gliwice", "region_suntago", "region_modlin",
     "region_zabrze", "region_olawa", "region_kampinos", "region_czersk",
+    "region_kornik",
 })
 
 
@@ -1737,27 +1777,50 @@ def poi_geo_region_key(p: dict) -> str | None:
     # FIX #254: Warszawa day-trip — Zamek w Czersku.
     if any(k in blob for k in ("czersk", "zamek w czersku")):
         return "region_czersk"
-    # FIX #234: Katowice day-trips — Zabrze underground cluster, Oława (Wrocław).
-    if "zabrze" in blob and any(k in blob for k in ("podziem", "szyb", "guido", "kopalnia")):
+    # FIX #234/#255: Katowice day-trips — Zabrze excursion (by city or mine names).
+    if "zabrze" in city:
+        return "region_zabrze"
+    if "zabrze" in blob and any(
+        k in blob for k in (
+            "podziem", "szyb", "guido", "kopalnia", "carboneum", "sztolnia", "luiza",
+        )
+    ):
         return "region_zabrze"
     if "oława" in blob or "olawa" in blob:
         if any(k in blob for k in ("arboretum", "wojsławice", "wojslawice")):
             return "region_olawa"
+    # FIX #255: Poznań — Kórnik castle day-trip (avoid Gniezno+Kórnik same day).
+    if any(k in blob for k in ("kórnik", "kornik", "zamek w kórniku", "zamek w korniku")):
+        return "region_kornik"
     return None
 
 
 def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: dict | None) -> bool:
-    """FIX #234/#254: keep meal suggestions in the same excursion / city area."""
+    """FIX #234/#254/#255: keep meal suggestions in the same excursion / city area."""
     if not last_poi:
         return True
     poi_reg = poi_geo_region_key(last_poi)
     r_city = str(restaurant.get("city") or "").lower()
     r_name = str(restaurant.get("name") or "").lower()
     blob = f"{r_city} {r_name}"
-    if poi_reg != "region_wieliczka" and any(k in blob for k in ("wieliczka", "bochnia", "kopalnia soli")):
+    _wieliczka_rest = (
+        "wieliczka", "bochnia", "kopalnia soli", "salina",
+        "wielką sol", "wielka sol", "pod wielk",
+    )
+    # Never pull mine-town restaurants after a Kraków-city stop.
+    if poi_reg != "region_wieliczka" and any(k in blob for k in _wieliczka_rest):
         return False
     if poi_reg != "region_ojcow" and any(k in blob for k in ("ojców", "ojcow", "ojcówie")):
         return False
+    # FIX #255: while still at OPN — refuse Kraków-city restaurants.
+    if poi_reg == "region_ojcow" and any(
+        k in blob for k in ("kraków", "krakow", "krak ")
+    ) and not any(k in blob for k in ("ojców", "ojcow", "ojcówie", "pieskow")):
+        return False
+    # FIX #255: while still at the mine — lunch must stay near Wieliczka/Bochnia.
+    if poi_reg == "region_wieliczka" and not any(k in blob for k in _wieliczka_rest):
+        if any(k in blob for k in ("kraków", "krakow", "krak")):
+            return False
     # FIX #254: Czersk day-trip must not pull Śródmieście Warsaw restaurants.
     if poi_reg != "region_czersk" and any(k in blob for k in ("czersk", "zamek w czersku")):
         return False
@@ -1765,17 +1828,21 @@ def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: di
         k in blob for k in ("warszawa", "warsaw", "śródmieście", "srodmiescie")
     ) and "czersk" not in blob:
         return False
-    day_reg = (context or {}).get("day_geo_region")
-    if day_reg == "region_wieliczka" and not any(k in blob for k in ("wieliczka", "bochnia", "krak")):
+    # FIX #255: after Gliwice/Zabrze stop — don't lunch back in Katowice.
+    if poi_reg == "region_gliwice" and any(k in blob for k in ("katowice", "katowic")):
         return False
-    if day_reg == "region_czersk" and not any(k in blob for k in ("czersk", "góra kalwaria", "gora kalwaria")):
-        if any(k in blob for k in ("warszawa", "warsaw")):
-            return False
+    if poi_reg == "region_zabrze" and any(k in blob for k in ("katowice", "katowic")):
+        return False
+    day_reg = (context or {}).get("day_geo_region")
+    if day_reg == "region_czersk" and poi_reg == "region_czersk":
+        if not any(k in blob for k in ("czersk", "góra kalwaria", "gora kalwaria")):
+            if any(k in blob for k in ("warszawa", "warsaw")):
+                return False
     # When last POI has no GPS, still refuse obvious distant towns.
     if not last_poi.get("lat") or not last_poi.get("lng"):
         req = str((context or {}).get("requested_city") or "").lower()
         if req and r_city and req[:4] not in r_city and r_city[:4] not in req:
-            if any(k in blob for k in ("wieliczka", "bochnia", "czersk", "ojców", "ojcow")):
+            if any(k in blob for k in ("wieliczka", "bochnia", "czersk", "ojców", "ojcow", "salina")):
                 return False
     return True
 
@@ -1883,11 +1950,12 @@ def should_block_cross_region_in_day(p: dict, context: dict | None) -> bool:
 
 
 def is_seasonal_water_poi_out_of_season(p: dict, context: dict | None) -> bool:
-    """FIX #233: block cruises/pontoons in winter (Wrocław client feedback)."""
+    """FIX #233/#255: block cruises/pontoons/summer lakes in winter."""
     name = str(p.get("name", "")).lower()
     if not any(m in name for m in (
         "rejs", "ponton", "żaglówk", "zaglówk", "spływ", "spluw", "kajak",
         "statkiem", "gondol", "zatoka",
+        "zalew bagry", "kąpielisko", "kapielisko",
     )):
         return False
     ctx = context or {}
@@ -2001,6 +2069,29 @@ def should_skip_poi_candidate(p: dict, context: dict | None) -> bool:
             _nm = str(p.get("name", "")).lower()
             if any(k in _nm for k in ("guliwer", "bawialnia", "bawialni")):
                 return True
+    # FIX #255: Arboretum Wojsławice (~46 km) off short Wrocław trips.
+    if context and int(context.get("num_days") or 1) <= 3:
+        if poi_geo_region_key(p) == "region_olawa":
+            return True
+    # FIX #255: micro-stops far from city centre (e.g. Plaża Puszczykowo 23 km / 35 min).
+    # Keep forts / bunkers / mines — they are real day-trip anchors, not beach fillers.
+    _centroid = (context or {}).get("city_centroid")
+    _nm255 = str(p.get("name", "")).lower()
+    if _centroid and p.get("lat") and p.get("lng") and not any(
+        k in _nm255 for k in (
+            "fort ", "bunkier", "schron", "kopalnia", "sztolnia", "guido", "luiza",
+        )
+    ):
+        try:
+            _dist255 = haversine_distance(
+                float(_centroid[0]), float(_centroid[1]),
+                float(p.get("lat")), float(p.get("lng")),
+            )
+            _tmax255 = int(p.get("time_max") or p.get("time_min") or 60)
+            if _dist255 >= 18.0 and _tmax255 <= 40:
+                return True
+        except (TypeError, ValueError):
+            pass
     return False
 
 
@@ -2544,8 +2635,33 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("ostrów tumski", 120),
         ("ostrow tumski", 120),
         ("muzeum uniwersytetu", 90),
-        ("muzeum narodowe", 150),
-        ("hala stulecia", 120),
+        ("muzeum narodowe", 120),
+        ("hala stulecia", 90),
+        # FIX #255: client — absurd multi-hour stops.
+        ("gojump", 90),
+        ("bastion sakwowy", 75),
+        ("hala targowa", 60),
+        ("nikiszowiec", 90),
+        ("galeria szyb wilson", 90),
+        ("szyb wilson", 90),
+        ("cybermagia", 75),
+        ("park chopina", 60),
+        ("kościół św. anny", 20),
+        ("kosciol sw. anny", 20),
+        ("kosciol sw anny", 20),
+        ("kościół sw. anny", 20),
+        ("rogalowe muzeum", 75),
+        ("muzeum archeologiczne", 90),
+        ("zamek ujazdowski", 120),
+        ("centrum nauki kopernik", 150),
+        ("rynek we wrocławiu", 120),
+        ("rynek we wroclawiu", 120),
+        ("rynek główny", 120),
+        ("rynek glowny", 120),
+        ("stary rynek", 120),
+        ("muzeum armii krajowej", 90),
+        ("ogród botaniczny", 90),
+        ("ogrod botaniczny", 90),
     )
     for marker, cap in _named_caps:
         if marker in name:
@@ -2559,7 +2675,9 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
     if any(k in name for k in ("park ", "ogród", "ogrod", "bulwar", "planty", "wyspa")):
         return 90
     if "muzeum" in name or "museum" in poi_type:
-        return 150
+        return 120
+    if any(k in name for k in ("trampolin", "jump", "gojump")):
+        return 90
     return None
 
 
@@ -2620,6 +2738,14 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("gokart", 60),
         ("karting", 60),
         ("laser tag", 60),
+        # FIX #255: Wrocław family active venues need a real session floor.
+        ("aquapark", 90),
+        ("park wodny", 90),
+        ("loopy", 75),
+        ("sala zabaw", 75),
+        ("kopalnia guido", 90),
+        ("królowa luiza", 90),
+        ("krolowa luiza", 90),
     )
     for _marker, _nmin in _named_mins:
         if _marker in _poi_name_lower:
@@ -3948,8 +4074,8 @@ def score_poi(
             "ethnographic_museum", "art_gallery", "temporary_exhibitions",
         }
         _poi_tags_eve = set(p.get("tags", []))
-        if _evening_museum_tags & _poi_tags_eve:
-            score -= 25.0  # Museums feel heavy in the evening
+        if _evening_museum_tags & _poi_tags_eve or is_museum_heritage_poi(p):
+            score -= 55.0  # FIX #255: museums feel heavy in the evening
         if p.get("type") == "trail":
             score -= 40.0  # Trails after 16:00 = darkness risk / exhaustion
         _evening_relax_tags = {"relaxation", "spa", "termy", "wellness", "hot_springs", "swimming_pool"}
@@ -3959,6 +4085,16 @@ def score_poi(
         _evening_viewpoint_tags = {"scenic_viewpoint"}
         if _evening_viewpoint_tags & set(p.get("tags", [])):
             score -= 20.0  # Viewpoints lose appeal after dark
+        if is_museum_heritage_poi(p) or "muzeum" in str(p.get("name", "")).lower():
+            score -= 80.0  # FIX #255: client — museums after ~17:00
+    # FIX #255: outdoor summer rides / caves after dusk.
+    if now >= 18 * 60 + 30:
+        _nm_late = str(p.get("name", "")).lower()
+        if any(k in _nm_late for k in (
+            "letni tor", "saneczkowy", "jaskinia", "barbakan",
+            "pałac krzysztofory", "palac krzysztofory",
+        )):
+            score -= 120.0
 
     # zmeczenie
     score -= float(fatigue)
@@ -4865,6 +5001,24 @@ def score_poi(
             "kopalnia guido", "królowa luiza", "krolowa luiza",
         )):
             score += 85.0
+
+    # FIX #255: underground preference — boost real mine / bunker / fort POIs.
+    if "underground" in _prefs221:
+        if any(n in _name221 for n in (
+            "kopalnia guido", "guido", "królowa luiza", "krolowa luiza",
+            "sztolnia", "carboneum", "podziem", "bunkier", "schron",
+            "fort ", "krypta", "muzeum powstania", "kopiec powstania",
+            "tepfactor", "grawitacja",
+        )):
+            score += 130.0
+        if travel_style == "adventure" or "adventure" in _prefs221:
+            if any(n in _name221 for n in (
+                "fort ", "bunkier", "schron", "podziem", "escape", "park linowy",
+            )):
+                score += 70.0
+        if any(n in _name221 for n in ("house of air", "galeria szyb wilson", "szyb wilson")):
+            if "museum_heritage" not in _prefs221 and "history_mystery" not in _prefs221:
+                score -= 100.0
 
     # FIX #233: city day 1 — don't open with far excursion / Arboretum Wojsławice
     from app.domain.planner.city_copy import is_city_tourism_trip as _city233
@@ -5965,9 +6119,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                         print(f"[LUNCH FIX#145] local_food_experience: {_tagged} restaurants have regional tags (sorted first)")
 
                     # If we have current location (last attraction), sort by proximity
+                    last_attraction = None
                     if plan:
-                        # Find last attraction for location context
-                        last_attraction = None
                         for item in reversed(plan):
                             if item.get("type") == "attraction" and item.get("poi"):
                                 last_attraction = item.get("poi")
@@ -5983,7 +6136,14 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                                     f"{[s.get('name') for s in lunch_suggestions]}"
                                 )
                     if not lunch_suggestions and lunch_restaurants:
-                        lunch_suggestions = [{**r} for r in lunch_restaurants[:3]]
+                        # FIX #255: fallback must still honour geo filter (no Salina after Kraków POI).
+                        pool = lunch_restaurants
+                        if last_attraction:
+                            pool = [
+                                r for r in lunch_restaurants
+                                if _meal_restaurant_geo_ok(r, last_attraction, context)
+                            ]
+                        lunch_suggestions = [{**r} for r in pool[:3]]
                         print(f"[LUNCH] Fallback suggestions: {[s.get('name') for s in lunch_suggestions]}")
                 
                 # FIX #Problem9 DEBUG: Log lunch insertion with group_type
@@ -6170,9 +6330,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             )
 
                     # If we have current location (last attraction), sort by proximity
+                    last_attraction = None
                     if plan:
-                        # Find last attraction for location context
-                        last_attraction = None
                         for item in reversed(plan):
                             if item.get("type") == "attraction" and item.get("poi"):
                                 last_attraction = item.get("poi")
@@ -6193,7 +6352,13 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                             if "_distance" in r
                             else 999.0,
                         )
-                        dinner_suggestions = [{**r} for r in dinner_restaurants[:3]]
+                        pool = dinner_restaurants
+                        if last_attraction:
+                            pool = [
+                                r for r in dinner_restaurants
+                                if _meal_restaurant_geo_ok(r, last_attraction, context)
+                            ]
+                        dinner_suggestions = [{**r} for r in pool[:3]]
                         for s in dinner_suggestions:
                             s.pop("_distance", None)
                         print(f"[DINNER] Fallback suggestions: {[s.get('name') for s in dinner_suggestions]}")
@@ -6282,6 +6447,18 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 print(f"[FIX #197] EVENING ONLY: EXCLUDED {poi_name_safe} before 17:00")
                 continue
 
+            # FIX #255: outdoor / cave sites after dusk.
+            if now >= 18 * 60 + 30:
+                _late_nm = str(p.get("name", "")).lower()
+                if any(k in _late_nm for k in (
+                    "letni tor", "saneczkowy", "jaskinia", "barbakan",
+                    "pałac krzysztofory", "palac krzysztofory",
+                    "zamek w ojcowie", "zamek ojcow",
+                )):
+                    poi_name_safe = str(p.get('name', 'Unknown')).encode('ascii', errors='ignore').decode('ascii')
+                    print(f"[FIX #255] AFTER DUSK: EXCLUDED {poi_name_safe}")
+                    continue
+
             # FIX #244 Poznań: max 1 zoo/day (Nowe + Stare Zoo)
             _poi_nm244 = str(p.get("name", "")).lower()
             if daily_zoo_count >= 1 and any(
@@ -6299,9 +6476,19 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
 
             # FIX #58 (21.05.2026): Hard cap: max 1 museum per day for adventure profile
             # FIX #233: adventure without museum_heritage → zero museums/day
+            # FIX #255: underground/history in top-3 also unlocks 1 museum (WAWA json7
+            # has museum_heritage as 3rd pref — limit 0 starved powstanie/cytadela).
             _user_prefs_58 = user.get("preferences") or []
             _adv_museum_cap = travel_style == "adventure" or "adventure" in _user_prefs_58
-            _adv_mus_limit = 1 if "museum_heritage" in _user_prefs_58[:2] else 0
+            _adv_mus_limit = 0
+            if "museum_heritage" in _user_prefs_58[:2]:
+                _adv_mus_limit = 1
+            elif (
+                "museum_heritage" in _user_prefs_58[:3]
+                or "history_mystery" in _user_prefs_58[:3]
+                or "underground" in _user_prefs_58[:2]
+            ):
+                _adv_mus_limit = 1
             if _adv_museum_cap and daily_museum_count >= _adv_mus_limit:
                 _mus_tags_58 = {"themed_museum", "regional_heritage", "museum_heritage", "museums",
                                 "mountain_culture", "multimedia_exhibition", "interactive_exhibits",

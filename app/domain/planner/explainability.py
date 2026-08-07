@@ -254,6 +254,7 @@ _CATEGORY_HIGHLIGHT_PL = {
     "shooting": "Rywalizacja w grupie na arenie",
     "escape_room": "Zagadki do rozwiązania zespołowo",
     "maze": "Zabawa na orientację na świeżym powietrzu",
+    "mirror_maze": "Zabawa na orientację w lustrzanym labiryncie",
     "amusement": "Rozrywka w klimacie parku tematycznego",
     "playground": "Bezpieczna strefa zabaw dla najmłodszych",
     "zoo": "Spotkanie ze zwierzętami z bliska",

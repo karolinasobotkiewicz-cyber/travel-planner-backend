@@ -77,6 +77,9 @@ def filter_by_season(pois, current_date):
                 # FIX #253: client — Ogród Botaniczny / Japoński closed in February.
                 "ogród botaniczny", "ogrod botaniczny",
                 "ogród japoński", "ogrod japonski",
+                # FIX #255: summer beaches / urban lakes in February.
+                "zalew bagry", "bagry", "plaża puszczykowo", "plaza puszczykowo",
+                "plaża miejska", "plaza miejska", "kąpielisko", "kapielisko",
             )
         ):
             continue
@@ -106,6 +109,10 @@ def filter_by_season(pois, current_date):
                     "park grabiszynski", "łazienki", "lazienki", "park skaryszewski",
                     "park wilsona", "zakrzówek", "zakrzowek",
                     "las wolski", "błonia", "blonia",
+                    # FIX #255: Kraków winter nature fillers for sparse days.
+                    "park jordana", "park bednarskiego", "kopiec krakusa",
+                    "kopiec kościuszki", "kopiec kosciuszki", "skałki twardowskiego",
+                    "skalki twardowskiego", "park lotników", "park lotnikow",
                 )
             ) and not any(
                 m in _pname for m in (
