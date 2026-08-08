@@ -517,6 +517,14 @@ def _restaurant_dict_to_suggestion(r: Dict[str, Any], meal_type: str) -> Restaur
         )
     image_key = r.get("image_key") or None
     avg_cost = r.get("avg_meal_cost")
+    _tg = (
+        r.get("target_groups")
+        or r.get("recommended_for")
+        or r.get("target_group")
+        or []
+    )
+    if isinstance(_tg, str):
+        _tg = [x.strip() for x in _tg.split(",") if x.strip()]
     return RestaurantSuggestion(
         id=str(r.get("id", "")),
         name=r.get("name", ""),
@@ -531,6 +539,7 @@ def _restaurant_dict_to_suggestion(r: Dict[str, Any], meal_type: str) -> Restaur
         avg_meal_cost=int(avg_cost) if avg_cost is not None else None,
         city=r.get("city", "") or "",
         pro_tip=r.get("pro_tip") or None,
+        target_groups=list(_tg or []),
     )
 
 
@@ -574,29 +583,60 @@ def _filter_meal_suggestions(
     suggestions: List[RestaurantSuggestion],
     *,
     preferences: Optional[List[str]] = None,
+    target_group: Optional[str] = None,
 ) -> List[RestaurantSuggestion]:
-    """FIX #234/#242: strip placeholders; prefer regional cuisine when requested."""
-    out: List[RestaurantSuggestion] = []
+    """FIX #234/#242/#257: strip placeholders; prefer regional; respect recommended_for."""
+    from app.domain.scoring.family_fit import (
+        restaurant_hard_denied_for_group,
+        restaurant_matches_target_group,
+    )
+
     prefs = {_meal_pref_str(p) for p in (preferences or []) if p}
     want_local = "local_food_experience" in prefs
-    for s in (suggestions or []):
+    user = {"target_group": target_group or ""}
+
+    def _rdict(s: RestaurantSuggestion) -> dict:
+        return {
+            "name": getattr(s, "name", "") or "",
+            "target_groups": getattr(s, "target_groups", None)
+            or getattr(s, "recommended_for", None)
+            or [],
+        }
+
+    def _base_ok(s: RestaurantSuggestion) -> bool:
         if _is_generic_meal_suggestion(s):
-            continue
-        if want_local:
-            cuisine = _meal_pref_str(getattr(s, "cuisine_type", "") or "")
-            cuisines = {c.strip().lower() for c in cuisine.split(",") if c.strip()}
-            name = _meal_pref_str(getattr(s, "name", "") or "")
-            if cuisines & _NON_LOCAL_MEAL_CUISINES:
-                continue
-            if any(h in name for h in _NON_LOCAL_MEAL_NAME_HINTS):
-                continue
-        out.append(s)
-    # FIX #246: when local_food filter removes all, keep any non-generic suggestions
-    if want_local and not out and suggestions:
-        for s in suggestions:
-            if not _is_generic_meal_suggestion(s):
-                out.append(s)
-    return out
+            return False
+        if restaurant_hard_denied_for_group(_rdict(s), user):
+            return False
+        if not want_local:
+            return True
+        name = _meal_pref_str(getattr(s, "name", "") or "")
+        cuisine = _meal_pref_str(getattr(s, "cuisine_type", "") or "")
+        cuisines = {c.strip().lower() for c in cuisine.split(",") if c.strip()}
+        if cuisines & _NON_LOCAL_MEAL_CUISINES:
+            return False
+        if any(h in name for h in _NON_LOCAL_MEAL_NAME_HINTS):
+            return False
+        return True
+
+    pool = [s for s in (suggestions or []) if _base_ok(s)]
+    if target_group:
+        matched = [
+            s for s in pool
+            if restaurant_matches_target_group(_rdict(s), user)
+        ]
+        if matched:
+            return matched
+        # City data often omits seniors/solo from recommended_for — keep pool
+        # but never reintroduce hard-denied venues.
+        return pool
+    if want_local and not pool and suggestions:
+        return [
+            s for s in suggestions
+            if not _is_generic_meal_suggestion(s)
+            and not restaurant_hard_denied_for_group(_rdict(s), user)
+        ]
+    return pool
 
 
 # FIX (01.07.2026 - front feedback): plan musi zwracać miasto, daty i nazwę.
@@ -3647,6 +3687,7 @@ class PlanService:
                 parse_suggestion_fn=_restaurant_dict_to_suggestion,
                 filter_fn=lambda sugs: _filter_meal_suggestions(
                     sugs, preferences=_meal_prefs246,
+                    target_group=(user or {}).get("target_group"),
                 ),
             )
             if all_pois_dict:
@@ -3853,13 +3894,50 @@ class PlanService:
                 _fitems = self._strip_transits_to_unscheduled_destinations(
                     _fitems, day_num=day_plan.day,
                 )
-                _fitems = self._enforce_car_parking_logistics(
-                    _fitems, _final_coord_map, _day_ctx, day_num=day_plan.day,
+                if all_pois_dict and user is not None:
+                    _fitems = self._backfill_sparse_day_attractions(
+                        _fitems, all_pois_dict, _day_ctx, user, global_used_pois,
+                        set(_keys_before_day253), set(_names_before_day253),
+                        day_num=day_plan.day, min_attr=2, cross_day_reuse=True,
+                        last_guido_day=_last_guido_day,
+                        last_luiza_day=_last_luiza_day, trip_has_water=_trip_has_water,
+                    )
+                    _fitems = self._strip_closed_attractions(
+                        _fitems, all_pois_dict, _day_ctx, day_num=day_plan.day,
+                    )
+                    _fitems = self._ensure_transits_between_attractions(
+                        _fitems, _final_coord_map, _day_ctx,
+                    )
+                    _fitems = self._update_transit_destinations(
+                        _fitems, _final_coord_map,
+                    )
+                _fitems = self._fit_transits_between_stops(
+                    _fitems, day_num=day_plan.day,
+                )
+                _fitems = self._absorb_idle_gaps(
+                    _fitems, all_pois_dict, _day_ctx, day_num=day_plan.day,
+                )
+                _fitems = self._cap_stretched_attraction_durations(
+                    _fitems, day_num=day_plan.day,
+                )
+                _fitems = self._enforce_minimum_dinner_time(
+                    _fitems, day_end, day_num=day_plan.day,
                 )
                 _fitems = self._cover_open_slots_with_free_time(
                     _fitems, _day_ctx, day_num=day_plan.day,
                 )
                 _fitems = self._trim_free_time_over_real_items(
+                    _fitems, day_num=day_plan.day,
+                )
+                _fitems = self._remove_timeline_overlaps(_fitems, day_plan.day)
+                # FIX #257: parking absolute last on Wrocław outer finalize.
+                _fitems = self._enforce_car_parking_logistics(
+                    _fitems, _final_coord_map, _day_ctx, day_num=day_plan.day,
+                )
+                _fitems = self._fit_transits_between_stops(
+                    _fitems, day_num=day_plan.day,
+                )
+                _fitems = self._strip_transits_to_unscheduled_destinations(
                     _fitems, day_num=day_plan.day,
                 )
                 _fitems = self._remove_timeline_overlaps(_fitems, day_plan.day)
@@ -4276,6 +4354,8 @@ class PlanService:
                     suggestions=_filter_meal_suggestions(
                         _parse_meal_suggestions(item.get("suggestions", []), "lunch"),
                         preferences=list(trip_input.preferences or []),
+                        target_group=getattr(getattr(trip_input, "group", None), "type", None)
+                        or (user or {}).get("target_group"),
                     ),
                     location_context=item.get("location_context"),
                 )
@@ -4301,6 +4381,8 @@ class PlanService:
                     suggestions=_filter_meal_suggestions(
                         _parse_meal_suggestions(item.get("suggestions", []), "dinner"),
                         preferences=list(trip_input.preferences or []),
+                        target_group=getattr(getattr(trip_input, "group", None), "type", None)
+                        or (user or {}).get("target_group"),
                     ),
                 )
                 items.append(dinner_item)
@@ -8005,6 +8087,11 @@ class PlanService:
         day_num: int = 0,
     ) -> List[Any]:
         """FIX #246 Kraków: usuń cel atrakcji przy zbyt długim transporcie (np. 41 min)."""
+        # FIX #257 Wrocław: keep intentional day-trip destinations (Galowice etc.).
+        _DAYTRIP_KEEP = (
+            "galowice", "powozów", "powozow", "topacz", "wojsławice", "wojslawice",
+            "oława", "olawa", "złotniki", "zlotniki",
+        )
         drop_names: set[str] = set()
         for it in items:
             if getattr(it, "type", None) != ItemType.TRANSIT:
@@ -8013,6 +8100,13 @@ class PlanService:
             if dur <= max_min:
                 continue
             to = getattr(it, "to_location", "") or ""
+            tl = to.lower()
+            if to and any(k in tl for k in _DAYTRIP_KEEP):
+                print(
+                    f"[FIX #257] Day {day_num}: keep day-trip destination "
+                    f"{to!r} despite {dur}m transit"
+                )
+                continue
             if to:
                 drop_names.add(to)
                 print(
@@ -8164,6 +8258,8 @@ class PlanService:
         n_attr = sum(1 for it in items if _is_timeline_attraction(it))
         day_start_str = context.get("day_start") or "09:00"
         day_start_min = time_to_minutes(day_start_str)
+        _city_bf = str(context.get("requested_city") or "").lower()
+        _is_wro_bf = "wrocław" in _city_bf or "wroclaw" in _city_bf
 
         first_block_min = None
         for it in items:
@@ -8191,20 +8287,40 @@ class PlanService:
                 or (n_attr < min_attr and first_block_min >= 13 * 60)
                 # FIX #256: Wrocław — fill ≥90 min unexplained morning holes.
                 or (
-                    (
-                        "wrocław" in str(context.get("requested_city") or "").lower()
-                        or "wroclaw" in str(context.get("requested_city") or "").lower()
-                    )
+                    _is_wro_bf
                     and (first_block_min - day_start_min >= 90)
                 )
             )
         )
+        # FIX #257: Wrocław — also fill mid-day holes ≥90 min even when day
+        # already has enough attractions (client: 1–5h unexplained blanks).
+        need_midday = False
+        if _is_wro_bf:
+            _blocks_md: list[tuple[int, int]] = []
+            _de_md = time_to_minutes(context.get("day_end") or "19:00")
+            for _it_md in items:
+                _st_md = getattr(_it_md, "start_time", None)
+                _en_md = getattr(_it_md, "end_time", None)
+                if not _st_md or not _en_md:
+                    continue
+                try:
+                    _blocks_md.append((time_to_minutes(_st_md), time_to_minutes(_en_md)))
+                except Exception:
+                    continue
+            _blocks_md.sort()
+            _cur_md = day_start_min
+            _largest_md = 0
+            for _st_b, _en_b in _blocks_md:
+                _largest_md = max(_largest_md, _st_b - _cur_md)
+                _cur_md = max(_cur_md, _en_b)
+            _largest_md = max(_largest_md, _de_md - _cur_md)
+            need_midday = _largest_md >= 90
         target = min_attr
         # FIX #255b: 7-day couples audits require ≥3 attrs from day 4 onward.
         if _num_days_bf >= 7 and day_num >= 4:
             target = max(target, 3)
 
-        if n_attr >= target and not need_morning:
+        if n_attr >= target and not need_morning and not need_midday:
             return items
 
         _req_city = context.get("requested_city", "")
@@ -8475,6 +8591,30 @@ class PlanService:
             used_ids.add(poi.get("id"))
             n_attr += 1
             print(f"[FIX #245] Day {day_num}: sparse backfill {poi.get('name')}")
+
+        # FIX #257: Wrocław midday holes ≥90 min even after min_attr reached.
+        if need_midday:
+            for _ in range(3):
+                gap = _largest_gap(90)
+                if not gap:
+                    break
+                slot_start, slot_end = gap
+                if slot_end - slot_start < 90:
+                    break
+                poi = _pick_poi(slot_start, slot_end)
+                if not poi:
+                    break
+                st = minutes_to_time(slot_start)
+                inserts.append(
+                    self._generate_attraction_item(
+                        poi, st, user, user.get("target_group", "solo"), context, None
+                    )
+                )
+                used_ids.add(poi.get("id"))
+                n_attr += 1
+                print(
+                    f"[FIX #257] Day {day_num}: midday hole backfill {poi.get('name')}"
+                )
 
         if not inserts:
             return items
@@ -9635,6 +9775,10 @@ class PlanService:
         day_start = context.get("day_start") or "09:00"
         day_end = context.get("day_end") or "19:00"
         ctx = {**context, "day_start": day_start, "day_end": day_end}
+        # FIX #257: meal tiering / recommended_for need user on context.
+        if user:
+            ctx.setdefault("user", user)
+            ctx.setdefault("target_group", user.get("target_group"))
         _meal_prefs = list(
             context.get("preferences") or (user or {}).get("preferences") or []
         )
@@ -9697,6 +9841,7 @@ class PlanService:
             parse_suggestion_fn=_restaurant_dict_to_suggestion,
             filter_fn=lambda sugs: _filter_meal_suggestions(
                 sugs, preferences=_meal_prefs,
+                target_group=(user or {}).get("target_group"),
             ),
         )
         items = self._route_meals_into_timeline(
@@ -9759,6 +9904,7 @@ class PlanService:
             parse_suggestion_fn=_restaurant_dict_to_suggestion,
             filter_fn=lambda sugs: _filter_meal_suggestions(
                 sugs, preferences=_meal_prefs,
+                target_group=(user or {}).get("target_group"),
             ),
         )
         items = self._route_meals_into_timeline(
@@ -9845,6 +9991,7 @@ class PlanService:
                             parse_suggestion_fn=_restaurant_dict_to_suggestion,
                             filter_fn=lambda sugs: _filter_meal_suggestions(
                                 sugs, preferences=_meal_prefs,
+                                target_group=(user or {}).get("target_group"),
                             ),
                         )
                         items = self._route_meals_into_timeline(
@@ -10016,12 +10163,9 @@ class PlanService:
         items = self._enforce_day_transport_consistency(
             items, user, ctx, day_num=day_num,
         )
-        # FIX #256: Wrocław parking logistics (return-to-car). Other cities unchanged.
-        _city_park256 = str((ctx or {}).get("requested_city") or "").lower()
-        if "wrocław" in _city_park256 or "wroclaw" in _city_park256:
-            items = self._enforce_car_parking_logistics(
-                items, poi_coords, ctx, day_num=day_num,
-            )
+        # FIX #257: Wrocław parking is applied at the absolute end of the WRO
+        # polish block below — running it here lets later ensure_transits /
+        # fit passes rewrite car legs into teleport contradictions.
         # Routing runs after the integrity pass and can stretch a leg over the
         # stop it leads to, so the timeline has to be squared up once more.
         items = self._fit_transits_between_stops(items, day_num=day_num)
@@ -10062,7 +10206,9 @@ class PlanService:
         )
         items = self._absorb_idle_gaps(items, all_pois_dict, ctx, day_num=day_num)
         items = self._remove_timeline_overlaps(items, day_num)
-        # FIX #256: Wrocław-only post-absorb polish (caps / meals / neon / parking).
+        # FIX #256/#257: Wrocław-only post-absorb polish.
+        # Parking logistics MUST be last — any routing after it rewrites car
+        # legs and recreates teleport contradictions the client reported.
         _city250 = str((ctx or {}).get("requested_city") or "").lower()
         if "wrocław" in _city250 or "wroclaw" in _city250:
             items = self._cap_stretched_attraction_durations(items, day_num=day_num)
@@ -10073,9 +10219,6 @@ class PlanService:
             items = _push_early_lunch_to_noon(items)
             items = self._strip_misscheduled_evening_attractions(
                 items, all_pois_dict, day_num=day_num,
-            )
-            items = self._enforce_car_parking_logistics(
-                items, poi_coords, ctx, day_num=day_num,
             )
             items = self._run_transit_routing_pass(items, poi_coords, ctx, day_num)
             items = self._strip_misscheduled_evening_attractions(
@@ -10088,14 +10231,44 @@ class PlanService:
                 items, poi_coords, ctx,
             )
             items = self._update_transit_destinations(items, poi_coords)
-            items = self._enforce_car_parking_logistics(
-                items, poi_coords, ctx, day_num=day_num,
-            )
+            if all_pois_dict is not None and user is not None:
+                items = self._backfill_sparse_day_attractions(
+                    items, all_pois_dict, ctx, user,
+                    global_used_pois or set(),
+                    trip_repeat_keys or set(),
+                    trip_names_before_day or set(),
+                    day_num=day_num, min_attr=2, cross_day_reuse=True,
+                )
+                items = self._strip_closed_attractions(
+                    items, all_pois_dict, ctx, day_num=day_num,
+                )
+                items = self._ensure_transits_between_attractions(
+                    items, poi_coords, ctx,
+                )
+                items = self._update_transit_destinations(items, poi_coords)
             items = self._fit_transits_between_stops(items, day_num=day_num)
+            items = self._absorb_idle_gaps(
+                items, all_pois_dict, ctx, day_num=day_num,
+            )
+            # Re-cap after absorb — midday fill can leave museums at 2–4h.
+            items = self._cap_stretched_attraction_durations(items, day_num=day_num)
+            # Absorb can pull dinner into a hole → re-assert ≥17:30.
+            items = self._enforce_minimum_dinner_time(
+                items, ctx.get("day_end") or "19:00", day_num=day_num,
+            )
             items = self._cover_open_slots_with_free_time(
                 items, ctx, day_num=day_num,
             )
             items = self._trim_free_time_over_real_items(items, day_num=day_num)
+            items = self._remove_timeline_overlaps(items, day_num)
+            # Absolute last: return-to-car walks; no full routing after this.
+            items = self._enforce_car_parking_logistics(
+                items, poi_coords, ctx, day_num=day_num,
+            )
+            items = self._fit_transits_between_stops(items, day_num=day_num)
+            items = self._strip_transits_to_unscheduled_destinations(
+                items, day_num=day_num,
+            )
             items = self._remove_timeline_overlaps(items, day_num)
 
         return self._sort_items_by_time(items)
@@ -10129,6 +10302,7 @@ class PlanService:
             parse_suggestion_fn=_restaurant_dict_to_suggestion,
             filter_fn=lambda sugs: _filter_meal_suggestions(
                 sugs, preferences=_meal_prefs,
+                target_group=(user or {}).get("target_group"),
             ),
         )
         if all_pois_dict is not None and user is not None and global_used_pois is not None:
@@ -10516,7 +10690,28 @@ class PlanService:
                         r for r in restaurants
                         if _geo_ok255(r, anchor, context)
                     ] if anchor else list(restaurants)
-                for cand in nearby:
+                from app.domain.scoring.family_fit import (
+                    restaurant_hard_denied_for_group as _hard257,
+                    restaurant_matches_target_group as _match257,
+                )
+                _user257 = (context or {}).get("user") or {}
+                if not _user257.get("target_group") and (context or {}).get("target_group"):
+                    _user257 = {
+                        **_user257,
+                        "target_group": context.get("target_group"),
+                    }
+                _pref257 = [
+                    c for c in nearby
+                    if not _hard257(c, _user257)
+                    and (
+                        not _user257.get("target_group")
+                        or _match257(c, _user257)
+                    )
+                ]
+                _pool257 = _pref257 or [
+                    c for c in nearby if not _hard257(c, _user257)
+                ]
+                for cand in _pool257:
                     nm = (cand.get("name") or "").lower()
                     if not nm or nm in used:
                         continue

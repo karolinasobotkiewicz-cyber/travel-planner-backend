@@ -82,6 +82,8 @@ def filter_by_season(pois, current_date):
                 "plaża miejska", "plaza miejska", "kąpielisko", "kapielisko",
                 # FIX #256 Wrocław: outdoor rope park closed in winter (client).
                 "park linowy partynice", "partynice",
+                # FIX #257 Wrocław: carriage museum / Galowice closed in winter.
+                "muzeum powozów", "muzeum powozow", "galowice",
             )
         ):
             continue

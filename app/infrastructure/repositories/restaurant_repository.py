@@ -250,8 +250,9 @@ class RestaurantRepository:
             "space": restaurant.space,
             "reservations_required": restaurant.reservations_required,
             
-            # Target group (JSON array)
+            # Target group / Excel recommended_for (JSON array)
             "target_groups": restaurant.target_group or [],
+            "recommended_for": restaurant.target_group or [],
             "children_friendly": restaurant.children_friendly,
             
             # Tags (FIX #145 01.06.2026)

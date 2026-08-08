@@ -109,12 +109,28 @@ def is_child_oriented_attraction(poi: dict) -> bool:
     return False
 
 
-def restaurant_matches_target_group(restaurant: dict, user: dict) -> bool:
-    """FIX #229: filter lunch/dinner suggestions by restaurant target_group."""
+def restaurant_hard_denied_for_group(restaurant: dict, user: dict) -> bool:
+    """FIX #257: absolute restaurant bans independent of recommended_for."""
     user_group = _safe_str(user.get("target_group", ""))
+    rname = _safe_str(restaurant.get("name", "")).lower()
+    if user_group == "family_kids" and "house of spices" in rname:
+        return True
+    return False
+
+
+def restaurant_matches_target_group(restaurant: dict, user: dict) -> bool:
+    """FIX #229/#257: filter lunch/dinner by recommended_for / target_groups."""
+    user_group = _safe_str(user.get("target_group", ""))
+    if restaurant_hard_denied_for_group(restaurant, user):
+        return False
     if not user_group:
         return True
-    target_groups = restaurant.get("target_groups") or []
+    target_groups = (
+        restaurant.get("target_groups")
+        or restaurant.get("recommended_for")
+        or restaurant.get("target_group")
+        or []
+    )
     if not target_groups:
         return True
     if isinstance(target_groups, str):
@@ -122,7 +138,28 @@ def restaurant_matches_target_group(restaurant: dict, user: dict) -> bool:
     tg = {_safe_str(x) for x in target_groups if x}
     if not tg:
         return True
-    return user_group in tg
+    if "all" in tg:
+        return True
+    # Normalize common Excel labels → planner group ids.
+    _ALIASES = {
+        "family": "family_kids",
+        "families": "family_kids",
+        "kids": "family_kids",
+        "dzieci": "family_kids",
+        "rodzina": "family_kids",
+        "couple": "couples",
+        "couples": "couples",
+        "para": "couples",
+        "pary": "couples",
+        "senior": "seniors",
+        "seniors": "seniors",
+        "seniorzy": "seniors",
+        "friends": "friends",
+        "przyjaciele": "friends",
+        "solo": "solo",
+    }
+    tg_norm = {_ALIASES.get(x, x) for x in tg}
+    return user_group in tg_norm or user_group in tg
 
 
 def should_exclude_by_target_group(poi: dict, user: dict) -> bool:

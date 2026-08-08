@@ -27,6 +27,8 @@ _WINTER_BAN = (
     "partynice", "ponton", "spływ", "splyw", "złotniki", "zlotniki",
     "zatoka gondoli", "ogród japoński", "ogrod japonski",
     "ogród botaniczny", "ogrod botaniczny",
+    # FIX #257
+    "muzeum powozów", "muzeum powozow", "galowice",
 )
 
 
@@ -141,7 +143,7 @@ def _audit_wroclaw_256(plan, payload: dict, label: str) -> list[str]:
         if n_attr >= 2 and window >= 6 * 60 and not has_lunch and day_end_min >= 15 * 60:
             issues.append(f"{label} day{day.day}: missing lunch")
 
-        # --- gaps ≥ 90 min unexplained (not free_time) ---
+        # --- gaps ≥ 120 min unexplained (FIX #257: client 1–5h blanks) ---
         timed = [
             it for it in items
             if getattr(it, "start_time", None) and getattr(it, "end_time", None)
@@ -151,20 +153,19 @@ def _audit_wroclaw_256(plan, payload: dict, label: str) -> list[str]:
         for it in timed:
             st = time_to_minutes(it.start_time)
             gap = st - cursor
-            # Meals pushed to valid hours leave intentional afternoon holes —
-            # only flag gaps before attractions/transits.
-            if (
-                gap >= 150
-                and _tv(it) == ItemType.ATTRACTION.value
+            # Dinner is pushed to ≥17:30 by design — don't treat the pre-dinner
+            # wait as an unexplained blank (client cares about dead air before
+            # attractions / legs, not before a scheduled evening meal).
+            if gap >= 120 and _tv(it) in (
+                ItemType.ATTRACTION.value, ItemType.TRANSIT.value,
             ):
                 covered = any(
                     _tv(ft) == ItemType.FREE_TIME.value
-                    and time_to_minutes(ft.start_time) < st
-                    and time_to_minutes(ft.end_time) > cursor
+                    and time_to_minutes(ft.start_time) <= cursor + 5
+                    and time_to_minutes(ft.end_time) >= st - 5
                     for ft in timed
                     if getattr(ft, "start_time", None)
                 )
-                # Also accept a meal sitting in the hole (lunch/dinner bridge).
                 covered = covered or any(
                     _tv(m) in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value)
                     and time_to_minutes(m.start_time) < st

@@ -16,6 +16,7 @@ from app.domain.scoring.family_fit import (
     is_child_oriented_attraction,
     should_exclude_by_target_group,
     restaurant_matches_target_group,
+    restaurant_hard_denied_for_group,
 )
 from app.domain.scoring.profile_poi_rules import (
     should_deny_poi_for_profile,
@@ -1855,15 +1856,24 @@ def _tiered_nearby_restaurants(
     radii_km: tuple[float, ...] = (1.0, 2.0, 3.5),
     limit: int = 3,
 ) -> list[dict]:
-    """FIX #235: tiered meal proximity — prefer 1 km, widen before returning empty."""
+    """FIX #235/#257: tiered meal proximity + recommended_for / target_group."""
     if not restaurants or not last_poi:
         return []
     lat = last_poi.get("lat")
     lng = last_poi.get("lng")
-    candidates = [
+    user = (context or {}).get("user") or {}
+    if not user.get("target_group") and (context or {}).get("target_group"):
+        user = {**user, "target_group": context.get("target_group")}
+    geo_ok = [
         r for r in restaurants
         if _meal_restaurant_geo_ok(r, last_poi, context)
+        and not restaurant_hard_denied_for_group(r, user)
     ]
+    matched = [
+        r for r in geo_ok
+        if not user.get("target_group") or restaurant_matches_target_group(r, user)
+    ]
+    candidates = matched or geo_ok
     # FIX #254: missing GPS must still respect geo filter (no Wieliczka after Wawel).
     if not lat or not lng:
         return [{**r} for r in candidates[:limit]]
@@ -2521,37 +2531,58 @@ def is_open(p, now, duration, season, context=None):
 
     oh = p.get("opening_hours")
     oh_seasonal = p.get("opening_hours_seasonal")
-    
+
+    # Extract date info from context (needed for hard bans even when hours missing).
+    year = month = day = weekday = None
+    if context and "date" in context:
+        date_obj = context["date"]
+        if hasattr(date_obj, "year"):
+            year, month, day = date_obj.year, date_obj.month, date_obj.day
+            weekday = date_obj.weekday()
+        elif isinstance(date_obj, str):
+            from datetime import datetime
+            dt = datetime.strptime(date_obj, "%Y-%m-%d")
+            year, month, day = dt.year, dt.month, dt.day
+            weekday = dt.weekday()
+        else:
+            year, month, day, weekday = date_obj
+
+    # FIX #257: hard closed rules when Excel hours are absent (Wrocław client).
+    _pname_hard = safe_str(p.get("name", "")).lower()
+    if weekday == 0 and any(
+        k in _pname_hard
+        for k in (
+            "muzeum narodowe",
+            "muzeum przyrodnicze",
+            "pana tadeusza",
+        )
+    ):
+        return False
+    if month in (11, 12, 1, 2, 3) and any(
+        k in _pname_hard
+        for k in (
+            "muzeum powozów", "muzeum powozow", "galowice",
+            "ponton", "spływ", "splyw", "złotniki", "zlotniki",
+        )
+    ):
+        return False
+    if context and is_seasonal_water_poi_out_of_season(p, context):
+        return False
+
     # FIX #33 (18.05.2026): Only skip validation when BOTH opening_hours and seasonal are absent.
     # Previously: `if not oh: return True` — this incorrectly ignored oh_seasonal!
     # Example: KULIGI has oh=None but oh_seasonal=[{winter hours}] → must check seasonal.
     if not oh and not oh_seasonal:
         return True
-    
+
     # Extract date info from context
-    if not context or "date" not in context:
+    if year is None:
         # No date context - use legacy simple validation
         print(f"[is_open DEBUG] No date context - using legacy validation for {p.get('Name', 'UNKNOWN')}")
         day_start = time_to_minutes("09:00")
         day_end = time_to_minutes("20:00")
         return (now >= day_start) and (now < day_end)
-    
-    # Parse context date - handle datetime objects, tuples, and strings
-    date_obj = context["date"]
-    if hasattr(date_obj, 'year'):
-        # It's a datetime object
-        year, month, day = date_obj.year, date_obj.month, date_obj.day
-        weekday = date_obj.weekday()
-    elif isinstance(date_obj, str):
-        # It's a string "YYYY-MM-DD"
-        from datetime import datetime
-        dt = datetime.strptime(date_obj, "%Y-%m-%d")
-        year, month, day = dt.year, dt.month, dt.day
-        weekday = dt.weekday()
-    else:
-        # It's a tuple (year, month, day, weekday)
-        year, month, day, weekday = date_obj
-    
+
     current_date = (year, month, day)
     
     # CLIENT FEEDBACK (30.01.2026 - Requirements #2-3): Debug opening_hours validation
@@ -2684,6 +2715,7 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("hydropolis", 120),
         ("zajezdnia", 120),
         ("muzeum przyrodnicze", 90),
+        ("pana tadeusza", 90),
         ("park mamuta", 90),
         # FIX #256: aquapark must not hit the generic "park " 90-min category cap.
         ("aquapark", 180),
@@ -6098,11 +6130,17 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if restaurants_available:
                     # FIX #65 (22.05.2026): meal_type can be comma-separated e.g. "lunch,dinner"
                     # Use "in" check instead of exact equality
-                    lunch_restaurants = [
+                    _lunch_all = [
                         r for r in restaurants_available
                         if "lunch" in (r.get("meal_type") or "").lower()
-                        and restaurant_matches_target_group(r, user)
+                        and not restaurant_hard_denied_for_group(r, user)
                     ]
+                    _lunch_match = [
+                        r for r in _lunch_all
+                        if restaurant_matches_target_group(r, user)
+                    ]
+                    # Prefer recommended_for matches; fall back when city data omits group.
+                    lunch_restaurants = _lunch_match or _lunch_all
 
                     # FIX #59 (22.05.2026): Cuisine filter for local_food_experience preference
                     # Problem: Giga Buła (burgers/american) suggested to users who prefer local cuisine
@@ -6322,11 +6360,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if restaurants_available:
                     # FIX #65 (22.05.2026): meal_type can be comma-separated e.g. "lunch,dinner"
                     # Use "in" check instead of exact equality
-                    dinner_restaurants = [
+                    _dinner_all = [
                         r for r in restaurants_available
                         if "dinner" in (r.get("meal_type") or "").lower()
-                        and restaurant_matches_target_group(r, user)
+                        and not restaurant_hard_denied_for_group(r, user)
                     ]
+                    _dinner_match = [
+                        r for r in _dinner_all
+                        if restaurant_matches_target_group(r, user)
+                    ]
+                    dinner_restaurants = _dinner_match or _dinner_all
 
                     # FIX #242 Warszawa: kolacja „regionalne smaki” bez włoskiej/fast-food
                     user_prefs_for_dinner = user.get("preferences", [])

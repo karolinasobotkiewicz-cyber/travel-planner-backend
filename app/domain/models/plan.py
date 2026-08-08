@@ -259,6 +259,10 @@ class RestaurantSuggestion(BaseModel):
     avg_meal_cost: int | None = Field(default=None, ge=0, description="Średni koszt posiłku PLN")
     city: str = Field(default="", description="Miasto restauracji")
     pro_tip: str | None = Field(default=None, description="Pro tip dla restauracji (jeśli dostępne)")
+    target_groups: List[str] = Field(
+        default_factory=list,
+        description="Excel recommended_for / target groups",
+    )
 
 
 class LunchBreakItem(BaseModel):
