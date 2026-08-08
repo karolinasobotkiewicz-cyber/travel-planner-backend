@@ -3930,7 +3930,8 @@ class PlanService:
                     _fitems, day_num=day_plan.day,
                 )
                 _fitems = self._remove_timeline_overlaps(_fitems, day_plan.day)
-                # FIX #257: parking absolute last on Wrocław outer finalize.
+                # FIX #257/257b: parking absolute last — no ensure_transits /
+                # destination rewrite after this (they recreate teleports).
                 _fitems = self._enforce_car_parking_logistics(
                     _fitems, _final_coord_map, _day_ctx, day_num=day_plan.day,
                 )
@@ -3941,6 +3942,10 @@ class PlanService:
                     _fitems, day_num=day_plan.day,
                 )
                 _fitems = self._remove_timeline_overlaps(_fitems, day_plan.day)
+                # Re-run parking after fit/strip — fit can leave car.from wrong.
+                _fitems = self._enforce_car_parking_logistics(
+                    _fitems, _final_coord_map, _day_ctx, day_num=day_plan.day,
+                )
                 _fitems = self._sort_items_by_time(_fitems)
             # Register trip-wide state from the FINAL day only.
             from app.domain.scoring.profile_poi_rules import (
@@ -10270,6 +10275,9 @@ class PlanService:
                 items, day_num=day_num,
             )
             items = self._remove_timeline_overlaps(items, day_num)
+            items = self._enforce_car_parking_logistics(
+                items, poi_coords, ctx, day_num=day_num,
+            )
 
         return self._sort_items_by_time(items)
 
@@ -12008,11 +12016,15 @@ class PlanService:
             to = (getattr(it, "to_location", None) or "").strip()
 
             if _is_walk(it):
-                if car_parked_at and (
-                    _norm(frm) == _norm(car_parked_at)
-                    or _norm(to) != _norm(car_parked_at)
-                ):
-                    walked_away = True
+                if car_parked_at:
+                    if _norm(to) == _norm(car_parked_at):
+                        # FIX #257b: walk back to the parked car clears the flag.
+                        walked_away = False
+                    elif (
+                        _norm(frm) == _norm(car_parked_at)
+                        or _norm(to) != _norm(car_parked_at)
+                    ):
+                        walked_away = True
                 out.append(it)
                 continue
 
@@ -12020,10 +12032,10 @@ class PlanService:
                 out.append(it)
                 continue
 
-            # Car leg after walking away from a different park spot → return first.
+            # FIX #257b: ANY car leg that does not start at the parked spot is a
+            # teleport (missing walk/transit after return-to-car still counts).
             if (
                 car_parked_at
-                and walked_away
                 and frm
                 and _norm(frm) != _norm(car_parked_at)
             ):
@@ -12046,38 +12058,77 @@ class PlanService:
                     car_st = 12 * 60
                 walk_st = max(0, car_st - walk_min)
                 walk_en = car_st
-                try:
-                    ret = TransitItem(
-                        start_time=minutes_to_time(walk_st),
-                        end_time=minutes_to_time(walk_en),
-                        duration_min=walk_en - walk_st,
-                        mode=TransitMode.WALK,
-                        from_location=frm,
-                        to_location=car_parked_at,
-                        distance_km=round(dist_km, 3),
-                        routing_source="estimated_walk",
-                    )
-                    if c_from and c_car:
+                # Prefer retargeting an existing walk from this spot (avoids
+                # duplicate overlapping return legs — FIX #257b / test-08).
+                retargeted = False
+                for j in range(len(out) - 1, -1, -1):
+                    prev = out[j]
+                    if getattr(prev, "type", None) != ItemType.TRANSIT:
+                        if _is_timeline_attraction(prev):
+                            break
+                        continue
+                    if not _is_walk(prev):
+                        break
+                    p_frm = (getattr(prev, "from_location", None) or "").strip()
+                    p_to = (getattr(prev, "to_location", None) or "").strip()
+                    if _norm(p_frm) == _norm(frm) or _norm(p_to) == _norm(frm):
                         try:
-                            ret = ret.model_copy(update={
-                                "geometry": [
-                                    [c_from[1], c_from[0]],
-                                    [c_car[1], c_car[0]],
-                                ],
-                                "geometry_latlng": [
-                                    [c_from[0], c_from[1]],
-                                    [c_car[0], c_car[1]],
-                                ],
-                            })
+                            upd = {
+                                "from_location": p_frm or frm,
+                                "to_location": car_parked_at,
+                                "end_time": minutes_to_time(walk_en),
+                                "start_time": minutes_to_time(walk_st),
+                                "duration_min": walk_en - walk_st,
+                                "distance_km": round(dist_km, 3),
+                                "routing_source": "estimated_walk",
+                            }
+                            out[j] = prev.model_copy(update=upd)
                         except Exception:
-                            pass
-                    out.append(ret)
-                    print(
-                        f"[FIX #256] Day {day_num}: return-to-car walk "
-                        f"{frm} → {car_parked_at} ({walk_min}m)"
-                    )
-                except Exception as exc:
-                    print(f"[FIX #256] Day {day_num}: return-to-car failed: {exc}")
+                            try:
+                                prev.to_location = car_parked_at
+                                prev.from_location = p_frm or frm
+                            except Exception:
+                                pass
+                        retargeted = True
+                        print(
+                            f"[FIX #257b] Day {day_num}: retarget walk "
+                            f"{p_frm}→{p_to} to return-to-car → {car_parked_at}"
+                        )
+                        break
+                    break
+                if not retargeted:
+                    try:
+                        ret = TransitItem(
+                            start_time=minutes_to_time(walk_st),
+                            end_time=minutes_to_time(walk_en),
+                            duration_min=walk_en - walk_st,
+                            mode=TransitMode.WALK,
+                            from_location=frm,
+                            to_location=car_parked_at,
+                            distance_km=round(dist_km, 3),
+                            routing_source="estimated_walk",
+                        )
+                        if c_from and c_car:
+                            try:
+                                ret = ret.model_copy(update={
+                                    "geometry": [
+                                        [c_from[1], c_from[0]],
+                                        [c_car[1], c_car[0]],
+                                    ],
+                                    "geometry_latlng": [
+                                        [c_from[0], c_from[1]],
+                                        [c_car[0], c_car[1]],
+                                    ],
+                                })
+                            except Exception:
+                                pass
+                        out.append(ret)
+                        print(
+                            f"[FIX #256] Day {day_num}: return-to-car walk "
+                            f"{frm} → {car_parked_at} ({walk_min}m)"
+                        )
+                    except Exception as exc:
+                        print(f"[FIX #256] Day {day_num}: return-to-car failed: {exc}")
                 try:
                     it = it.model_copy(update={"from_location": car_parked_at})
                 except Exception:

@@ -96,14 +96,14 @@ def _audit_wroclaw_256(plan, payload: dict, label: str) -> list[str]:
             frm = (getattr(it, "from_location", "") or "").strip()
             to = (getattr(it, "to_location", "") or "").strip()
             if "walk" in mode:
-                if car_at and frm.lower() == car_at.lower():
-                    walked = True
-                elif car_at and to.lower() != car_at.lower():
+                if car_at and to.lower() == car_at.lower():
+                    walked = False  # returned to parked car
+                elif car_at and (
+                    frm.lower() == car_at.lower() or to.lower() != car_at.lower()
+                ):
                     walked = True
             elif "car" in mode:
-                if car_at and walked and frm.lower() != car_at.lower():
-                    # Allow if the immediately previous timed item is a
-                    # return-to-car walk ending at the parking spot.
+                if car_at and frm.lower() != car_at.lower():
                     issues.append(
                         f"{label} day{day.day}: car teleport "
                         f"(parked={car_at!r}, start={frm!r})"
