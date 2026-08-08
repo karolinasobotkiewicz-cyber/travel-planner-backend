@@ -264,10 +264,26 @@ def build_fallback_copy(poi: Dict[str, Any]) -> Tuple[str, Optional[str]]:
         return desc, tip
     if "bajgl" in (desc or "").lower() and "obwarzank" in name_l:
         desc = "Muzeum Obwarzanka Krakowskiego — historia i wypiek symbolu Krakowa."
+    # FIX #256: GoJump Excel row reused Kraków copy for Wrocław.
+    if "gojump" in name_l and any(
+        k in (desc or "").lower() for k in ("w krakowie", "w kraków", "w krakow")
+    ):
+        city_bit = city or "mieście"
+        desc = (
+            f"GoJump to duży park trampolin {loc.strip() or ('w ' + city_bit)} "
+            f"— strefy dla różnych poziomów zaawansowania."
+        )
+    if "wena" in name_l and tip and any(
+        k in tip.lower() for k in ("umówieniu", "umowieniu", "wcześniejszym", "wczesniejszym")
+    ):
+        tip = "Sprawdź aktualne godziny na stronie muzeum przed wizytą."
     if tip and "koronach drzew" in tip.lower() and "linowy" not in name_l:
         tip = None
-    if tip and any(k in tip.lower() for k in ("promocji rodzinnych", "dla rodzin", "z dziećmi")):
-        # Couples / adult aquaparks should not get family promo tips.
+    if tip and any(k in tip.lower() for k in (
+        "promocji rodzinnych", "dla rodzin", "z dziećmi", "dla dzieci",
+        "dzieci i młodzież", "dzieci i mlodziez", "warsztat", "warsztaty dla",
+    )):
+        # Couples / adult plans must not get kids/family promo tips.
         tip = None
     if tip and any(k in tip.lower() for k in ("pokaz", "fontann")) and "pergola" in name_l:
         # Winter callers strip season elsewhere; keep tip neutral year-round.

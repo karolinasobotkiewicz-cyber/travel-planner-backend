@@ -80,6 +80,8 @@ def filter_by_season(pois, current_date):
                 # FIX #255: summer beaches / urban lakes in February.
                 "zalew bagry", "bagry", "plaża puszczykowo", "plaza puszczykowo",
                 "plaża miejska", "plaza miejska", "kąpielisko", "kapielisko",
+                # FIX #256 Wrocław: outdoor rope park closed in winter (client).
+                "park linowy partynice", "partynice",
             )
         ):
             continue

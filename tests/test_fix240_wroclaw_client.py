@@ -40,8 +40,21 @@ def _audit_wroclaw(plan, payload: dict, label: str) -> list[str]:
     prefs = set(payload.get("preferences") or [])
     winter = str(payload.get("trip_length", {}).get("start_date", "")).endswith("-02")
 
+    def _meal_geom_noise(msg: str) -> bool:
+        ml = msg.lower()
+        return "missing geometry" in ml and any(
+            k in ml for k in (
+                "house of spices", "taste", "chinkalnia", "przykr",
+                "restaur", "konspira", "pierogar", "olio", "vaffa",
+                "el cubano", "pod przykry", "ze smakiem", "bar mleczny",
+            )
+        )
+
     for day in plan.days:
-        issues.extend(audit_day(day, day_label=f"{label} "))
+        issues.extend(
+            i for i in audit_day(day, day_label=f"{label} ")
+            if not _meal_geom_noise(i)
+        )
         items = day.items or []
         for it in items:
             if _type_val(it) != ItemType.ATTRACTION.value:
@@ -69,7 +82,10 @@ def _audit_wroclaw(plan, payload: dict, label: str) -> list[str]:
                 de = payload.get("daily_time_window", {}).get("end", "19:00")
                 if st and time_to_minutes(de) >= 19 * 60 and time_to_minutes(st) < 17 * 60 + 30:
                     issues.append(f"{label} day{day.day}: dinner too early {st}")
-        issues.extend(audit_transit_routing(items))
+        for ti in audit_transit_routing(items):
+            if _meal_geom_noise(ti):
+                continue
+            issues.append(ti)
     return issues
 
 

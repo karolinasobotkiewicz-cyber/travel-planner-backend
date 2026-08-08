@@ -2608,7 +2608,7 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
     _named_caps = (
         ("sky tower", 60),
         ("punkt widokowy", 60),
-        ("zatoka gondoli", 75),
+        ("zatoka gondoli", 60),
         ("pergola", 75),
         ("laser tag", 120),
         ("paintball", 120),
@@ -2670,6 +2670,23 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("św. anny", 20),
         ("sw. anny", 20),
         ("sw anny", 20),
+        # FIX #256 Wrocław: stop stretch-to-day_end on micro / mid stops.
+        ("galeria neon", 45),
+        ("neon side", 45),
+        ("most tumski", 45),
+        ("aula leopoldina", 60),
+        ("aula ", 60),
+        ("muzeum powozów", 60),
+        ("muzeum powozow", 60),
+        ("muzeum topacz", 60),
+        ("topacz", 60),
+        ("loopy", 120),
+        ("hydropolis", 120),
+        ("zajezdnia", 120),
+        ("muzeum przyrodnicze", 90),
+        ("park mamuta", 90),
+        # FIX #256: aquapark must not hit the generic "park " 90-min category cap.
+        ("aquapark", 180),
     )
     for marker, cap in _named_caps:
         if marker in name:
@@ -2680,8 +2697,10 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         return 60
     if any(k in name for k in ("katedra", "bazylika", "kościół", "kosciol")):
         return 90
-    if any(k in name for k in ("park ", "ogród", "ogrod", "bulwar", "planty", "wyspa")):
-        return 90
+    # FIX #256: "aquapark" contains "park" — exclude water parks from urban park cap.
+    if "aquapark" not in name and "park wodny" not in name and "wodny park" not in name:
+        if any(k in name for k in ("park ", "ogród", "ogrod", "bulwar", "planty", "wyspa")):
+            return 90
     if "muzeum" in name or "museum" in poi_type:
         return 120
     if any(k in name for k in ("trampolin", "jump", "gojump")):
