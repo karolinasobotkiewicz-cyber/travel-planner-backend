@@ -161,6 +161,17 @@ def _last_attraction_name(items: list) -> str:
     return ""
 
 
+def _city_needs_car_gap_polish(city: str) -> bool:
+    """FIX #257/#258: Wrocław + Warszawa — car parking last, morning/midday fill.
+
+    Do NOT broaden to other cities without audits (KRK previously regressed).
+    """
+    c = (city or "").lower()
+    return any(
+        k in c for k in ("wrocław", "wroclaw", "warszawa", "warsaw")
+    )
+
+
 def _item_type_value(item) -> str:
     """Normalize ItemType enum / raw string."""
     t = getattr(item, "type", None)
@@ -3805,11 +3816,11 @@ class PlanService:
                 )
                 _fitems = self._remove_timeline_overlaps(_fitems, day_plan.day)
                 _fitems = self._sort_items_by_time(_fitems)
-            # FIX #256: Wrocław-only final guards (other cities keep FIX #255 path).
+            # FIX #256/#258: Wrocław + Warszawa final guards (other cities: FIX #255).
             _city256 = str(
                 (_day_ctx or {}).get("requested_city") or _requested_city or ""
             ).lower()
-            _is_wro256 = "wrocław" in _city256 or "wroclaw" in _city256
+            _is_wro256 = _city_needs_car_gap_polish(_city256)
             if _is_wro256:
                 _n_before_eve256 = sum(
                     1 for _it in _fitems if _is_timeline_attraction(_it)
@@ -7475,12 +7486,25 @@ class PlanService:
             poi = by_id.get(getattr(it, "poi_id", "")) or by_name.get(getattr(it, "name", ""), {})
             if is_evening_only_poi(poi) or is_evening_only_poi({"name": getattr(it, "name", "")}):
                 st = getattr(it, "start_time", None)
-                if st and time_to_minutes(st) < 17 * 60:
-                    print(
-                        f"[FIX #240] Day {day_num}: stripped morning evening-only "
-                        f"{getattr(it, 'name', '?')}"
+                if st:
+                    st_m = time_to_minutes(st)
+                    _nm_eve = (getattr(it, "name", "") or "").lower()
+                    # FIX #258: Park Fontann shows ~21:30 — strip anything before 20:00.
+                    _fontann = any(
+                        k in _nm_eve
+                        for k in (
+                            "park fontann",
+                            "fontanna multimedialna",
+                            "multimedialny park fontann",
+                        )
                     )
-                    continue
+                    _cut = 20 * 60 if _fontann else 17 * 60
+                    if st_m < _cut:
+                        print(
+                            f"[FIX #240/#258] Day {day_num}: stripped early evening-only "
+                            f"{getattr(it, 'name', '?')} at {st}"
+                        )
+                        continue
             out.append(it)
         return out
 
@@ -8264,7 +8288,7 @@ class PlanService:
         day_start_str = context.get("day_start") or "09:00"
         day_start_min = time_to_minutes(day_start_str)
         _city_bf = str(context.get("requested_city") or "").lower()
-        _is_wro_bf = "wrocław" in _city_bf or "wroclaw" in _city_bf
+        _is_wro_bf = _city_needs_car_gap_polish(_city_bf)
 
         first_block_min = None
         for it in items:
@@ -8290,15 +8314,15 @@ class PlanService:
                 # FIX #255b: late-start sparse days on long trips (KAT test-08 d7).
                 or (_num_days_bf >= 7 and n_attr < max(min_attr, 3))
                 or (n_attr < min_attr and first_block_min >= 13 * 60)
-                # FIX #256: Wrocław — fill ≥90 min unexplained morning holes.
+                # FIX #256/#258: Wrocław/Warszawa — fill ≥90 min morning holes.
                 or (
                     _is_wro_bf
                     and (first_block_min - day_start_min >= 90)
                 )
             )
         )
-        # FIX #257: Wrocław — also fill mid-day holes ≥90 min even when day
-        # already has enough attractions (client: 1–5h unexplained blanks).
+        # FIX #257/#258: Wrocław/Warszawa — fill mid-day holes ≥90 min even when
+        # day already has enough attractions (client: unexplained blanks).
         need_midday = False
         if _is_wro_bf:
             _blocks_md: list[tuple[int, int]] = []
@@ -8503,10 +8527,10 @@ class PlanService:
                     poi, slot_start_min, dur, context.get("season", "all"), context
                 ):
                     continue
-                # FIX #256: Wrocław — never seed Neon/evening-only into daytime.
+                # FIX #256/#258: never seed Neon/Fontann/evening-only into daytime.
                 _city_pick = str(context.get("requested_city") or "").lower()
                 if (
-                    ("wrocław" in _city_pick or "wroclaw" in _city_pick)
+                    _city_needs_car_gap_polish(_city_pick)
                     and slot_start_min < 17 * 60
                 ):
                     from app.domain.planner.engine import (
@@ -10211,11 +10235,11 @@ class PlanService:
         )
         items = self._absorb_idle_gaps(items, all_pois_dict, ctx, day_num=day_num)
         items = self._remove_timeline_overlaps(items, day_num)
-        # FIX #256/#257: Wrocław-only post-absorb polish.
+        # FIX #256/#257/#258: Wrocław + Warszawa post-absorb polish.
         # Parking logistics MUST be last — any routing after it rewrites car
         # legs and recreates teleport contradictions the client reported.
         _city250 = str((ctx or {}).get("requested_city") or "").lower()
-        if "wrocław" in _city250 or "wroclaw" in _city250:
+        if _city_needs_car_gap_polish(_city250):
             items = self._cap_stretched_attraction_durations(items, day_num=day_num)
             items = self._enforce_minimum_dinner_time(
                 items, ctx.get("day_end") or "19:00", day_num=day_num,

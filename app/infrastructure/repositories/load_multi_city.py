@@ -77,7 +77,7 @@ def _safe_str(val, default='') -> str:
     return str(val).strip() if str(val).strip() else default
 
 def _safe_child_age(raw):
-    """Safely parse child age from Excel - returns None if not a valid int."""
+    """Parse minimum child age from Excel (int, or range like '6-10,10-14')."""
     if raw is None or (isinstance(raw, float) and pd.isna(raw)):
         return None
     if isinstance(raw, pd.Timestamp):
@@ -88,7 +88,15 @@ def _safe_child_age(raw):
     try:
         return int(float(s))
     except (ValueError, TypeError):
-        return None
+        pass
+    # FIX #258: ranges e.g. "6-10,10-14" / "7-15" → minimum age
+    m = re.search(r"(\d+)", s)
+    if m:
+        try:
+            return int(m.group(1))
+        except (ValueError, TypeError):
+            return None
+    return None
 
 
 def _safe_float(raw, default=None):
@@ -168,7 +176,17 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
     
     # Convert to list of dicts compatible with engine.py
     poi_list = []
-    
+    from app.infrastructure.repositories.load_zakopane import (
+        _parse_seasonal_list,
+        _convert_seasonal_to_json,
+    )
+    # FIX #258: enable seasonal hours for Warszawa only for now.
+    # Global enable closed Mon museums city-wide and caused KRK old-town repeats
+    # on Mondays (previously treated as always-open). Expand city-by-city later.
+    _enable_seasonal_hours = any(
+        _normalize_city(c) in ("warszawa", "warsaw") for c in (cities or [])
+    )
+
     for idx, row in df_filtered.iterrows():
         # Skip rows with missing critical data
         if pd.isna(row.get('Name')) or pd.isna(row.get('Lat')) or pd.isna(row.get('Lng')):
@@ -182,10 +200,20 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
         _pop_score = float(row.get('popularity_score', 0.5)) if pd.notna(row.get('popularity_score')) else 0.5
         _name = row.get('Name', '')
         # FIX #75: opening_hours = '{}' is a truthy string → engine treats POI as closed.
-        # Clear it so is_open() sees both oh=None and oh_seasonal=None → returns True (always open).
+        # Clear empty placeholders. FIX #258: load opening_hours_seasonal for Warszawa
+        # (was never loaded → is_open always True → Wilanów/Fontann/BUW bugs).
         _oh_raw = row.get('Opening hours', None)
         _oh = str(_oh_raw).strip() if _oh_raw is not None and pd.notna(_oh_raw) else None
         _oh = None if not _oh or _oh in ('{}', '[]', 'None', 'nan', '') else _oh
+
+        _seasonal_json = None
+        if _enable_seasonal_hours:
+            _seasonal_raw = _safe_str(row.get('opening_hours_seasonal'))
+            _seasonal_json = _parse_seasonal_list(_seasonal_raw) if _seasonal_raw else None
+            if _seasonal_json is None and _seasonal_raw:
+                _old_seasonal = _convert_seasonal_to_json(_seasonal_raw)
+                if _old_seasonal:
+                    _seasonal_json = [_old_seasonal]
 
         _raw_id = row.get('ID')
         _id = str(_raw_id) if _raw_id is not None and pd.notna(_raw_id) and str(_raw_id).strip() not in ('', 'nan') else f"poi_{idx}"
@@ -215,8 +243,9 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             "time_max": _tmax,
             "best_time": _safe_str(row.get('recommended_time_of_day'), 'any'),
             
-            # Opening hours  # FIX #75: '{}' → None so all multi_city POIs pass is_open() check
+            # Opening hours — FIX #258: seasonal hours drive is_open for multi-city
             "opening_hours": _oh,
+            "opening_hours_seasonal": _seasonal_json,
             "opening_days": _safe_str(row.get('opening_days'), 'Mon-Sun'),
             
             # Popularity & scoring  # FIX #75: add "popularity" alias used by classify_poi()

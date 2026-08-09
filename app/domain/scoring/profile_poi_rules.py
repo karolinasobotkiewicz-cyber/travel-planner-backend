@@ -140,6 +140,11 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     )):
         return True
 
+    # FIX #258: MiniCiti is for ages 7–15 — never for toddlers (boosts used to win).
+    if any(k in name for k in ("miniciti", "mini citi")):
+        if child_age is not None and isinstance(child_age, (int, float)) and child_age < 7:
+            return True
+
     # FIX #233 Kraków family_kids — Fabryka Schindlera / Stare Miasto core
     if tg == "family_kids":
         if any(k in name for k in (

@@ -2547,7 +2547,7 @@ def is_open(p, now, duration, season, context=None):
         else:
             year, month, day, weekday = date_obj
 
-    # FIX #257: hard closed rules when Excel hours are absent (Wrocław client).
+    # FIX #257/#258: hard closed rules when Excel hours are absent / incomplete.
     _pname_hard = safe_str(p.get("name", "")).lower()
     if weekday == 0 and any(
         k in _pname_hard
@@ -2555,7 +2555,20 @@ def is_open(p, now, duration, season, context=None):
             "muzeum narodowe",
             "muzeum przyrodnicze",
             "pana tadeusza",
+            # FIX #258 Warszawa — Monday closures (client + Excel)
+            "muzeum fabryki norblina",
+            "norblina",
+            "muzeum gazowni",
+            "gazowni warszawskiej",
         )
+    ):
+        return False
+    # Zamek Królewski (Warszawa) closed Mon — not Ogrody / not Wawel (Kraków).
+    if weekday == 0 and (
+        "zamek królewski" in _pname_hard or "zamek krolewski" in _pname_hard
+    ) and not any(
+        k in _pname_hard
+        for k in ("ogród", "ogrod", "ogrody", "park", "wawel")
     ):
         return False
     if month in (11, 12, 1, 2, 3) and any(
@@ -2566,6 +2579,22 @@ def is_open(p, now, duration, season, context=None):
         )
     ):
         return False
+    # FIX #258: Multimedialny Park Fontann — only weekend evening shows (Excel).
+    # Evening-only gate alone still allowed Thu 18:00; hard-ban weekdays / daytime.
+    if any(
+        k in _pname_hard
+        for k in (
+            "multimedialny park fontann",
+            "park fontann",
+            "fontanna multimedialna",
+        )
+    ):
+        if weekday is not None and weekday not in (5, 6):  # Sat/Sun only
+            return False
+        if now < 20 * 60:  # shows start ~20:30+
+            return False
+        if month is not None and month not in (5, 6, 7, 8, 9):
+            return False
     if context and is_seasonal_water_poi_out_of_season(p, context):
         return False
 
@@ -2719,6 +2748,10 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("park mamuta", 90),
         # FIX #256: aquapark must not hit the generic "park " 90-min category cap.
         ("aquapark", 180),
+        # FIX #258 Warszawa: Park Fontann show ≈ 30 min.
+        ("multimedialny park fontann", 30),
+        ("park fontann", 30),
+        ("fontanna multimedialna", 30),
     )
     for marker, cap in _named_caps:
         if marker in name:

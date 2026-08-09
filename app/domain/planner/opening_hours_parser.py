@@ -349,10 +349,16 @@ def is_poi_open_at_time(
     # Don't arrive just 1 minute before close - ensure at least 15 min buffer
     open_start, open_end = weekday_hours[weekday]
     visit_end = start_time_minutes + duration_minutes
-    
-    # Safety margin: closing at 18:00 means last entry at 17:45
-    effective_close_time = open_end - 15
-    
+    window = open_end - open_start
+
+    # FIX #258: short show windows (e.g. Park Fontann 21:30-22:00 = 30 min)
+    # cannot apply a 15-min early-close margin — that makes scheduling impossible.
+    if window <= 45:
+        effective_close_time = open_end
+    else:
+        # Safety margin: closing at 18:00 means last entry at 17:45
+        effective_close_time = open_end - 15
+
     return start_time_minutes >= open_start and visit_end <= effective_close_time
 
 

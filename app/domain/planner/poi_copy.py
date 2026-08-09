@@ -258,6 +258,16 @@ def build_fallback_copy(poi: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     name_l = name.lower()
 
     # FIX #254: hard overrides for known bad Excel / generic copy.
+    # FIX #258: Wedel — classic café is on Szpitalna; POI row is aleja Wedla 5.
+    if any(k in name_l for k in ("wedel", "pijalnia czekolady")):
+        addr = str(poi.get("address") or poi.get("Address") or "").strip()
+        if "wedla" in addr.lower() or "warsz" in (city or "").lower() or not addr:
+            desc = (
+                "Pijalnia Czekolady E. Wedel — muzeum i degustacja czekolady "
+                "przy alei Wedla 5 w Warszawie (Praga)."
+            )
+            tip = tip or "Sprawdź godziny i bilety online — to lokal przy alei Wedla 5, nie przy ul. Szpitalnej."
+            return desc, tip
     if "obwarzank" in name_l:
         desc = "Muzeum Obwarzanka Krakowskiego — historia i wypiek symbolu Krakowa."
         tip = "Spróbuj świeżego obwarzanka na miejscu — to lokalny smak Krakowa."
