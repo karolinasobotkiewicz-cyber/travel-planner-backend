@@ -180,11 +180,12 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
         _parse_seasonal_list,
         _convert_seasonal_to_json,
     )
-    # FIX #258: enable seasonal hours for Warszawa only for now.
+    # FIX #258/#259: seasonal hours for Warszawa + Wrocław only.
     # Global enable closed Mon museums city-wide and caused KRK old-town repeats
     # on Mondays (previously treated as always-open). Expand city-by-city later.
     _enable_seasonal_hours = any(
-        _normalize_city(c) in ("warszawa", "warsaw") for c in (cities or [])
+        _normalize_city(c) in ("warszawa", "warsaw", "wroclaw", "wrocław")
+        for c in (cities or [])
     )
 
     for idx, row in df_filtered.iterrows():

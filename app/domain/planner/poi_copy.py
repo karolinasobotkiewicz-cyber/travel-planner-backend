@@ -258,6 +258,12 @@ def build_fallback_copy(poi: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     name_l = name.lower()
 
     # FIX #254: hard overrides for known bad Excel / generic copy.
+    # FIX #259: Park Mamuta is free — never tip "kup bilet online".
+    if "park mamuta" in name_l or "mamuta" in name_l:
+        if tip and any(k in tip.lower() for k in ("bilet", "ticket", "kup ")):
+            tip = "Wejście darmowe — warto sprawdzić aktualne godziny przed wizytą."
+        if not desc:
+            desc = "Park Mamuta — plenerowa ekspozycja rzeźb dinozaurów, wstęp wolny."
     # FIX #258: Wedel — classic café is on Szpitalna; POI row is aleja Wedla 5.
     if any(k in name_l for k in ("wedel", "pijalnia czekolady")):
         addr = str(poi.get("address") or poi.get("Address") or "").strip()

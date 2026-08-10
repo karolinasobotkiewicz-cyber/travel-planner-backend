@@ -2595,6 +2595,24 @@ def is_open(p, now, duration, season, context=None):
             return False
         if month is not None and month not in (5, 6, 7, 8, 9):
             return False
+    # FIX #259 Wrocław: winter outdoor rope park (belt-and-suspenders vs seasonality).
+    if month in (11, 12, 1, 2, 3) and "partynice" in _pname_hard:
+        return False
+    # FIX #259: Panorama / Narodowe (Wrocław) — winter afternoon close ~16:00
+    # when seasonal hours missing. Name-scoped to avoid KRK Muzeum Narodowe.
+    if month in (11, 12, 1, 2, 3) and not oh_seasonal:
+        _visit_end = now + int(duration or 0)
+        if "panorama rac" in _pname_hard and (
+            now >= 16 * 60 or _visit_end > 16 * 60
+        ):
+            return False
+        if (
+            "muzeum narodowe" in _pname_hard
+            and ("wrocław" in _pname_hard or "wroclaw" in _pname_hard)
+            and weekday == 4
+            and (now >= 16 * 60 or _visit_end > 16 * 60)
+        ):
+            return False
     if context and is_seasonal_water_poi_out_of_season(p, context):
         return False
 
@@ -2692,8 +2710,8 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("wyspa słodowa", 75),
         ("wyspa slodowa", 75),
         ("katedra", 90),
-        ("ostrów tumski", 120),
-        ("ostrow tumski", 120),
+        ("ostrów tumski", 90),
+        ("ostrow tumski", 90),
         ("muzeum uniwersytetu", 90),
         ("muzeum narodowe", 120),
         ("hala stulecia", 90),
@@ -2752,6 +2770,12 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("multimedialny park fontann", 30),
         ("park fontann", 30),
         ("fontanna multimedialna", 30),
+        # FIX #259 Wrocław: client — absurd / show-length stops.
+        ("panorama racławicka", 40),
+        ("panorama raclawicka", 40),
+        ("pitlane", 90),
+        ("most grunwaldzki", 45),
+        ("most tumski", 45),
     )
     for marker, cap in _named_caps:
         if marker in name:

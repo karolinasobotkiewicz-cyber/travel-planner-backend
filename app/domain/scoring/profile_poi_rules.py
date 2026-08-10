@@ -76,6 +76,15 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("bastion sakwowy", "wro_bastion"),
         ("most grunwaldzki", "wro_most_grunwaldzki"),
         ("centrum historii zajezdnia", "wro_zajezdnia"),
+        # FIX #259 Wrocław — trip-level icons (client: ×2/×3 duplicates)
+        ("muzeum narodowe", "wro_muzeum_narodowe"),
+        ("pergola", "wro_pergola"),
+        ("browar stu mostów", "wro_browar_stu"),
+        ("browar stu mostow", "wro_browar_stu"),
+        ("panorama racławicka", "wro_panorama"),
+        ("panorama raclawicka", "wro_panorama"),
+        ("kolejkowo", "wro_kolejkowo"),
+        ("movie gate", "wro_movie_gate"),
         # FIX #249 Poznań — powtarzalne fillery centrum
         ("stary rynek w poznaniu", "poz_stary_rynek"),
         ("ratusz w poznaniu", "poz_ratusz"),
@@ -1638,6 +1647,20 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
         delta -= 80.0
         if tg in ("seniors", "solo") and (style == "relax" or "relaxation" in prefs):
             delta -= 90.0
+
+    # FIX #259: Hala Stulecia is a weak cover for water + food + relaxation.
+    if "hala stulecia" in name and {
+        "water_attractions", "local_food_experience", "relaxation",
+    } <= prefs:
+        delta -= 120.0
+    # Prefer real green when relaxation / nature are requested but day is dry.
+    if ("relaxation" in prefs or "nature_landscape" in prefs) and any(
+        k in name for k in (
+            "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
+            "bulwar", "ogród japoński", "ogrod japonski", "lasek", "las strzeli",
+        )
+    ):
+        delta += 55.0
 
     if tg == "friends" and adv and {"history_mystery", "museum_heritage", "underground"} <= prefs:
         if "active_sport" not in prefs:
