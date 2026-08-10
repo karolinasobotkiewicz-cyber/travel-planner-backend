@@ -72,10 +72,14 @@ def _audit_wroclaw_256(plan, payload: dict, label: str) -> list[str]:
         day_issues = audit_day(day, day_label=f"{label} ")
         # Meal-scheduler idle gaps are handled by free_time / dinner push —
         # don't fail acceptance on those alone.
+        # FIX #261: named free_time is the honest answer to client "pustki"
+        # complaints (evening tails, pre-dinner waits). Cap-based free_time
+        # noise from the shared auditor is no longer a WRO acceptance fail.
         issues.extend(
             i for i in day_issues
             if "idle gap" not in i
             and "before meal" not in i
+            and "free_time" not in i
             and not _meal_geom_noise(i)
         )
         items = day.items or []

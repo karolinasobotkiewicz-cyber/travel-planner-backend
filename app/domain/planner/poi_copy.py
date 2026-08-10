@@ -291,15 +291,20 @@ def build_fallback_copy(poi: Dict[str, Any]) -> Tuple[str, Optional[str]]:
         return desc, tip
     if "bajgl" in (desc or "").lower() and "obwarzank" in name_l:
         desc = "Muzeum Obwarzanka Krakowskiego — historia i wypiek symbolu Krakowa."
-    # FIX #256: GoJump Excel row reused Kraków copy for Wrocław.
+    # FIX #256/#261: GoJump Excel row reused Kraków copy for Wrocław.
+    _gojump_foreign = ("w krakowie", "w kraków", "w krakow", "krakowie", "krakowa")
     if "gojump" in name_l and any(
-        k in (desc or "").lower() for k in ("w krakowie", "w kraków", "w krakow")
+        k in (desc or "").lower() or k in (tip or "").lower() for k in _gojump_foreign
     ):
         city_bit = city or "mieście"
-        desc = (
-            f"GoJump to duży park trampolin {loc.strip() or ('w ' + city_bit)} "
-            f"— strefy dla różnych poziomów zaawansowania."
-        )
+        loc_bit = loc.strip() or ("w " + city_bit)
+        if any(k in (desc or "").lower() for k in _gojump_foreign):
+            desc = (
+                f"GoJump to duży park trampolin {loc_bit} "
+                f"— strefy dla różnych poziomów zaawansowania."
+            )
+        if tip and any(k in tip.lower() for k in _gojump_foreign):
+            tip = f"Sprawdź aktualne godziny i bilety GoJump {loc_bit}."
     if "wena" in name_l and tip and any(
         k in tip.lower() for k in ("umówieniu", "umowieniu", "wcześniejszym", "wczesniejszym")
     ):

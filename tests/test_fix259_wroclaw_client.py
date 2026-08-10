@@ -24,10 +24,11 @@ def test_fix259_pitlane_duration_cap_90():
     ) == 90
 
 
-def test_fix259_most_grunwaldzki_cap_45():
+def test_fix259_most_grunwaldzki_cap_25():
+    # FIX #261: client — "Most Grunwaldzki 40 min jest za długo" → 25 min look-around.
     assert visit_duration_hard_cap(
         {"name": "Most Grunwaldzki"}, for_scheduling=True,
-    ) == 45
+    ) == 25
 
 
 def test_fix259_ostrow_cap_90():

@@ -1715,13 +1715,23 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
     } <= prefs:
         delta -= 120.0
     # Prefer real green when relaxation / nature are requested but day is dry.
+    # FIX #261: stronger boost — winter WRO plans kept scheduling museums while
+    # Pergola/Wyspa/Zatoka sat unused and prefs reported uncovered.
     if ("relaxation" in prefs or "nature_landscape" in prefs) and any(
         k in name for k in (
             "park szczytnicki", "pergola", "wyspa słodowa", "wyspa slodowa",
             "bulwar", "ogród japoński", "ogrod japonski", "lasek", "las strzeli",
+            "zatoka gondoli", "ogród botaniczny", "ogrod botaniczny",
         )
     ):
-        delta += 55.0
+        delta += 140.0
+        if "muzeum" not in name and "zajezdnia" not in name:
+            delta += 40.0
+    if ("relaxation" in prefs or "nature_landscape" in prefs) and any(
+        k in name for k in ("zajezdnia", "aula leopoldina", "panorama racławicka",
+                            "panorama raclawicka")
+    ):
+        delta -= 70.0
 
     if tg == "friends" and adv and {"history_mystery", "museum_heritage", "underground"} <= prefs:
         if "active_sport" not in prefs:

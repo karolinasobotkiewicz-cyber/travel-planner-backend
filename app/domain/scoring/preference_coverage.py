@@ -497,7 +497,9 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
     ),
     "relaxation": (
         "most tumski", "rynek", "fontanna", "hala stulecia", "muzeum narodowe",
-        "pergola przy hali", "hydropolis",
+        # FIX #261: Pergola / greens ARE the client's relaxation cover in Wrocław —
+        # keep denying Hydropolis (museum) but credit the outdoor pergola.
+        "hydropolis",
         # FIX #221: palace museums outside city are not relaxation (Rogalin miscredit).
         "rogalin", "pałac w rogalin", "palac w rogalin", "muzeum pałac w rogalin",
         "muzeum palac w rogalin",
@@ -615,6 +617,16 @@ def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
     if pref == "active_sport" and any(m in name for m in _STRONG_ACTIVE_NAME_MARKERS):
         return True
     if pref == "water_attractions" and any(m in name for m in _STRONG_WATER_NAME_MARKERS):
+        return True
+    # FIX #261 Wrocław: signature outdoor greens must count even when Excel tags
+    # are thin (client: Pergola in plan but nature/relax reported uncovered).
+    if pref == "nature_landscape" and any(m in name for m in _STRONG_NATURE_NAME_MARKERS):
+        return True
+    if pref == "relaxation" and any(m in name for m in (
+        "wyspa słodowa", "wyspa slodowa", "ogród japoński", "ogrod japonski",
+        "park szczytnicki", "pergola", "zatoka gondoli", "ogród botaniczny",
+        "ogrod botaniczny", "bulwar", "aquapark",
+    )):
         return True
     tags = excel_tags(poi)
     if pref == "nature_landscape":
@@ -765,7 +777,10 @@ def preference_coverage_adequate(pref: str, matching_pois: list) -> bool:
         return False
     if pref == "nature_landscape":
         strong = [p for p in matching_pois if is_strong_nature_coverage_poi(p)]
-        return len(strong) >= 2 or (len(strong) >= 1 and len(matching_pois) >= 2)
+        # FIX #261: one signature green (Pergola / Wyspa / Bastion) is enough in
+        # a dense city plan — requiring two left winter Wrocław trips uncovered
+        # even when Pergola was already scheduled.
+        return len(strong) >= 1 or len(matching_pois) >= 2
     if pref == "relaxation":
         return len(matching_pois) >= 1
     if pref in ("active_sport", "water_attractions", "kids_attractions"):

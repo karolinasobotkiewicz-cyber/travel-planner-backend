@@ -2803,8 +2803,13 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("panorama racławicka", 40),
         ("panorama raclawicka", 40),
         ("pitlane", 90),
-        ("most grunwaldzki", 45),
+        # FIX #261 Wrocław: client — "Most Grunwaldzki 40 min jest za długo",
+        # "Dworzec Świebodzki 81 min wygląda za długo". Both are look-around
+        # stops, not visits.
+        ("most grunwaldzki", 25),
         ("most tumski", 45),
+        ("dworzec świebodzki", 60),
+        ("dworzec swiebodzki", 60),
         # FIX #260 Warszawa: ZOO must not hit generic "ogród" 90-min park cap;
         # PKiN must not absorb to 3h+.
         ("ogród zoologiczny", 150),
@@ -2901,6 +2906,8 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("kopalnia guido", 90),
         ("królowa luiza", 90),
         ("krolowa luiza", 90),
+        # FIX #261: Sky Tower crushed to 21 min against day_end — keep a real visit.
+        ("sky tower", 45),
         # FIX #260 Warszawa: client — ZOO / Łazienki / Wilanów too short.
         ("ogród zoologiczny", 120),
         ("ogrod zoologiczny", 120),
@@ -2928,6 +2935,26 @@ def choose_duration(p, now, end, lunch_done, user=None):
     if _hard_cap is not None:
         tmax = min(tmax, _hard_cap)
         tmin = min(tmin, tmax)
+    # FIX #261: a preschooler will not spend 90 minutes walking around a
+    # cathedral island (client WRO json 5: "Ostrów Tumski 90 min ... słabo
+    # dopasowany do 5-latka"). Playgrounds and water parks keep their length.
+    if user and str(user.get("target_group") or "") == "family_kids":
+        _kid_age = user.get("children_age")
+        try:
+            _kid_age = int(_kid_age) if _kid_age is not None else None
+        except (TypeError, ValueError):
+            _kid_age = None
+        if _kid_age is not None and _kid_age <= 6:
+            _sightseeing = any(
+                k in _poi_name_lower
+                for k in (
+                    "ostrów tumski", "ostrow tumski", "katedra", "kościół",
+                    "kosciol", "rynek", "muzeum", "panorama", "aula",
+                )
+            )
+            if _sightseeing:
+                tmax = min(tmax, 60)
+                tmin = min(tmin, tmax)
     tmax = max(tmax, tmin)
 
     # Use the HIGHER of: POI's time_min OR type-based minimum
@@ -5399,12 +5426,12 @@ def plan_multiple_days(pois, user, contexts, day_start, day_end, warnings_out=No
     
     # Get core limits for this target group
     target_group = user.get("target_group", "solo")
-    limits = GROUP_ATTRACTION_LIMITS.get(target_group, {
+    limits = dict(GROUP_ATTRACTION_LIMITS.get(target_group, {
         "soft": 7,
         "hard": 8,
         "core_min": 1,
         "core_max": 2,
-    })
+    }))
     
     # Calculate core POIs to distribute
     # Each day wants core_min (usually 1), but we have limited core POIs
@@ -6031,12 +6058,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
     # Goal: Enforce at least 1 attraction per top 3 user preference per day
     covered_preferences = set()  # Track which of top 3 preferences have been covered
     
-    limits = GROUP_ATTRACTION_LIMITS.get(user["target_group"], {
+    # FIX #261: copy — the travel-style / city-tourism branches below write into
+    # this dict. Mutating the shared config shrank the caps a little on every
+    # request, so a long-lived server slowly starved its own plans (and the same
+    # payload came back different on the second call).
+    limits = dict(GROUP_ATTRACTION_LIMITS.get(user["target_group"], {
         "soft": 7,
         "hard": 8,
         "core_min": 1,
         "core_max": 2,
-    })
+    }))
     
     # FIX #197/#221: import before travel_style branch (relax used is_city_tourism_trip).
     from app.domain.planner.city_copy import is_city_tourism_trip

@@ -679,7 +679,43 @@ def normalize_poi(p, index):
                 "wieczorem bywa tłoczno."
             )
 
+    _relocate_foreign_city_mentions(_norm_result)
     return _norm_result
+
+
+# FIX #261: chain venues were described with the city of another branch — the
+# client read "park trampolin w Krakowie" inside a Wrocław plan (GoJump).
+_CITY_FORMS = {
+    "wrocław": ("we Wrocławiu", "Wrocławia", "Wrocław"),
+    "warszawa": ("w Warszawie", "Warszawy", "Warszawa"),
+    "kraków": ("w Krakowie", "Krakowa", "Kraków"),
+    "poznań": ("w Poznaniu", "Poznania", "Poznań"),
+    "gdańsk": ("w Gdańsku", "Gdańska", "Gdańsk"),
+    "katowice": ("w Katowicach", "Katowic", "Katowice"),
+    "łódź": ("w Łodzi", "Łodzi", "Łódź"),
+}
+_COPY_FIELDS = ("description_short", "description_long", "pro_tip", "why_visit")
+
+
+def _relocate_foreign_city_mentions(poi: dict) -> None:
+    """Rewrite another city's name in the copy to the city the POI is in."""
+    city = str(poi.get("city") or "").strip().lower()
+    own = _CITY_FORMS.get(city)
+    if not own:
+        return
+    for field in _COPY_FIELDS:
+        text = poi.get(field)
+        if not isinstance(text, str) or not text:
+            continue
+        updated = text
+        for key, forms in _CITY_FORMS.items():
+            if key == city:
+                continue
+            for foreign, mine in zip(forms, own):
+                if foreign in updated:
+                    updated = updated.replace(foreign, mine)
+        if updated != text:
+            poi[field] = updated
 
 
 def normalize_pois(pois):
