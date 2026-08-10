@@ -264,6 +264,17 @@ def build_fallback_copy(poi: Dict[str, Any]) -> Tuple[str, Optional[str]]:
             tip = "Wejście darmowe — warto sprawdzić aktualne godziny przed wizytą."
         if not desc:
             desc = "Park Mamuta — plenerowa ekspozycja rzeźb dinozaurów, wstęp wolny."
+    # FIX #260: Browary Warszawskie — never tip/compare to Hala Koszyki.
+    if "browary warszawskie" in name_l:
+        desc = (
+            "Browary Warszawskie — kompleks z restauracjami, piwem rzemieślniczym "
+            "i przestrzenią eventową na Woli."
+        )
+        tip = (
+            "Zaplanuj czas na obiad lub degustację piwa na miejscu — "
+            "wieczorem bywa tłoczno."
+        )
+        return desc, tip
     # FIX #258: Wedel — classic café is on Szpitalna; POI row is aleja Wedla 5.
     if any(k in name_l for k in ("wedel", "pijalnia czekolady")):
         addr = str(poi.get("address") or poi.get("Address") or "").strip()

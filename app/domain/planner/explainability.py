@@ -351,8 +351,13 @@ def explain_poi_selection(
             or context.get("city") or context.get("requested_city")
             or "Twojej destynacji"
         )
-        # FIX #254: "Must-see we Wrocławiu", not "Must-see w Wrocław".
-        reasons.append(f"Must-see {city_locative_pl(str(_poi_city))}")
+        _nm_ms = str(poi.get("name") or "").lower()
+        # FIX #260: Kampinos is not "Must-see w Warszawie".
+        if "kampinos" in _nm_ms:
+            reasons.append("Must-see w Kampinosie (Izabelin / okolice Warszawy)")
+        else:
+            # FIX #254: "Must-see we Wrocławiu", not "Must-see w Wrocław".
+            reasons.append(f"Must-see {city_locative_pl(str(_poi_city))}")
     elif priority >= 11:
         reasons.append("Wysoko polecane przez lokalnych")
 

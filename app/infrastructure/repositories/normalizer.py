@@ -663,14 +663,21 @@ def normalize_poi(p, index):
                 "Spróbuj świeżego obwarzanka na miejscu — to lokalny smak Krakowa."
             )
     if "browary warszawskie" in _nm234:
+        # FIX #260: never mention Hala Koszyki (wrong venue / wrong tip).
         _norm_result["description_short"] = (
-            "Kompakt browarniany z restauracjami, piwem rzemieślniczym i przestrzenią eventową."
+            "Browary Warszawskie — kompleks z restauracjami, piwem rzemieślniczym "
+            "i przestrzenią eventową na Woli."
         )
         _norm_result["description_long"] = (
-            "Browary Warszawskie to zrewitalizowany kompleks browarniany na Pradze-Północ "
-            "z restauracjami, lokalnymi browarami i przestrzenią kulturalną — oddzielna "
-            "atrakcja od Hali Koszyki."
+            "Browary Warszawskie to zrewitalizowany kompleks browarniany "
+            "z restauracjami, lokalnymi browarami i przestrzenią kulturalną."
         )
+        _tip234 = str(_norm_result.get("pro_tip") or "")
+        if "koszyki" in _tip234.lower() or not _tip234.strip():
+            _norm_result["pro_tip"] = (
+                "Zaplanuj czas na obiad lub degustację piwa na miejscu — "
+                "wieczorem bywa tłoczno."
+            )
 
     return _norm_result
 

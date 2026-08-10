@@ -63,6 +63,16 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("centrum pieniądza", "waw_centrum_pieniadza"),
         ("centrum pieniadza", "waw_centrum_pieniadza"),
         ("browary warszawskie", "waw_browary"),
+        # FIX #260 Warszawa — garden / park trip repeats
+        ("ogród krasińskich", "waw_ogrod_krasinskich"),
+        ("ogrod krasinskich", "waw_ogrod_krasinskich"),
+        ("ogród saski", "waw_ogrod_saski"),
+        ("ogrod saski", "waw_ogrod_saski"),
+        ("ogród botaniczny", "waw_ogrod_botaniczny"),
+        ("ogrod botaniczny", "waw_ogrod_botaniczny"),
+        ("łazienki królewskie", "waw_lazienki"),
+        ("lazienki krolewskie", "waw_lazienki"),
+        ("kampinos", "waw_kampinos"),
         # FIX #248 Wrocław — powtarzalne fillery
         ("wyspa słodowa", "wro_wyspa_slodowa"),
         ("wyspa slodowa", "wro_wyspa_slodowa"),
@@ -637,7 +647,9 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
     # FIX #231 — cultural style should not erase relaxation
     if style == "cultural" and "relaxation" in prefs:
         if any(k in name for k in ("ogród", "ogrod", "park ", "bulwar", "wyspa", "spa", "termy")):
-            delta += 70.0
+            # FIX #260: rope parks are not green relaxation.
+            if "linowy" not in name:
+                delta += 70.0
         if "muzeum" in name and "hydropolis" not in name:
             delta -= 35.0
 
@@ -658,7 +670,9 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
         if "aquapark" in name or "park wodny" in name:
             delta -= 80.0
         if any(k in name for k in ("ogród", "ogrod", "bulwar", "park ", "wyspa słodowa")):
-            delta += 55.0
+            # FIX #260: Park Linowy ≠ park spacerowy.
+            if "linowy" not in name:
+                delta += 55.0
 
     # Bastion Sakwowy — couples + relax + water
     if "bastion sakwowy" in name and tg == "couples" and {"relaxation", "water_attractions"} <= prefs:
@@ -1587,6 +1601,48 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             if int(ctx.get("trip_active_sport_count") or 0) < 1:
                 delta -= 85.0
 
+    # FIX #260: Park Linowy / Kampinos wrong for soft cultural-relax-food days.
+    _soft_waw = {"cultural", "museum_heritage", "relaxation", "local_food_experience"}
+    _active_waw = {"adventure", "active_sport", "nature_landscape"}
+    if "park linowy" in name or ("linowy" in name and "park" in name):
+        if (prefs & _soft_waw) and not (prefs & _active_waw) and style != "adventure":
+            delta -= 220.0
+        elif (prefs & {"cultural", "museum_heritage", "relaxation"}) and not (
+            prefs & _active_waw
+        ) and style != "adventure":
+            # cultural+museum+relaxation without local_food still a soft day.
+            delta -= 180.0
+    if "kampinos" in name:
+        _hist_waw = {"underground", "history_mystery", "museum_heritage"}
+        if (prefs & _hist_waw) and "nature_landscape" not in prefs and "active_sport" not in prefs:
+            delta -= 200.0
+        # Long hop tax unless nature/active is explicitly requested.
+        if "nature_landscape" not in prefs and "active_sport" not in prefs and style != "adventure":
+            delta -= 80.0
+    # FIX #260: local_food_experience — boost edible landmarks, demote illusion parks.
+    if "local_food_experience" in prefs:
+        if any(k in name for k in (
+            "wedel", "manufaktura cukierków", "manufaktura cukierkow",
+            "browary warszawskie", "pijalnia czekolady", "muzeum polskiej wódki",
+            "muzeum polskiej wodki",
+        )):
+            delta += 140.0
+        if any(k in name for k in ("świat iluzji", "swiat iluzji", "iluzji")):
+            if not (prefs & {"kids_attractions", "adventure", "active_sport"}):
+                delta -= 160.0
+    # Soft cultural days: Świat Iluzji is a weak fit.
+    if any(k in name for k in ("świat iluzji", "swiat iluzji")):
+        if (prefs & {"museum_heritage", "cultural", "history_mystery"}) and not (
+            prefs & {"kids_attractions", "adventure"}
+        ):
+            delta -= 120.0
+    # Nature+relax days: demote PKiN / Stare Miasto icons.
+    if {"nature_landscape", "relaxation"} <= prefs and "museum_heritage" not in prefs:
+        if any(k in name for k in (
+            "pałac kultury", "palac kultury", "pkin", "stare miasto",
+        )):
+            delta -= 130.0
+
     if tg == "friends" and adv and {"underground", "history_mystery"} <= prefs:
         if any(k in name for k in (
             "podziemia", "schron", "krypta", "bunkier", "fort ", "katakumby",
@@ -1594,10 +1650,13 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             "zamek krolewski", "norblin", "muzeum gazowni", "x pawilon",
         )):
             delta += 160.0
+        # FIX #260: do NOT boost park linowy for underground/history days.
         if any(k in name for k in (
-            "tepfactor", "park linowy", "grawitacja", "gazowni", "kajak", "escape",
+            "tepfactor", "grawitacja", "gazowni", "kajak", "escape",
         )):
             delta += 140.0
+        if "park linowy" in name:
+            delta -= 160.0
         if any(k in name for k in (
             "pałac kultury", "palac kultury", "pkin", "polin",
             "centrum nauki kopernik", "park wodny", "warszawianka",
@@ -1607,6 +1666,8 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             if int(ctx.get("day_museum_count") or 0) >= 1:
                 delta -= 95.0
             delta -= 60.0
+        if "kampinos" in name:
+            delta -= 180.0
 
     if tg == "solo" and "nature_landscape" in prefs:
         if any(k in name for k in (

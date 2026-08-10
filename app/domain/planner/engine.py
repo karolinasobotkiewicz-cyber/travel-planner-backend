@@ -1477,7 +1477,7 @@ def travel_time_minutes(a, b, context):
     if _use_walk:
         _walk_speed = CITY_TOURISM_WALK_SPEED_KMH if _city_trip else 5.0
         walk_time = (distance_km / _walk_speed) * 60
-        return max(int(walk_time), 5)
+        raw = max(int(walk_time), 5)
     else:
         # FIX #234: road distance in cities is longer than straight-line haversine.
         _road_km = distance_km * (CITY_ROAD_DISTANCE_FACTOR if _city_trip else 1.0)
@@ -1486,7 +1486,36 @@ def travel_time_minutes(a, b, context):
         speed_kmh = CLUSTER_ROAD_SPEEDS_KMH.get(cluster_type, 45.0)
         drive_time = (_road_km / speed_kmh) * 60 + 5
         raw = max(int(drive_time), 10)
-        return effective_travel_minutes(raw, context, from_poi=a, to_poi=b)
+        raw = effective_travel_minutes(raw, context, from_poi=a, to_poi=b)
+
+    # FIX #260: Warszawa day-trips (Kampinos / Czersk / Modlin) must not collapse
+    # to ~10 min hops when one endpoint is outside the city (client: Czersk→Nova
+    # Wola 10 min; missing realistic Warszawa→Kampinos legs).
+    try:
+        reg_a = poi_geo_region_key(a)
+        reg_b = poi_geo_region_key(b)
+    except Exception:
+        reg_a = reg_b = None
+    _daytrip_regs = {
+        "region_kampinos", "region_czersk", "region_modlin", "region_suntago",
+    }
+    if distance_km >= 8.0 and (
+        (reg_a in _daytrip_regs) != (reg_b in _daytrip_regs)
+        or (reg_a in _daytrip_regs and reg_b in _daytrip_regs and reg_a != reg_b)
+        or (reg_a in _daytrip_regs and not reg_b)
+        or (reg_b in _daytrip_regs and not reg_a)
+    ):
+        # ~35 min floor for ≥8 km city↔day-trip; scale gently with distance.
+        floor = 35 if distance_km < 20 else min(75, int(distance_km * 1.4) + 10)
+        raw = max(raw, floor)
+        if _use_walk and distance_km >= 3.0:
+            # Day-trip hops are never walkable.
+            _road_km = distance_km * (CITY_ROAD_DISTANCE_FACTOR if _city_trip else 1.3)
+            cluster_type = context.get("signals", {}).get("cluster_type", "standalone_city")
+            speed_kmh = CLUSTER_ROAD_SPEEDS_KMH.get(cluster_type, 45.0)
+            drive_time = (_road_km / speed_kmh) * 60 + 5
+            raw = max(raw, int(drive_time), floor)
+    return raw
 
 
 def get_transport_mode(a, b, context=None):
@@ -2730,7 +2759,7 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("kościół sw. anny", 20),
         ("rogalowe muzeum", 75),
         ("muzeum archeologiczne", 90),
-        ("zamek ujazdowski", 120),
+        ("zamek ujazdowski", 90),  # FIX #260: was 120 — too long late in multi-day trips
         ("centrum nauki kopernik", 150),
         ("rynek we wrocławiu", 120),
         ("rynek we wroclawiu", 120),
@@ -2776,6 +2805,14 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("pitlane", 90),
         ("most grunwaldzki", 45),
         ("most tumski", 45),
+        # FIX #260 Warszawa: ZOO must not hit generic "ogród" 90-min park cap;
+        # PKiN must not absorb to 3h+.
+        ("ogród zoologiczny", 150),
+        ("ogrod zoologiczny", 150),
+        ("zoo w warszawie", 150),
+        ("pałac kultury", 120),
+        ("palac kultury", 120),
+        ("pkin", 120),
     )
     for marker, cap in _named_caps:
         if marker in name:
@@ -2788,8 +2825,10 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         return 90
     # FIX #256: "aquapark" contains "park" — exclude water parks from urban park cap.
     if "aquapark" not in name and "park wodny" not in name and "wodny park" not in name:
-        if any(k in name for k in ("park ", "ogród", "ogrod", "bulwar", "planty", "wyspa")):
-            return 90
+        # FIX #260: zoo / zoological gardens are not urban park micro-stops.
+        if "zoo" not in name and "zoolog" not in name:
+            if any(k in name for k in ("park ", "ogród", "ogrod", "bulwar", "planty", "wyspa")):
+                return 90
     if "muzeum" in name or "museum" in poi_type:
         return 120
     if any(k in name for k in ("trampolin", "jump", "gojump")):
@@ -2862,11 +2901,28 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("kopalnia guido", 90),
         ("królowa luiza", 90),
         ("krolowa luiza", 90),
+        # FIX #260 Warszawa: client — ZOO / Łazienki / Wilanów too short.
+        ("ogród zoologiczny", 120),
+        ("ogrod zoologiczny", 120),
+        ("łazienki królewskie", 90),
+        ("lazienki krolewskie", 90),
+        ("wilanowie", 120),
+        ("wilanów", 120),
+        ("wilanow", 120),
+        ("polin", 100),
     )
     for _marker, _nmin in _named_mins:
         if _marker in _poi_name_lower:
             tmin = max(tmin, _nmin)
             break
+    # FIX #260: seniors + relax need longer landmark visits in Warszawa.
+    if user and str(user.get("target_group") or "") == "seniors":
+        if any(k in _poi_name_lower for k in ("łazienki", "lazienki")):
+            tmin = max(tmin, 90)
+        if any(k in _poi_name_lower for k in ("wilanów", "wilanow", "wilanowie")):
+            tmin = max(tmin, 120)
+        if "zoo" in _poi_name_lower and "mini" not in _poi_name_lower:
+            tmin = max(tmin, 120)
     # FIX #254: clamp absurd Excel time_max before preferred_duration uses it.
     _hard_cap = visit_duration_hard_cap(p)
     if _hard_cap is not None:
