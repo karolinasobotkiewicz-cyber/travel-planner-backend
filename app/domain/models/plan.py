@@ -258,6 +258,10 @@ class RestaurantSuggestion(BaseModel):
     price_level: int = Field(default=2, ge=1, le=4, description="Poziom cen 1-4")
     avg_meal_cost: int | None = Field(default=None, ge=0, description="Średni koszt posiłku PLN")
     city: str = Field(default="", description="Miasto restauracji")
+    description: str | None = Field(
+        default=None,
+        description="FIX #263: opis z bazy (cuisine/atmosphere/pro_tip), nie generyczny placeholder",
+    )
     pro_tip: str | None = Field(default=None, description="Pro tip dla restauracji (jeśli dostępne)")
     target_groups: List[str] = Field(
         default_factory=list,

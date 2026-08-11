@@ -65,7 +65,11 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "park decjusza", "kopiec krakusa", "aula leopoldina",
         "cmentarz powązkowski", "cmentarz powazkowski",
     ),
-    "solo": ("pixel xl", "pixel", "centrum nauki kopernik"),
+    "solo": (
+        "pixel xl", "pixel", "centrum nauki kopernik",
+        # FIX #263 Wrocław: Loopy is a kids trampoline park — not solo/relax.
+        "loopy",
+    ),
     "couples": (
         "pixel xl", "pixel", "loopy",
         # FIX #229: Stacja Grawitacja for cultural+relax couples
@@ -110,10 +114,28 @@ def is_child_oriented_attraction(poi: dict) -> bool:
 
 
 def restaurant_hard_denied_for_group(restaurant: dict, user: dict) -> bool:
-    """FIX #257: absolute restaurant bans independent of recommended_for."""
+    """FIX #257/#263: absolute restaurant bans independent of recommended_for."""
     user_group = _safe_str(user.get("target_group", ""))
     rname = _safe_str(restaurant.get("name", "")).lower()
     if user_group == "family_kids" and "house of spices" in rname:
+        return True
+    # FIX #263: wine-bar couples venues are wrong for family_kids / seniors.
+    if user_group in ("family_kids", "seniors") and rname in (
+        "the cork", "cork",
+    ):
+        return True
+    target_groups = (
+        restaurant.get("target_groups")
+        or restaurant.get("recommended_for")
+        or restaurant.get("target_group")
+        or []
+    )
+    if isinstance(target_groups, str):
+        target_groups = [x.strip() for x in target_groups.split(",") if x.strip()]
+    tg = {_safe_str(x) for x in target_groups if x}
+    if user_group == "family_kids" and tg and tg <= {"couples"}:
+        return True
+    if user_group == "friends" and tg and tg <= {"couples"}:
         return True
     return False
 

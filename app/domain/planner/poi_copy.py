@@ -258,12 +258,22 @@ def build_fallback_copy(poi: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     name_l = name.lower()
 
     # FIX #254: hard overrides for known bad Excel / generic copy.
-    # FIX #259: Park Mamuta is free — never tip "kup bilet online".
+    # FIX #259/#263: free attractions must not tip "kup bilet online".
+    _ticket_free = False
+    try:
+        tn = poi.get("ticket_normal")
+        if tn is not None and float(tn) == 0:
+            _ticket_free = True
+    except Exception:
+        pass
     if "park mamuta" in name_l or "mamuta" in name_l:
-        if tip and any(k in tip.lower() for k in ("bilet", "ticket", "kup ")):
-            tip = "Wejście darmowe — warto sprawdzić aktualne godziny przed wizytą."
+        _ticket_free = True
         if not desc:
             desc = "Park Mamuta — plenerowa ekspozycja rzeźb dinozaurów, wstęp wolny."
+    if _ticket_free and tip and any(
+        k in tip.lower() for k in ("bilet", "ticket", "kup online", "kup bilet")
+    ):
+        tip = "Wejście darmowe — warto sprawdzić aktualne godziny przed wizytą."
     # FIX #260: Browary Warszawskie — never tip/compare to Hala Koszyki.
     if "browary warszawskie" in name_l:
         desc = (
