@@ -628,6 +628,14 @@ def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
         "ogrod botaniczny", "bulwar", "aquapark",
     )):
         return True
+    # FIX #262 Warszawa: no cave/mine rows in Excel — Muzeum Powstania (kanały)
+    # and Cytadela casemates are the honest underground cover for the city.
+    if pref == "underground" and any(m in name for m in (
+        "muzeum powstania warszawskiego", "powstania warszawskiego",
+        "cytadel", "x pawilon", "muzeum katyńskie", "muzeum katynskie",
+        "podziemia", "kanał", "kanal",
+    )):
+        return True
     tags = excel_tags(poi)
     if pref == "nature_landscape":
         tags = {t for t in tags if t not in _NATURE_COVERAGE_TAG_DENY}

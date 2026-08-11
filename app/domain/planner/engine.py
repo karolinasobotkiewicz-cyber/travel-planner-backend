@@ -2818,6 +2818,12 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("pałac kultury", 120),
         ("palac kultury", 120),
         ("pkin", 120),
+        # FIX #262 Warszawa: client — Świat Iluzji 120 min too long after ZOO;
+        # Stare Miasto must not stretch to 3h+ to fill a hole.
+        ("świat iluzji", 90),
+        ("swiat iluzji", 90),
+        ("stare miasto w warszawie", 120),
+        ("stare miasto", 120),
     )
     for marker, cap in _named_caps:
         if marker in name:
