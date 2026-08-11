@@ -32,11 +32,15 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "kościół św. wojciecha", "sw. wojciecha",
         # FIX #231
         "be happy museum", "plac bohaterów getta",
+        # FIX #264: Kleks is kids entertainment, not adult adventure
+        "kleks",
     ),
     "seniors": (
         "kopiec powstania",
         # FIX #229: don't open day with micro memorials
         "grób nieznanego", "pałac prezydencki", "pomnik syren",
+        # FIX #264
+        "kleks", "park linowy",
     ),
     "family_kids": (
         "grób nieznanego", "grob nieznanego", "changing of the guard",
@@ -69,12 +73,16 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "pixel xl", "pixel", "centrum nauki kopernik",
         # FIX #263 Wrocław: Loopy is a kids trampoline park — not solo/relax.
         "loopy",
+        # FIX #264: kids entertainment for solo
+        "kleks", "kolejkowo", "sala zabaw",
     ),
     "couples": (
         "pixel xl", "pixel", "loopy",
         # FIX #229: Stacja Grawitacja for cultural+relax couples
         "stacja grawitacja", "anomalii grawitacyjnej", "miejsce anomalii",
         "centrum nauki kopernik",
+        # FIX #264
+        "kleks", "kolejkowo",
     ),
 }
 _CHILD_POI_TAGS = frozenset({
@@ -137,6 +145,14 @@ def restaurant_hard_denied_for_group(restaurant: dict, user: dict) -> bool:
         return True
     if user_group == "friends" and tg and tg <= {"couples"}:
         return True
+    # FIX #264: couples must not get friends-only venues (client: U Szwejka /
+    # Pianka / Medusa for couples).
+    if user_group == "couples" and tg and tg <= {"friends"}:
+        return True
+    # FIX #264: solo — family-tagged venues are wrong; do NOT hard-deny the
+    # whole couples/friends pool (many cities have zero solo tags — WRO).
+    if user_group == "solo" and tg and "family_kids" in tg and "solo" not in tg:
+        return True
     return False
 
 
@@ -181,7 +197,13 @@ def restaurant_matches_target_group(restaurant: dict, user: dict) -> bool:
         "solo": "solo",
     }
     tg_norm = {_ALIASES.get(x, x) for x in tg}
-    return user_group in tg_norm or user_group in tg
+    if user_group in tg_norm or user_group in tg:
+        return True
+    # FIX #264: Warszawa has no solo-tagged restaurants — seniors-friendly
+    # milk bars are the best available match for solo travelers.
+    if user_group == "solo" and "seniors" in tg_norm:
+        return True
+    return False
 
 
 def should_exclude_by_target_group(poi: dict, user: dict) -> bool:

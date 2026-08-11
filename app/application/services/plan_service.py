@@ -786,9 +786,9 @@ def _filter_meal_suggestions(
             raw = getattr(s, "target_groups", None) or []
             return {str(x).strip().lower() for x in raw if x}
 
-        # FIX #263: never fall back to couples-only venues for family/friends/
-        # seniors when the nearby pool has better-fitting alternatives.
-        if tg in ("family_kids", "friends", "seniors", "solo"):
+        # FIX #263/#264: never fall back to mismatched exclusive venues when
+        # the nearby pool has better-fitting alternatives.
+        if tg in ("family_kids", "friends", "seniors", "solo", "couples"):
             soft = []
             for s in pool:
                 tset = _tg_set(s)
@@ -799,11 +799,36 @@ def _filter_meal_suggestions(
                     continue
                 if tg == "friends" and tset <= {"couples"}:
                     continue
-                if tg == "seniors" and tset <= {"couples", "friends", "family_kids"}:
-                    # keep only if also seniors-friendly or empty — already skipped
+                if tg == "couples" and tset <= {"friends"}:
                     continue
+                if tg == "seniors" and "seniors" not in tset and tset <= {
+                    "couples", "friends", "family_kids", "solo",
+                }:
+                    continue
+                if tg == "solo" and "solo" not in tset:
+                    # Prefer seniors/friends bars; skip family / romantic-only.
+                    if "family_kids" in tset:
+                        continue
+                    if "couples" in tset and "seniors" not in tset:
+                        continue
+                    if tset <= {"friends"}:
+                        # friends-only is acceptable for solo only as fallback
+                        soft.append(s)
+                        continue
                 soft.append(s)
             if soft:
+                # FIX #264: rank solo toward seniors-friendly / non-romantic.
+                if tg == "solo":
+                    def _solo_rank(s: RestaurantSuggestion) -> int:
+                        tset = _tg_set(s)
+                        if "solo" in tset or "all" in tset or not tset:
+                            return 0
+                        if "seniors" in tset:
+                            return 1
+                        if tset <= {"friends"}:
+                            return 2
+                        return 3
+                    soft = sorted(soft, key=_solo_rank)
                 return soft
         # City data often omits seniors/solo from recommended_for — keep pool
         # but never reintroduce hard-denied venues.
@@ -5464,6 +5489,78 @@ class PlanService:
                     )
                     # Absolute last — ensure_stop can recreate Warzywniak→Warzywniak.
                     _it262 = self._strip_self_transits(_it262, day_num=_d262.day)
+                    # FIX #264: last-word polish after meal scrub / inject can
+                    # reintroduce foreign POIs, early lunch gaps, far walks.
+                    if all_pois_dict and user is not None:
+                        _it262 = self._strip_profile_denied_attractions(
+                            _it262, user, all_pois_dict, day_num=_d262.day,
+                        )
+                    _it262 = self._strip_wrong_city_attractions(
+                        _it262, _day_ctx259, day_num=_d262.day,
+                    )
+                    _it262 = self._push_lunch_not_before_noon(
+                        _it262, day_num=_d262.day,
+                    )
+                    _it262 = self._scrub_meal_target_groups(
+                        _it262, _day_ctx259, user, day_num=_d262.day,
+                    )
+                    _it262 = self._force_known_good_poi_coords(
+                        _it262, day_num=_d262.day,
+                    )
+                    _cm_f262 = self._merge_coord_map(_final_coord_map, _it262)
+                    _it262 = self._cap_stretched_attraction_durations(
+                        _it262, day_num=_d262.day,
+                    )
+                    _it262 = self._route_meals_into_timeline(
+                        _it262, _cm_f262, _day_ctx259, day_num=_d262.day,
+                    )
+                    _it262 = self._ensure_stop_to_stop_legs(
+                        _it262, _cm_f262, _day_ctx259, day_num=_d262.day,
+                    )
+                    _it262 = self._fix_unrealistic_transit_modes(
+                        _it262, _cm_f262, _day_ctx259, day_num=_d262.day,
+                    )
+                    _it262 = [
+                        self._fix_implausible_transit_duration(
+                            it, _cm_f262, _day_ctx259,
+                        )
+                        if _item_type_value(it) == ItemType.TRANSIT.value else it
+                        for it in _it262
+                    ]
+                    _it262 = self._repair_car_chain(
+                        _it262, _cm_f262, _day_ctx259, day_num=_d262.day,
+                    )
+                    # Lunch floor first, then slide approaches to touch 12:00
+                    # so we never leave a 12–15 min anonymous pre-lunch hole.
+                    _it262 = self._push_lunch_not_before_noon(
+                        _it262, day_num=_d262.day,
+                    )
+                    _it262 = self._close_meal_approach_gaps(
+                        _it262, day_num=_d262.day,
+                    )
+                    _it262 = self._name_remaining_holes(
+                        _it262, _day_ctx259, day_num=_d262.day,
+                    )
+                    _it262 = self._merge_abutting_free_time_hard(
+                        _it262, day_num=_d262.day,
+                    )
+                    _it262 = self._absorb_small_residual_gaps(
+                        _it262, _day_ctx259, day_num=_d262.day,
+                    )
+                    _it262 = [
+                        self._normalize_transit_routing_item(
+                            it, _cm_f262, _day_ctx259,
+                        )
+                        if _item_type_value(it) == ItemType.TRANSIT.value else it
+                        for it in _it262
+                    ]
+                    _it262 = self._strip_self_transits(_it262, day_num=_d262.day)
+                    _it262 = self._fix_unrealistic_transit_modes(
+                        _it262, _cm_f262, _day_ctx259, day_num=_d262.day,
+                    )
+                    _it262 = self._merge_abutting_free_time_hard(
+                        _it262, day_num=_d262.day,
+                    )
                 _it262 = self._strip_self_transits(_it262, day_num=_d262.day)
                 _it262 = self._sort_items_by_time(_it262)
                 _final262.append(DayPlan(
@@ -8862,16 +8959,56 @@ class PlanService:
         fp, tp = _endpoint(frm), _endpoint(to)
         lat1, lng1 = _poi_lat_lng(fp or {})
         lat2, lng2 = _poi_lat_lng(tp or {})
-        # FIX #260: never keep stale geometry after from/to rewrites
-        # (client WAWA: "from Bulwary" but polyline starts at Stary Dom / Botaniczny).
+        # FIX #260/#264: never keep stale geometry after from/to rewrites.
+        # Client WAWA: polyline can start correctly but end at Manufaktura /
+        # wrong Browary row while to_location is the real restaurant.
         geom = getattr(it, "geometry", None)
         stale_geom = False
-        if geom and lat1 is not None and lng1 is not None:
+
+        def _geom_end_stale(g) -> bool:
+            if not g or lat2 is None or lng2 is None:
+                return False
             try:
-                g0 = geom[0]
+                gl = g[-1]
                 # GeoJSON order [lng, lat]
-                g_lng, g_lat = float(g0[0]), float(g0[1])
-                if abs(g_lng - float(lng1)) > 0.002 or abs(g_lat - float(lat1)) > 0.002:
+                return (
+                    abs(float(gl[0]) - float(lng2)) > 0.002
+                    or abs(float(gl[1]) - float(lat2)) > 0.002
+                )
+            except Exception:
+                return True
+
+        def _geom_start_stale(g) -> bool:
+            if not g or lat1 is None or lng1 is None:
+                return False
+            try:
+                g0 = g[0]
+                return (
+                    abs(float(g0[0]) - float(lng1)) > 0.002
+                    or abs(float(g0[1]) - float(lat1)) > 0.002
+                )
+            except Exception:
+                return True
+
+        if geom and (_geom_start_stale(geom) or _geom_end_stale(geom)):
+            stale_geom = True
+        # Also validate geometry_latlng (lat,lng order) independently.
+        gll0 = getattr(it, "geometry_latlng", None)
+        if gll0 and lat1 is not None and lng1 is not None:
+            try:
+                p0 = gll0[0]
+                if abs(float(p0[0]) - float(lat1)) > 0.002 or abs(
+                    float(p0[1]) - float(lng1)
+                ) > 0.002:
+                    stale_geom = True
+            except Exception:
+                stale_geom = True
+        if gll0 and lat2 is not None and lng2 is not None:
+            try:
+                p1 = gll0[-1]
+                if abs(float(p1[0]) - float(lat2)) > 0.002 or abs(
+                    float(p1[1]) - float(lng2)
+                ) > 0.002:
                     stale_geom = True
             except Exception:
                 stale_geom = True
@@ -8890,16 +9027,9 @@ class PlanService:
             it = self._attach_route_metadata(it, fp, tp, context)
         # Re-check: attach may leave stale polyline if ORS/haversine missed.
         geom2 = getattr(it, "geometry", None)
-        still_stale = False
-        if geom2 and lat1 is not None and lng1 is not None:
-            try:
-                g0 = geom2[0]
-                if abs(float(g0[0]) - float(lng1)) > 0.002 or abs(
-                    float(g0[1]) - float(lat1)
-                ) > 0.002:
-                    still_stale = True
-            except Exception:
-                still_stale = True
+        still_stale = bool(
+            geom2 and (_geom_start_stale(geom2) or _geom_end_stale(geom2))
+        )
         if (not geom2 or still_stale) and lat1 is not None and lat2 is not None:
             geom = [[float(lng1), float(lat1)], [float(lng2), float(lat2)]]
             gll = [[float(lat1), float(lng1)], [float(lat2), float(lng2)]]
@@ -11069,7 +11199,10 @@ class PlanService:
                                 "name": to_name, "lat": lat2, "lng": lng2,
                                 "id": getattr(next_attr, "poi_id", "") or "",
                             }
-                    if lat2 is not None and lng2 is not None:
+                    if (
+                        lat2 is not None and lng2 is not None
+                        and rlat is not None and rlng is not None
+                    ):
                         from_d = {"lat": float(rlat), "lng": float(rlng)}
                         to_d = {"lat": float(lat2), "lng": float(lng2)}
                         ctx = {**context, "has_car": context.get("has_car", True)}
@@ -14906,7 +15039,9 @@ class PlanService:
 
             new_meal_st = meal_st
             if mt == ItemType.LUNCH_BREAK.value and prev_min is not None:
-                earliest = max(prev_min + dur, self._MEAL_FLOOR261[mt])
+                # FIX #264: WAWA/WRO client lunch floor is 12:00 (push_lunch).
+                lunch_floor = max(self._MEAL_FLOOR261[mt], 12 * 60)
+                earliest = max(prev_min + dur, lunch_floor)
                 if meal_st - earliest >= 10:
                     meal_dur = int(getattr(it, "duration_min", 0) or 0) or (
                         time_to_minutes(getattr(it, "end_time", None) or meal_start)
@@ -15464,17 +15599,49 @@ class PlanService:
             )
             primary_bad = False
             if sugs:
+                _p0 = {
+                    "name": getattr(sugs[0], "name", ""),
+                    "target_groups": getattr(sugs[0], "target_groups", []) or [],
+                }
                 primary_bad = restaurant_hard_denied_for_group(
-                    {
-                        "name": getattr(sugs[0], "name", ""),
-                        "target_groups": getattr(sugs[0], "target_groups", []) or [],
-                    },
-                    {"target_group": tg},
+                    _p0, {"target_group": tg},
                 ) or not filtered or (
                     filtered
                     and (getattr(filtered[0], "name", "") or "")
                     != (getattr(sugs[0], "name", "") or "")
                 )
+                # FIX #264: seniors/solo/couples — treat exclusive mismatch as
+                # bad when a better city-pool alternative exists (nearby soft
+                # filter may still return the bad primary when soft is empty).
+                if not primary_bad:
+                    _ptg = {
+                        str(x).strip().lower()
+                        for x in (_p0.get("target_groups") or []) if x
+                    }
+                    tg_l = str(tg).strip().lower()
+
+                    def _row_tgs(r: Any) -> set:
+                        raw = (
+                            (r.get("target_groups") if isinstance(r, dict) else None)
+                            or (r.get("target_group") if isinstance(r, dict) else None)
+                            or getattr(r, "target_groups", None)
+                            or []
+                        )
+                        return {str(x).strip().lower() for x in raw if x}
+
+                    if tg_l == "seniors" and _ptg and "seniors" not in _ptg:
+                        if any("seniors" in _row_tgs(r) for r in pool):
+                            primary_bad = True
+                    if tg_l == "solo" and _ptg and "solo" not in _ptg and "seniors" not in _ptg:
+                        # Prefer seniors/solo-tagged city venues over friends-
+                        # only / romantic / family nearby picks.
+                        if any(
+                            ("seniors" in _row_tgs(r) or "solo" in _row_tgs(r))
+                            for r in pool
+                        ):
+                            primary_bad = True
+                    if tg_l == "couples" and _ptg <= {"friends"}:
+                        primary_bad = True
             if not primary_bad and filtered:
                 out.append(it)
                 continue
@@ -15759,6 +15926,48 @@ class PlanService:
                 )
                 continue
             out.append(it)
+        return out
+
+    def _force_known_good_poi_coords(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #264: overwrite known-bad Excel coordinates on timeline items."""
+        _FIXES = (
+            ("browary warszawskie", 52.2345, 20.9877),
+        )
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            fixed = None
+            for marker, lat, lng in _FIXES:
+                if marker in nm:
+                    fixed = (lat, lng)
+                    break
+            if not fixed:
+                out.append(it)
+                continue
+            cur_lat, cur_lng = getattr(it, "lat", None), getattr(it, "lng", None)
+            try:
+                if (
+                    cur_lat is not None and cur_lng is not None
+                    and abs(float(cur_lat) - fixed[0]) < 0.0008
+                    and abs(float(cur_lng) - fixed[1]) < 0.0008
+                ):
+                    out.append(it)
+                    continue
+                out.append(it.model_copy(update={"lat": fixed[0], "lng": fixed[1]}))
+                print(
+                    f"[FIX #264] Day {day_num}: forced coords for "
+                    f"{getattr(it, 'name', '?')} → {fixed[0]},{fixed[1]}"
+                )
+            except Exception:
+                out.append(it)
         return out
 
     def _boost_thin_relax_nature_day(

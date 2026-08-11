@@ -118,6 +118,9 @@ def classify_poi_category(poi: Dict[str, Any]) -> str:
     # FIX #254: name overrides before token rules (wrong Excel tags / false positives).
     if "obwarzank" in name:
         return "museum"
+    # FIX #264: Muzeum Ewolucji/Geologiczne are museums, not amusement/science tips.
+    if "muzeum ewolucji" in name or "muzeum geologiczne" in name:
+        return "museum"
     if any(k in name for k in ("skałki twardowskiego", "skalki twardowskiego")):
         return "park"
     if "park jordana" in name:
@@ -274,6 +277,24 @@ def build_fallback_copy(poi: Dict[str, Any]) -> Tuple[str, Optional[str]]:
         k in tip.lower() for k in ("bilet", "ticket", "kup online", "kup bilet")
     ):
         tip = "Wejście darmowe — warto sprawdzić aktualne godziny przed wizytą."
+    # FIX #264: Muzeum Geologiczne / free museums must not tip ticket purchase.
+    if any(k in name_l for k in ("muzeum geologiczne", "muzeum ewolucji")):
+        try:
+            if float(poi.get("ticket_normal") or 0) == 0:
+                _ticket_free = True
+        except Exception:
+            pass
+        if _ticket_free and tip and any(
+            k in tip.lower() for k in ("bilet", "ticket", "kup ")
+        ):
+            tip = "Wstęp wolny — sprawdź aktualne godziny otwarcia przed wizytą."
+        if "muzeum ewolucji" in name_l and (
+            not desc or "park tematycznego" in desc.lower()
+        ):
+            desc = (
+                "Muzeum Ewolucji — paleontologia i historia życia na Ziemi "
+                "w zbiorach PAN w Warszawie."
+            )
     # FIX #260: Browary Warszawskie — never tip/compare to Hala Koszyki.
     if "browary warszawskie" in name_l:
         desc = (

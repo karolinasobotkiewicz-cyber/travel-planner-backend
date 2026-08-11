@@ -178,6 +178,17 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
             if not any(k in name for k in ("hydropolis", "kopernik", "nauki")):
                 return True
 
+    # FIX #264: Park Linowy is high-intensity — never for relax / cultural /
+    # nature+relaxation solo days (client WAWA json 8/9).
+    if "park linowy" in name or ("linowy" in name and "park" in name):
+        if (
+            style in ("relax", "cultural")
+            or "relaxation" in prefs
+            or nat_relax
+            or tg in ("seniors",)
+        ):
+            return True
+
     # Kraków: Podziemia Rynku for family with young child
     if tg == "family_kids" and "podziemia rynku" in name:
         if child_age is None or (isinstance(child_age, (int, float)) and child_age <= 6):
@@ -1668,6 +1679,15 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             delta -= 60.0
         if "kampinos" in name:
             delta -= 180.0
+
+    # FIX #264: rope parks clash with relax / cultural / seniors profiles.
+    _style264 = _safe_str(user.get("travel_style"))
+    if "park linowy" in name and (
+        _style264 in ("relax", "cultural")
+        or "relaxation" in prefs
+        or tg in ("seniors", "solo")
+    ):
+        delta -= 220.0
 
     if tg == "solo" and "nature_landscape" in prefs:
         if any(k in name for k in (

@@ -604,6 +604,12 @@ def normalize_poi(p, index):
 
     # FIX #234: correct known bad Excel descriptions (client feedback).
     _nm234 = _norm_result["name"].lower()
+    # FIX #264: Excel has two Browary Warszawskie rows; 52.222/21.011 is wrong.
+    if "browary warszawskie" in _nm234:
+        _norm_result["lat"] = 52.2345
+        _norm_result["lng"] = 20.9877
+        if not (_norm_result.get("address") or "").strip():
+            _norm_result["address"] = "Grzybowska 72A, Warszawa"
     if "fontanna multimedialna" in _nm234:
         _norm_result["description_short"] = (
             "Nowoczesny park z efektownymi pokazami fontann, światła i dźwięku we Wrocławiu."
@@ -719,4 +725,17 @@ def _relocate_foreign_city_mentions(poi: dict) -> None:
 
 
 def normalize_pois(pois):
-    return [normalize_poi(p, i) for i, p in enumerate(pois)]
+    """Normalize POIs; FIX #264: drop duplicate Browary Warszawskie rows."""
+    out = [normalize_poi(p, i) for i, p in enumerate(pois)]
+    seen_browary = False
+    deduped = []
+    for poi in out:
+        name = (poi.get("name") or "").lower()
+        if "browary warszawskie" in name:
+            if seen_browary:
+                continue
+            seen_browary = True
+            poi["lat"] = 52.2345
+            poi["lng"] = 20.9877
+        deduped.append(poi)
+    return deduped

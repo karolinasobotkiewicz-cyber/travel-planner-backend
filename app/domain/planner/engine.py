@@ -2824,6 +2824,12 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("swiat iluzji", 90),
         ("stare miasto w warszawie", 120),
         ("stare miasto", 120),
+        # FIX #264 Warszawa: client — Kopiec / Most / Jeziorko too long.
+        ("kopiec powstania", 60),
+        ("most świętokrzyski", 30),
+        ("most swietokrzyski", 30),
+        ("jeziorko czerniakowskie", 150),
+        ("archikatedr", 45),
     )
     for marker, cap in _named_caps:
         if marker in name:
@@ -2923,6 +2929,9 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("wilanów", 120),
         ("wilanow", 120),
         ("polin", 100),
+        # FIX #264: Botaniczny 30 min is too short; ZOO family floor already 120.
+        ("ogród botaniczny", 60),
+        ("ogrod botaniczny", 60),
     )
     for _marker, _nmin in _named_mins:
         if _marker in _poi_name_lower:
