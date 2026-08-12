@@ -4946,11 +4946,15 @@ class PlanService:
                 )
                 _it259 = self._strip_self_transits(_it259, day_num=_d259.day)
                 _it259 = self._sort_items_by_time(_it259)
+                # FIX #265: heal overlaps after late mutators; keep day dates.
+                _it259 = self._remove_timeline_overlaps(_it259, _d259.day)
                 _final_days259.append(DayPlan(
                     day=_d259.day,
                     title=_generate_day_title(_it259, _d259.day),
                     items=_it259,
                     quality_badges=_d259.quality_badges,
+                    date=getattr(_d259, "date", None),
+                    weekday=getattr(_d259, "weekday", None),
                 ))
               except Exception as _exc261:
                 # FIX #261: never 500 the whole plan because one day's polish
@@ -4961,6 +4965,7 @@ class PlanService:
                 )
                 _final_days259.append(_d259)
             days = _final_days259
+            _apply_day_dates(days, _ctx_fields.get("start_date"))
             # FIX #261: absolute polish never swaps attractions, so a late-trip
             # day that reused Hydropolis/Rynek still needs one trip-wide pass.
             if all_pois_dict and user is not None:
@@ -5034,15 +5039,19 @@ class PlanService:
                             _it261, _day_ctx259, day_num=_d261.day,
                         )
                         _it261 = self._sort_items_by_time(_it261)
+                        _it261 = self._remove_timeline_overlaps(_it261, _d261.day)
                         _deduped261.append(DayPlan(
                             day=_d261.day,
                             title=_generate_day_title(_it261, _d261.day),
                             items=_it261,
                             quality_badges=_d261.quality_badges,
+                            date=getattr(_d261, "date", None),
+                            weekday=getattr(_d261, "weekday", None),
                         ))
                     else:
                         _deduped261.append(_d261)
                 days = _deduped261
+                _apply_day_dates(days, _ctx_fields.get("start_date"))
             # FIX #262: final meal / density pass after trip-wide swaps.
             _final262: List[DayPlan] = []
             for _d262 in days:
@@ -5563,13 +5572,21 @@ class PlanService:
                     )
                 _it262 = self._strip_self_transits(_it262, day_num=_d262.day)
                 _it262 = self._sort_items_by_time(_it262)
+                # FIX #265: absolute last overlap heal — post-heal mutators
+                # (_fix_implausible, meal routing) reopen 1–12 min overlaps.
+                _it262 = self._remove_timeline_overlaps(_it262, _d262.day)
+                _it262 = self._sort_items_by_time(_it262)
                 _final262.append(DayPlan(
                     day=_d262.day,
                     title=_generate_day_title(_it262, _d262.day),
                     items=_it262,
                     quality_badges=_d262.quality_badges,
+                    date=getattr(_d262, "date", None),
+                    weekday=getattr(_d262, "weekday", None),
                 ))
             days = _final262
+            # FIX #265: DayPlan rebuilds after _apply_day_dates wipe date/weekday.
+            _apply_day_dates(days, _ctx_fields.get("start_date"))
             # FIX #260: scrub stale early_dinner warnings (engine emits before
             # dinner push to ≥17:30; client saw "20:17" while final was 18:25).
             _any_dinner_ok = False
@@ -9150,11 +9167,25 @@ class PlanService:
             return it
         dist = haversine_distance(float(lat1), float(lng1), float(lat2), float(lng2))
         cur = int(getattr(it, "duration_min", 0) or 0)
-        if dist < 0.8:
-            return it
-        # City traffic: ~25 km/h effective + 5 min buffer; walk: ~4.5 km/h.
         mode = str(getattr(it, "mode", "") or "").lower()
         is_walk = "walk" in mode
+        # FIX #265: micro-walks (83 m → 12–15 min) — clamp down, don't skip.
+        if is_walk and dist < 0.25:
+            ideal = max(2, int(round(dist / 4.5 * 60)) + 1)
+            if cur > ideal + 2:
+                st = time_to_minutes(getattr(it, "start_time", "09:00") or "09:00")
+                try:
+                    return it.model_copy(update={
+                        "duration_min": ideal,
+                        "end_time": minutes_to_time(st + ideal),
+                        "distance_km": round(dist, 3),
+                    })
+                except Exception:
+                    return it
+            return it
+        if dist < 0.8 and not (is_walk and cur > 20):
+            return it
+        # City traffic: ~25 km/h effective + 5 min buffer; walk: ~4.5 km/h.
         if is_walk:
             min_plausible = max(5, int(dist / 4.5 * 60))
         else:
@@ -15937,6 +15968,12 @@ class PlanService:
         """FIX #264: overwrite known-bad Excel coordinates on timeline items."""
         _FIXES = (
             ("browary warszawskie", 52.2345, 20.9877),
+            # FIX #265: Muzeum Świat Iluzji we Wrocławiu must not keep Warsaw GPS
+            # (~302 km) — Centennial Hall / Iglica cluster.
+            ("muzeum świat iluzji we wrocławiu", 51.1069, 17.0773),
+            ("muzeum swiat iluzji we wroclawiu", 51.1069, 17.0773),
+            ("świat iluzji we wrocławiu", 51.1069, 17.0773),
+            ("swiat iluzji we wroclawiu", 51.1069, 17.0773),
         )
         out: List[Any] = []
         for it in items:
@@ -16209,6 +16246,9 @@ class PlanService:
             )):
                 score += 50.0
             if "mamuta" in pname:
+                # FIX #265: never inject kids-only Mamuta for adult profiles.
+                if str((user or {}).get("target_group") or "").lower() != "family_kids":
+                    continue
                 score += 20.0
             if score > best_score:
                 best, best_score = poi, score

@@ -610,6 +610,23 @@ def normalize_poi(p, index):
         _norm_result["lng"] = 20.9877
         if not (_norm_result.get("address") or "").strip():
             _norm_result["address"] = "Grzybowska 72A, Warszawa"
+    # FIX #265: Wrocław Świat Iluzji must not keep Warsaw GPS (~302 km).
+    if "iluzji" in _nm234 and "wrocław" in (
+        (_norm_result.get("city") or "").lower()
+        + " "
+        + _nm234
+    ):
+        try:
+            _ilat = float(_norm_result.get("lat") or 0)
+            _ilng = float(_norm_result.get("lng") or 0)
+        except Exception:
+            _ilat, _ilng = 0.0, 0.0
+        # Warsaw-ish coords or absurd distance from Wrocław centre.
+        if (
+            abs(_ilat - 52.23) < 0.15 and abs(_ilng - 21.01) < 0.15
+        ) or abs(_ilat - 51.11) > 0.5:
+            _norm_result["lat"] = 51.1069
+            _norm_result["lng"] = 17.0773
     if "fontanna multimedialna" in _nm234:
         _norm_result["description_short"] = (
             "Nowoczesny park z efektownymi pokazami fontann, światła i dźwięku we Wrocławiu."

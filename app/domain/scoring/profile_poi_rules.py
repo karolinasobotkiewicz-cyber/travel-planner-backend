@@ -95,6 +95,9 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("panorama raclawicka", "wro_panorama"),
         ("kolejkowo", "wro_kolejkowo"),
         ("movie gate", "wro_movie_gate"),
+        # FIX #265: Park Mamuta must not spam across days
+        ("park mamuta", "wro_park_mamuta"),
+        ("mamuta", "wro_park_mamuta"),
         # FIX #249 Poznań — powtarzalne fillery centrum
         ("stary rynek w poznaniu", "poz_stary_rynek"),
         ("ratusz w poznaniu", "poz_ratusz"),
@@ -188,6 +191,10 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
             or tg in ("seniors",)
         ):
             return True
+
+    # FIX #265: Park Mamuta is kids-only — never for adult profiles.
+    if "mamuta" in name and tg not in ("family_kids", "family"):
+        return True
 
     # Kraków: Podziemia Rynku for family with young child
     if tg == "family_kids" and "podziemia rynku" in name:

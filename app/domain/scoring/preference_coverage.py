@@ -456,6 +456,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "lustrzany labirynt", "be happy museum",
         # FIX #227: arcade / VR / escape room are not museum heritage.
         "pixel", "escape room", "kino 7d", "cybermagia",
+        # FIX #265: Park Mamuta is kids outdoor dinosaurs — never museum_heritage.
+        "park mamuta", "mamuta",
     ),
     "nature_landscape": (
         "spodek", "rynek", "dlugi targ", "długi targ", "fontanna neptuna",

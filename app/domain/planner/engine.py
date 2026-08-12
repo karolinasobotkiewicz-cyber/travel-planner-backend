@@ -1477,7 +1477,11 @@ def travel_time_minutes(a, b, context):
     if _use_walk:
         _walk_speed = CITY_TOURISM_WALK_SPEED_KMH if _city_trip else 5.0
         walk_time = (distance_km / _walk_speed) * 60
-        raw = max(int(walk_time), 5)
+        # FIX #265: 83 m must not become a 12–15 min "minimum walk".
+        if distance_km < 0.2:
+            raw = max(2, int(round(walk_time)) + 1)
+        else:
+            raw = max(int(walk_time), 5)
     else:
         # FIX #234: road distance in cities is longer than straight-line haversine.
         _road_km = distance_km * (CITY_ROAD_DISTANCE_FACTOR if _city_trip else 1.0)

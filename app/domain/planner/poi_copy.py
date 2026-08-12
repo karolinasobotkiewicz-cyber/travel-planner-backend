@@ -125,6 +125,9 @@ def classify_poi_category(poi: Dict[str, Any]) -> str:
         return "park"
     if "park jordana" in name:
         return "park"
+    # FIX #265: Park Mamuta is outdoor kids dinosaurs — never museum.
+    if "mamuta" in name:
+        return "playground"
     if any(k in name for k in ("jeziorko czerniakowskie", "jezioro czerniak")):
         return "water_nature"
     if "kampinos" in name:
@@ -271,8 +274,12 @@ def build_fallback_copy(poi: Dict[str, Any]) -> Tuple[str, Optional[str]]:
         pass
     if "park mamuta" in name_l or "mamuta" in name_l:
         _ticket_free = True
-        if not desc:
-            desc = "Park Mamuta — plenerowa ekspozycja rzeźb dinozaurów, wstęp wolny."
+        desc = (
+            "Park Mamuta — plenerowa ekspozycja rzeźb dinozaurów dla rodzin "
+            "z dziećmi, wstęp wolny."
+        )
+        tip = "Wstęp wolny — idealny na krótki spacer z dziećmi między większymi atrakcjami."
+        return desc, tip
     if _ticket_free and tip and any(
         k in tip.lower() for k in ("bilet", "ticket", "kup online", "kup bilet")
     ):

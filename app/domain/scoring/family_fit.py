@@ -20,6 +20,8 @@ _CHILD_POI_NAME_MARKERS = (
     "lego", "wielka wystawa klock",     "loopy", "pixel xl",
     "guliwer", "centrum rozrywki",
     "kolejkowo", "jumpcity", "nemo", "park wodny", "wodny park",
+    # FIX #265: Park Mamuta is kids outdoor dinosaurs — not adult filler.
+    "park mamuta", "mamuta",
 )
 # FIX #197: recurring client mismatches (name heuristics when Excel target_group is loose)
 _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
@@ -34,6 +36,8 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "be happy museum", "plac bohaterów getta",
         # FIX #264: Kleks is kids entertainment, not adult adventure
         "kleks",
+        # FIX #265: Park Mamuta is kids-only outdoor dinosaurs
+        "park mamuta", "mamuta",
     ),
     "seniors": (
         "kopiec powstania",
@@ -41,6 +45,8 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "grób nieznanego", "pałac prezydencki", "pomnik syren",
         # FIX #264
         "kleks", "park linowy",
+        # FIX #265
+        "park mamuta", "mamuta",
     ),
     "family_kids": (
         "grób nieznanego", "grob nieznanego", "changing of the guard",
@@ -75,6 +81,8 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "loopy",
         # FIX #264: kids entertainment for solo
         "kleks", "kolejkowo", "sala zabaw",
+        # FIX #265
+        "park mamuta", "mamuta",
     ),
     "couples": (
         "pixel xl", "pixel", "loopy",
@@ -83,6 +91,8 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "centrum nauki kopernik",
         # FIX #264
         "kleks", "kolejkowo",
+        # FIX #265
+        "park mamuta", "mamuta",
     ),
 }
 _CHILD_POI_TAGS = frozenset({
@@ -130,6 +140,11 @@ def restaurant_hard_denied_for_group(restaurant: dict, user: dict) -> bool:
     # FIX #263: wine-bar couples venues are wrong for family_kids / seniors.
     if user_group in ("family_kids", "seniors") and rname in (
         "the cork", "cork",
+    ):
+        return True
+    # FIX #265: cocktail bars are wrong for family with kids (client: Le Barometre).
+    if user_group == "family_kids" and any(
+        k in rname for k in ("barometre", "cocktail", "drink & food", "drink and food")
     ):
         return True
     target_groups = (
