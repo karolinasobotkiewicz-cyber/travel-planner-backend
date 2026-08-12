@@ -2742,6 +2742,9 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("park jordana", 75),
         ("wyspa słodowa", 75),
         ("wyspa slodowa", 75),
+        # FIX #266: before generic "katedra" — "archikatedralna" contains "katedra".
+        ("archikatedr", 45),
+        ("bazylika", 45),
         ("katedra", 90),
         ("ostrów tumski", 90),
         ("ostrow tumski", 90),
@@ -2833,7 +2836,11 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("most świętokrzyski", 30),
         ("most swietokrzyski", 30),
         ("jeziorko czerniakowskie", 150),
-        ("archikatedr", 45),
+        # FIX #266 Warszawa: Powązki 209 min too long for balanced.
+        ("cmentarz powązkowski", 120),
+        ("cmentarz powazkowski", 120),
+        ("powązk", 120),
+        ("powazk", 120),
     )
     for marker, cap in _named_caps:
         if marker in name:
@@ -2929,6 +2936,9 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("ogrod zoologiczny", 120),
         ("łazienki królewskie", 90),
         ("lazienki krolewskie", 90),
+        # FIX #266: bare "Łazienki" must also hit the floor.
+        ("łazienki", 90),
+        ("lazienki", 90),
         ("wilanowie", 120),
         ("wilanów", 120),
         ("wilanow", 120),
@@ -2949,6 +2959,14 @@ def choose_duration(p, now, end, lunch_done, user=None):
             tmin = max(tmin, 120)
         if "zoo" in _poi_name_lower and "mini" not in _poi_name_lower:
             tmin = max(tmin, 120)
+    # FIX #266: relax style — Łazienki/ZOO must not be micro-stops.
+    if user and str(user.get("travel_style") or "").lower() == "relax":
+        if any(k in _poi_name_lower for k in ("łazienki", "lazienki")):
+            tmin = max(tmin, 90)
+        if "zoo" in _poi_name_lower and "mini" not in _poi_name_lower:
+            tmin = max(tmin, 120)
+        if any(k in _poi_name_lower for k in ("ogród botaniczny", "ogrod botaniczny")):
+            tmin = max(tmin, 60)
     # FIX #254: clamp absurd Excel time_max before preferred_duration uses it.
     _hard_cap = visit_duration_hard_cap(p)
     if _hard_cap is not None:

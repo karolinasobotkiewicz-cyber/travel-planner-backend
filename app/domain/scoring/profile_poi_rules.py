@@ -73,6 +73,9 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("łazienki królewskie", "waw_lazienki"),
         ("lazienki krolewskie", "waw_lazienki"),
         ("kampinos", "waw_kampinos"),
+        # FIX #266: pool filler must not repeat across days
+        ("warszawianka", "waw_warszawianka"),
+        ("park wodny warszaw", "waw_warszawianka"),
         # FIX #248 Wrocław — powtarzalne fillery
         ("wyspa słodowa", "wro_wyspa_slodowa"),
         ("wyspa slodowa", "wro_wyspa_slodowa"),
@@ -191,6 +194,18 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
             or tg in ("seniors",)
         ):
             return True
+
+    # FIX #266: Warszawianka / indoor pool is filler when water is not a pref
+    # (client: json4/8/9 — doesn't match nature/relax/museum profiles).
+    if any(k in name for k in ("warszawianka", "park wodny warszaw")):
+        if "water_attractions" not in prefs and "active_sport" not in prefs:
+            if style in ("relax", "cultural") or "relaxation" in prefs or nat_relax:
+                return True
+            if tg in ("solo", "seniors", "couples") and style == "balanced":
+                # Still allow occasional pool day only when explicitly watery.
+                if not ({"nature_landscape", "museum_heritage"} & prefs):
+                    return False
+                return True
 
     # FIX #265: Park Mamuta is kids-only — never for adult profiles.
     if "mamuta" in name and tg not in ("family_kids", "family"):

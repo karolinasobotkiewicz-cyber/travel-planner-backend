@@ -496,6 +496,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "katedra", "archikatedra", "bazylika", "parafia", "most ", "kładka", "kladka",
         # FIX #225: socialist district sightseeing tour is not a food experience.
         "nowa huta",
+        # FIX #266: Norblin is industrial heritage museum, not food experience.
+        "norblin", "muzeum fabryki norblina",
     ),
     "relaxation": (
         "most tumski", "rynek", "fontanna", "hala stulecia", "muzeum narodowe",
@@ -546,6 +548,26 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "rynek", "plac ", "browar", "deptak", "pomnik",
         # FIX #227: arcade / VR / escape room are not underground.
         "pixel", "escape room", "kino 7d", "cybermagia",
+        # FIX #266: memorial mound / uprising museum ≠ underground caves/mines.
+        "kopiec powstania", "kopiec ",
+        "muzeum powstania warszawskiego", "powstania warszawskiego",
+    ),
+    "museum_heritage": (
+        "spodek", "pomnik syreny", "park sensoryczny", "wieża ratuszowa",
+        "fontanna neptuna", "dlugi targ", "długi targ",
+        # FIX #210: spa-resort building is not a museum
+        "dom zdrojowy", "zdrojowy",
+        # FIX #213: cathedrals/churches → history_mystery, not museum.
+        "katedra", "archikatedra", "bazylika", "parafia",
+        # FIX #222: chocolate / weak urban POI ≠ museum.
+        "wedel", "czekolad", "pijalnia czekolady", "plac wolności", "plac wolnosci",
+        "rynek jeżycki", "rynek jezycki", "pomnik bamberki", "domy kupieckie",
+        # FIX #225: mirror maze / photo-installation venues ≠ museum heritage.
+        "lustrzany labirynt", "be happy museum",
+        # FIX #227: arcade / VR / escape room are not museum heritage.
+        "pixel", "escape room", "kino 7d", "cybermagia",
+        # FIX #265: Park Mamuta is kids outdoor dinosaurs — never museum_heritage.
+        "park mamuta", "mamuta",
     ),
     "kids_attractions": (
         "podziemia rynku",
@@ -630,12 +652,17 @@ def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
         "ogrod botaniczny", "bulwar", "aquapark",
     )):
         return True
-    # FIX #262 Warszawa: no cave/mine rows in Excel — Muzeum Powstania (kanały)
-    # and Cytadela casemates are the honest underground cover for the city.
+    # FIX #262/#266 Warszawa: real underground = Cytadela / casemates / tunnels.
+    # Client FIX #266: Muzeum Powstania + Kopiec must NOT fake-cover underground.
     if pref == "underground" and any(m in name for m in (
-        "muzeum powstania warszawskiego", "powstania warszawskiego",
         "cytadel", "x pawilon", "muzeum katyńskie", "muzeum katynskie",
-        "podziemia", "kanał", "kanal",
+        "podziemia", "kanał", "kanal", "gazowni", "schron", "bunkier",
+    )):
+        return True
+    # FIX #266: Zamek Królewski is one of Warsaw's key museums — always cover
+    # museum_heritage even when Excel tags are thin/misfiled.
+    if pref == "museum_heritage" and any(m in name for m in (
+        "zamek królewski", "zamek krolewski",
     )):
         return True
     tags = excel_tags(poi)

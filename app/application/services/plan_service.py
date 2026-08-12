@@ -5387,9 +5387,12 @@ class PlanService:
                         _na_end = sum(
                             1 for x in _it262 if _is_timeline_attraction(x)
                         )
-                        if _na_end <= 2 and _ft_end >= 150:
+                        # FIX #266: also rescue 3-POI days with 3h+ free_time
+                        # (client WAWA: D7/D3 empty afternoons).
+                        if _na_end <= 3 and _ft_end >= 150:
                             _before = _na_end
-                            for _inj_try in range(2 if _ft_end >= 180 else 1):
+                            _tries = 3 if _ft_end >= 180 else 2
+                            for _inj_try in range(_tries):
                                 _it262 = self._inject_attraction_into_free_time(
                                     _it262, all_pois_dict, {
                                         **_day_ctx259,
@@ -5399,6 +5402,31 @@ class PlanService:
                                         "allow_pre_meal_inject": True,
                                     }, user, day_num=_d262.day,
                                 )
+                            _it262 = self._boost_thin_relax_nature_day(
+                                _it262, all_pois_dict, {
+                                    **_day_ctx259,
+                                    **(contexts[_d262.day - 1]
+                                       if _d262.day - 1 < len(contexts) else {}),
+                                    "allow_soft_profile": True,
+                                    "allow_pre_meal_inject": True,
+                                }, user, day_num=_d262.day,
+                            )
+                            try:
+                                _end_m = time_to_minutes(
+                                    _day_ctx259.get("day_end") or day_end
+                                )
+                            except Exception:
+                                _end_m = 20 * 60
+                            _it262 = self._stretch_attractions_into_empty_day(
+                                _it262, all_pois_dict, _end_m, day_num=_d262.day,
+                            )
+                            # Recompute free_time labels after stretch/inject.
+                            _it262 = self._name_remaining_holes(
+                                _it262, _day_ctx259, day_num=_d262.day,
+                            )
+                            _it262 = self._merge_abutting_free_time_hard(
+                                _it262, day_num=_d262.day,
+                            )
                             if sum(1 for x in _it262 if _is_timeline_attraction(x)) > _before:
                                 _cm_f262 = self._merge_coord_map(
                                     _final_coord_map, _it262,
@@ -5476,7 +5504,7 @@ class PlanService:
                     ]
                     _it262 = self._remove_timeline_overlaps(_it262, _d262.day)
                     _it262 = self._cap_stretched_attraction_durations(
-                        _it262, day_num=_d262.day,
+                        _it262, day_num=_d262.day, user=user,
                     )
                     _it262 = self._name_remaining_holes(
                         _it262, _day_ctx259, day_num=_d262.day,
@@ -5507,6 +5535,18 @@ class PlanService:
                     _it262 = self._strip_wrong_city_attractions(
                         _it262, _day_ctx259, day_num=_d262.day,
                     )
+                    # FIX #266: foreign POI strip leaves ghost legs / car park
+                    # at Wrocław Iluzji; absurd 00:00→09:15 (=555 min) legs.
+                    _it262 = self._strip_transits_to_unscheduled_destinations(
+                        _it262, day_num=_d262.day,
+                    )
+                    _cm_f262 = self._merge_coord_map(_final_coord_map, _it262)
+                    _it262 = self._clamp_absurd_transit_durations(
+                        _it262, _cm_f262, _day_ctx259, day_num=_d262.day,
+                    )
+                    _it262 = self._repair_car_chain(
+                        _it262, _cm_f262, _day_ctx259, day_num=_d262.day,
+                    )
                     _it262 = self._push_lunch_not_before_noon(
                         _it262, day_num=_d262.day,
                     )
@@ -5518,7 +5558,7 @@ class PlanService:
                     )
                     _cm_f262 = self._merge_coord_map(_final_coord_map, _it262)
                     _it262 = self._cap_stretched_attraction_durations(
-                        _it262, day_num=_d262.day,
+                        _it262, day_num=_d262.day, user=user,
                     )
                     _it262 = self._route_meals_into_timeline(
                         _it262, _cm_f262, _day_ctx259, day_num=_d262.day,
@@ -5536,6 +5576,9 @@ class PlanService:
                         if _item_type_value(it) == ItemType.TRANSIT.value else it
                         for it in _it262
                     ]
+                    _it262 = self._clamp_absurd_transit_durations(
+                        _it262, _cm_f262, _day_ctx259, day_num=_d262.day,
+                    )
                     _it262 = self._repair_car_chain(
                         _it262, _cm_f262, _day_ctx259, day_num=_d262.day,
                     )
@@ -5572,6 +5615,71 @@ class PlanService:
                     )
                 _it262 = self._strip_self_transits(_it262, day_num=_d262.day)
                 _it262 = self._sort_items_by_time(_it262)
+                # FIX #266: final density after profile/foreign strips (Warszawianka
+                # denial can reopen a 3h hole that earlier inject already filled).
+                if (
+                    all_pois_dict and user is not None
+                    and _city_needs_car_gap_polish(
+                        str(_day_ctx259.get("requested_city") or "")
+                    )
+                ):
+                    _ft_last = sum(
+                        int(getattr(x, "duration_min", 0) or 0)
+                        for x in _it262
+                        if _item_type_value(x) == ItemType.FREE_TIME.value
+                    )
+                    _na_last = sum(
+                        1 for x in _it262 if _is_timeline_attraction(x)
+                    )
+                    if _na_last <= 3 and _ft_last >= 150:
+                        for _ in range(3 if _ft_last >= 180 else 2):
+                            _it262 = self._inject_attraction_into_free_time(
+                                _it262, all_pois_dict, {
+                                    **_day_ctx259,
+                                    **(contexts[_d262.day - 1]
+                                       if _d262.day - 1 < len(contexts) else {}),
+                                    "allow_soft_profile": True,
+                                    "allow_pre_meal_inject": True,
+                                }, user, day_num=_d262.day,
+                            )
+                        _it262 = self._boost_thin_relax_nature_day(
+                            _it262, all_pois_dict, {
+                                **_day_ctx259,
+                                **(contexts[_d262.day - 1]
+                                   if _d262.day - 1 < len(contexts) else {}),
+                                "allow_soft_profile": True,
+                                "allow_pre_meal_inject": True,
+                            }, user, day_num=_d262.day,
+                        )
+                        try:
+                            _end_m2 = time_to_minutes(
+                                _day_ctx259.get("day_end") or day_end
+                            )
+                        except Exception:
+                            _end_m2 = 20 * 60
+                        _it262 = self._stretch_attractions_into_empty_day(
+                            _it262, all_pois_dict, _end_m2, day_num=_d262.day,
+                        )
+                        _it262 = self._strip_wrong_city_attractions(
+                            _it262, _day_ctx259, day_num=_d262.day,
+                        )
+                        _cm_f262 = self._merge_coord_map(_final_coord_map, _it262)
+                        _it262 = self._strip_transits_to_unscheduled_destinations(
+                            _it262, day_num=_d262.day,
+                        )
+                        _it262 = self._ensure_stop_to_stop_legs(
+                            _it262, _cm_f262, _day_ctx259, day_num=_d262.day,
+                        )
+                        _it262 = self._repair_car_chain(
+                            _it262, _cm_f262, _day_ctx259, day_num=_d262.day,
+                        )
+                        _it262 = self._name_remaining_holes(
+                            _it262, _day_ctx259, day_num=_d262.day,
+                        )
+                        _it262 = self._merge_abutting_free_time_hard(
+                            _it262, day_num=_d262.day,
+                        )
+                        _it262 = self._sort_items_by_time(_it262)
                 # FIX #265: absolute last overlap heal — post-heal mutators
                 # (_fix_implausible, meal routing) reopen 1–12 min overlaps.
                 _it262 = self._remove_timeline_overlaps(_it262, _d262.day)
@@ -9169,8 +9277,8 @@ class PlanService:
         cur = int(getattr(it, "duration_min", 0) or 0)
         mode = str(getattr(it, "mode", "") or "").lower()
         is_walk = "walk" in mode
-        # FIX #265: micro-walks (83 m → 12–15 min) — clamp down, don't skip.
-        if is_walk and dist < 0.25:
+        # FIX #265/#266: micro-walks (83–500 m ≠ 12–28 min) — clamp down.
+        if is_walk and dist < 0.55:
             ideal = max(2, int(round(dist / 4.5 * 60)) + 1)
             if cur > ideal + 2:
                 st = time_to_minutes(getattr(it, "start_time", "09:00") or "09:00")
@@ -14364,9 +14472,13 @@ class PlanService:
         items: List[Any],
         *,
         day_num: int = 0,
+        user: Optional[Dict[str, Any]] = None,
     ) -> List[Any]:
-        """FIX #256: clamp visits that absorb-pass stretched past hard caps."""
+        """FIX #256/#266: clamp visits past hard caps; floor iconic short stops."""
         from app.domain.planner.engine import visit_duration_hard_cap
+
+        style = str((user or {}).get("travel_style") or "").lower()
+        group = str((user or {}).get("target_group") or "").lower()
 
         out: List[Any] = []
         for it in items:
@@ -14374,23 +14486,46 @@ class PlanService:
                 out.append(it)
                 continue
             nm = getattr(it, "name", "") or ""
-            cap = visit_duration_hard_cap({"name": nm}, for_scheduling=True)
-            if not cap:
-                out.append(it)
-                continue
+            nm_l = nm.lower()
             dur = int(getattr(it, "duration_min", 0) or 0)
             st = getattr(it, "start_time", None)
-            if not st or dur <= cap:
+            if not st:
                 out.append(it)
                 continue
-            new_en = minutes_to_time(time_to_minutes(st) + cap)
+
+            cap = visit_duration_hard_cap({"name": nm}, for_scheduling=True)
+            floor = 0
+            if any(k in nm_l for k in ("łazienki", "lazienki")):
+                floor = max(floor, 90)
+            if "polin" in nm_l:
+                floor = max(floor, 100)
+            if "ogród botaniczny" in nm_l or "ogrod botaniczny" in nm_l:
+                floor = max(floor, 60)
+            if (
+                ("ogród zoologiczny" in nm_l or "ogrod zoologiczny" in nm_l
+                 or ("zoo" in nm_l and "mini" not in nm_l))
+                and (style == "relax" or group in ("family_kids", "seniors"))
+            ):
+                floor = max(floor, 120)
+
+            target = dur
+            if cap is not None and target > cap:
+                target = cap
+            if floor and target < floor:
+                target = floor if cap is None else min(max(floor, target), cap)
+                if target < floor and cap is not None and cap < floor:
+                    target = cap  # hard cap wins over floor
+
+            if target == dur:
+                out.append(it)
+                continue
             try:
                 out.append(it.model_copy(update={
-                    "end_time": new_en,
-                    "duration_min": cap,
+                    "end_time": minutes_to_time(time_to_minutes(st) + target),
+                    "duration_min": target,
                 }))
                 print(
-                    f"[FIX #256] Day {day_num}: capped {nm} {dur}→{cap} min"
+                    f"[FIX #266] Day {day_num}: duration {nm} {dur}→{target} min"
                 )
             except Exception:
                 out.append(it)
@@ -15288,7 +15423,7 @@ class PlanService:
         *,
         day_num: int = 0,
     ) -> List[Any]:
-        """FIX #262: never schedule 'Muzeum Świat Iluzji we Wrocławiu' in Warszawa."""
+        """FIX #262/#266: drop foreign-city POIs and legs that name them."""
         city = str(context.get("requested_city") or "").strip().lower()
         if not city:
             return items
@@ -15306,22 +15441,174 @@ class PlanService:
                 break
         if not banned:
             return items
-        out: List[Any] = []
-        for it in items:
-            if not _is_timeline_attraction(it):
-                out.append(it)
-                continue
-            nm = (getattr(it, "name", "") or "").lower()
-            if any(
+
+        def _foreign_label(text: str) -> bool:
+            nm = (text or "").lower()
+            if not nm:
+                return False
+            return any(
                 f"we {b}" in nm or f"w {b}" in nm or nm.endswith(b)
                 for b in banned
-            ):
+            )
+
+        out: List[Any] = []
+        for it in items:
+            tv = _item_type_value(it)
+            if _is_timeline_attraction(it):
+                nm = getattr(it, "name", "") or ""
+                if _foreign_label(nm):
+                    print(
+                        f"[FIX #266] Day {day_num}: stripped foreign-city POI "
+                        f"{nm} (trip={city})"
+                    )
+                    continue
+                out.append(it)
+                continue
+            if tv == ItemType.TRANSIT.value:
+                fr = getattr(it, "from_location", "") or ""
+                to = getattr(it, "to_location", "") or ""
+                if _foreign_label(fr) or _foreign_label(to):
+                    print(
+                        f"[FIX #266] Day {day_num}: stripped foreign-city transit "
+                        f"{fr}->{to} (trip={city})"
+                    )
+                    continue
+            out.append(it)
+        return out
+
+    def _clamp_absurd_transit_durations(
+        self,
+        items: List[Any],
+        coord_map: Dict[str, dict],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+        max_urban_min: int = 120,
+    ) -> List[Any]:
+        """FIX #266: drop/clamp overnight or absurdly long urban car/walk legs."""
+        out: List[Any] = []
+        for it in items:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            cur = int(getattr(it, "duration_min", 0) or 0)
+            st = getattr(it, "start_time", None)
+            en = getattr(it, "end_time", None)
+            frm = getattr(it, "from_location", "") or ""
+            to = getattr(it, "to_location", "") or ""
+            # Overnight / broken clock (e.g. 00:00→09:15 = 555 min).
+            bad_clock = False
+            try:
+                if st and en:
+                    st_m = time_to_minutes(st)
+                    en_m = time_to_minutes(en)
+                    if en_m < st_m or cur >= 180 or st_m < 5 * 60:
+                        bad_clock = True
+            except Exception:
+                bad_clock = cur >= 180
+            if not bad_clock and cur <= max_urban_min:
+                # Still clamp too-slow short urban hops (1–3 km ≠ 35+ min).
+                fp, tp = coord_map.get(frm), coord_map.get(to)
+                if fp and tp:
+                    lat1, lng1 = _poi_lat_lng(fp)
+                    lat2, lng2 = _poi_lat_lng(tp)
+                    if lat1 is not None and lat2 is not None:
+                        dist = haversine_distance(
+                            float(lat1), float(lng1), float(lat2), float(lng2),
+                        )
+                        mode = str(getattr(it, "mode", "") or "").lower()
+                        is_walk = "walk" in mode
+                        if is_walk and dist < 0.6 and cur > max(8, int(dist / 4.5 * 60) + 3):
+                            ideal = max(2, int(round(dist / 4.5 * 60)) + 1)
+                            try:
+                                st_m = time_to_minutes(st or "09:00")
+                                out.append(it.model_copy(update={
+                                    "duration_min": ideal,
+                                    "end_time": minutes_to_time(st_m + ideal),
+                                    "distance_km": round(dist, 3),
+                                }))
+                                print(
+                                    f"[FIX #266] Day {day_num}: clamped slow walk "
+                                    f"{frm}->{to} {cur}→{ideal}min"
+                                )
+                                continue
+                            except Exception:
+                                pass
+                        if (
+                            not is_walk
+                            and 0.8 <= dist <= 4.0
+                            and cur > max(18, int(dist / 20.0 * 60) + 10)
+                        ):
+                            try:
+                                ideal = max(8, int(dist / 20.0 * 60) + 8)
+                                st_m = time_to_minutes(st or "09:00")
+                                out.append(it.model_copy(update={
+                                    "duration_min": ideal,
+                                    "end_time": minutes_to_time(st_m + ideal),
+                                    "distance_km": round(dist, 2),
+                                }))
+                                print(
+                                    f"[FIX #266] Day {day_num}: clamped slow car "
+                                    f"{frm}->{to} {cur}→{ideal}min"
+                                )
+                                continue
+                            except Exception:
+                                pass
+                out.append(it)
+                continue
+            # Recompute or drop.
+            fp, tp = coord_map.get(frm), coord_map.get(to)
+            if not fp or not tp:
                 print(
-                    f"[FIX #262] Day {day_num}: stripped foreign-city POI "
-                    f"{getattr(it, 'name', '?')} (trip={city})"
+                    f"[FIX #266] Day {day_num}: dropped absurd transit "
+                    f"{frm}->{to} ({cur}min, no coords)"
                 )
                 continue
-            out.append(it)
+            lat1, lng1 = _poi_lat_lng(fp)
+            lat2, lng2 = _poi_lat_lng(tp)
+            if lat1 is None or lat2 is None:
+                continue
+            try:
+                ctx = {**context, "has_car": context.get("has_car", True)}
+                new_dur = int(travel_time_minutes(
+                    {"lat": float(lat1), "lng": float(lng1)},
+                    {"lat": float(lat2), "lng": float(lng2)},
+                    ctx,
+                ))
+                new_dur = max(5, min(new_dur, max_urban_min))
+                if not st:
+                    continue
+                st_m = time_to_minutes(st)
+                # If start is before reasonable day window, drop the leg.
+                day_start = context.get("day_start") or "09:00"
+                try:
+                    if st_m < time_to_minutes(day_start) - 5:
+                        print(
+                            f"[FIX #266] Day {day_num}: dropped pre-day transit "
+                            f"{frm}->{to} @{st}"
+                        )
+                        continue
+                except Exception:
+                    pass
+                out.append(it.model_copy(update={
+                    "duration_min": new_dur,
+                    "end_time": minutes_to_time(st_m + new_dur),
+                    "distance_km": round(
+                        haversine_distance(
+                            float(lat1), float(lng1), float(lat2), float(lng2),
+                        ),
+                        2,
+                    ),
+                }))
+                print(
+                    f"[FIX #266] Day {day_num}: clamped absurd transit "
+                    f"{frm}->{to} {cur}→{new_dur}min"
+                )
+            except Exception:
+                print(
+                    f"[FIX #266] Day {day_num}: dropped absurd transit "
+                    f"{frm}->{to} ({cur}min)"
+                )
         return out
 
     def _clamp_timeline_to_day_end(
@@ -16040,9 +16327,15 @@ class PlanService:
         )
         n_attr = sum(1 for it in items if _is_timeline_attraction(it))
         # Always plant a green when relax/nature is selected and coverage is thin.
-        if greens >= 1 and not (ft_total >= 180 and n_attr <= 2):
+        # FIX #266: also plant when free_time ≥150 even with 1 green already
+        # (client: D3 still 170–220 min empty after one park).
+        if greens >= 2 and not (ft_total >= 180 and n_attr <= 2):
             return items
-        if ft_total < 90:
+        if greens >= 1 and ft_total < 150:
+            return items
+        if greens == 0 and ft_total < 90:
+            return items
+        if greens >= 1 and ft_total < 150 and n_attr > 2:
             return items
         return self._inject_attraction_into_free_time(
             items, pool, context, user, day_num=day_num,
@@ -16230,6 +16523,25 @@ class PlanService:
                 and not context.get("allow_soft_profile")
             ):
                 continue
+            # FIX #266: never soft-inject rope parks / pool filler — client bans.
+            if any(k in pname for k in (
+                "park linowy", "warszawianka", "park wodny warszaw",
+            )):
+                continue
+            # FIX #266: never inject foreign-city named POIs into another city
+            # (soft densify was planting Wrocław Iluzji into Warszawa).
+            _rc = str(req_city or "").lower()
+            if "warszawa" in _rc or "warsaw" in _rc:
+                if any(k in pname for k in (
+                    "wrocław", "wroclaw", "we wrocław", "we wroclaw",
+                    "kraków", "krakow", "poznań", "poznan",
+                )):
+                    continue
+            if "wrocław" in _rc or "wroclaw" in _rc:
+                if any(k in pname for k in (
+                    "warszawa", "warsaw", "we warszaw", "kraków", "krakow",
+                )):
+                    continue
             # Prefer greens / soft culture for relax solo.
             score = 1.0  # any valid city POI beats leaving a 3h hole
             if any(k in pname for k in (
