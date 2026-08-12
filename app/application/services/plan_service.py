@@ -5392,24 +5392,40 @@ class PlanService:
                         if _na_end <= 3 and _ft_end >= 150:
                             _before = _na_end
                             _tries = 3 if _ft_end >= 180 else 2
+                            # FIX #267: never densify icons already used earlier
+                            # in the trip (Zamek / Wilanów P0).
+                            _keys267 = set(_trip_repeat_keys_so_far or set())
+                            _names267 = set(_trip_names_so_far or set())
+                            for _pd267 in _final262:
+                                for _pit267 in (_pd267.items or []):
+                                    if not _is_timeline_attraction(_pit267):
+                                        continue
+                                    _pnm = (getattr(_pit267, "name", "") or "")
+                                    if _pnm:
+                                        _names267.add(_pnm.lower())
+                                    from app.domain.scoring.profile_poi_rules import (
+                                        poi_trip_repeat_key as _rk267,
+                                    )
+                                    _pk = _rk267(_pnm)
+                                    if _pk:
+                                        _keys267.add(_pk)
+                            _inj_ctx267 = {
+                                **_day_ctx259,
+                                **(contexts[_d262.day - 1]
+                                   if _d262.day - 1 < len(contexts) else {}),
+                                "allow_soft_profile": True,
+                                "allow_pre_meal_inject": True,
+                                "trip_repeat_keys": _keys267,
+                                "trip_attraction_names": _names267,
+                            }
                             for _inj_try in range(_tries):
                                 _it262 = self._inject_attraction_into_free_time(
-                                    _it262, all_pois_dict, {
-                                        **_day_ctx259,
-                                        **(contexts[_d262.day - 1]
-                                           if _d262.day - 1 < len(contexts) else {}),
-                                        "allow_soft_profile": True,
-                                        "allow_pre_meal_inject": True,
-                                    }, user, day_num=_d262.day,
+                                    _it262, all_pois_dict, _inj_ctx267,
+                                    user, day_num=_d262.day,
                                 )
                             _it262 = self._boost_thin_relax_nature_day(
-                                _it262, all_pois_dict, {
-                                    **_day_ctx259,
-                                    **(contexts[_d262.day - 1]
-                                       if _d262.day - 1 < len(contexts) else {}),
-                                    "allow_soft_profile": True,
-                                    "allow_pre_meal_inject": True,
-                                }, user, day_num=_d262.day,
+                                _it262, all_pois_dict, _inj_ctx267,
+                                user, day_num=_d262.day,
                             )
                             try:
                                 _end_m = time_to_minutes(
@@ -5632,24 +5648,38 @@ class PlanService:
                         1 for x in _it262 if _is_timeline_attraction(x)
                     )
                     if _na_last <= 3 and _ft_last >= 150:
+                        _keys267b = set(_trip_repeat_keys_so_far or set())
+                        _names267b = set(_trip_names_so_far or set())
+                        for _pd267b in _final262:
+                            for _pit267b in (_pd267b.items or []):
+                                if not _is_timeline_attraction(_pit267b):
+                                    continue
+                                _pnm267b = (getattr(_pit267b, "name", "") or "")
+                                if _pnm267b:
+                                    _names267b.add(_pnm267b.lower())
+                                from app.domain.scoring.profile_poi_rules import (
+                                    poi_trip_repeat_key as _rk267b,
+                                )
+                                _pk267b = _rk267b(_pnm267b)
+                                if _pk267b:
+                                    _keys267b.add(_pk267b)
+                        _inj_ctx267b = {
+                            **_day_ctx259,
+                            **(contexts[_d262.day - 1]
+                               if _d262.day - 1 < len(contexts) else {}),
+                            "allow_soft_profile": True,
+                            "allow_pre_meal_inject": True,
+                            "trip_repeat_keys": _keys267b,
+                            "trip_attraction_names": _names267b,
+                        }
                         for _ in range(3 if _ft_last >= 180 else 2):
                             _it262 = self._inject_attraction_into_free_time(
-                                _it262, all_pois_dict, {
-                                    **_day_ctx259,
-                                    **(contexts[_d262.day - 1]
-                                       if _d262.day - 1 < len(contexts) else {}),
-                                    "allow_soft_profile": True,
-                                    "allow_pre_meal_inject": True,
-                                }, user, day_num=_d262.day,
+                                _it262, all_pois_dict, _inj_ctx267b,
+                                user, day_num=_d262.day,
                             )
                         _it262 = self._boost_thin_relax_nature_day(
-                            _it262, all_pois_dict, {
-                                **_day_ctx259,
-                                **(contexts[_d262.day - 1]
-                                   if _d262.day - 1 < len(contexts) else {}),
-                                "allow_soft_profile": True,
-                                "allow_pre_meal_inject": True,
-                            }, user, day_num=_d262.day,
+                            _it262, all_pois_dict, _inj_ctx267b,
+                            user, day_num=_d262.day,
                         )
                         try:
                             _end_m2 = time_to_minutes(
@@ -5693,6 +5723,124 @@ class PlanService:
                     weekday=getattr(_d262, "weekday", None),
                 ))
             days = _final262
+            # FIX #267: final polish densify can reintroduce Zamek/Wilanów —
+            # absolute trip-level icon strip after every day is rebuilt.
+            days = self._strip_cross_day_trip_repeats(days)
+            for _di267, _d267 in enumerate(days):
+                _it267 = self._strip_transits_to_unscheduled_destinations(
+                    list(_d267.items or []), day_num=_d267.day,
+                )
+                _cm267 = self._merge_coord_map(_final_coord_map, _it267)
+                _ctx267 = {
+                    **(context or {}),
+                    "requested_city": str(
+                        (context or {}).get("requested_city")
+                        or (_ctx_fields or {}).get("requested_city")
+                        or ""
+                    ),
+                    "day_start": day_start,
+                    "day_end": day_end,
+                    "has_car": bool((context or {}).get("has_car", True)),
+                    "preferences": list((user or {}).get("preferences") or []),
+                }
+                if contexts and _d267.day - 1 < len(contexts):
+                    _ctx267 = {**contexts[_d267.day - 1], **_ctx267}
+                _it267 = self._force_known_good_poi_coords(
+                    _it267, day_num=_d267.day,
+                )
+                _cm267 = self._merge_coord_map(_cm267, _it267)
+                _it267 = self._cap_stretched_attraction_durations(
+                    _it267, day_num=_d267.day, user=user,
+                )
+                # Drop stale post-lunch walks back to the lunch restaurant
+                # (client: lunch done, later walk→Lindleya then car→already-visited).
+                _it267 = self._strip_stale_post_meal_returns(
+                    _it267, day_num=_d267.day,
+                )
+                _it267 = self._force_approach_before_destination(
+                    _it267, day_num=_d267.day,
+                )
+                _it267 = self._ensure_stop_to_stop_legs(
+                    _it267, _cm267, _ctx267, day_num=_d267.day,
+                )
+                # Car repair MUST be after ensure_stop (which recreates legs
+                # with stale from_location — client car-teleport audits).
+                _it267 = self._repair_car_chain(
+                    _it267, _cm267, _ctx267, day_num=_d267.day,
+                )
+                _it267 = self._enforce_car_parking_logistics(
+                    _it267, _cm267, _ctx267, day_num=_d267.day,
+                )
+                _it267 = self._relabel_return_to_car_transits(
+                    _it267, day_num=_d267.day,
+                )
+                _it267 = self._force_approach_before_destination(
+                    _it267, day_num=_d267.day,
+                )
+                _it267 = [
+                    self._fix_implausible_transit_duration(it, _cm267, _ctx267)
+                    if _item_type_value(it) == ItemType.TRANSIT.value else it
+                    for it in _it267
+                ]
+                _it267 = self._clamp_absurd_transit_durations(
+                    _it267, _cm267, _ctx267, day_num=_d267.day,
+                )
+                _it267 = self._strip_self_transits(_it267, day_num=_d267.day)
+                _it267 = self._push_lunch_not_before_noon(
+                    _it267, day_num=_d267.day,
+                )
+                # FIX #267: late polish can leave lunch at 14:48–15:31.
+                _it267 = _fix_late_lunch(_it267, latest_min=14 * 60 + 30)
+                _it267 = self._close_meal_approach_gaps(
+                    _it267, day_num=_d267.day,
+                )
+                # One more car heal after lunch push can slide approaches.
+                _it267 = self._repair_car_chain(
+                    _it267, _cm267, _ctx267, day_num=_d267.day,
+                )
+                _it267 = self._remove_timeline_overlaps(_it267, _d267.day)
+                _it267 = self._sort_items_by_time(_it267)
+                days[_di267] = DayPlan(
+                    day=_d267.day,
+                    title=_generate_day_title(_it267, _d267.day),
+                    items=_it267,
+                    quality_badges=_d267.quality_badges,
+                    date=getattr(_d267, "date", None),
+                    weekday=getattr(_d267, "weekday", None),
+                )
+            # FIX #267: if underground still uncovered in Warszawa, plant X Pawilon
+            # / Gazownia into the largest free_time (prefs = WHAT).
+            if (
+                user is not None
+                and all_pois_dict
+                and "underground" in {
+                    str(p).lower() for p in (user.get("preferences") or [])
+                }
+                and _city_needs_car_gap_polish(
+                    str((context or {}).get("requested_city") or "")
+                )
+            ):
+                days = self._ensure_warszawa_underground_coverage(
+                    days, all_pois_dict, context or {}, user,
+                )
+                # Coverage was computed before this late swap — refresh.
+                try:
+                    preference_coverage = self._compute_preference_coverage(
+                        days,
+                        list((user or {}).get("preferences") or []),
+                        all_pois_dict,
+                    )
+                    _under = (preference_coverage or {}).get("underground") or {}
+                    if _under.get("covered"):
+                        plan_warnings = [
+                            w for w in plan_warnings
+                            if not (
+                                w.get("type") == "preference_not_covered"
+                                and w.get("preference") == "underground"
+                            )
+                        ]
+                except Exception:
+                    pass
             # FIX #265: DayPlan rebuilds after _apply_day_dates wipe date/weekday.
             _apply_day_dates(days, _ctx_fields.get("start_date"))
             # FIX #260: scrub stale early_dinner warnings (engine emits before
@@ -10716,6 +10864,261 @@ class PlanService:
             out.append(it)
         return out
 
+    def _strip_cross_day_trip_repeats(
+        self,
+        days: List[Any],
+    ) -> List[Any]:
+        """FIX #267: drop icon POIs that already appeared on an earlier day.
+
+        Final densify / gap-fill can reintroduce Zamek Królewski or Wilanów
+        after per-day trip_repeat strips ran — client P0 on WAWA json 4/6/8/9.
+        """
+        from app.domain.scoring.profile_poi_rules import poi_trip_repeat_key
+        from app.domain.models.plan import DayPlan
+
+        seen_keys: set = set()
+        seen_names: set = set()
+        out_days: List[Any] = []
+        for day in days:
+            kept: List[Any] = []
+            stripped = False
+            for it in (day.items or []):
+                if not _is_timeline_attraction(it):
+                    kept.append(it)
+                    continue
+                nm = (getattr(it, "name", "") or "").strip()
+                nml = nm.lower()
+                rk = poi_trip_repeat_key(nm)
+                # Hard icons even when repeat-key table misses a spelling.
+                hard = any(k in nml for k in (
+                    "zamek królewski", "zamek krolewski",
+                    "wilanów", "wilanow", "muzeum pałacu króla", "muzeum palacu krola",
+                ))
+                if (rk and rk in seen_keys) or (hard and nml in seen_names):
+                    print(
+                        f"[FIX #267] Day {getattr(day, 'day', '?')}: "
+                        f"stripped cross-day repeat {nm}"
+                    )
+                    stripped = True
+                    continue
+                if rk:
+                    seen_keys.add(rk)
+                if hard or rk:
+                    seen_names.add(nml)
+                kept.append(it)
+            if stripped:
+                kept = self._strip_transits_to_unscheduled_destinations(
+                    kept, day_num=getattr(day, "day", 0) or 0,
+                )
+                try:
+                    kept = self._sort_items_by_time(kept)
+                except Exception:
+                    kept = sorted(
+                        kept,
+                        key=lambda x: time_to_minutes(
+                            getattr(x, "start_time", None) or "00:00"
+                        ),
+                    )
+                try:
+                    out_days.append(DayPlan(
+                        day=day.day,
+                        title=_generate_day_title(kept, day.day),
+                        items=kept,
+                        quality_badges=getattr(day, "quality_badges", None),
+                        date=getattr(day, "date", None),
+                        weekday=getattr(day, "weekday", None),
+                    ))
+                except Exception:
+                    # Unit tests may pass SimpleNamespace days/items.
+                    from types import SimpleNamespace as _SNS
+                    out_days.append(_SNS(
+                        day=day.day,
+                        items=kept,
+                        quality_badges=getattr(day, "quality_badges", None),
+                        date=getattr(day, "date", None),
+                        weekday=getattr(day, "weekday", None),
+                    ))
+            else:
+                out_days.append(day)
+        return out_days
+
+    def _strip_stale_post_meal_returns(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #267: drop walks/cars back to a meal restaurant after that meal ended."""
+        meal_ends: Dict[str, int] = {}
+        for it in items:
+            if _item_type_value(it) not in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            ):
+                continue
+            try:
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
+            for sug in (getattr(it, "suggestions", None) or [])[:1]:
+                rn = (getattr(sug, "name", None) or "").strip().lower()
+                if rn:
+                    meal_ends[rn] = max(meal_ends.get(rn, 0), en)
+            mn = (getattr(it, "name", None) or "").strip().lower()
+            if mn:
+                meal_ends[mn] = max(meal_ends.get(mn, 0), en)
+        if not meal_ends:
+            return items
+        out: List[Any] = []
+        for it in items:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            to = (getattr(it, "to_location", "") or "").strip().lower()
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                out.append(it)
+                continue
+            meal_en = meal_ends.get(to)
+            if meal_en is not None and st >= meal_en:
+                print(
+                    f"[FIX #267] Day {day_num}: stripped stale post-meal "
+                    f"leg → {getattr(it, 'to_location', '?')} @{getattr(it, 'start_time', '?')}"
+                )
+                continue
+            out.append(it)
+        return out
+
+    def _ensure_warszawa_underground_coverage(
+        self,
+        days: List[Any],
+        pool: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        user: Dict[str, Any],
+    ) -> List[Any]:
+        """FIX #267: plant X Pawilon / Gazownia when underground is uncovered."""
+        from app.domain.scoring.preference_coverage import poi_covers_preference_report
+        from app.domain.models.plan import DayPlan
+
+        def _day_has_underground(day) -> bool:
+            for it in (day.items or []):
+                if not _is_timeline_attraction(it):
+                    continue
+                poi = {"name": getattr(it, "name", ""), "tags": getattr(it, "tags", None) or []}
+                for p in pool:
+                    if (p.get("name") or "") == getattr(it, "name", ""):
+                        poi = p
+                        break
+                if poi_covers_preference_report(poi, "underground"):
+                    return True
+            return False
+
+        if any(_day_has_underground(d) for d in days):
+            return days
+
+        candidates = []
+        for p in pool:
+            nm = (p.get("name") or "").lower()
+            if any(k in nm for k in ("x pawilon", "cytadel", "muzeum gazowni", "gazowni")):
+                if poi_covers_preference_report(p, "underground"):
+                    candidates.append(p)
+        if not candidates:
+            return days
+        # Prefer X Pawilon, then Gazownia.
+        candidates.sort(
+            key=lambda p: (
+                0 if "x pawilon" in (p.get("name") or "").lower() else 1,
+                0 if "gazowni" in (p.get("name") or "").lower() else 2,
+            )
+        )
+        best_day_idx = None
+        best_ft = -1
+        for i, day in enumerate(days):
+            ft = sum(
+                int(getattr(it, "duration_min", 0) or 0)
+                for it in (day.items or [])
+                if _item_type_value(it) == ItemType.FREE_TIME.value
+            )
+            if ft > best_ft:
+                best_ft = ft
+                best_day_idx = i
+        if best_day_idx is None or best_ft < 45:
+            # Fall back to day 1 even without free_time — inject will no-op if no hole.
+            best_day_idx = 0
+        day = days[best_day_idx]
+        ctx = {
+            **context,
+            "allow_soft_profile": True,
+            "allow_pre_meal_inject": True,
+            "requested_city": context.get("requested_city") or "Warszawa",
+        }
+        items = self._inject_attraction_into_free_time(
+            list(day.items or []), candidates, ctx, user, day_num=day.day,
+        )
+        has_under = any(
+            _is_timeline_attraction(it)
+            and any(
+                k in (getattr(it, "name", "") or "").lower()
+                for k in ("x pawilon", "cytadel", "gazowni")
+            )
+            for it in items
+        )
+        if not has_under:
+            # Hard swap a weak non-pref filler for X Pawilon / Gazownia.
+            weak_markers = (
+                "skaryszewsk", "tepfactor", "grawitacja", "kampinos",
+                "górka", "gorka", "jeziorko", "kopiec", "bulwary",
+            )
+            swap_idx = None
+            for i, it in enumerate(items):
+                if not _is_timeline_attraction(it):
+                    continue
+                nml = (getattr(it, "name", "") or "").lower()
+                if any(w in nml for w in weak_markers):
+                    swap_idx = i
+                    break
+            if swap_idx is not None:
+                donor = candidates[0]
+                try:
+                    old = items[swap_idx]
+                    fresh = self._generate_attraction_item(
+                        donor,
+                        getattr(old, "start_time", None) or "10:00",
+                        user,
+                        user.get("target_group", "solo"),
+                        ctx,
+                        None,
+                    )
+                    visit = fresh.model_copy(update={
+                        "start_time": getattr(old, "start_time", None),
+                        "end_time": getattr(old, "end_time", None),
+                        "duration_min": int(
+                            getattr(old, "duration_min", 0) or 60
+                        ),
+                    })
+                    items = list(items)
+                    items[swap_idx] = visit
+                    has_under = True
+                    print(
+                        f"[FIX #267] Day {day.day}: swapped "
+                        f"{getattr(old, 'name', '?')} → {donor.get('name')}"
+                    )
+                except Exception as exc:
+                    print(f"[FIX #267] underground swap failed: {exc}")
+        if not has_under:
+            return days
+        print(f"[FIX #267] Day {day.day}: ensured underground coverage")
+        new_days = list(days)
+        new_days[best_day_idx] = DayPlan(
+            day=day.day,
+            title=_generate_day_title(items, day.day),
+            items=items,
+            quality_badges=getattr(day, "quality_badges", None),
+            date=getattr(day, "date", None),
+            weekday=getattr(day, "weekday", None),
+        )
+        return new_days
+
     def _strip_guido_luiza_same_day(
         self,
         items: List[Any],
@@ -14235,6 +14638,50 @@ class PlanService:
                 out.append(it)
                 continue
 
+            # FIX #267: car.from already equals the park, but the party walked
+            # away (Zamek→Ogród then car from Zamek with no return walk). Insert
+            # return-to-car from the last occupied place first.
+            if (
+                car_parked_at
+                and walked_away
+                and frm
+                and _norm(frm) == _norm(car_parked_at)
+            ):
+                last_place = None
+                for prev in reversed(out):
+                    if _is_timeline_attraction(prev):
+                        last_place = (getattr(prev, "name", None) or "").strip()
+                        break
+                    if _item_type_value(prev) in (
+                        ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                    ):
+                        for sug in (getattr(prev, "suggestions", None) or [])[:1]:
+                            rn = (getattr(sug, "name", None) or "").strip()
+                            if rn:
+                                last_place = rn
+                                break
+                        if last_place:
+                            break
+                if last_place and _norm(last_place) != _norm(car_parked_at):
+                    already = any(
+                        _item_type_value(x) == ItemType.TRANSIT.value
+                        and _is_walk(x)
+                        and _norm(getattr(x, "to_location", "") or "")
+                        == _norm(car_parked_at)
+                        and _norm(getattr(x, "from_location", "") or "")
+                        == _norm(last_place)
+                        for x in out
+                    )
+                    if not already:
+                        frm = last_place  # fall through into insert below
+                        # Force the teleport branch by mismatching from briefly.
+                        # (handled by rewriting check below with walked frm)
+                        try:
+                            it = it.model_copy(update={"from_location": last_place})
+                            frm = last_place
+                        except Exception:
+                            pass
+
             # FIX #257b: ANY car leg that does not start at the parked spot is a
             # teleport (missing walk/transit after return-to-car still counts).
             if (
@@ -14480,10 +14927,14 @@ class PlanService:
         style = str((user or {}).get("travel_style") or "").lower()
         group = str((user or {}).get("target_group") or "").lower()
 
+        ordered = self._sort_items_by_time(list(items))
         out: List[Any] = []
-        for it in items:
+        i = 0
+        while i < len(ordered):
+            it = ordered[i]
             if not _is_timeline_attraction(it):
                 out.append(it)
+                i += 1
                 continue
             nm = getattr(it, "name", "") or ""
             nm_l = nm.lower()
@@ -14491,6 +14942,7 @@ class PlanService:
             st = getattr(it, "start_time", None)
             if not st:
                 out.append(it)
+                i += 1
                 continue
 
             cap = visit_duration_hard_cap({"name": nm}, for_scheduling=True)
@@ -14498,7 +14950,7 @@ class PlanService:
             if any(k in nm_l for k in ("łazienki", "lazienki")):
                 floor = max(floor, 90)
             if "polin" in nm_l:
-                floor = max(floor, 100)
+                floor = max(floor, 120)
             if "ogród botaniczny" in nm_l or "ogrod botaniczny" in nm_l:
                 floor = max(floor, 60)
             if (
@@ -14506,7 +14958,10 @@ class PlanService:
                  or ("zoo" in nm_l and "mini" not in nm_l))
                 and (style == "relax" or group in ("family_kids", "seniors"))
             ):
-                floor = max(floor, 120)
+                # FIX #267: family kids need ≥150; seniors/relax keep 120.
+                floor = max(floor, 150 if group == "family_kids" else 120)
+            if "kampinos" in nm_l:
+                floor = max(floor, 60)
 
             target = dur
             if cap is not None and target > cap:
@@ -14518,17 +14973,42 @@ class PlanService:
 
             if target == dur:
                 out.append(it)
+                i += 1
                 continue
             try:
-                out.append(it.model_copy(update={
+                new_it = it.model_copy(update={
                     "end_time": minutes_to_time(time_to_minutes(st) + target),
                     "duration_min": target,
-                }))
+                })
+                out.append(new_it)
                 print(
                     f"[FIX #266] Day {day_num}: duration {nm} {dur}→{target} min"
                 )
+                # FIX #267: when flooring (e.g. ZOO 135→150), shift later items
+                # so remove_overlaps does not immediately shrink us back.
+                if target > dur:
+                    delta = target - dur
+                    for later in ordered[i + 1:]:
+                        try:
+                            ls = getattr(later, "start_time", None)
+                            le = getattr(later, "end_time", None)
+                            if not ls or not le:
+                                out.append(later)
+                                continue
+                            out.append(later.model_copy(update={
+                                "start_time": minutes_to_time(
+                                    time_to_minutes(ls) + delta
+                                ),
+                                "end_time": minutes_to_time(
+                                    time_to_minutes(le) + delta
+                                ),
+                            }))
+                        except Exception:
+                            out.append(later)
+                    return out
             except Exception:
                 out.append(it)
+            i += 1
         return out
 
     def _snap_anonymous_timeline_gaps(
@@ -16252,15 +16732,16 @@ class PlanService:
         *,
         day_num: int = 0,
     ) -> List[Any]:
-        """FIX #264: overwrite known-bad Excel coordinates on timeline items."""
+        """FIX #264/#267: overwrite known-bad Excel coords/addresses on items."""
+        # marker -> (lat, lng, address|None)
         _FIXES = (
-            ("browary warszawskie", 52.2345, 20.9877),
+            ("browary warszawskie", 52.2345, 20.9877, "Grzybowska 72A, 00-844 Warszawa"),
+            ("pijalnia czekolady", 52.2335, 21.0168, "Szpitalna 8, 00-031 Warszawa"),
             # FIX #265: Muzeum Świat Iluzji we Wrocławiu must not keep Warsaw GPS
-            # (~302 km) — Centennial Hall / Iglica cluster.
-            ("muzeum świat iluzji we wrocławiu", 51.1069, 17.0773),
-            ("muzeum swiat iluzji we wroclawiu", 51.1069, 17.0773),
-            ("świat iluzji we wrocławiu", 51.1069, 17.0773),
-            ("swiat iluzji we wroclawiu", 51.1069, 17.0773),
+            ("muzeum świat iluzji we wrocławiu", 51.1069, 17.0773, None),
+            ("muzeum swiat iluzji we wroclawiu", 51.1069, 17.0773, None),
+            ("świat iluzji we wrocławiu", 51.1069, 17.0773, None),
+            ("swiat iluzji we wroclawiu", 51.1069, 17.0773, None),
         )
         out: List[Any] = []
         for it in items:
@@ -16269,26 +16750,47 @@ class PlanService:
                 continue
             nm = (getattr(it, "name", "") or "").lower()
             fixed = None
-            for marker, lat, lng in _FIXES:
+            for marker, lat, lng, addr in _FIXES:
                 if marker in nm:
-                    fixed = (lat, lng)
+                    # Wedel only — avoid other "pijalnia" rows.
+                    if marker == "pijalnia czekolady" and "wedel" not in nm:
+                        continue
+                    fixed = (lat, lng, addr)
                     break
             if not fixed:
                 out.append(it)
                 continue
             cur_lat, cur_lng = getattr(it, "lat", None), getattr(it, "lng", None)
+            upd: Dict[str, Any] = {}
             try:
                 if (
-                    cur_lat is not None and cur_lng is not None
-                    and abs(float(cur_lat) - fixed[0]) < 0.0008
-                    and abs(float(cur_lng) - fixed[1]) < 0.0008
+                    cur_lat is None or cur_lng is None
+                    or abs(float(cur_lat) - fixed[0]) >= 0.0008
+                    or abs(float(cur_lng) - fixed[1]) >= 0.0008
                 ):
-                    out.append(it)
-                    continue
-                out.append(it.model_copy(update={"lat": fixed[0], "lng": fixed[1]}))
+                    upd["lat"] = fixed[0]
+                    upd["lng"] = fixed[1]
+            except Exception:
+                upd["lat"] = fixed[0]
+                upd["lng"] = fixed[1]
+            if fixed[2]:
+                cur_addr = (getattr(it, "address", None) or "").lower()
+                if (
+                    not cur_addr
+                    or "koszykowa" in cur_addr
+                    or "aleja wedla" in cur_addr
+                    or "aleje wedla" in cur_addr
+                    or cur_addr != fixed[2].lower()
+                ):
+                    upd["address"] = fixed[2]
+            if not upd:
+                out.append(it)
+                continue
+            try:
+                out.append(it.model_copy(update=upd))
                 print(
-                    f"[FIX #264] Day {day_num}: forced coords for "
-                    f"{getattr(it, 'name', '?')} → {fixed[0]},{fixed[1]}"
+                    f"[FIX #267] Day {day_num}: forced coords/address for "
+                    f"{getattr(it, 'name', '?')}"
                 )
             except Exception:
                 out.append(it)
@@ -16528,6 +17030,17 @@ class PlanService:
                 "park linowy", "warszawianka", "park wodny warszaw",
             )):
                 continue
+            # FIX #267: densify must respect trip-level icon repeats (Zamek/Wilanów).
+            _rk_inj = poi_trip_repeat_key(poi.get("name") or "")
+            _prior_keys = context.get("trip_repeat_keys") or set()
+            if _rk_inj and _rk_inj in _prior_keys:
+                continue
+            _prior_names = {
+                str(x).strip().lower()
+                for x in (context.get("trip_attraction_names") or set())
+            }
+            if pname in _prior_names and _rk_inj:
+                continue
             # FIX #266: never inject foreign-city named POIs into another city
             # (soft densify was planting Wrocław Iluzji into Warszawa).
             _rc = str(req_city or "").lower()
@@ -16557,6 +17070,34 @@ class PlanService:
                 "zamek", "muzeum", "hala ", "katedra", "panorama",
             )):
                 score += 50.0
+            # FIX #267: preferences define WHAT — boost real pref covers in densify.
+            _prefs_inj = {
+                str(p).lower() for p in (
+                    (user or {}).get("preferences") or context.get("preferences") or []
+                )
+            }
+            if "underground" in _prefs_inj and any(
+                k in pname for k in ("cytadel", "x pawilon", "gazowni", "podziem")
+            ):
+                score += 80.0
+            if "history_mystery" in _prefs_inj and any(
+                k in pname for k in (
+                    "powstania", "cytadel", "zamek", "muzeum wojska", "gazowni",
+                )
+            ):
+                score += 40.0
+            if _prefs_inj and any(
+                k in pname for k in (
+                    "stacja grawitacja", "górka szczęśliwick", "gorka szczesliwick",
+                    "jeziorko", "kampinos",
+                )
+            ):
+                # Adventure fillers that cover none of the selected prefs.
+                from app.domain.scoring.preference_coverage import (
+                    poi_covers_preference_report as _pcr_inj,
+                )
+                if not any(_pcr_inj(poi, p) for p in _prefs_inj):
+                    score -= 60.0
             if "mamuta" in pname:
                 # FIX #265: never inject kids-only Mamuta for adult profiles.
                 if str((user or {}).get("target_group") or "").lower() != "family_kids":

@@ -214,9 +214,11 @@ def restaurant_matches_target_group(restaurant: dict, user: dict) -> bool:
     tg_norm = {_ALIASES.get(x, x) for x in tg}
     if user_group in tg_norm or user_group in tg:
         return True
-    # FIX #264: Warszawa has no solo-tagged restaurants — seniors-friendly
-    # milk bars are the best available match for solo travelers.
-    if user_group == "solo" and "seniors" in tg_norm:
+    # FIX #264/#267: Warszawa Excel rarely tags `solo` — treat seniors /
+    # couples / friends pools as acceptable for solo travelers (client json9).
+    if user_group == "solo" and (
+        "seniors" in tg_norm or "couples" in tg_norm or "friends" in tg_norm
+    ):
         return True
     return False
 

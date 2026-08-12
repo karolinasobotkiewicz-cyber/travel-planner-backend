@@ -604,12 +604,12 @@ def normalize_poi(p, index):
 
     # FIX #234: correct known bad Excel descriptions (client feedback).
     _nm234 = _norm_result["name"].lower()
-    # FIX #264: Excel has two Browary Warszawskie rows; 52.222/21.011 is wrong.
+    # FIX #264/#267: Excel has two Browary Warszawskie rows; Koszykowa 63 is
+    # Hala Koszyki — wrong venue. Force Wola / Grzybowska coords + address.
     if "browary warszawskie" in _nm234:
         _norm_result["lat"] = 52.2345
         _norm_result["lng"] = 20.9877
-        if not (_norm_result.get("address") or "").strip():
-            _norm_result["address"] = "Grzybowska 72A, Warszawa"
+        _norm_result["address"] = "Grzybowska 72A, 00-844 Warszawa"
     # FIX #265: Wrocław Świat Iluzji must not keep Warsaw GPS (~302 km).
     if "iluzji" in _nm234 and "wrocław" in (
         (_norm_result.get("city") or "").lower()
@@ -657,13 +657,18 @@ def normalize_poi(p, index):
                 "z warszawską przy ulicy Szpitalnej."
             )
         elif "warszawa" in _city234 or "warsaw" in _city234 or not _city234:
+            # FIX #267: Excel address "aleja Wedla 5" is the Praga factory area —
+            # the historic pijalnia is at Szpitalna 8. Keep copy + GPS consistent.
+            _norm_result["address"] = "Szpitalna 8, 00-031 Warszawa"
+            _norm_result["lat"] = 52.2335
+            _norm_result["lng"] = 21.0168
             _norm_result["description_short"] = (
                 "Degustacja czekolady Wedel w historycznej pijalni przy ulicy Szpitalnej."
             )
             _norm_result["description_long"] = (
                 "Pijalnia Czekolady E. Wedel w Warszawie to miejsce degustacji wyrobów czekoladowych "
                 "marki Wedel w stylowym wnętrzu przy ulicy Szpitalnej — nie mylić z Muzeum "
-                "Fabryki Czekolady."
+                "Fabryki Czekolady ani z adresem produkcyjnym przy alei Wedla."
             )
         else:
             _norm_result["description_short"] = (

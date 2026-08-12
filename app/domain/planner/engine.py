@@ -1030,6 +1030,14 @@ def is_scenic_experience_poi(poi: dict) -> bool:
 def is_underground_poi(p: dict) -> bool:
     """FIX #190/#192/#201: Real cave/mine visit — not museums mis-tagged."""
     name = str(p.get("name", "")).lower()
+    # FIX #267 Warszawa: Cytadela casemates / Gazownia are the honest underground
+    # cover (no caves/mines in the city Excel). Must win over the generic
+    # "muze…" deny below.
+    if any(m in name for m in (
+        "cytadel", "x pawilon", "muzeum gazowni", "gazowni warszaw",
+        "podziemia", "schron", "bunkier",
+    )):
+        return True
     if any(m in name for m in _UNDERGROUND_NAME_MARKERS):
         if "archiw" in name or ("muze" in name and "kopal" not in name):
             return False
@@ -2738,7 +2746,8 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("park adama wodziczki", 60),
         ("park szelągowski", 60),
         ("park szelagowski", 60),
-        ("park skaryszewski", 90),
+        # FIX #267: adventure client — 90 min Skaryszewski is too long look-around.
+        ("park skaryszewski", 75),
         ("park jordana", 75),
         ("wyspa słodowa", 75),
         ("wyspa slodowa", 75),
@@ -2746,6 +2755,14 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("archikatedr", 45),
         ("bazylika", 45),
         ("katedra", 90),
+        # FIX #267 Warszawa: stretch must not turn Zamek/Browary into 2–4h blocks.
+        ("zamek królewski", 120),
+        ("zamek krolewski", 120),
+        ("browary warszawskie", 90),
+        ("górka szczęśliwick", 90),
+        ("gorka szczesliwick", 90),
+        ("stacja grawitacja", 90),
+        ("park skaryszewsk", 75),
         ("ostrów tumski", 90),
         ("ostrow tumski", 90),
         ("muzeum uniwersytetu", 90),
@@ -2819,9 +2836,10 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("dworzec swiebodzki", 60),
         # FIX #260 Warszawa: ZOO must not hit generic "ogród" 90-min park cap;
         # PKiN must not absorb to 3h+.
-        ("ogród zoologiczny", 150),
-        ("ogrod zoologiczny", 150),
-        ("zoo w warszawie", 150),
+        # FIX #267: family ZOO floor 150 needs headroom above the old 150 hard cap.
+        ("ogród zoologiczny", 180),
+        ("ogrod zoologiczny", 180),
+        ("zoo w warszawie", 180),
         ("pałac kultury", 120),
         ("palac kultury", 120),
         ("pkin", 120),
@@ -2942,10 +2960,12 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("wilanowie", 120),
         ("wilanów", 120),
         ("wilanow", 120),
-        ("polin", 100),
+        ("polin", 120),  # FIX #267: pro_tip 2–3h — floor was 100, still short
         # FIX #264: Botaniczny 30 min is too short; ZOO family floor already 120.
         ("ogród botaniczny", 60),
         ("ogrod botaniczny", 60),
+        # FIX #267: Kampinos after 60+ min drive must not be an 11-min micro-stop.
+        ("kampinos", 60),
     )
     for _marker, _nmin in _named_mins:
         if _marker in _poi_name_lower:
@@ -2967,6 +2987,15 @@ def choose_duration(p, now, end, lunch_done, user=None):
             tmin = max(tmin, 120)
         if any(k in _poi_name_lower for k in ("ogród botaniczny", "ogrod botaniczny")):
             tmin = max(tmin, 60)
+    # FIX #267: family with kids — ZOO needs a real half-day block.
+    if user and str(user.get("target_group") or "") == "family_kids":
+        if "zoo" in _poi_name_lower and "mini" not in _poi_name_lower:
+            tmin = max(tmin, 150)
+    # FIX #267: adventure — parks are look-around, not 90–155 min fillers.
+    if user and str(user.get("travel_style") or "").lower() == "adventure":
+        if "skaryszewsk" in _poi_name_lower:
+            tmax = min(tmax, 60)
+            tmin = min(tmin, tmax)
     # FIX #254: clamp absurd Excel time_max before preferred_duration uses it.
     _hard_cap = visit_duration_hard_cap(p)
     if _hard_cap is not None:

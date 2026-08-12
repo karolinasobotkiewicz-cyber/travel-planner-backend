@@ -76,6 +76,15 @@ def poi_trip_repeat_key(name: str) -> str | None:
         # FIX #266: pool filler must not repeat across days
         ("warszawianka", "waw_warszawianka"),
         ("park wodny warszaw", "waw_warszawianka"),
+        # FIX #267: iconic WAWA museums/palaces — never D1+D3 duplicates.
+        # Must appear BEFORE Poznań "zamek królewski" marker (shared name).
+        ("zamek królewski", "waw_zamek_krolewski"),
+        ("zamek krolewski", "waw_zamek_krolewski"),
+        ("wilanów", "waw_wilanow"),
+        ("wilanow", "waw_wilanow"),
+        ("muzeum pałacu króla", "waw_wilanow"),
+        ("muzeum palacu krola", "waw_wilanow"),
+        ("muzeum pałacu król", "waw_wilanow"),
         # FIX #248 Wrocław — powtarzalne fillery
         ("wyspa słodowa", "wro_wyspa_slodowa"),
         ("wyspa slodowa", "wro_wyspa_slodowa"),
@@ -102,10 +111,10 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("park mamuta", "wro_park_mamuta"),
         ("mamuta", "wro_park_mamuta"),
         # FIX #249 Poznań — powtarzalne fillery centrum
+        # (Zamek Królewski trip key is shared via waw_zamek_krolewski above —
+        # FIX #267 — same POI name in WAWA/POZ; one key per trip is enough.)
         ("stary rynek w poznaniu", "poz_stary_rynek"),
         ("ratusz w poznaniu", "poz_ratusz"),
-        ("zamek królewski", "poz_zamek_krolewski"),
-        ("zamek krolewski", "poz_zamek_krolewski"),
         ("park adama mickiewicza", "poz_park_mickiewicza"),
         ("makieta dawnego poznania", "poz_makieta"),
         ("zamek cesarski", "poz_zamek_cesarski"),
@@ -1676,6 +1685,31 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
         )):
             delta -= 130.0
 
+    # FIX #267: preferences define WHAT — boost real underground POIs for any
+    # group when underground is selected (X Pawilon / Gazownia exist in WAWA).
+    if "underground" in prefs:
+        if any(k in name for k in (
+            "cytadel", "x pawilon", "muzeum gazowni", "gazowni",
+            "podziemia", "schron", "bunkier",
+        )):
+            delta += 200.0
+        if any(k in name for k in (
+            "stacja grawitacja", "górka szczęśliwick", "gorka szczesliwick",
+            "jeziorko", "kampinos", "park linowy",
+        )):
+            delta -= 160.0
+    if "history_mystery" in prefs and "nature_landscape" not in prefs:
+        if any(k in name for k in (
+            "muzeum powstania", "muzeum wojska", "cytadel", "zamek królewski",
+            "zamek krolewski", "gazowni", "x pawilon",
+        )):
+            delta += 90.0
+        if any(k in name for k in (
+            "jeziorko", "górka szczęśliwick", "gorka szczesliwick",
+            "stacja grawitacja", "kampinos",
+        )):
+            delta -= 120.0
+
     if tg == "friends" and adv and {"underground", "history_mystery"} <= prefs:
         if any(k in name for k in (
             "podziemia", "schron", "krypta", "bunkier", "fort ", "katakumby",
@@ -1683,11 +1717,12 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             "zamek krolewski", "norblin", "muzeum gazowni", "x pawilon",
         )):
             delta += 160.0
-        # FIX #260: do NOT boost park linowy for underground/history days.
-        if any(k in name for k in (
-            "tepfactor", "grawitacja", "gazowni", "kajak", "escape",
-        )):
-            delta += 140.0
+        # FIX #260/#267: Gazownia is real underground — keep boost; demote
+        # adventure fillers that cover none of the selected prefs.
+        if any(k in name for k in ("tepfactor", "kajak", "escape")):
+            delta += 80.0
+        if "grawitacja" in name:
+            delta -= 100.0
         if "park linowy" in name:
             delta -= 160.0
         if any(k in name for k in (
