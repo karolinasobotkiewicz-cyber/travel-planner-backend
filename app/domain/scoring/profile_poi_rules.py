@@ -110,6 +110,16 @@ def poi_trip_repeat_key(name: str) -> str | None:
         # FIX #265: Park Mamuta must not spam across days
         ("park mamuta", "wro_park_mamuta"),
         ("mamuta", "wro_park_mamuta"),
+        # FIX #268: Wrocław icons — client ×3–×7 trip spam (Iluzja/Aquapark/Topacz/Katedra)
+        ("świat iluzji", "wro_swiat_iluzji"),
+        ("swiat iluzji", "wro_swiat_iluzji"),
+        ("muzeum iluzji", "wro_swiat_iluzji"),
+        ("aquapark", "wro_aquapark"),
+        ("zamek topacz", "wro_topacz"),
+        ("muzeum motoryzacji i techniki zamek topacz", "wro_topacz"),
+        ("topacz", "wro_topacz"),
+        ("katedra wrocławska", "wro_katedra"),
+        ("katedra wroclawska", "wro_katedra"),
         # FIX #249 Poznań — powtarzalne fillery centrum
         # (Zamek Królewski trip key is shared via waw_zamek_krolewski above —
         # FIX #267 — same POI name in WAWA/POZ; one key per trip is enough.)
@@ -348,6 +358,10 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     if tg == "seniors" and (style == "relax" or {"relaxation", "nature_landscape"} <= prefs):
         if "hala targowa" in name:
             return True
+
+    # FIX #268: Świat Iluzji is a weak fit for seniors (museum/nature/relax trips).
+    if tg == "seniors" and any(k in name for k in ("świat iluzji", "swiat iluzji", "muzeum iluzji")):
+        return True
 
     # FIX #248 Wrocław — Fort Przygody/paintball off history+museum bez active_sport (json7)
     if tg == "friends" and adv and "active_sport" not in prefs:
@@ -1678,6 +1692,19 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             prefs & {"kids_attractions", "adventure"}
         ):
             delta -= 120.0
+        # FIX #268: seniors + nature/museum/relax — never treat as filler.
+        if tg == "seniors" or (
+            prefs & {"nature_landscape", "relaxation", "museum_heritage"}
+            and not (prefs & {"kids_attractions", "active_sport"})
+        ):
+            delta -= 180.0
+    # FIX #268: expensive fillers that cover no selected prefs (Kosmopark / Zajezdnia).
+    if "kosmopark" in name and not (prefs & {"kids_attractions", "active_sport", "adventure"}):
+        delta -= 220.0
+    if "zajezdnia" in name and not (
+        prefs & {"history_mystery", "museum_heritage", "underground"}
+    ):
+        delta -= 140.0
     # Nature+relax days: demote PKiN / Stare Miasto icons.
     if {"nature_landscape", "relaxation"} <= prefs and "museum_heritage" not in prefs:
         if any(k in name for k in (

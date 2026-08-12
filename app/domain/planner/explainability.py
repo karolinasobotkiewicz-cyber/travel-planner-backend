@@ -191,6 +191,9 @@ def _explain_profile_match(
             return "Świetne na grupowe przygody"
 
     if target_group == "family_kids":
+        # FIX #268: Pixel XL copy says youth/adults — never claim "dla najmłodszych".
+        if "pixel" in poi_name:
+            return None
         kids_indicators = ["kids", "family", "playground", "zoo", "children"]
         if any(ind in poi_tags_str or ind in poi_name for ind in kids_indicators):
             return "Idealne dla rodzin z dziećmi"
@@ -284,6 +287,10 @@ def _explain_category_highlight(
 
     cat = classify_poi_category(poi)
     tg = (user or {}).get("target_group") or ""
+    poi_name = str(poi.get("name") or "").lower()
+    # FIX #268: Pixel XL is adult entertainment, not a kids playground reason.
+    if "pixel" in poi_name and cat in ("playground", "amusement", "entertainment"):
+        return "Interaktywna rozrywka w dużym formacie"
     # Client: "Bezpieczna strefa zabaw…" on Park Jordana / Wedel / Plac for couples.
     if cat == "playground" and tg not in ("family_kids", "family"):
         return None

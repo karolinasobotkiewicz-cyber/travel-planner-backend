@@ -829,6 +829,26 @@ def _filter_meal_suggestions(
                             return 2
                         return 3
                     soft = sorted(soft, key=_solo_rank)
+                # FIX #268: family_kids — prefer family-tagged / casual Polish names
+                # when Excel omits family_kids on most WRO restaurants.
+                if tg == "family_kids":
+                    def _fam_rank(s: RestaurantSuggestion) -> int:
+                        tset = _tg_set(s)
+                        n = _meal_pref_str(getattr(s, "name", "") or "")
+                        if "family_kids" in tset or "family" in tset:
+                            return 0
+                        if any(
+                            k in n
+                            for k in (
+                                "pierog", "mleczny", "pizza", "burger",
+                                "famil", "naleśnik", "nalesnik", "kebab",
+                            )
+                        ):
+                            return 1
+                        if not tset or "all" in tset:
+                            return 2
+                        return 3
+                    soft = sorted(soft, key=_fam_rank)
                 return soft
         # City data often omits seniors/solo from recommended_for — keep pool
         # but never reintroduce hard-denied venues.
@@ -3917,6 +3937,9 @@ class PlanService:
                 _fitems = self._strip_misscheduled_afternoon_attractions(
                     _fitems, all_pois_dict, day_num=day_plan.day,
                 )
+                _fitems = self._strip_misscheduled_morning_preferred_attractions(
+                    _fitems, all_pois_dict, day_num=day_plan.day,
+                )
             _hist_mus248 = (
                 all_pois_dict
                 and user.get("target_group") == "friends"
@@ -5752,6 +5775,13 @@ class PlanService:
                 _it267 = self._cap_stretched_attraction_durations(
                     _it267, day_num=_d267.day, user=user,
                 )
+                if all_pois_dict:
+                    _it267 = self._strip_misscheduled_evening_attractions(
+                        _it267, all_pois_dict, day_num=_d267.day,
+                    )
+                    _it267 = self._strip_misscheduled_morning_preferred_attractions(
+                        _it267, all_pois_dict, day_num=_d267.day,
+                    )
                 # Drop stale post-lunch walks back to the lunch restaurant
                 # (client: lunch done, later walk→Lindleya then car→already-visited).
                 _it267 = self._strip_stale_post_meal_returns(
@@ -5865,6 +5895,158 @@ class PlanService:
                         and any(fd in str(w.get("message") or "") for fd in _final_dinners)
                     )
                 ]
+
+            # FIX #268: densify/strip mutate cost + coverage AFTER early budget/
+            # preference sync — re-trim expensive days and refresh both.
+            if user is not None:
+                _poi_by_id268 = {
+                    p.get("id"): p for p in (all_pois_dict or []) if p.get("id")
+                }
+                _final268: List[DayPlan] = []
+                for _d268 in days:
+                    _it268 = list(_d268.items or [])
+                    _it268 = self._trim_day_to_budget(
+                        _it268,
+                        user,
+                        _poi_by_id268,
+                        day_num=_d268.day,
+                        min_attrs=2,
+                        all_pois_dict=all_pois_dict,
+                        context={
+                            **(context or {}),
+                            "requested_city": str(
+                                (context or {}).get("requested_city")
+                                or (_ctx_fields or {}).get("requested_city")
+                                or ""
+                            ),
+                        },
+                    )
+                    _it268 = self._strip_transits_to_unscheduled_destinations(
+                        _it268, day_num=_d268.day,
+                    )
+                    _it268 = self._strip_self_transits(_it268, day_num=_d268.day)
+                    _it268 = self._sort_items_by_time(_it268)
+                    _final268.append(DayPlan(
+                        day=_d268.day,
+                        title=_generate_day_title(_it268, _d268.day),
+                        items=_it268,
+                        quality_badges=_d268.quality_badges,
+                        date=getattr(_d268, "date", None),
+                        weekday=getattr(_d268, "weekday", None),
+                    ))
+                days = _final268
+                _apply_day_dates(days, _ctx_fields.get("start_date"))
+
+                # Rewrite budget warnings from post-trim costs.
+                plan_warnings = [
+                    w for w in plan_warnings
+                    if w.get("type") not in (
+                        "budget_exceeded", "budget_constraint_active",
+                    )
+                ]
+                _dl268 = user.get("daily_limit")
+                if _dl268 is None:
+                    _bd268 = user.get("budget", {})
+                    if isinstance(_bd268, dict):
+                        _dl268 = _bd268.get("daily_limit")
+                if _dl268 is not None and float(_dl268) > 0:
+                    _dl268 = float(_dl268)
+                    for _d_bw in days:
+                        _day_cost = 0.0
+                        _expensive = []
+                        for _it_bw in (_d_bw.items or []):
+                            try:
+                                _ic = float(
+                                    getattr(_it_bw, "cost_estimate", None)
+                                    or getattr(_it_bw, "total_cost", None)
+                                    or 0
+                                )
+                            except (TypeError, ValueError):
+                                _ic = 0.0
+                            if _ic > 0:
+                                _day_cost += _ic
+                                if _ic / _dl268 > 0.70:
+                                    _expensive.append((
+                                        getattr(_it_bw, "name", None) or "Unknown",
+                                        int(_ic),
+                                        int(_ic / _dl268 * 100),
+                                    ))
+                        if _day_cost > _dl268:
+                            plan_warnings.append({
+                                "type": "budget_exceeded",
+                                "day": _d_bw.day,
+                                "daily_limit": int(_dl268),
+                                "actual_cost": int(_day_cost),
+                                "overage": int(_day_cost - _dl268),
+                                "message": (
+                                    f"Dzień {_d_bw.day}: Koszt przekracza dzienny limit "
+                                    f"o {int(_day_cost - _dl268)} PLN"
+                                ),
+                            })
+                        for _en, _ec, _ep in _expensive:
+                            plan_warnings.append({
+                                "type": "budget_constraint_active",
+                                "day": _d_bw.day,
+                                "daily_limit": int(_dl268),
+                                "expensive_item": _en,
+                                "item_cost": _ec,
+                                "percentage_of_budget": _ep,
+                                "message": (
+                                    f"Dzień {_d_bw.day}: '{_en}' pochłania "
+                                    f"{_ep}% dziennego budżetu "
+                                    f"({_ec} PLN z {int(_dl268)} PLN limitu)"
+                                ),
+                            })
+
+                # Drop stale sparse_day warnings after densify/trim.
+                _attr_by_day268 = {
+                    dp.day: sum(
+                        1 for it in (dp.items or [])
+                        if _is_timeline_attraction(it)
+                    )
+                    for dp in days
+                }
+                plan_warnings = [
+                    w for w in plan_warnings
+                    if not (
+                        w.get("type") == "sparse_day"
+                        and _attr_by_day268.get(w.get("day"), 0) >= 2
+                    )
+                ]
+
+                try:
+                    preference_coverage = self._compute_preference_coverage(
+                        days,
+                        list((user or {}).get("preferences") or []),
+                        all_pois_dict,
+                    )
+                    # Drop stale preference_not_covered when coverage is now true.
+                    plan_warnings = [
+                        w for w in plan_warnings
+                        if not (
+                            w.get("type") == "preference_not_covered"
+                            and (preference_coverage or {}).get(
+                                w.get("preference") or "", {}
+                            ).get("covered")
+                        )
+                    ]
+                    for _pref, _pinfo in (preference_coverage or {}).items():
+                        if _pinfo.get("covered"):
+                            continue
+                        if any(
+                            w.get("type") == "preference_not_covered"
+                            and w.get("preference") == _pref
+                            for w in plan_warnings
+                        ):
+                            continue
+                        plan_warnings.append(
+                            self._preference_not_covered_warning(
+                                _pref,
+                                "Sprawdź dostępność atrakcji w bazie lub skróć liczbę preferencji.",
+                            )
+                        )
+                except Exception:
+                    pass
 
         return PlanResponse(
             plan_id=plan_id,
@@ -9414,17 +9596,44 @@ class PlanService:
             return it
         frm = getattr(it, "from_location", "") or ""
         to = getattr(it, "to_location", "") or ""
-        fp, tp = coord_map.get(frm), coord_map.get(to)
-        if not fp or not tp:
-            return it
-        lat1, lng1 = _poi_lat_lng(fp)
-        lat2, lng2 = _poi_lat_lng(tp)
-        if lat1 is None or lat2 is None:
-            return it
-        dist = haversine_distance(float(lat1), float(lng1), float(lat2), float(lng2))
         cur = int(getattr(it, "duration_min", 0) or 0)
         mode = str(getattr(it, "mode", "") or "").lower()
         is_walk = "walk" in mode
+        try:
+            item_dist = float(getattr(it, "distance_km", 0) or 0)
+        except (TypeError, ValueError):
+            item_dist = 0.0
+
+        def _stretch_from_road_km(dist_km: float) -> Any:
+            """FIX #268: when coords missing (Wrocław→Wena), still fix 40 km / 10 min."""
+            if is_walk or dist_km < 15 or cur >= max(20, int(dist_km / 25.0 * 60 + 5)):
+                return it
+            new_dur = max(20, min(180, int(dist_km / 25.0 * 60 + 5)))
+            st = time_to_minutes(getattr(it, "start_time", "09:00") or "09:00")
+            try:
+                print(
+                    f"[FIX #268] Implausible road-km transit {frm}->{to}: "
+                    f"{cur}min for {dist_km:.1f}km → {new_dur}min"
+                )
+                return it.model_copy(update={
+                    "duration_min": new_dur,
+                    "end_time": minutes_to_time(st + new_dur),
+                })
+            except Exception:
+                return it
+
+        fp, tp = coord_map.get(frm), coord_map.get(to)
+        if not fp or not tp:
+            return _stretch_from_road_km(item_dist)
+        lat1, lng1 = _poi_lat_lng(fp)
+        lat2, lng2 = _poi_lat_lng(tp)
+        if lat1 is None or lat2 is None:
+            return _stretch_from_road_km(item_dist)
+        dist = haversine_distance(float(lat1), float(lng1), float(lat2), float(lng2))
+        # FIX #268: item.distance_km may be road-km while coords are wrong/short —
+        # use the larger distance for speed plausibility (46 km ≠ 10 min).
+        if item_dist > dist:
+            dist = item_dist
         # FIX #265/#266: micro-walks (83–500 m ≠ 12–28 min) — clamp down.
         if is_walk and dist < 0.55:
             ideal = max(2, int(round(dist / 4.5 * 60)) + 1)
@@ -9469,7 +9678,7 @@ class PlanService:
                 }
             )
         except Exception:
-            return it
+            return _stretch_from_road_km(item_dist or dist)
 
     def _strip_misscheduled_evening_attractions(
         self,
@@ -9511,6 +9720,44 @@ class PlanService:
                             f"{getattr(it, 'name', '?')} at {st}"
                         )
                         continue
+            out.append(it)
+        return out
+
+    def _strip_misscheduled_morning_preferred_attractions(
+        self,
+        items: List[Any],
+        all_pois_dict: Optional[List[Dict[str, Any]]],
+        day_num: int = 1,
+        *,
+        latest_min: int = 13 * 60,
+    ) -> List[Any]:
+        """FIX #268: Hala Targowa (pro tip: rano) must not land at 16:14."""
+        from app.domain.planner.engine import is_morning_preferred_poi
+
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            poi = {"name": getattr(it, "name", "") or ""}
+            if all_pois_dict:
+                by_id = {p.get("id"): p for p in all_pois_dict if p.get("id")}
+                by_name = {p.get("name"): p for p in all_pois_dict if p.get("name")}
+                poi = (
+                    by_id.get(getattr(it, "poi_id", ""))
+                    or by_name.get(getattr(it, "name", ""), {})
+                    or poi
+                )
+            if not is_morning_preferred_poi(poi):
+                out.append(it)
+                continue
+            st = getattr(it, "start_time", None)
+            if st and time_to_minutes(st) >= latest_min:
+                print(
+                    f"[FIX #268] Day {day_num}: stripped afternoon morning-preferred "
+                    f"{getattr(it, 'name', '?')} at {st}"
+                )
+                continue
             out.append(it)
         return out
 
@@ -10878,6 +11125,17 @@ class PlanService:
 
         seen_keys: set = set()
         seen_names: set = set()
+        seen_hard_markers: set = set()
+        _HARD_MARKERS = (
+            "zamek królewski", "zamek krolewski",
+            "wilanów", "wilanow", "muzeum pałacu króla", "muzeum palacu krola",
+            # FIX #268 Wrocław trip icons
+            "świat iluzji", "swiat iluzji", "muzeum iluzji",
+            "aquapark",
+            "topacz",
+            "katedra wrocławska", "katedra wroclawska",
+            "panorama racławicka", "panorama raclawicka",
+        )
         out_days: List[Any] = []
         for day in days:
             kept: List[Any] = []
@@ -10889,22 +11147,25 @@ class PlanService:
                 nm = (getattr(it, "name", "") or "").strip()
                 nml = nm.lower()
                 rk = poi_trip_repeat_key(nm)
-                # Hard icons even when repeat-key table misses a spelling.
-                hard = any(k in nml for k in (
-                    "zamek królewski", "zamek krolewski",
-                    "wilanów", "wilanow", "muzeum pałacu króla", "muzeum palacu krola",
-                ))
-                if (rk and rk in seen_keys) or (hard and nml in seen_names):
+                hit_markers = tuple(m for m in _HARD_MARKERS if m in nml)
+                hard_repeat = bool(hit_markers) and any(
+                    m in seen_hard_markers for m in hit_markers
+                )
+                if (rk and rk in seen_keys) or hard_repeat or (
+                    hit_markers and nml in seen_names
+                ):
                     print(
-                        f"[FIX #267] Day {getattr(day, 'day', '?')}: "
+                        f"[FIX #268] Day {getattr(day, 'day', '?')}: "
                         f"stripped cross-day repeat {nm}"
                     )
                     stripped = True
                     continue
                 if rk:
                     seen_keys.add(rk)
-                if hard or rk:
+                if hit_markers or rk:
                     seen_names.add(nml)
+                for m in hit_markers:
+                    seen_hard_markers.add(m)
                 kept.append(it)
             if stripped:
                 kept = self._strip_transits_to_unscheduled_destinations(
@@ -12491,6 +12752,9 @@ class PlanService:
         items = self._strip_misscheduled_afternoon_attractions(
             items, all_pois_dict, day_num,
         )
+        items = self._strip_misscheduled_morning_preferred_attractions(
+            items, all_pois_dict, day_num,
+        )
         items = self._diversify_meal_suggestions(items, ctx, day_num=day_num)
         items = self._complete_day_coverage(
             items,
@@ -12757,6 +13021,9 @@ class PlanService:
             items, all_pois_dict, day_num,
         )
         items = self._strip_misscheduled_afternoon_attractions(
+            items, all_pois_dict, day_num,
+        )
+        items = self._strip_misscheduled_morning_preferred_attractions(
             items, all_pois_dict, day_num,
         )
         items = self._strip_mixed_opn_krakow_attractions(
@@ -14962,6 +15229,9 @@ class PlanService:
                 floor = max(floor, 150 if group == "family_kids" else 120)
             if "kampinos" in nm_l:
                 floor = max(floor, 60)
+            # FIX #268: Aquapark ≥2h (client: 55 min too short).
+            if "aquapark" in nm_l or "park wodny" in nm_l:
+                floor = max(floor, 120)
 
             target = dur
             if cap is not None and target > cap:

@@ -1142,6 +1142,24 @@ def is_evening_only_poi(poi: dict) -> bool:
         "multimedialny park fontann", "park fontann",
     )):
         return True
+    # FIX #268: Zatoka Gondoli — pro tip / TOD = evening, not 10:00.
+    if "zatoka gondoli" in name:
+        return True
+    return False
+
+
+def is_morning_preferred_poi(poi: dict) -> bool:
+    """FIX #268: POIs that should not be scheduled late afternoon (Hala Targowa)."""
+    name = str(poi.get("name", "")).lower()
+    if "hala targowa" in name:
+        return True
+    tod = str(poi.get("recommended_time_of_day") or poi.get("best_time") or "").lower()
+    if not tod:
+        return False
+    parts = [x.strip() for x in tod.replace("/", ",").split(",") if x.strip()]
+    morning = {"morning", "rano", "forenoon"}
+    if parts and all(p in morning or p in ("any", "") for p in parts):
+        return any(p in morning for p in parts)
     return False
 
 
@@ -2770,8 +2788,9 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("hala stulecia", 90),
         # FIX #255: client — absurd multi-hour stops.
         ("gojump", 90),
-        ("bastion sakwowy", 75),
-        ("hala targowa", 60),
+        # FIX #268: "krótki przystanek" — 75 min looked absurd vs copy.
+        ("bastion sakwowy", 45),
+        ("hala targowa", 45),
         ("nikiszowiec", 90),
         ("galeria szyb wilson", 90),
         ("szyb wilson", 90),
@@ -2939,9 +2958,9 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("gokart", 60),
         ("karting", 60),
         ("laser tag", 60),
-        # FIX #255: Wrocław family active venues need a real session floor.
-        ("aquapark", 90),
-        ("park wodny", 90),
+        # FIX #268: Aquapark needs ≥2h (client: 55 min way too short).
+        ("aquapark", 120),
+        ("park wodny", 120),
         ("loopy", 75),
         ("sala zabaw", 75),
         ("kopalnia guido", 90),
