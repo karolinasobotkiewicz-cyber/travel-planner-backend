@@ -298,6 +298,8 @@ def _explain_category_highlight(
     # FIX #271: caves are not theme parks; city gates are not long museum visits.
     if "jaskinia" in poi_name:
         return "Podziemna trasa w naturalnej jaskini"
+    if "genius loci" in poi_name:
+        return "Rezerwat archeologiczny i podziemna ekspozycja"
     if any(k in poi_name for k in (
         "brama floriańska", "brama florian", "barbakan",
     )):

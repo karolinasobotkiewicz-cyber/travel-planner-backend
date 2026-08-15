@@ -433,6 +433,7 @@ _NATURE_LANDMARK_NAME_DENY = (
     "pomnik syreny",
     "syrenka warszawska",
     "pkin",
+    "genius loci",
 )
 
 _WEAK_HERITAGE_ONLY = frozenset({
@@ -486,6 +487,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "muzeum geologicz", "podziemia rynku", "kopalnia wieliczka", "fabryka schindler",
         "fabryka wódki", "fabryka wodki", "rogalowe muzeum", "muzeum obwarzank",
         "lustrzany labirynt", "be happy museum", "kopiec powstania",
+        # FIX #272 Poznań: archaeological reserve ≠ nature walk.
+        "genius loci",
     ),
     "local_food_experience": (
         "wyspa słodowa", "plac europejski", "deptak", "rynek",
@@ -551,6 +554,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         # FIX #266: memorial mound / uprising museum ≠ underground caves/mines.
         "kopiec powstania", "kopiec ",
         "muzeum powstania warszawskiego", "powstania warszawskiego",
+        # FIX #272 Poznań: Park Cytadela is a park, not a tunnel/mine.
+        "park cytadela",
     ),
     "museum_heritage": (
         "spodek", "pomnik syreny", "park sensoryczny", "wieża ratuszowa",
@@ -654,7 +659,7 @@ def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
         return True
     # FIX #262/#266 Warszawa: real underground = Cytadela / casemates / tunnels.
     # Client FIX #266: Muzeum Powstania + Kopiec must NOT fake-cover underground.
-    if pref == "underground" and any(m in name for m in (
+    if pref == "underground" and "park cytadela" not in name and any(m in name for m in (
         "cytadel", "x pawilon", "muzeum katyńskie", "muzeum katynskie",
         "podziemia", "kanał", "kanal", "gazowni", "schron", "bunkier",
     )):

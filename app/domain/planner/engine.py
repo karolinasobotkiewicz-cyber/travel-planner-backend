@@ -1839,7 +1839,10 @@ def poi_geo_region_key(p: dict) -> str | None:
     )):
         return "region_wieliczka"
     # FIX #233: Poznań/Gniezno, Katowice/Gliwice, Warszawa day-trips
-    if any(k in blob for k in ("gniezno", "gnieźnie", "gniezn")):
+    if any(k in blob for k in (
+        "gniezno", "gnieźnie", "gniezn",
+        "początków państwa", "poczatkow panstwa", "początkow panstwa",
+    )):
         return "region_gniezno"
     if "gliwice" in blob:
         return "region_gliwice"
@@ -2926,6 +2929,20 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("cmentarz powazkowski", 120),
         ("powązk", 120),
         ("powazk", 120),
+        # FIX #272 Poznań: look-around / stretch stops the client called out.
+        ("muzeum iluzji", 75),
+        ("palmiarnia", 75),
+        ("szachty", 75),
+        ("letni tor", 45),
+        ("saneczkowy", 45),
+        ("ratusz w poznaniu", 60),
+        ("pomnik ofiar czerwca", 25),
+        ("stare koryto warty", 75),
+        ("muzeum początków państwa", 90),
+        ("muzeum poczatkow panstwa", 90),
+        ("park jana pawła", 75),
+        ("park jana pawla", 75),
+        ("fotoplastykon", 40),
     )
     for marker, cap in _named_caps:
         if marker in name:

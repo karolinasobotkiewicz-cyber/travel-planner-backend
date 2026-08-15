@@ -457,6 +457,16 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
         if tg == "couples" and "museum_heritage" in prefs and "kids_attractions" not in prefs:
             return True
 
+    # FIX #272 Poznań — Jump Arena is sport, not a default filler.
+    if "jump arena" in name and "active_sport" not in prefs:
+        return True
+
+    # FIX #272 Poznań — Zamek Cesarski is a weak kids+relax match.
+    if "zamek cesarski" in name and tg == "family_kids":
+        if "kids_attractions" in prefs or "relaxation" in prefs:
+            if "museum_heritage" not in prefs and "history_mystery" not in prefs:
+                return True
+
     # FIX #271 Kraków — Park Lotników is not adventure/underground/history.
     if "park lotników" in name or "park lotnikow" in name:
         if adv and ({"underground", "history_mystery"} & prefs) and "nature_landscape" not in prefs:
