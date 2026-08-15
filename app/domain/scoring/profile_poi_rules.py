@@ -120,6 +120,7 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("topacz", "wro_topacz"),
         ("katedra wrocławska", "wro_katedra"),
         ("katedra wroclawska", "wro_katedra"),
+        ("pana tadeusza", "wro_pana_tadeusza"),
         # FIX #249 Poznań — powtarzalne fillery centrum
         # (Zamek Królewski trip key is shared via waw_zamek_krolewski above —
         # FIX #267 — same POI name in WAWA/POZ; one key per trip is enough.)
@@ -362,6 +363,19 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     # FIX #268: Świat Iluzji is a weak fit for seniors (museum/nature/relax trips).
     if tg == "seniors" and any(k in name for k in ("świat iluzji", "swiat iluzji", "muzeum iluzji")):
         return True
+    # FIX #269: Iluzja is a filler, not underground/history/nature/relax.
+    if any(k in name for k in ("świat iluzji", "swiat iluzji", "muzeum iluzji")):
+        if tg != "family_kids" and "kids_attractions" not in prefs:
+            if prefs & {"underground", "nature_landscape", "relaxation"} and "museum_heritage" not in prefs:
+                return True
+            if "underground" in prefs and "kids_attractions" not in prefs:
+                return True
+
+    # FIX #269: Hala Stulecia is architecture, not underground/adventure.
+    if "hala stulecia" in name:
+        if tg == "friends" and adv and "underground" in prefs:
+            if "kids_attractions" not in prefs:
+                return True
 
     # FIX #248 Wrocław — Fort Przygody/paintball off history+museum bez active_sport (json7)
     if tg == "friends" and adv and "active_sport" not in prefs:

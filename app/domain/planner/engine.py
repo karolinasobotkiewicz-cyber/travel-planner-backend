@@ -716,6 +716,8 @@ WALK_THRESHOLD_KM = 1.2
 # FIX #213: city tourism — longer walk threshold, slower walk speed (realistic centre hops).
 CITY_TOURISM_WALK_THRESHOLD_KM = 3.5
 CITY_TOURISM_WALK_SPEED_KMH = 4.5
+# FIX #269: car must not auto-trigger on strict-centre hops (WRO/WAW client).
+CITY_TOURISM_CAR_FLOOR_KM = 2.0
 # FIX #234: haversine understates road distance in cities (~1.4× vs straight line).
 CITY_ROAD_DISTANCE_FACTOR = 1.45
 # POIs farther than this from city centroid are day-trip only (Zone C / late days).
@@ -1148,6 +1150,12 @@ def is_evening_only_poi(poi: dict) -> bool:
     return False
 
 
+def is_evening_preferred_poi(poi: dict) -> bool:
+    """FIX #269: daytime-ok POIs whose pro tip is dusk (Ostrów lanterns)."""
+    name = str(poi.get("name", "")).lower()
+    return "ostrów tumski" in name or "ostrow tumski" in name
+
+
 def is_morning_preferred_poi(poi: dict) -> bool:
     """FIX #268: POIs that should not be scheduled late afternoon (Hala Targowa)."""
     name = str(poi.get("name", "")).lower()
@@ -1493,11 +1501,11 @@ def travel_time_minutes(a, b, context):
     # FIX #255: keep travel_time consistent with get_transport_mode (car ≥1.2 km).
     _modes = context.get("transport_modes") or []
     _prefer_car = context.get("has_car", True) and ("car" in _modes or not _modes)
-    _car_floor = 1.2 if _city_trip else 0.6
+    _car_floor = CITY_TOURISM_CAR_FLOOR_KM if _city_trip else 0.6
     _use_walk = distance_km < _walk_thresh
     if _prefer_car and distance_km >= _car_floor:
         _use_walk = False
-    if _city_trip and _prefer_car and distance_km < 1.0:
+    if _city_trip and _prefer_car and distance_km < CITY_TOURISM_CAR_FLOOR_KM:
         _use_walk = True
 
     if _use_walk:
@@ -1528,6 +1536,8 @@ def travel_time_minutes(a, b, context):
         reg_a = reg_b = None
     _daytrip_regs = {
         "region_kampinos", "region_czersk", "region_modlin", "region_suntago",
+        # FIX #269: Wrocław suburbs — 40 km / 15 min was a client P0.
+        "region_olawa", "region_wojslawice", "region_galowice", "region_topacz",
     }
     if distance_km >= 8.0 and (
         (reg_a in _daytrip_regs) != (reg_b in _daytrip_regs)
@@ -1570,22 +1580,22 @@ def get_transport_mode(a, b, context=None):
     )
     # FIX #254: in dense city tourism, short hops stay on foot (client: car on
     # 50–500 m + estimated_walk). Prefer car only for longer urban legs.
-    if _city_trip and distance_km < 1.0:
+    if _city_trip and distance_km < CITY_TOURISM_CAR_FLOOR_KM:
         return "walking"
-    # FIX #255: after the day already used a car, keep ≥1 km legs on car
-    # (G10: no walk-after-car teleport on 1+ km hops).
+    # FIX #255/#269: after the day already used a car, keep longer legs on car
+    # (G10: no walk-after-car teleport). Centre hops <2 km stay on foot.
     if (
         context
         and context.get("day_used_car")
         and context.get("has_car", True)
-        and distance_km >= 1.0
+        and distance_km >= CITY_TOURISM_CAR_FLOOR_KM
     ):
         return "car"
     # FIX #240: user explicitly chose car — prefer driving for longer legs.
-    # City tourism: raise floor to 1.2 km so old-town hops stay walkable.
+    # City tourism: raise floor so old-town hops stay walkable.
     _modes = context.get("transport_modes") if context else None
     if context and context.get("has_car", True) and _modes and "car" in _modes:
-        _car_floor = 1.2 if _city_trip else 0.6
+        _car_floor = CITY_TOURISM_CAR_FLOOR_KM if _city_trip else 0.6
         if distance_km >= _car_floor:
             return "car"
     return "walking" if distance_km < _walk_thresh else "car"
@@ -1846,9 +1856,20 @@ def poi_geo_region_key(p: dict) -> str | None:
         )
     ):
         return "region_zabrze"
+    # FIX #269: Wrocław day-trips — Oława / Wojsławice / Galowice / Topacz.
+    if any(k in blob for k in (
+        "arboretum wojsławice", "arboretum wojslawice",
+        "wojsławice", "wojslawice",
+    )):
+        return "region_wojslawice"
     if "oława" in blob or "olawa" in blob:
-        if any(k in blob for k in ("arboretum", "wojsławice", "wojslawice")):
-            return "region_olawa"
+        return "region_olawa"
+    if any(k in blob for k in (
+        "galowice", "muzeum powozów", "muzeum powozow",
+    )):
+        return "region_galowice"
+    if "topacz" in blob:
+        return "region_topacz"
     # FIX #255: Poznań — Kórnik castle day-trip (avoid Gniezno+Kórnik same day).
     if any(k in blob for k in ("kórnik", "kornik", "zamek w kórniku", "zamek w korniku")):
         return "region_kornik"
@@ -1893,6 +1914,17 @@ def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: di
         return False
     if poi_reg == "region_zabrze" and any(k in blob for k in ("katowice", "katowic")):
         return False
+    # FIX #269: after Oława / Galowice / Wojsławice — don't lunch back in Wrocław.
+    _wro_daytrips = {
+        "region_olawa", "region_galowice", "region_wojslawice",
+    }
+    if poi_reg in _wro_daytrips:
+        if any(k in blob for k in ("wrocław", "wroclaw")) and not any(
+            k in blob for k in (
+                "oława", "olawa", "galowice", "wojsławice", "wojslawice",
+            )
+        ):
+            return False
     day_reg = (context or {}).get("day_geo_region")
     if day_reg == "region_czersk" and poi_reg == "region_czersk":
         if not any(k in blob for k in ("czersk", "góra kalwaria", "gora kalwaria")):

@@ -190,6 +190,8 @@ def _explain_profile_match(
         if any(ind in poi_tags_str or ind in poi_name for ind in adventure_indicators):
             return "Świetne na grupowe przygody"
 
+    if "aula leopoldina" in poi_name:
+        return "Barokowa aula Uniwersytetu Wrocławskiego — krótki, treściwy przystanek."
     if target_group == "family_kids":
         # FIX #268: Pixel XL copy says youth/adults — never claim "dla najmłodszych".
         if "pixel" in poi_name:

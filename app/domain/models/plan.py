@@ -303,7 +303,7 @@ class DinnerBreakItem(BaseModel):
     end_time: str = Field(..., pattern=r"^([01]\d|2[0-3]):([0-5]\d)$")
     duration_min: int = Field(..., ge=0, description="Czas przerwy")
     label: str = Field(
-        default="Kolacja / regionalne smaki", description="Etykieta"
+        default="Kolacja", description="Etykieta"
     )
     suggestions: List[RestaurantSuggestion] = Field(
         default_factory=list,
