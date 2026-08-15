@@ -2943,6 +2943,28 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("park jana pawła", 75),
         ("park jana pawla", 75),
         ("fotoplastykon", 40),
+        # FIX #273 Katowice: stretch stops the client called out.
+        ("górnośląski park etnograficzny", 90),
+        ("gornoslaski park etnograficzny", 90),
+        ("skansen", 90),
+        ("browar mariacki", 75),
+        ("rynek w katowicach", 60),
+        ("rynek katowic", 60),
+        ("dolina trzech stawów", 90),
+        ("dolina trzech stawow", 90),
+        ("spodek", 60),
+        ("tężnia solankowa", 60),
+        ("teznia solankowa", 60),
+        ("tężnia", 60),
+        ("teznia", 60),
+        ("kościół św. michała", 45),
+        ("kosciol sw. michala", 45),
+        ("kosciol sw michala", 45),
+        ("świętego michała", 45),
+        ("swietego michala", 45),
+        ("park chrobrego", 60),
+        ("papugarnia", 75),
+        ("planetarium", 90),
     )
     for marker, cap in _named_caps:
         if marker in name:
@@ -3054,6 +3076,16 @@ def choose_duration(p, now, end, lunch_done, user=None):
         # FIX #270: friends adventure — 48 min Grawitacja is too short.
         ("stacja grawitacja", 75),
         ("tepfactor", 75),
+        # FIX #273 Katowice floors.
+        ("papugarnia", 45),
+        ("park chrobrego", 40),
+        ("muzeum historii katowic", 45),
+        ("zamek piastowski", 45),
+        ("tężnia", 40),
+        ("teznia", 40),
+        ("carboneum", 40),
+        ("wieża ciśnień", 40),
+        ("wieza cisnien", 40),
         ("czersk", 90),
         # FIX #271 Kraków: Pieskowa is a castle visit, not a 39-min look.
         ("pieskowa", 75),

@@ -162,12 +162,12 @@ def _last_attraction_name(items: list) -> str:
 
 
 def _city_needs_car_gap_polish(city: str) -> bool:
-    """FIX #257/#258/#271/#272: WRO + WAW + KRK + Poznań — car, gaps, meals."""
+    """FIX #257/#258/#271/#272/#273: WRO + WAW + KRK + Poznań + Katowice."""
     c = (city or "").lower()
     return any(
         k in c for k in (
             "wrocław", "wroclaw", "warszawa", "warsaw", "kraków", "krakow",
-            "poznań", "poznan",
+            "poznań", "poznan", "katowice",
         )
     )
 
@@ -202,6 +202,22 @@ _KORNIK_NAME_MARKERS = (
 )
 _GNIEZNO_DEFAULT_COORDS = (52.5347, 17.5826)
 _KORNIK_DEFAULT_COORDS = (52.2442, 17.0903)
+_ZABRZE_NAME_MARKERS = (
+    "zabrze", "zabrzu", "guido", "królowa luiza", "krolowa luiza", "sztolnia",
+)
+_GLIWICE_NAME_MARKERS = ("gliwice", "gliwic")
+_ZABRZE_DEFAULT_COORDS = (50.3249, 18.7857)
+_GLIWICE_DEFAULT_COORDS = (50.2945, 18.6714)
+
+
+def _is_zabrze_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in _ZABRZE_NAME_MARKERS)
+
+
+def _is_gliwice_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in _GLIWICE_NAME_MARKERS)
 
 
 def _is_gniezno_stop_name(name: str) -> bool:
@@ -783,11 +799,14 @@ _NON_LOCAL_MEAL_CUISINES = frozenset({
     "american", "burgers", "street_food", "fast_food", "italian", "asian",
     "georgian", "caucasian", "gruzińska", "gruzinska",
     "indian", "indyjska", "curry",
+    "greek", "grecka", "greck",
 })
 _NON_LOCAL_MEAL_NAME_HINTS = (
-    "forno", "pizza", "włosk", "wlosk", "italian", "burger", "kebab",
+    "forno", "pizza", "włosk", "wlosk", "italian", "italia", "ciao",
+    "burger", "kebab",
     "gruzi", "georgian", "khinkali", "tbilisi", "kaukask",
     "curry", "royal curry", "indian", "indyjsk",
+    "greck", "greek", "souvlaki", "gyros",
 )
 
 
@@ -6383,6 +6402,9 @@ class PlanService:
                         _it269f, all_pois_dict, _ctx269f, user,
                         day_num=_d269f.day,
                     )
+                    _it269f = self._strip_mixed_opn_krakow_attractions(
+                        _it269f, all_pois_dict, _d269f.day,
+                    )
                     _it269f = self._strip_transits_to_unscheduled_destinations(
                         _it269f, day_num=_d269f.day,
                     )
@@ -6429,6 +6451,18 @@ class PlanService:
                     _it269f = self._push_dinner_not_before(
                         _it269f, day_num=_d269f.day,
                     )
+                    _it269f = self._drop_dinner_stacked_on_food_poi(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._enforce_dinner_min_duration(
+                        _it269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._enforce_minimum_lunch_duration(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._rewrite_katowice_satellite_copy(
+                        _it269f, day_num=_d269f.day,
+                    )
                     _it269f = self._ensure_stop_to_stop_legs(
                         _it269f, _cm269f, _ctx269f, day_num=_d269f.day, min_km=0.08,
                     )
@@ -6461,6 +6495,31 @@ class PlanService:
                     )
                     _it269f = self._force_approach_before_destination(
                         _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._strip_transits_to_unscheduled_destinations(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._ensure_stop_to_stop_legs(
+                        _it269f, _cm269f, _ctx269f, day_num=_d269f.day, min_km=0.08,
+                    )
+                    _it269f = self._retarget_all_legs_to_prev_stop(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._convert_late_lunch_past_four(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._refill_named_free_time(
+                        _it269f, all_pois_dict, _ctx269f, user,
+                        day_num=_d269f.day,
+                    )
+                    _it269f = self._strip_mixed_opn_krakow_attractions(
+                        _it269f, all_pois_dict, _d269f.day,
+                    )
+                    _it269f = self._strip_transits_to_unscheduled_destinations(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._ensure_stop_to_stop_legs(
+                        _it269f, _cm269f, _ctx269f, day_num=_d269f.day, min_km=0.08,
                     )
                     _it269f = self._name_remaining_holes(
                         _it269f, _ctx269f, day_num=_d269f.day,
@@ -10147,6 +10206,7 @@ class PlanService:
             "ojców", "ojcow", "łokietka", "lokietka", "pieskowa", "maczuga",
             "jaskinia ciemna", "wieliczka", "bochnia",
             "gniezno", "gnieźnie", "kórnik", "kornik",
+            "zabrze", "guido", "gliwice",
         )
         if (not is_walk) and item_dist >= 8 and cur <= 15:
             need = max(20, min(90, int(item_dist / 25.0 * 60 + 5)))
@@ -10529,6 +10589,10 @@ class PlanService:
                 return "gniezno"
             if reg == "region_kornik" or _is_kornik_stop_name(nm):
                 return "kornik"
+            if reg == "region_zabrze" or _is_zabrze_stop_name(nm):
+                return "zabrze"
+            if reg == "region_gliwice" or _is_gliwice_stop_name(nm):
+                return "gliwice"
             return "city"
 
         kinds = [_kind(it) for it in attrs]
@@ -10536,6 +10600,8 @@ class PlanService:
         n_wiel = kinds.count("wieliczka")
         n_gniez = kinds.count("gniezno")
         n_korn = kinds.count("kornik")
+        n_zabrze = kinds.count("zabrze")
+        n_gliwice = kinds.count("gliwice")
         n_city = kinds.count("city")
         keep = None
         far_counts = [
@@ -10543,6 +10609,8 @@ class PlanService:
             ("wieliczka", n_wiel),
             ("gniezno", n_gniez),
             ("kornik", n_korn),
+            ("zabrze", n_zabrze),
+            ("gliwice", n_gliwice),
         ]
         far_present = [(k, n) for k, n in far_counts if n]
         if len(far_present) >= 2:
@@ -10564,8 +10632,11 @@ class PlanService:
         # Morning city is allowed only when the excursion starts after noon.
         whole_day = first_far is not None and first_far <= 12 * 60
         # FIX #272: Gniezno/Kórnik — full-day cluster, or drop a late add-on.
-        if keep in ("gniezno", "kornik") and first_far is not None:
-            n_far = n_gniez if keep == "gniezno" else n_korn
+        if keep in ("gniezno", "kornik", "zabrze", "gliwice") and first_far is not None:
+            n_far = {
+                "gniezno": n_gniez, "kornik": n_korn,
+                "zabrze": n_zabrze, "gliwice": n_gliwice,
+            }[keep]
             if first_far <= 12 * 60 or n_far >= max(n_city, 1):
                 whole_day = True
             elif first_far > 14 * 60 and n_city > n_far:
@@ -11893,6 +11964,8 @@ class PlanService:
             "katedra wrocławska", "katedra wroclawska",
             "panorama racławicka", "panorama raclawicka",
             "pana tadeusza",
+            # FIX #273 Katowice
+            "nemo",
         )
         out_days: List[Any] = []
         for day in days:
@@ -16085,6 +16158,8 @@ class PlanService:
             # FIX #268: Aquapark ≥2h (client: 55 min too short).
             if "aquapark" in nm_l or "park wodny" in nm_l:
                 floor = max(floor, 120)
+            if "muzeum historii katowic" in nm_l:
+                floor = max(floor, 45)
             if "pieskowa" in nm_l:
                 floor = max(floor, 75)
                 # FIX #271: a 33-min castle look is worse than dropping it.
@@ -16250,7 +16325,21 @@ class PlanService:
                 continue
             dur = int(getattr(it, "duration_min", 0) or 0)
             st = getattr(it, "start_time", None)
-            if not st or dur >= min_min:
+            if not st:
+                out.append(it)
+                continue
+            if dur > 60:
+                try:
+                    out.append(it.model_copy(update={
+                        "end_time": minutes_to_time(time_to_minutes(st) + 60),
+                        "duration_min": 60,
+                    }))
+                    print(f"[FIX #273] Day {day_num}: lunch {dur}→60 min")
+                    continue
+                except Exception:
+                    out.append(it)
+                    continue
+            if dur >= min_min:
                 out.append(it)
                 continue
             try:
@@ -17960,6 +18049,10 @@ class PlanService:
             ("arboretum kornickie", 52.2447, 17.0956, "Kórnik"),
             ("arboretum w kórniku", 52.2447, 17.0956, "Kórnik"),
             ("arboretum w korniku", 52.2447, 17.0956, "Kórnik"),
+            # FIX #273: Gliwice / Tychy rows sometimes keep Katowice GPS.
+            ("palmiarnia miejska", 50.2975, 18.6847, "Gliwice"),
+            ("willa caro", 50.2936, 18.6658, "Gliwice"),
+            ("wodny park tychy", 50.1230, 19.0070, "Tychy"),
         )
         out: List[Any] = []
         for it in items:
@@ -18521,6 +18614,33 @@ class PlanService:
                 for it in items if _is_timeline_attraction(it)
             )
             if day_korn and not _is_kornik_stop_name(pname):
+                continue
+            _day_attr_nms = [
+                (getattr(it, "name", "") or "")
+                for it in items if _is_timeline_attraction(it)
+            ]
+            n_zabrze_day = sum(1 for n in _day_attr_nms if _is_zabrze_stop_name(n))
+            n_gliwice_day = sum(1 for n in _day_attr_nms if _is_gliwice_stop_name(n))
+            n_day_tot = len(_day_attr_nms)
+            day_zabrze = n_zabrze_day > 0 and n_zabrze_day >= max(1, n_day_tot - n_zabrze_day)
+            day_gliwice = (
+                n_gliwice_day > 0 and n_gliwice_day >= max(1, n_day_tot - n_gliwice_day)
+            )
+            if day_zabrze and not _is_zabrze_stop_name(pname):
+                continue
+            if day_gliwice and not _is_gliwice_stop_name(pname):
+                continue
+            # FIX #273: don't plant a Zabrze/Gliwice add-on into a Katowice day.
+            if not day_zabrze and _is_zabrze_stop_name(pname):
+                continue
+            if not day_gliwice and _is_gliwice_stop_name(pname):
+                continue
+            if "house of air" in pname and "active_sport" not in _prefs_cap:
+                continue
+            if ("św. anny" in pname or "sw. anny" in pname) and _prefs_cap & {
+                "water_attractions", "nature_landscape", "relaxation",
+                "mountain_trails", "kids_attractions", "local_food_experience",
+            }:
                 continue
             if day_ojcow:
                 score += 80.0
@@ -20369,6 +20489,31 @@ class PlanService:
                     f"[FIX #271] Day {day_num}: dropped crushed Pieskowa ({dur}m)"
                 )
                 continue
+            if "palmiarnia" in nm and dur < 40:
+                print(
+                    f"[FIX #273] Day {day_num}: dropped crushed Palmiarnia ({dur}m)"
+                )
+                continue
+            if ("tężnia" in nm or "teznia" in nm) and dur < 25:
+                print(
+                    f"[FIX #273] Day {day_num}: dropped crushed Tężnia ({dur}m)"
+                )
+                continue
+            if "zamek piastowski" in nm and dur < 30:
+                print(
+                    f"[FIX #273] Day {day_num}: dropped crushed Zamek Piastowski ({dur}m)"
+                )
+                continue
+            if "wodny park tychy" in nm and dur < 40:
+                print(
+                    f"[FIX #273] Day {day_num}: dropped crushed Wodny Park Tychy ({dur}m)"
+                )
+                continue
+            if "muzeum historii katowic" in nm and dur < 40:
+                print(
+                    f"[FIX #273] Day {day_num}: dropped crushed MHK ({dur}m)"
+                )
+                continue
             out.append(it)
         return out
 
@@ -20387,6 +20532,7 @@ class PlanService:
             "wieliczka", "bochnia", "suntago", "czersk", "kampinos",
             "wilanów", "wilanow", "modlin",
             "gniezno", "gnieźnie", "kórnik", "kornik",
+            "zabrze", "guido", "gliwice",
         )
         out: List[Any] = []
         for it in items:
@@ -20562,6 +20708,10 @@ class PlanService:
                     last_pt = _GNIEZNO_DEFAULT_COORDS
                 elif _is_kornik_stop_name(nm):
                     last_pt = _KORNIK_DEFAULT_COORDS
+                elif _is_zabrze_stop_name(nm):
+                    last_pt = _ZABRZE_DEFAULT_COORDS
+                elif _is_gliwice_stop_name(nm):
+                    last_pt = _GLIWICE_DEFAULT_COORDS
                 else:
                     last_pt = None
                 out.append(it)
@@ -20595,6 +20745,99 @@ class PlanService:
                 out.append(it)
         return self._sort_items_by_time(out)
 
+    def _rewrite_katowice_satellite_copy(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #273: city/Must-see/why_selected for Gliwice/Zabrze/Nikiszowiec."""
+        from app.domain.planner.city_copy import city_locative_pl
+
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            city = None
+            if _is_gliwice_stop_name(nm) or any(
+                k in nm for k in ("palmiarnia miejska", "willa caro")
+            ):
+                city = "Gliwice"
+            elif _is_zabrze_stop_name(nm):
+                city = "Zabrze"
+            elif any(k in nm for k in ("chorzów", "chorzow", "park śląski", "park slaski")):
+                city = "Chorzów"
+            elif "tychy" in nm:
+                city = "Tychy"
+            why = list(getattr(it, "why_selected", None) or [])
+            new_why = []
+            for r in why:
+                rl = (r or "").lower()
+                if city and "must-see w katowicach" in rl:
+                    r = f"Must-see {city_locative_pl(city)}"
+                if "nikiszowiec" in nm and "ekspozycja" in rl:
+                    r = "Historyczne osiedle robotnicze z ceglaną zabudową"
+                if (
+                    "rynek" in nm
+                    and "krótki przystanek" in rl
+                    and int(getattr(it, "duration_min", 0) or 0) > 45
+                ):
+                    continue
+                new_why.append(r)
+            upd: Dict[str, Any] = {}
+            if city and (getattr(it, "city", "") or "").lower() in ("", "katowice"):
+                upd["city"] = city
+            if new_why != why:
+                upd["why_selected"] = new_why
+            if not upd:
+                out.append(it)
+                continue
+            try:
+                out.append(it.model_copy(update=upd))
+            except Exception:
+                out.append(it)
+        return out
+
+    def _drop_dinner_stacked_on_food_poi(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #273: no dinner 5 min after Browar / Guido food-length visit."""
+        ordered = self._sort_items_by_time(list(items))
+        last_food_end = None
+        for it in ordered:
+            if not _is_timeline_attraction(it):
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            if any(k in nm for k in ("browar", "guido", "królowa luiza", "krolowa luiza")):
+                try:
+                    last_food_end = time_to_minutes(getattr(it, "end_time", None) or "")
+                except Exception:
+                    pass
+        if last_food_end is None:
+            return items
+        out: List[Any] = []
+        for it in ordered:
+            if _item_type_value(it) != ItemType.DINNER_BREAK.value:
+                out.append(it)
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                out.append(it)
+                continue
+            if 0 <= st - last_food_end < 45:
+                print(
+                    f"[FIX #273] Day {day_num}: dropped dinner stacked on food POI"
+                )
+                continue
+            out.append(it)
+        return out
+
     def _pull_daytrip_cluster_to_morning(
         self,
         items: List[Any],
@@ -20608,7 +20851,11 @@ class PlanService:
             return items
         names = [(getattr(it, "name", "") or "") for it in attrs]
         if not any(
-            _is_gniezno_stop_name(n) or _is_kornik_stop_name(n) for n in names
+            _is_gniezno_stop_name(n)
+            or _is_kornik_stop_name(n)
+            or _is_zabrze_stop_name(n)
+            or _is_gliwice_stop_name(n)
+            for n in names
         ):
             return items
         if not all(
@@ -20616,6 +20863,8 @@ class PlanService:
             or _is_kornik_stop_name(n)
             or _is_ojcow_stop_name(n)
             or _is_wieliczka_stop_name(n)
+            or _is_zabrze_stop_name(n)
+            or _is_gliwice_stop_name(n)
             for n in names
         ):
             return items
@@ -20828,6 +21077,32 @@ class PlanService:
                             last_pt = _KORNIK_DEFAULT_COORDS
                     except Exception:
                         last_pt = _KORNIK_DEFAULT_COORDS
+                elif _is_zabrze_stop_name(nm):
+                    try:
+                        if (
+                            last_pt is None
+                            or haversine_distance(
+                                last_pt[0], last_pt[1],
+                                _ZABRZE_DEFAULT_COORDS[0],
+                                _ZABRZE_DEFAULT_COORDS[1],
+                            ) > 12
+                        ):
+                            last_pt = _ZABRZE_DEFAULT_COORDS
+                    except Exception:
+                        last_pt = _ZABRZE_DEFAULT_COORDS
+                elif _is_gliwice_stop_name(nm):
+                    try:
+                        if (
+                            last_pt is None
+                            or haversine_distance(
+                                last_pt[0], last_pt[1],
+                                _GLIWICE_DEFAULT_COORDS[0],
+                                _GLIWICE_DEFAULT_COORDS[1],
+                            ) > 12
+                        ):
+                            last_pt = _GLIWICE_DEFAULT_COORDS
+                    except Exception:
+                        last_pt = _GLIWICE_DEFAULT_COORDS
                 out.append(it)
                 continue
             if _item_type_value(it) not in meal_types:

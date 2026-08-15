@@ -573,6 +573,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "pixel", "escape room", "kino 7d", "cybermagia",
         # FIX #265: Park Mamuta is kids outdoor dinosaurs — never museum_heritage.
         "park mamuta", "mamuta",
+        # FIX #273: parrot house is kids/animals, not a museum.
+        "papugarnia",
     ),
     "kids_attractions": (
         "podziemia rynku",
@@ -581,6 +583,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
     ),
     "active_sport": (
         "zoo", "ogród zoologiczny", "rynek", "muzeum",
+        # FIX #273: planetarium is a show, not sport (Katowice json3).
+        "planetarium",
         # FIX #213: food / brewery / chocolate ≠ sport.
         "browar", "wedel", "czekolad", "pijalnia", "port warta", "stary port",
         "lotnictwa", "planty", "katedra", "parafia", "pręgierz", "pregierz",
@@ -776,7 +780,7 @@ _STRONG_RELAX_NAME_MARKERS = (
 
 _STRONG_ACTIVE_NAME_MARKERS = (
     "tepfactor", "park linowy", "kajak", "trampolin", "gojump", "paintball",
-    "escape room", "gokart", "wspinacz", "obstacle",
+    "escape room", "gokart", "wspinacz", "obstacle", "house of air",
 )
 
 _STRONG_WATER_NAME_MARKERS = (

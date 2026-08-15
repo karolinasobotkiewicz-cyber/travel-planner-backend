@@ -300,6 +300,8 @@ def _explain_category_highlight(
         return "Podziemna trasa w naturalnej jaskini"
     if "genius loci" in poi_name:
         return "Rezerwat archeologiczny i podziemna ekspozycja"
+    if "nikiszowiec" in poi_name:
+        return "Historyczne osiedle robotnicze z ceglaną zabudową"
     if any(k in poi_name for k in (
         "brama floriańska", "brama florian", "barbakan",
     )):
@@ -378,6 +380,12 @@ def explain_poi_selection(
         # FIX #260: Kampinos is not "Must-see w Warszawie".
         if "kampinos" in _nm_ms:
             reasons.append("Must-see w Kampinosie (Izabelin / okolice Warszawy)")
+        elif any(k in _nm_ms for k in ("gliwice", "rynek w gliwic")):
+            reasons.append("Must-see w Gliwicach")
+        elif any(k in _nm_ms for k in ("zabrze", "guido", "królowa luiza", "krolowa luiza")):
+            reasons.append("Must-see w Zabrzu")
+        elif any(k in _nm_ms for k in ("chorzów", "chorzow", "park śląski", "park slaski")):
+            reasons.append("Must-see w Chorzowie")
         else:
             # FIX #254: "Must-see we Wrocławiu", not "Must-see w Wrocław".
             reasons.append(f"Must-see {city_locative_pl(str(_poi_city))}")

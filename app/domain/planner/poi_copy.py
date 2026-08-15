@@ -115,6 +115,9 @@ def poi_name_tokens(poi: Dict[str, Any]) -> set:
 def classify_poi_category(poi: Dict[str, Any]) -> str:
     """Semantic category used for copy + explainability. Never raises."""
     name = str(poi.get("name") or poi.get("Name") or "").lower()
+    # FIX #273: Nikiszowiec is a historic workers' settlement, not a museum hall.
+    if "nikiszowiec" in name:
+        return "heritage"
     # FIX #254: name overrides before token rules (wrong Excel tags / false positives).
     if "obwarzank" in name:
         return "museum"

@@ -52,6 +52,17 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("nikiszowiec", "kat_nikiszowiec"),
         ("tężnia", "kat_teznia"),
         ("teznia", "kat_teznia"),
+        ("park wodny nemo", "kat_nemo"),
+        ("nemo", "kat_nemo"),
+        ("kościół św. michała", "kat_park_kosciuszki"),
+        ("kosciol sw. michala", "kat_park_kosciuszki"),
+        ("kosciol sw michala", "kat_park_kosciuszki"),
+        ("świętego michała", "kat_park_kosciuszki"),
+        ("swietego michala", "kat_park_kosciuszki"),
+        ("michała archanioła", "kat_park_kosciuszki"),
+        ("michala archaniola", "kat_park_kosciuszki"),
+        ("parafia św. michała", "kat_park_kosciuszki"),
+        ("parafia sw. michala", "kat_park_kosciuszki"),
         # FIX #247 Warszawa — powtarzalne mikro-fillery
         ("most świętokrzyski", "waw_most_swietokrzyski"),
         ("most swietokrzyski", "waw_most_swietokrzyski"),
@@ -427,7 +438,15 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
         return True
 
     # FIX #231 — Katowice family: Kościół św. Anny
-    if tg == "family_kids" and ("św. anny" in name or "sw. anny" in name):
+    if ("św. anny" in name or "sw. anny" in name) and prefs & {
+        "water_attractions", "nature_landscape", "relaxation",
+        "mountain_trails", "kids_attractions", "active_sport",
+        "local_food_experience",
+    }:
+        if "kościół" in name or "kosciol" in name or "parafia" in name:
+            return True
+    # FIX #273: water+relax couples — kościół św. Anny is not a water day.
+    if "water_attractions" in prefs and ("św. anny" in name or "sw. anny" in name):
         if "kościół" in name or "kosciol" in name or "parafia" in name:
             return True
 
@@ -625,6 +644,10 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     if tg == "couples" and "water_attractions" in prefs:
         if "planetarium" in name:
             return True
+
+    # FIX #273: Planetarium is not active_sport coverage (Katowice json3).
+    if "planetarium" in name and "active_sport" in prefs and adv:
+        return True
 
     # FIX #244 Poznań — micro heritage off friends adventure
     if tg == "friends" and adv:
@@ -882,7 +905,7 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
         delta -= 100.0
 
     if "planetarium" in name and tg == "friends" and adv and "active_sport" in prefs:
-        delta -= 85.0
+        delta -= 200.0
 
     if day == 1 and any(k in name for k in ("rynek w katowicach", "rynek katowic")):
         delta -= 90.0
@@ -1205,8 +1228,8 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
     )):
         delta += 90.0
     if "active_sport" in needed and any(k in name for k in (
-        "gojump", "park linowy", "trampolin", "aquapark", "kopalnia", "bungee",
-        "hydropolis", "paintball", "escape", "linowa", "planetarium",
+        "gojump", "park linowy", "trampolin", "house of air", "aquapark",
+        "bungee", "hydropolis", "paintball", "escape", "linowa",
     )):
         delta += 95.0
 
