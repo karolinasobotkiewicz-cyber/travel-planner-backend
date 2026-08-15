@@ -274,7 +274,7 @@ _CATEGORY_HIGHLIGHT_PL = {
     "old_town": "Klimat historycznego centrum",
     "viewpoint": "Panorama miasta z góry",
     "garden": "Kolekcje roślin i spokojne alejki",
-    "park": "Zieleń i przestrzeń na oddech w środku dnia",
+    "park": "Zieleń i przestrzeń na oddech",
     "water_nature": "Nadwodne widoki i spokojniejsze tempo",
     "hiking": "Kontakt z przyrodą na trasie spacerowej",
     "cruise": "Miasto oglądane od strony wody",
@@ -295,6 +295,13 @@ def _explain_category_highlight(
     cat = classify_poi_category(poi)
     tg = (user or {}).get("target_group") or ""
     poi_name = str(poi.get("name") or "").lower()
+    # FIX #271: caves are not theme parks; city gates are not long museum visits.
+    if "jaskinia" in poi_name:
+        return "Podziemna trasa w naturalnej jaskini"
+    if any(k in poi_name for k in (
+        "brama floriańska", "brama florian", "barbakan",
+    )):
+        return "Zabytek przy historycznym ciągu Starego Miasta"
     # FIX #268: Pixel XL is adult entertainment, not a kids playground reason.
     if "pixel" in poi_name and cat in ("playground", "amusement", "entertainment"):
         return "Interaktywna rozrywka w dużym formacie"
@@ -411,7 +418,11 @@ def explain_poi_selection(
 
     duration_reason = _explain_duration_fit(poi)
     if duration_reason:
-        reasons.append(duration_reason)
+        # FIX #271: don't pair "dłuższa wizyta" with "krótki przystanek".
+        if not any(
+            "dłuższej wizyty" in r or "dłuższa wizyta" in r for r in reasons
+        ):
+            reasons.append(duration_reason)
 
     if not reasons:
         reasons.append("Pasuje do czasu i lokalizacji w Twoim planie")

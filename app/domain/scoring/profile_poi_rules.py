@@ -450,6 +450,20 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     )):
         return True
 
+    # FIX #271 Kraków — Park Jordana is a weak cultural/museum match.
+    if "park jordana" in name:
+        if style == "cultural":
+            return True
+        if tg == "couples" and "museum_heritage" in prefs and "kids_attractions" not in prefs:
+            return True
+
+    # FIX #271 Kraków — Park Lotników is not adventure/underground/history.
+    if "park lotników" in name or "park lotnikow" in name:
+        if adv and ({"underground", "history_mystery"} & prefs) and "nature_landscape" not in prefs:
+            return True
+        if style == "cultural" and "museum_heritage" in prefs:
+            return True
+
     # FIX #241 Kraków — Lustrzany Labirynt poza dopasowanymi profilami
     if "lustrzany labirynt" in name:
         if style == "cultural":

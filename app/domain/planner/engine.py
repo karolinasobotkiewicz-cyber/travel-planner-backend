@@ -1541,6 +1541,8 @@ def travel_time_minutes(a, b, context):
         "region_kampinos", "region_czersk", "region_modlin", "region_suntago",
         # FIX #269: Wrocław suburbs — 40 km / 15 min was a client P0.
         "region_olawa", "region_wojslawice", "region_galowice", "region_topacz",
+        # FIX #271: Kraków — Ojców / Wieliczka must not collapse to 15 min.
+        "region_ojcow", "region_wieliczka",
     }
     if distance_km >= 8.0 and (
         (reg_a in _daytrip_regs) != (reg_b in _daytrip_regs)
@@ -2802,6 +2804,13 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         # FIX #267: adventure client — 90 min Skaryszewski is too long look-around.
         ("park skaryszewski", 75),
         ("park jordana", 75),
+        # FIX #271 Kraków: look-around parks / maze / Ojców rock must not stretch.
+        ("park lotników", 75),
+        ("park lotnikow", 75),
+        ("lustrzany labirynt", 40),
+        ("maczuga herkulesa", 60),
+        ("bulwary wiślane", 90),
+        ("bulwary wislane", 90),
         ("wyspa słodowa", 75),
         ("wyspa slodowa", 75),
         # FIX #266: before generic "katedra" — "archikatedralna" contains "katedra".
@@ -2992,7 +3001,8 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("gornoslaski park etnograficzny", 90),
         ("muzeum powstania wielkopolskiego", 45),
         # FIX #254 / #253: booked active blocks need a real session length.
-        ("labirynt", 60),
+        ("lustrzany labirynt", 30),
+        ("labirynt", 30),
         ("paintball", 60),
         ("gokart", 60),
         ("karting", 60),
@@ -3028,6 +3038,8 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("stacja grawitacja", 75),
         ("tepfactor", 75),
         ("czersk", 90),
+        # FIX #271 Kraków: Pieskowa is a castle visit, not a 39-min look.
+        ("pieskowa", 75),
     )
     for _marker, _nmin in _named_mins:
         if _marker in _poi_name_lower:
@@ -6435,6 +6447,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                                 for k in (
                                     "forno", "pizza", "włosk", "wlosk", "italian",
                                     "gruzi", "georgian", "khinkali", "tbilisi",
+                                    "curry", "royal curry", "indian", "indyjsk",
                                 )
                             )
                         ]
@@ -6661,6 +6674,7 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                                 for k in (
                                     "forno", "pizza", "włosk", "wlosk", "italian",
                                     "gruzi", "georgian", "khinkali", "tbilisi",
+                                    "curry", "royal curry", "indian", "indyjsk",
                                 )
                             )
                         ]

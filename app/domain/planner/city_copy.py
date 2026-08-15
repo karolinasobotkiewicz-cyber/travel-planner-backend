@@ -128,7 +128,16 @@ def is_city_tourism_trip(context: Optional[Dict[str, Any]] = None) -> bool:
     """FIX #197: single-city urban trips (Kraków, Poznań…) — not Zakopane/mountain-only."""
     if not context or context.get("is_zakopane_trip"):
         return False
-    return context.get("trip_type") in ("city_tourism", "mixed", "cluster")
+    if context.get("trip_type") in ("city_tourism", "mixed", "cluster"):
+        return True
+    # FIX #271: polish passes may omit trip_type — still walk the old town.
+    city = str(context.get("requested_city") or context.get("city") or "").lower()
+    return any(
+        k in city for k in (
+            "kraków", "krakow", "wrocław", "wroclaw", "warszawa", "warsaw",
+            "poznań", "poznan", "gdańsk", "gdansk",
+        )
+    )
 
 
 def multi_city_density_mode(
