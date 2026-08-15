@@ -123,4 +123,5 @@ def test_fix268_absurd_road_km_without_coords():
         routing_source="estimated_road",
     )
     out = svc._fix_implausible_transit_duration(it, {}, {"has_car": True})
-    assert int(out.duration_min) >= 90
+    # FIX #274: client — Wena is a city hop, max 45 min (not a 90-min stretch).
+    assert 30 <= int(out.duration_min) <= 45

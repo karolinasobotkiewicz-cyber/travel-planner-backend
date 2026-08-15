@@ -208,6 +208,10 @@ _ZABRZE_NAME_MARKERS = (
 _GLIWICE_NAME_MARKERS = ("gliwice", "gliwic")
 _ZABRZE_DEFAULT_COORDS = (50.3249, 18.7857)
 _GLIWICE_DEFAULT_COORDS = (50.2945, 18.6714)
+_WOJSLAWICE_NAME_MARKERS = ("wojsławice", "wojslawice")
+_WOJSLAWICE_DEFAULT_COORDS = (50.7250, 16.8520)
+_FLYSPOT_DEFAULT_COORDS = (51.0478, 16.9719)
+_WENA_DEFAULT_COORDS = (51.0920, 17.0480)
 
 
 def _is_zabrze_stop_name(name: str) -> bool:
@@ -218,6 +222,11 @@ def _is_zabrze_stop_name(name: str) -> bool:
 def _is_gliwice_stop_name(name: str) -> bool:
     nm = (name or "").lower()
     return any(k in nm for k in _GLIWICE_NAME_MARKERS)
+
+
+def _is_wojslawice_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in _WOJSLAWICE_NAME_MARKERS)
 
 
 def _is_gniezno_stop_name(name: str) -> bool:
@@ -819,8 +828,9 @@ def _filter_meal_suggestions(
     *,
     preferences: Optional[List[str]] = None,
     target_group: Optional[str] = None,
+    meal_slot: Optional[str] = None,
 ) -> List[RestaurantSuggestion]:
-    """FIX #234/#242/#257: strip placeholders; prefer regional; respect recommended_for."""
+    """FIX #234/#242/#257/#274: strip placeholders; prefer regional; meal_type matches slot."""
     from app.domain.scoring.family_fit import (
         restaurant_hard_denied_for_group,
         restaurant_matches_target_group,
@@ -829,6 +839,7 @@ def _filter_meal_suggestions(
     prefs = {_meal_pref_str(p) for p in (preferences or []) if p}
     want_local = "local_food_experience" in prefs
     user = {"target_group": target_group or ""}
+    slot = (meal_slot or "").strip().lower()
 
     def _rdict(s: RestaurantSuggestion) -> dict:
         return {
@@ -843,6 +854,12 @@ def _filter_meal_suggestions(
             return False
         if restaurant_hard_denied_for_group(_rdict(s), user):
             return False
+        mt = _meal_pref_str(getattr(s, "meal_type", "") or "")
+        if slot in ("lunch", "dinner") and mt:
+            if slot == "dinner" and "lunch" in mt and "dinner" not in mt and "all" not in mt:
+                return False
+            if slot == "lunch" and "dinner" in mt and "lunch" not in mt and "all" not in mt:
+                return False
         if not want_local:
             return True
         name = _meal_pref_str(getattr(s, "name", "") or "")
@@ -854,6 +871,16 @@ def _filter_meal_suggestions(
             return False
         return True
 
+    def _deprioritize_default(rows: List[RestaurantSuggestion]) -> List[RestaurantSuggestion]:
+        # FIX #274: Warzywniak was the default lunch/dinner on too many days.
+        if not rows or len(rows) < 2:
+            return rows
+        front, back = [], []
+        for s in rows:
+            n = _meal_pref_str(getattr(s, "name", "") or "")
+            (back if "warzywniak" in n else front).append(s)
+        return front + back
+
     pool = [s for s in (suggestions or []) if _base_ok(s)]
     if target_group:
         matched = [
@@ -861,7 +888,7 @@ def _filter_meal_suggestions(
             if restaurant_matches_target_group(_rdict(s), user)
         ]
         if matched:
-            return matched
+            return _deprioritize_default(matched)
         tg = (target_group or "").strip().lower()
 
         def _tg_set(s: RestaurantSuggestion) -> set:
@@ -931,10 +958,10 @@ def _filter_meal_suggestions(
                             return 2
                         return 3
                     soft = sorted(soft, key=_fam_rank)
-                return soft
+                return _deprioritize_default(soft)
         # City data often omits seniors/solo from recommended_for — keep pool
         # but never reintroduce hard-denied venues.
-        return pool
+        return _deprioritize_default(pool)
     if want_local and not pool and suggestions:
         return [
             s for s in suggestions
@@ -6260,8 +6287,25 @@ class PlanService:
                             _pk = _rk269(_pnm)
                             if _pk:
                                 _keys_f.add(_pk)
+                    _meals_f: set = set()
+                    for _src in _final269:
+                        for _pit in (_src.items or []):
+                            if _item_type_value(_pit) not in (
+                                ItemType.LUNCH_BREAK.value,
+                                ItemType.DINNER_BREAK.value,
+                            ):
+                                continue
+                            for _s in (getattr(_pit, "suggestions", None) or [])[:1]:
+                                _mn = (
+                                    getattr(_s, "name", None)
+                                    if not isinstance(_s, dict)
+                                    else _s.get("name")
+                                ) or ""
+                                if _mn:
+                                    _meals_f.add(str(_mn).strip().lower())
                     _ctx269f["trip_repeat_keys"] = _keys_f
                     _ctx269f["trip_attraction_names"] = _names_f
+                    _ctx269f["trip_meal_names"] = _meals_f
                     _ctx269f["requested_city"] = (
                         _ctx269f.get("requested_city")
                         or (context or {}).get("requested_city")
@@ -6520,6 +6564,119 @@ class PlanService:
                     )
                     _it269f = self._ensure_stop_to_stop_legs(
                         _it269f, _cm269f, _ctx269f, day_num=_d269f.day, min_km=0.08,
+                    )
+                    _it269f = self._guarantee_lunch_slot(
+                        _it269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._guarantee_dinner_before_day_end(
+                        _it269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._enforce_dinner_min_duration(
+                        _it269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._enforce_minimum_lunch_duration(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._align_meal_slot_types(
+                        _it269f, user, day_num=_d269f.day,
+                    )
+                    _it269f = self._dedupe_lunch_dinner_restaurants(
+                        _it269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._ensure_leading_transit(
+                        _it269f, _cm269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._dedupe_same_destination_approaches(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._retarget_all_legs_to_prev_stop(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._downgrade_short_urban_cars(
+                        _it269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._fix_implausible_transits_shifting(
+                        _it269f, _cm269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._clamp_timeline_to_day_end(
+                        _it269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._drop_crushed_named_visits(
+                        _it269f, user, day_num=_d269f.day,
+                    )
+                    _it269f = self._name_remaining_holes(
+                        _it269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    # FIX #274: clamp/shift can drop a short dinner or recreate
+                    # overlapping meal approaches — one last polish pass.
+                    _it269f = self._strip_self_transits(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._strip_post_dinner_pointless_returns(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._remove_timeline_overlaps(
+                        _it269f, _d269f.day,
+                    )
+                    _it269f = self._guarantee_dinner_before_day_end(
+                        _it269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._enforce_dinner_min_duration(
+                        _it269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._enforce_minimum_lunch_duration(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._align_meal_slot_types(
+                        _it269f, user, day_num=_d269f.day,
+                    )
+                    _it269f = self._ensure_leading_transit(
+                        _it269f, _cm269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._dedupe_same_destination_approaches(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._retarget_all_legs_to_prev_stop(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._fix_implausible_transits_shifting(
+                        _it269f, _cm269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._remove_timeline_overlaps(
+                        _it269f, _d269f.day,
+                    )
+                    _it269f = self._clamp_timeline_to_day_end(
+                        _it269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._guarantee_dinner_before_day_end(
+                        _it269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._enforce_dinner_min_duration(
+                        _it269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._strip_legs_inside_meals(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._strip_transits_to_unscheduled_destinations(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._strip_self_transits(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._snap_meals_to_nearby_restaurants(
+                        _it269f, _ctx269f, user, day_num=_d269f.day,
+                    )
+                    _it269f = self._rotate_repeated_default_meals(
+                        _it269f, _ctx269f, user, day_num=_d269f.day,
+                    )
+                    _it269f = self._align_meal_slot_types(
+                        _it269f, user, day_num=_d269f.day,
+                    )
+                    _it269f = self._retarget_all_legs_to_prev_stop(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    _it269f = self._remove_timeline_overlaps(
+                        _it269f, _d269f.day,
                     )
                     _it269f = self._name_remaining_holes(
                         _it269f, _ctx269f, day_num=_d269f.day,
@@ -10207,7 +10364,41 @@ class PlanService:
             "jaskinia ciemna", "wieliczka", "bochnia",
             "gniezno", "gnieźnie", "kórnik", "kornik",
             "zabrze", "guido", "gliwice",
+            "wojsławice", "wojslawice",
         )
+        blob = f"{frm} {to}".lower()
+        _HOP_CAPS = (
+            ("wojsławice", 50, 60), ("wojslawice", 50, 60),
+            ("flyspot", 25, 40),
+            ("fly spot", 25, 40),
+            ("aerodynamicz", 25, 40),
+            ("wena", 30, 45),
+        )
+        named = next(((lo, hi) for m, lo, hi in _HOP_CAPS if m in blob), None)
+        if named:
+            lo, hi = named
+            need = min(hi, max(lo, cur))
+            if need != cur:
+                st = time_to_minutes(getattr(it, "start_time", "09:00") or "09:00")
+                try:
+                    return it.model_copy(update={
+                        "duration_min": need,
+                        "end_time": minutes_to_time(st + need),
+                    })
+                except Exception:
+                    pass
+            return it
+        if (not is_walk) and item_dist >= 25 and cur > 75:
+            need = min(75, max(45, int(item_dist / 60.0 * 60 + 10)))
+            if cur > need:
+                st = time_to_minutes(getattr(it, "start_time", "09:00") or "09:00")
+                try:
+                    return it.model_copy(update={
+                        "duration_min": need,
+                        "end_time": minutes_to_time(st + need),
+                    })
+                except Exception:
+                    pass
         if (not is_walk) and item_dist >= 8 and cur <= 15:
             need = max(20, min(90, int(item_dist / 25.0 * 60 + 5)))
             if cur < need:
@@ -10246,7 +10437,7 @@ class PlanService:
             """FIX #268: when coords missing (Wrocław→Wena), still fix 40 km / 10 min."""
             if is_walk or dist_km < 8 or cur >= max(20, int(dist_km / 25.0 * 60 + 5)):
                 return it
-            new_dur = max(20, min(180, int(dist_km / 25.0 * 60 + 5)))
+            new_dur = max(20, min(75, int(dist_km / 55.0 * 60 + 10)))
             st = time_to_minutes(getattr(it, "start_time", "09:00") or "09:00")
             try:
                 print(
@@ -10593,6 +10784,8 @@ class PlanService:
                 return "zabrze"
             if reg == "region_gliwice" or _is_gliwice_stop_name(nm):
                 return "gliwice"
+            if reg == "region_wojslawice" or _is_wojslawice_stop_name(nm):
+                return "wojslawice"
             return "city"
 
         kinds = [_kind(it) for it in attrs]
@@ -10602,6 +10795,7 @@ class PlanService:
         n_korn = kinds.count("kornik")
         n_zabrze = kinds.count("zabrze")
         n_gliwice = kinds.count("gliwice")
+        n_wojs = kinds.count("wojslawice")
         n_city = kinds.count("city")
         keep = None
         far_counts = [
@@ -10611,6 +10805,7 @@ class PlanService:
             ("kornik", n_korn),
             ("zabrze", n_zabrze),
             ("gliwice", n_gliwice),
+            ("wojslawice", n_wojs),
         ]
         far_present = [(k, n) for k, n in far_counts if n]
         if len(far_present) >= 2:
@@ -10632,10 +10827,11 @@ class PlanService:
         # Morning city is allowed only when the excursion starts after noon.
         whole_day = first_far is not None and first_far <= 12 * 60
         # FIX #272: Gniezno/Kórnik — full-day cluster, or drop a late add-on.
-        if keep in ("gniezno", "kornik", "zabrze", "gliwice") and first_far is not None:
+        if keep in ("gniezno", "kornik", "zabrze", "gliwice", "wojslawice") and first_far is not None:
             n_far = {
                 "gniezno": n_gniez, "kornik": n_korn,
                 "zabrze": n_zabrze, "gliwice": n_gliwice,
+                "wojslawice": n_wojs,
             }[keep]
             if first_far <= 12 * 60 or n_far >= max(n_city, 1):
                 whole_day = True
@@ -11966,6 +12162,8 @@ class PlanService:
             "pana tadeusza",
             # FIX #273 Katowice
             "nemo",
+            # FIX #274 Wrocław
+            "paintball",
         )
         out_days: List[Any] = []
         for day in days:
@@ -16160,6 +16358,14 @@ class PlanService:
                 floor = max(floor, 120)
             if "muzeum historii katowic" in nm_l:
                 floor = max(floor, 45)
+            if "wena" in nm_l:
+                floor = max(floor, 90)
+            if "topacz" in nm_l:
+                floor = max(floor, 60)
+            if "muzeum narodowe" in nm_l:
+                floor = max(floor, 60)
+            if "laser tag" in nm_l or "lasertag" in nm_l:
+                floor = max(floor, 60)
             if "pieskowa" in nm_l:
                 floor = max(floor, 75)
                 # FIX #271: a 33-min castle look is worse than dropping it.
@@ -16577,6 +16783,63 @@ class PlanService:
             out.append(it)
         return out
 
+    def _strip_legs_inside_meals(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #274: no leftover hop during lunch/dinner to a dropped POI."""
+        ordered = self._sort_items_by_time(list(items))
+        meals: List[tuple] = []
+        for it in ordered:
+            if _item_type_value(it) not in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            ):
+                continue
+            try:
+                ms = time_to_minutes(getattr(it, "start_time", None) or "")
+                me = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
+            rname = ""
+            for s in (getattr(it, "suggestions", None) or [])[:1]:
+                rname = (
+                    (s.get("name") if isinstance(s, dict) else getattr(s, "name", ""))
+                    or ""
+                ).strip().lower()
+            meals.append((ms, me, rname))
+        if not meals:
+            return ordered
+        out: List[Any] = []
+        for it in ordered:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                out.append(it)
+                continue
+            to = (getattr(it, "to_location", "") or "").strip().lower()
+            drop = False
+            for ms, me, rname in meals:
+                if st < ms or st >= me - 1:
+                    continue
+                if rname and rname in to and en <= ms + 3:
+                    continue
+                drop = True
+                break
+            if drop:
+                print(
+                    f"[FIX #274] Day {day_num}: stripped transit during meal → "
+                    f"{getattr(it, 'to_location', '')}"
+                )
+                continue
+            out.append(it)
+        return out
+
     def _anchor_pre_meal_transits(
         self,
         items: List[Any],
@@ -16686,7 +16949,49 @@ class PlanService:
                 first_idx = i
                 break
             if tv == ItemType.TRANSIT.value:
-                # Already have a leading logistics leg.
+                to = (getattr(it, "to_location", "") or "")
+                if _is_wojslawice_stop_name(to):
+                    dur = int(getattr(it, "duration_min", 0) or 0)
+                    if dur < 50:
+                        need = 55
+                        try:
+                            st = time_to_minutes(
+                                getattr(it, "start_time", None)
+                                or context.get("day_start")
+                                or "09:00"
+                            )
+                            ordered[i] = it.model_copy(update={
+                                "duration_min": need,
+                                "end_time": minutes_to_time(st + need),
+                                "distance_km": max(
+                                    float(getattr(it, "distance_km", 0) or 0),
+                                    50.0,
+                                ),
+                            })
+                            for k in range(i + 1, len(ordered)):
+                                if not _is_timeline_attraction(ordered[k]):
+                                    continue
+                                ast = time_to_minutes(
+                                    getattr(ordered[k], "start_time", "") or ""
+                                )
+                                aen = time_to_minutes(
+                                    getattr(ordered[k], "end_time", "") or ""
+                                )
+                                adur = max(30, aen - ast)
+                                nst = st + need
+                                ordered[k] = ordered[k].model_copy(update={
+                                    "start_time": minutes_to_time(nst),
+                                    "end_time": minutes_to_time(nst + adur),
+                                    "duration_min": adur,
+                                })
+                                break
+                            print(
+                                f"[FIX #274] Day {day_num}: Wojsławice "
+                                f"approach {dur}→{need}min"
+                            )
+                            return ordered
+                        except Exception:
+                            return items
                 return items
             if tv in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
                 return items
@@ -16704,6 +17009,16 @@ class PlanService:
             poi.setdefault("lat", getattr(first_stop, "lat"))
             poi.setdefault("lng", getattr(first_stop, "lng"))
         poi.setdefault("name", name)
+        if _is_wojslawice_stop_name(name):
+            poi["lat"], poi["lng"] = _WOJSLAWICE_DEFAULT_COORDS
+            try:
+                first_stop = first_stop.model_copy(update={
+                    "lat": _WOJSLAWICE_DEFAULT_COORDS[0],
+                    "lng": _WOJSLAWICE_DEFAULT_COORDS[1],
+                })
+                ordered[first_idx] = first_stop
+            except Exception:
+                pass
         try:
             to_lat = float(poi.get("lat") or 0)
             to_lng = float(poi.get("lng") or 0)
@@ -16760,6 +17075,9 @@ class PlanService:
         except Exception:
             dur = int(dist_km * (1.6 if has_car else 14)) + 8
         dur = max(8, dur)
+        if _is_wojslawice_stop_name(name):
+            dur = min(60, max(50, dur))
+            dist_km = max(dist_km, 50.0)
         if gap < 8 and dur < 15:
             return items
 
@@ -17436,6 +17754,146 @@ class PlanService:
                 out.append(it)
         return out
 
+    def _align_meal_slot_types(
+        self,
+        items: List[Any],
+        user: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #274: lunch must not get dinner-only venues and vice versa."""
+        prefs = list((user or {}).get("preferences") or [])
+        tg = (user or {}).get("target_group")
+        out: List[Any] = []
+        for it in items:
+            tv = _item_type_value(it)
+            slot = None
+            if tv == ItemType.LUNCH_BREAK.value:
+                slot = "lunch"
+            elif tv == ItemType.DINNER_BREAK.value:
+                slot = "dinner"
+            if not slot:
+                out.append(it)
+                continue
+            sugs = list(getattr(it, "suggestions", None) or [])
+            if not sugs:
+                out.append(it)
+                continue
+            filtered = _filter_meal_suggestions(
+                sugs, preferences=prefs, target_group=tg, meal_slot=slot,
+            )
+            chosen = (filtered or sugs)[:3]
+            stamped = []
+            changed = False
+            for s in chosen:
+                if isinstance(s, dict):
+                    mt = str(s.get("meal_type") or "").lower()
+                    if mt != slot:
+                        stamped.append({**s, "meal_type": slot})
+                        changed = True
+                    else:
+                        stamped.append(s)
+                    continue
+                mt = str(getattr(s, "meal_type", "") or "").lower()
+                if mt != slot:
+                    try:
+                        stamped.append(s.model_copy(update={"meal_type": slot}))
+                        changed = True
+                        continue
+                    except Exception:
+                        pass
+                stamped.append(s)
+            if changed or (filtered and filtered != sugs):
+                try:
+                    out.append(it.model_copy(update={"suggestions": stamped}))
+                    print(f"[FIX #274] Day {day_num}: aligned {slot} meal_type")
+                    continue
+                except Exception:
+                    pass
+            out.append(it)
+        return out
+
+    def _rotate_repeated_default_meals(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        user: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #274: Warzywniak must not be the default lunch on most days."""
+        used = {
+            str(n).strip().lower()
+            for n in ((context or {}).get("trip_meal_names") or set())
+            if n
+        }
+        pool = list((context or {}).get("restaurants_available") or [])
+        tg = (user or {}).get("target_group") or (context or {}).get("target_group")
+        prefs = list((user or {}).get("preferences") or [])
+        out: List[Any] = []
+        seen_today: set = set()
+        for it in items:
+            tv = _item_type_value(it)
+            slot = None
+            if tv == ItemType.LUNCH_BREAK.value:
+                slot = "lunch"
+            elif tv == ItemType.DINNER_BREAK.value:
+                slot = "dinner"
+            if not slot:
+                out.append(it)
+                continue
+            sugs = list(getattr(it, "suggestions", None) or [])
+            cur = ""
+            if sugs:
+                raw = sugs[0]
+                cur = (
+                    (raw.get("name") if isinstance(raw, dict) else getattr(raw, "name", ""))
+                    or ""
+                ).strip().lower()
+            is_warz = "warzywniak" in cur
+            if cur and not (is_warz and (cur in used or cur in seen_today)):
+                seen_today.add(cur)
+                used.add(cur)
+                out.append(it)
+                continue
+            if not is_warz:
+                if cur:
+                    seen_today.add(cur)
+                    used.add(cur)
+                out.append(it)
+                continue
+            alts = []
+            for r in pool:
+                rn = " ".join(str(r.get("name") or "").lower().split())
+                if not rn or rn in used or rn in seen_today or "warzywniak" in rn:
+                    continue
+                if r.get("lat") is None or r.get("lng") is None:
+                    continue
+                alts.append(_restaurant_dict_to_suggestion(r, slot))
+            ranked = _filter_meal_suggestions(
+                alts, preferences=prefs, target_group=tg, meal_slot=slot,
+            ) if alts else []
+            pick = (ranked or alts)[:1]
+            if not pick:
+                if cur:
+                    seen_today.add(cur)
+                    used.add(cur)
+                out.append(it)
+                continue
+            try:
+                out.append(it.model_copy(update={"suggestions": pick}))
+                pn = (getattr(pick[0], "name", "") or "").strip().lower()
+                if pn:
+                    seen_today.add(pn)
+                    used.add(pn)
+                print(
+                    f"[FIX #274] Day {day_num}: rotated default restaurant "
+                    f"{cur!r} → {pn!r}"
+                )
+            except Exception:
+                out.append(it)
+        return out
+
     def _dedupe_lunch_dinner_restaurants(
         self,
         items: List[Any],
@@ -17567,10 +18025,45 @@ class PlanService:
                 continue
             new_en = min(end_limit, st_m + floor)
             if new_en - st_m < 40:
-                # Not enough room — pull start earlier if free_time sits in front.
+                # Not enough room — pull start earlier and trim the last stop.
                 need = 40 - (new_en - st_m)
                 new_st = max(17 * 60 + 30, st_m - need)
+                if end_limit - new_st < 40:
+                    new_st = end_limit - 45
                 if end_limit - new_st >= 40:
+                    for idx in range(len(out) - 1, -1, -1):
+                        prev = out[idx]
+                        ptv = _item_type_value(prev)
+                        if ptv not in (
+                            ItemType.ATTRACTION.value,
+                            ItemType.FREE_TIME.value,
+                            ItemType.TRANSIT.value,
+                        ):
+                            continue
+                        try:
+                            pst = time_to_minutes(
+                                getattr(prev, "start_time", None) or ""
+                            )
+                            pen = time_to_minutes(
+                                getattr(prev, "end_time", None) or ""
+                            )
+                        except Exception:
+                            continue
+                        if pen <= new_st:
+                            break
+                        if ptv == ItemType.TRANSIT.value or (
+                            ptv == ItemType.FREE_TIME.value
+                        ) or (new_st - pst < 25):
+                            out.pop(idx)
+                        else:
+                            try:
+                                out[idx] = prev.model_copy(update={
+                                    "end_time": minutes_to_time(new_st),
+                                    "duration_min": max(5, new_st - pst),
+                                })
+                            except Exception:
+                                pass
+                        break
                     try:
                         out.append(it.model_copy(update={
                             "start_time": minutes_to_time(new_st),
@@ -18053,6 +18546,11 @@ class PlanService:
             ("palmiarnia miejska", 50.2975, 18.6847, "Gliwice"),
             ("willa caro", 50.2936, 18.6658, "Gliwice"),
             ("wodny park tychy", 50.1230, 19.0070, "Tychy"),
+            ("arboretum wojsławice", 50.7250, 16.8520, "Wojsławice"),
+            ("arboretum wojslawice", 50.7250, 16.8520, "Wojsławice"),
+            ("wojsławice", 50.7250, 16.8520, "Wojsławice"),
+            ("flyspot", 51.0478, 16.9719, "Bielany Wrocławskie"),
+            ("muzeum motoryzacji wena", 51.0920, 17.0480, "Wrocław"),
         )
         out: List[Any] = []
         for it in items:
@@ -18637,6 +19135,18 @@ class PlanService:
                 continue
             if "house of air" in pname and "active_sport" not in _prefs_cap:
                 continue
+            if (
+                _is_wojslawice_stop_name(pname) or "grabowy" in pname
+            ) and str((context or {}).get("season") or "").lower() == "winter":
+                continue
+            if "bobolandia" in pname and _tg_cap not in ("family_kids", "family"):
+                continue
+            if "kosmopark" in pname and _tg_cap in ("solo", "seniors", "couples"):
+                continue
+            if _tg_cap == "seniors" and any(
+                k in pname for k in ("flyspot", "laser tag", "lasertag")
+            ):
+                continue
             if ("św. anny" in pname or "sw. anny" in pname) and _prefs_cap & {
                 "water_attractions", "nature_landscape", "relaxation",
                 "mountain_trails", "kids_attractions", "local_food_experience",
@@ -18924,12 +19434,19 @@ class PlanService:
             end_limit = time_to_minutes(day_end)
         except Exception:
             return items
-        if end_limit < 18 * 60 + 40:
+        if end_limit < 19 * 60:
             return items
-        if any(
-            _item_type_value(it) == ItemType.DINNER_BREAK.value for it in items
-        ):
-            return items
+        short_dinner = False
+        kept: List[Any] = []
+        for it in items:
+            if _item_type_value(it) != ItemType.DINNER_BREAK.value:
+                kept.append(it)
+                continue
+            if int(getattr(it, "duration_min", 0) or 0) >= 40:
+                return items
+            short_dinner = True
+        if short_dinner:
+            items = kept
         ordered = self._sort_items_by_time(list(items))
         last_end = None
         for it in ordered:
@@ -18992,17 +19509,25 @@ class PlanService:
                     )
                 except Exception:
                     return items
-                new_end = max(a_st + 30, end_limit - 60)
-                if end_limit - new_end < 40:
-                    return items
-                try:
-                    ordered[last_attr_idx] = ordered[last_attr_idx].model_copy(update={
-                        "end_time": minutes_to_time(new_end),
-                        "duration_min": new_end - a_st,
-                    })
-                except Exception:
-                    return items
-                start, dur = new_end, end_limit - new_end
+                dinner_start = end_limit - 45
+                if a_st >= dinner_start:
+                    if _item_type_value(ordered[last_attr_idx]) == ItemType.FREE_TIME.value or (
+                        dinner_start - a_st < 25
+                    ):
+                        ordered.pop(last_attr_idx)
+                    start, dur = dinner_start, 45
+                else:
+                    new_end = min(dinner_start, max(a_st + 25, end_limit - 60))
+                    if end_limit - new_end < 40:
+                        new_end = dinner_start
+                    try:
+                        ordered[last_attr_idx] = ordered[last_attr_idx].model_copy(update={
+                            "end_time": minutes_to_time(new_end),
+                            "duration_min": max(5, new_end - a_st),
+                        })
+                    except Exception:
+                        return items
+                    start, dur = new_end, end_limit - new_end
 
         # Trim free_time that would overlap the new dinner.
         trimmed: List[Any] = []
@@ -20514,6 +21039,32 @@ class PlanService:
                     f"[FIX #273] Day {day_num}: dropped crushed MHK ({dur}m)"
                 )
                 continue
+            if "wena" in nm and dur < 70:
+                print(
+                    f"[FIX #274] Day {day_num}: dropped crushed Wena ({dur}m)"
+                )
+                continue
+            if ("powozów" in nm or "powozow" in nm) and dur < 45:
+                print(
+                    f"[FIX #274] Day {day_num}: dropped crushed Powozy ({dur}m)"
+                )
+                continue
+            if "topacz" in nm and dur < 45:
+                print(
+                    f"[FIX #274] Day {day_num}: dropped crushed Topacz ({dur}m)"
+                )
+                continue
+            if "flyspot" in nm and dur < 35:
+                print(
+                    f"[FIX #274] Day {day_num}: dropped crushed Flyspot ({dur}m)"
+                )
+                continue
+            if dur < 18:
+                print(
+                    f"[FIX #274] Day {day_num}: dropped crushed "
+                    f"{getattr(it, 'name', '')} ({dur}m)"
+                )
+                continue
             out.append(it)
         return out
 
@@ -20533,6 +21084,7 @@ class PlanService:
             "wilanów", "wilanow", "modlin",
             "gniezno", "gnieźnie", "kórnik", "kornik",
             "zabrze", "guido", "gliwice",
+            "wojsławice", "wojslawice",
         )
         out: List[Any] = []
         for it in items:
@@ -20553,9 +21105,11 @@ class PlanService:
                 else:
                     out.append(it)
                     continue
-            if is_walk and dist >= 3.0:
+            if is_walk and (dist >= 3.0 or (dist <= 0 and int(getattr(it, "duration_min", 0) or 0) >= 45)):
                 try:
-                    need = max(15, min(90, int(dist / 25.0 * 60 + 5)))
+                    if dist <= 0:
+                        dist = max(3.5, int(getattr(it, "duration_min", 0) or 45) / 14.0)
+                    need = max(15, min(50, int(dist / 35.0 * 60 + 8)))
                     st = time_to_minutes(getattr(it, "start_time", "09:00") or "09:00")
                     it = it.model_copy(update={
                         "mode": TransitMode.CAR,

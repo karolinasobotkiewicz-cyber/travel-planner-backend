@@ -74,6 +74,7 @@ def filter_by_season(pois, current_date):
                 # FIX #240 Wrocław: fontanna multimedialna + arboretum sezonowe
                 "fontanna multimedialna", "fontanna multimedial",
                 "arboretum wojsławice", "arboretum wojslawice",
+                "grabowy labirynt",
                 # FIX #253: client — Ogród Botaniczny / Japoński closed in February.
                 "ogród botaniczny", "ogrod botaniczny",
                 "ogród japoński", "ogrod japonski",

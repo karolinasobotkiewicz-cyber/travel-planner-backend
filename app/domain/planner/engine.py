@@ -2886,7 +2886,9 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("zajezdnia", 120),
         ("muzeum przyrodnicze", 90),
         ("pana tadeusza", 90),
-        ("park mamuta", 90),
+        ("park mamuta", 75),
+        ("kolejkowo", 60),
+        ("movie gate", 90),
         # FIX #256: aquapark must not hit the generic "park " 90-min category cap.
         ("aquapark", 180),
         # FIX #258 Warszawa: Park Fontann show ≈ 30 min.
@@ -2894,8 +2896,8 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("park fontann", 30),
         ("fontanna multimedialna", 30),
         # FIX #259 Wrocław: client — absurd / show-length stops.
-        ("panorama racławicka", 40),
-        ("panorama raclawicka", 40),
+        ("panorama racławicka", 30),
+        ("panorama raclawicka", 30),
         ("pitlane", 90),
         # FIX #261 Wrocław: client — "Most Grunwaldzki 40 min jest za długo",
         # "Dworzec Świebodzki 81 min wygląda za długo". Both are look-around
@@ -3089,6 +3091,14 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("czersk", 90),
         # FIX #271 Kraków: Pieskowa is a castle visit, not a 39-min look.
         ("pieskowa", 75),
+        # FIX #274 Wrocław floors.
+        ("wena", 90),
+        ("laser tag", 60),
+        ("lasertag", 60),
+        ("muzeum narodowe", 60),
+        ("muzeum powozów", 60),
+        ("muzeum powozow", 60),
+        ("topacz", 60),
     )
     for _marker, _nmin in _named_mins:
         if _marker in _poi_name_lower:

@@ -129,6 +129,9 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("zamek topacz", "wro_topacz"),
         ("muzeum motoryzacji i techniki zamek topacz", "wro_topacz"),
         ("topacz", "wro_topacz"),
+        ("paintball", "wro_paintball"),
+        ("citypaintball", "wro_paintball"),
+        ("fort przygody", "wro_paintball"),
         ("katedra wrocławska", "wro_katedra"),
         ("katedra wroclawska", "wro_katedra"),
         ("pana tadeusza", "wro_pana_tadeusza"),
@@ -241,6 +244,52 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     # FIX #265: Park Mamuta is kids-only — never for adult profiles.
     if "mamuta" in name and tg not in ("family_kids", "family"):
         return True
+
+    # FIX #274 Wrocław: Bobolandia / Kosmopark are kids-only.
+    if "bobolandia" in name and tg not in ("family_kids", "family"):
+        return True
+    if "kosmopark" in name and tg in ("solo", "seniors", "couples"):
+        return True
+    if "kosmopark" in name and tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
+        if "active_sport" not in prefs:
+            return True
+
+    # FIX #274: Flyspot / Laser Tag off seniors; Laser Tag needs active_sport.
+    if tg == "seniors" and any(k in name for k in ("flyspot", "laser tag", "lasertag", "kosmopark")):
+        return True
+    if any(k in name for k in ("laser tag", "lasertag")) and "active_sport" not in prefs:
+        return True
+    if "flyspot" in name:
+        limit = user.get("daily_limit")
+        if limit is None:
+            budget = user.get("budget") or {}
+            if isinstance(budget, dict):
+                limit = budget.get("daily_limit")
+        try:
+            ticket = float(
+                poi.get("ticket_normal")
+                or poi.get("Ticket")
+                or poi.get("cost_estimate")
+                or 299
+            )
+        except (TypeError, ValueError):
+            ticket = 299.0
+        if limit is not None and ticket > float(limit):
+            return True
+
+    # FIX #274: winter-only outdoor / far garden closed late February.
+    _date = user.get("start_date") or user.get("date")
+    if _date:
+        try:
+            from app.domain.filters.seasonality import derive_season
+            if derive_season(_date) == "winter" and any(
+                k in name for k in (
+                    "wojsławice", "wojslawice", "grabowy labirynt",
+                )
+            ):
+                return True
+        except Exception:
+            pass
 
     # Kraków: Podziemia Rynku for family with young child
     if tg == "family_kids" and "podziemia rynku" in name:
@@ -387,6 +436,15 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
         if tg == "friends" and adv and "underground" in prefs:
             if "kids_attractions" not in prefs:
                 return True
+
+    # FIX #274: gardens off underground + history + museum + adventure.
+    if tg == "friends" and adv and "underground" in prefs:
+        if any(k in name for k in (
+            "ogród japoński", "ogrod japonski",
+            "ogród botaniczny", "ogrod botaniczny",
+            "park szczytnicki",
+        )):
+            return True
 
     # FIX #248 Wrocław — Fort Przygody/paintball off history+museum bez active_sport (json7)
     if tg == "friends" and adv and "active_sport" not in prefs:
