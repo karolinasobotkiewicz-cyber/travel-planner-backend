@@ -196,7 +196,12 @@ def _explain_profile_match(
         # FIX #268: Pixel XL copy says youth/adults — never claim "dla najmłodszych".
         if "pixel" in poi_name:
             return None
-        kids_indicators = ["kids", "family", "playground", "zoo", "children"]
+        if "smart kids" in poi_name:
+            return "Idealne dla rodzin z dziećmi"
+        kids_indicators = [
+            "kids", "family", "playground", "zoo", "children",
+            "smart kids", "planet", "sala zabaw", "miniciti", "kolejkowo",
+        ]
         if any(ind in poi_tags_str or ind in poi_name for ind in kids_indicators):
             return "Idealne dla rodzin z dziećmi"
 

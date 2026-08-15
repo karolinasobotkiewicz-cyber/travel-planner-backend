@@ -6147,12 +6147,69 @@ class PlanService:
                     }
                     if contexts and _d269f.day - 1 < len(contexts):
                         _ctx269f = {**contexts[_d269f.day - 1], **_ctx269f}
+                    _keys_f: set = set()
+                    _names_f: set = set()
+                    for _src in list(_final269) + [
+                        d for d in days
+                        if int(getattr(d, "day", 0) or 0) != int(_d269f.day or 0)
+                    ]:
+                        for _pit in (_src.items or []):
+                            if not _is_timeline_attraction(_pit):
+                                continue
+                            _pnm = (getattr(_pit, "name", "") or "")
+                            if _pnm:
+                                _names_f.add(_pnm.lower())
+                            _pk = _rk269(_pnm)
+                            if _pk:
+                                _keys_f.add(_pk)
+                    _ctx269f["trip_repeat_keys"] = _keys_f
+                    _ctx269f["trip_attraction_names"] = _names_f
+                    _ctx269f["requested_city"] = (
+                        _ctx269f.get("requested_city")
+                        or (context or {}).get("requested_city")
+                        or (_ctx_fields or {}).get("requested_city")
+                        or ""
+                    )
                     _it269f = self._retarget_all_legs_to_prev_stop(
                         _it269f, day_num=_d269f.day,
                     )
                     _it269f = self._ensure_stop_to_stop_legs(
                         _it269f, _cm269f, _ctx269f, day_num=_d269f.day, min_km=0.08,
                     )
+                    _it269f = self._fix_implausible_transits_shifting(
+                        _it269f, _cm269f, _ctx269f, day_num=_d269f.day,
+                    )
+                    if all_pois_dict:
+                        _it269f = self._strip_misscheduled_morning_preferred_attractions(
+                            _it269f, all_pois_dict, _d269f.day,
+                        )
+                        _it269f = self._strip_transits_to_unscheduled_destinations(
+                            _it269f, day_num=_d269f.day,
+                        )
+                    if user is not None:
+                        _it269f = self._cap_stretched_attraction_durations(
+                            _it269f, day_num=_d269f.day, user=user,
+                        )
+                        _it269f = self._strip_excessive_museums_same_day(
+                            _it269f, user, day_num=_d269f.day,
+                        )
+                        _it269f = self._strip_excessive_greens_same_day(
+                            _it269f, user, day_num=_d269f.day,
+                        )
+                    _it269f = self._refill_named_free_time(
+                        _it269f, all_pois_dict, _ctx269f, user,
+                        day_num=_d269f.day,
+                    )
+                    _it269f = self._ensure_stop_to_stop_legs(
+                        _it269f, _cm269f, _ctx269f, day_num=_d269f.day, min_km=0.08,
+                    )
+                    _it269f = self._retarget_all_legs_to_prev_stop(
+                        _it269f, day_num=_d269f.day,
+                    )
+                    if user is not None:
+                        _it269f = self._cap_stretched_attraction_durations(
+                            _it269f, day_num=_d269f.day, user=user,
+                        )
                     _it269f = self._name_remaining_holes(
                         _it269f, _ctx269f, day_num=_d269f.day,
                     )
@@ -9842,6 +9899,31 @@ class PlanService:
             item_dist = float(getattr(it, "distance_km", 0) or 0)
         except (TypeError, ValueError):
             item_dist = 0.0
+        _DAYTRIP = (
+            "suntago", "czersk", "kampinos", "wilanów", "wilanow", "modlin",
+        )
+        frm_dt = any(k in frm.lower() for k in _DAYTRIP)
+        to_dt = any(k in to.lower() for k in _DAYTRIP)
+        if frm_dt != to_dt and not is_walk:
+            if item_dist >= 20:
+                need = min(90, int(item_dist * 1.4) + 10)
+            elif item_dist >= 8:
+                need = 35
+            else:
+                need = 45
+            if cur < need:
+                st = time_to_minutes(getattr(it, "start_time", "09:00") or "09:00")
+                try:
+                    print(
+                        f"[FIX #270] Daytrip hop {frm}->{to}: "
+                        f"{cur}min → {need}min"
+                    )
+                    return it.model_copy(update={
+                        "duration_min": need,
+                        "end_time": minutes_to_time(st + need),
+                    })
+                except Exception:
+                    pass
 
         def _stretch_from_road_km(dist_km: float) -> Any:
             """FIX #268: when coords missing (Wrocław→Wena), still fix 40 km / 10 min."""
@@ -11732,6 +11814,11 @@ class PlanService:
         max_mus = 2
         if tg == "couples" and style == "cultural" and "relaxation" in prefs:
             max_mus = 1
+        elif "museum_heritage" not in prefs and (
+            prefs & {"nature_landscape", "relaxation"}
+        ):
+            # FIX #270: nature/relax days must not become a museum crawl.
+            max_mus = 1
         elif style == "balanced" and "museum_heritage" not in prefs:
             max_mus = 1
         count = 0
@@ -11746,6 +11833,41 @@ class PlanService:
                 if count > max_mus:
                     print(
                         f"[FIX #244] Day {day_num}: stripped museum stack "
+                        f"{getattr(it, 'name', '?')}"
+                    )
+                    continue
+            out.append(it)
+        return out
+
+    def _strip_excessive_greens_same_day(
+        self, items: List[Any], user: Dict[str, Any], *, day_num: int = 0
+    ) -> List[Any]:
+        """FIX #270: Łazienki + Saski + Botaniczny stacked is a 4h park day."""
+        _GREEN = (
+            "ogród", "ogrod", "łazienki", "lazienki", "park ",
+            "jeziorko", "bulwar", "wyspa",
+        )
+        # Wilanów / Kampinos are day-trips — keep even if parks already exist.
+        _KEEP = ("wilanów", "wilanow", "kampinos")
+        max_green = 2
+        prefs = {str(p).lower() for p in (user or {}).get("preferences") or []}
+        if prefs == {"nature_landscape"} or prefs == {"relaxation"}:
+            max_green = 3
+        count = 0
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            if any(k in nm for k in _KEEP):
+                out.append(it)
+                continue
+            if any(k in nm for k in _GREEN):
+                count += 1
+                if count > max_green:
+                    print(
+                        f"[FIX #270] Day {day_num}: stripped green stack "
                         f"{getattr(it, 'name', '?')}"
                     )
                     continue
@@ -13285,6 +13407,9 @@ class PlanService:
             )
             items = self._strip_duplicate_zoo_same_day(items, day_num=day_num)
             items = self._strip_excessive_museums_same_day(
+                items, user, day_num=day_num,
+            )
+            items = self._strip_excessive_greens_same_day(
                 items, user, day_num=day_num,
             )
             items = self._enforce_minimum_named_poi_duration(
@@ -15498,6 +15623,12 @@ class PlanService:
                 floor = max(floor, 150 if group == "family_kids" else 120)
             if "kampinos" in nm_l:
                 floor = max(floor, 60)
+            if any(k in nm_l for k in ("wilanów", "wilanow")):
+                floor = max(floor, 90)
+            if "tepfactor" in nm_l:
+                floor = max(floor, 75)
+            if "grawitacja" in nm_l:
+                floor = max(floor, 75)
             # FIX #268: Aquapark ≥2h (client: 55 min too short).
             if "aquapark" in nm_l or "park wodny" in nm_l:
                 floor = max(floor, 120)
@@ -17452,6 +17583,63 @@ class PlanService:
             out.append(it)
         return out
 
+    def _refill_named_free_time(
+        self,
+        items: List[Any],
+        pool: Optional[List[Dict[str, Any]]],
+        context: Dict[str, Any],
+        user: Optional[Dict[str, Any]],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #270: after strips, plant leftover unused POIs into named free_time."""
+        if not items or not pool or user is None:
+            return items
+        inj_ctx = {
+            **context,
+            "allow_soft_profile": True,
+            "allow_pre_meal_inject": True,
+            "trip_repeat_keys": set(context.get("trip_repeat_keys") or []),
+            "trip_attraction_names": set(context.get("trip_attraction_names") or []),
+        }
+        working = list(items)
+        for _ in range(8):
+            working = self._name_remaining_holes(
+                working, context, day_num=day_num,
+            )
+            ft = sum(
+                int(getattr(x, "duration_min", 0) or 0)
+                for x in working
+                if _item_type_value(x) == ItemType.FREE_TIME.value
+            )
+            if ft < 45:
+                break
+            before = ft
+            working = self._inject_attraction_into_free_time(
+                working, pool, inj_ctx, user, day_num=day_num,
+            )
+            working = self._boost_thin_relax_nature_day(
+                working, pool, inj_ctx, user, day_num=day_num,
+            )
+            after = sum(
+                int(getattr(x, "duration_min", 0) or 0)
+                for x in working
+                if _item_type_value(x) == ItemType.FREE_TIME.value
+            )
+            if after >= before:
+                break
+        if user is not None:
+            working = self._cap_stretched_attraction_durations(
+                working, day_num=day_num, user=user,
+            )
+            working = self._strip_excessive_museums_same_day(
+                working, user, day_num=day_num,
+            )
+            working = self._strip_excessive_greens_same_day(
+                working, user, day_num=day_num,
+            )
+        return working
+
     def _inject_attraction_into_free_time(
         self,
         items: List[Any],
@@ -17559,8 +17747,47 @@ class PlanService:
         if span < 40:
             return items
         req_city = context.get("requested_city") or ""
-        best = None
-        best_score = -9999.0
+        from app.domain.planner.engine import is_open as _is_open_inj
+        _prefs_cap = {
+            str(p).lower() for p in (user or {}).get("preferences") or []
+        }
+        _style_cap = str((user or {}).get("travel_style") or "").lower()
+        _tg_cap = str((user or {}).get("target_group") or "").lower()
+        max_mus_inj = 2
+        if _tg_cap == "couples" and _style_cap == "cultural" and "relaxation" in _prefs_cap:
+            max_mus_inj = 1
+        elif "museum_heritage" not in _prefs_cap and (
+            _prefs_cap & {"nature_landscape", "relaxation"}
+        ):
+            max_mus_inj = 1
+        elif _style_cap == "balanced" and "museum_heritage" not in _prefs_cap:
+            max_mus_inj = 1
+        max_green_inj = 2
+        if _prefs_cap == {"nature_landscape"} or _prefs_cap == {"relaxation"}:
+            max_green_inj = 3
+        _GREEN_INJ = (
+            "ogród", "ogrod", "łazienki", "lazienki", "park ",
+            "jeziorko", "bulwar", "wyspa",
+        )
+        _KEEP_INJ = ("wilanów", "wilanow", "kampinos")
+        day_museums = sum(
+            1 for it in items
+            if _is_timeline_attraction(it)
+            and (
+                "muzeum" in (getattr(it, "name", "") or "").lower()
+                or "museum" in (getattr(it, "name", "") or "").lower()
+            )
+        )
+        day_greens = 0
+        for it in items:
+            if not _is_timeline_attraction(it):
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            if any(k in nm for k in _KEEP_INJ):
+                continue
+            if any(k in nm for k in _GREEN_INJ):
+                day_greens += 1
+        ranked: List[tuple] = []
         for poi in pool:
             pname = (poi.get("name") or "").strip().lower()
             if not pname or pname in taken:
@@ -17628,7 +17855,7 @@ class PlanService:
                 is_evening_preferred_poi(poi) or is_evening_only_poi(poi)
             ) and ft_st < 16 * 60:
                 continue
-            if is_morning_preferred_poi(poi) and ft_st >= 15 * 60:
+            if is_morning_preferred_poi(poi) and ft_st >= 13 * 60:
                 continue
             # FIX #266: never inject foreign-city named POIs into another city
             # (soft densify was planting Wrocław Iluzji into Warszawa).
@@ -17646,13 +17873,33 @@ class PlanService:
                     continue
             # Prefer greens / soft culture for relax solo.
             score = 1.0  # any valid city POI beats leaving a 3h hole
-            if any(k in pname for k in (
+            tg = str((user or {}).get("target_group") or "").lower()
+            if tg != "family_kids" and any(k in pname for k in (
                 "loopy", "pixel", "trampoline", "sala zabaw", "park rozrywki",
+                "smart kids", "miniciti", "kolejkowo", "lalek",
+                "manufaktura cukierków", "manufaktura cukierkow",
+                "kleks", "farma wuja", "dyniolandia", "julinek",
             )):
-                # Keep Loopy for family_kids density; block for solo/couples/seniors.
-                tg = str((user or {}).get("target_group") or "").lower()
-                if tg != "family_kids":
+                continue
+            if day_museums >= max_mus_inj and (
+                "muzeum" in pname or "museum" in pname
+            ) and not any(k in pname for k in (
+                "wilanów", "wilanow", "łazienki", "lazienki",
+            )):
+                continue
+            if (
+                day_greens >= max_green_inj
+                and any(k in pname for k in _GREEN_INJ)
+                and not any(k in pname for k in _KEEP_INJ)
+            ):
+                continue
+            try:
+                if context.get("date") and not _is_open_inj(
+                    poi, ft_st, span, context.get("season") or "winter", context,
+                ):
                     continue
+            except Exception:
+                pass
             if any(k in pname for k in (
                 "ogród", "ogrod", "łazienki", "lazienki", "bulwar", "park ",
                 "wyspa", "zatoka", "pergola", "japoń", "japon",
@@ -17692,21 +17939,26 @@ class PlanService:
                 if str((user or {}).get("target_group") or "").lower() != "family_kids":
                     continue
                 score += 20.0
-            if score > best_score:
-                best, best_score = poi, score
-        if best is None:
-            return items
-        try:
-            fresh = self._generate_attraction_item(
-                best, minutes_to_time(ft_st), user,
-                user.get("target_group", "solo"), context, None,
-            )
-            visit = fresh.model_copy(update={
-                "start_time": minutes_to_time(ft_st),
-                "end_time": minutes_to_time(ft_st + span),
-                "duration_min": span,
-            })
-        except Exception:
+            ranked.append((score, poi))
+        ranked.sort(key=lambda x: -x[0])
+        visit = None
+        best = None
+        for _sc, cand in ranked[:24]:
+            try:
+                fresh = self._generate_attraction_item(
+                    cand, minutes_to_time(ft_st), user,
+                    user.get("target_group", "solo"), context, None,
+                )
+                visit = fresh.model_copy(update={
+                    "start_time": minutes_to_time(ft_st),
+                    "end_time": minutes_to_time(ft_st + span),
+                    "duration_min": span,
+                })
+                best = cand
+                break
+            except Exception:
+                continue
+        if visit is None or best is None:
             return items
         out = list(items)
         # Shrink / drop the free_time block we consumed.
@@ -18667,8 +18919,12 @@ class PlanService:
             km = 0.5
             if pt_a and pt_b:
                 km = haversine_distance(pt_a[0], pt_a[1], pt_b[0], pt_b[1])
-                if km < min_km:
-                    continue
+                # Distinct named stops always get a visible hop. Old-town pins
+                # (Stare Miasto → Zamek) can sit < min_km and used to teleport.
+                if km < 0.04:
+                    km = 0.25
+            elif not pt_a or not pt_b:
+                km = max(km, 0.4)
             try:
                 a_end = time_to_minutes(getattr(a, "end_time", None) or "")
                 b_start = time_to_minutes(getattr(b, "start_time", None) or "")
@@ -19480,9 +19736,34 @@ class PlanService:
         working = self._name_remaining_holes(working, context, day_num=day_num)
         working = self._merge_abutting_free_time_hard(working, day_num=day_num)
         working = self._relabel_dinner_items(working)
+        if user is not None:
+            working = self._cap_stretched_attraction_durations(
+                working, day_num=day_num, user=user,
+            )
+            working = self._strip_excessive_museums_same_day(
+                working, user, day_num=day_num,
+            )
+            working = self._strip_excessive_greens_same_day(
+                working, user, day_num=day_num,
+            )
+        working = self._fix_implausible_transits_shifting(
+            working, coord_map, context, day_num=day_num,
+        )
         working = self._clamp_timeline_to_day_end(
             working, context, day_num=day_num,
         )
+        working = self._refill_named_free_time(
+            working, all_pois_dict, context, user, day_num=day_num,
+        )
+        working = self._ensure_stop_to_stop_legs(
+            working, coord_map, context, day_num=day_num, min_km=0.08,
+        )
+        working = self._retarget_all_legs_to_prev_stop(working, day_num=day_num)
+        if user is not None:
+            working = self._cap_stretched_attraction_durations(
+                working, day_num=day_num, user=user,
+            )
+        working = self._name_remaining_holes(working, context, day_num=day_num)
         working = self._remove_timeline_overlaps(working, day_num)
         working = self._sort_items_by_time(working)
         return working
@@ -19530,10 +19811,15 @@ class PlanService:
                         _item_type_value(x) == ItemType.DINNER_BREAK.value
                         for x in items
                     ) and cursor >= 17 * 60
-                    if cursor >= 17 * 60:
+                    if cursor >= 19 * 60:
                         table = (
                             self._FT253_EVENING_POST_DINNER
                             if dinner_done else self._FT253_EVENING
+                        )
+                    elif cursor >= 17 * 60:
+                        table = (
+                            self._FT253_EVENING_POST_DINNER
+                            if dinner_done else self._FT253_AFTERNOON
                         )
                     elif cursor < 12 * 60:
                         table = self._FT253_MORNING

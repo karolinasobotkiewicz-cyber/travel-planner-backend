@@ -515,6 +515,11 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
         )):
             return True
 
+    # FIX #270: Browary is nightlife/food, not kids+nature.
+    if "browary warszawskie" in name:
+        if tg == "family_kids" and "local_food_experience" not in prefs:
+            return True
+
     # FIX #242 Warszawa — solo+nature+relax: miejskie fillery off
     if tg == "solo" and nat_relax:
         if any(k in name for k in (

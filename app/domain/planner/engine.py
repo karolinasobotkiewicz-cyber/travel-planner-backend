@@ -1161,6 +1161,9 @@ def is_morning_preferred_poi(poi: dict) -> bool:
     name = str(poi.get("name", "")).lower()
     if "hala targowa" in name:
         return True
+    # FIX #270: Zamek Królewski pro_tip is morning — not 14:07 / 16:16.
+    if "zamek królewski" in name or "zamek krolewski" in name:
+        return True
     tod = str(poi.get("recommended_time_of_day") or poi.get("best_time") or "").lower()
     if not tod:
         return False
@@ -2812,6 +2815,10 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("górka szczęśliwick", 90),
         ("gorka szczesliwick", 90),
         ("stacja grawitacja", 90),
+        # FIX #270: Tepfactor/Czersk must not absorb a whole afternoon.
+        ("tepfactor", 120),
+        ("czersk", 150),
+        ("suntago", 180),
         ("park skaryszewsk", 75),
         ("ostrów tumski", 90),
         ("ostrow tumski", 90),
@@ -3017,6 +3024,10 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("ogrod botaniczny", 60),
         # FIX #267: Kampinos after 60+ min drive must not be an 11-min micro-stop.
         ("kampinos", 60),
+        # FIX #270: friends adventure — 48 min Grawitacja is too short.
+        ("stacja grawitacja", 75),
+        ("tepfactor", 75),
+        ("czersk", 90),
     )
     for _marker, _nmin in _named_mins:
         if _marker in _poi_name_lower:
