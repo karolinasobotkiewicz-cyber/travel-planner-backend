@@ -226,6 +226,7 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
             "name": _name,
             "Name": _name,  # FIX #75: engine uses p.get("Name", "UNKNOWN") in several places
             "city": row.get('City', ''),
+            "city_excel": _safe_str(row.get('City', '')),
             "hub_city": _safe_str(row.get('Hub', '')),
             
             # Location
@@ -359,7 +360,7 @@ def load_multi_city_poi(excel_path: str, cities: List[str]) -> List[Dict[str, An
         m = {**orig, **norm}
         # FIX #198/#253: preserve loader GPS/address/copy if merge zeroed them (defensive)
         for _k in (
-            "lat", "lng", "address", "city",
+            "lat", "lng", "address", "city", "city_excel",
             "description_short", "description_long", "pro_tip",
         ):
             _ov = orig.get(_k)

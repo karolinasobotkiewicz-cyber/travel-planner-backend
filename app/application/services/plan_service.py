@@ -208,10 +208,25 @@ _ZABRZE_NAME_MARKERS = (
 _GLIWICE_NAME_MARKERS = ("gliwice", "gliwic")
 _ZABRZE_DEFAULT_COORDS = (50.3249, 18.7857)
 _GLIWICE_DEFAULT_COORDS = (50.2945, 18.6714)
-_WOJSLAWICE_NAME_MARKERS = ("wojsławice", "wojslawice")
+_WOJSLAWICE_NAME_MARKERS = (
+    "wojsławice", "wojslawice", "niemcza", "niemczy", "dolina tatarska",
+)
 _WOJSLAWICE_DEFAULT_COORDS = (50.7250, 16.8520)
 _FLYSPOT_DEFAULT_COORDS = (51.0478, 16.9719)
-_WENA_DEFAULT_COORDS = (51.0920, 17.0480)
+# FIX #276: Wena is in Oława, not Wrocław centre.
+_WENA_DEFAULT_COORDS = (50.9329, 17.2924)
+_OLAWA_NAME_MARKERS = ("oława", "olawa", "wena")
+_OLAWA_DEFAULT_COORDS = (50.9430, 17.2956)
+_ZABKOWICE_NAME_MARKERS = (
+    "ząbkowice", "zabkowice", "frankenstein",
+    "krzywa wieża", "krzywa wieza",
+)
+_ZABKOWICE_DEFAULT_COORDS = (50.5890, 16.8100)
+_BRZEG_NAME_MARKERS = (
+    "zamek piastów śląskich", "zamek piastow slaskich",
+    "w brzegu", "piastów śląskich w brzegu",
+)
+_BRZEG_DEFAULT_COORDS = (50.8637, 17.4667)
 
 
 def _is_zabrze_stop_name(name: str) -> bool:
@@ -227,6 +242,21 @@ def _is_gliwice_stop_name(name: str) -> bool:
 def _is_wojslawice_stop_name(name: str) -> bool:
     nm = (name or "").lower()
     return any(k in nm for k in _WOJSLAWICE_NAME_MARKERS)
+
+
+def _is_olawa_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in _OLAWA_NAME_MARKERS)
+
+
+def _is_zabkowice_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in _ZABKOWICE_NAME_MARKERS)
+
+
+def _is_brzeg_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in _BRZEG_NAME_MARKERS)
 
 
 def _is_gniezno_stop_name(name: str) -> bool:
@@ -1981,7 +2011,9 @@ class PlanService:
                         # FIX: Fallback to multi_city_attractions.xlsx for cities not in zakopane.xlsx
                         # Supports: Kraków, Warszawa, Gdańsk, Wrocław, Poznań, etc.
                         multi_city_excel_path = os.path.join("data", "multi_city_attractions.xlsx")
-                        pois_excel = load_multi_city_poi(multi_city_excel_path, [requested_city])
+                        from app.domain.planner.city_copy import wroclaw_poi_load_cities
+                        _load_cities = wroclaw_poi_load_cities(requested_city) or [requested_city]
+                        pois_excel = load_multi_city_poi(multi_city_excel_path, _load_cities)
                         print(f"[ROUTER] Loaded {len(pois_excel)} POIs from multi_city Excel (city: {requested_city})")
                     else:
                         print(f"[ROUTER] Loaded {len(pois_excel)} POIs from Excel (city: {requested_city})")
@@ -2092,9 +2124,23 @@ class PlanService:
                     print(f"[ROUTER] TOTAL restaurants for cluster: {len(all_restaurants)}", flush=True)
                 else:
                     # Single-city mode
-                    restaurants_db = restaurant_repo.get_by_city(restaurant_city)
-                    context["restaurants_available"] = [restaurant_repo.to_dict(r) for r in restaurants_db]
-                    print(f"[ROUTER] Loaded {len(restaurants_db)} restaurants from RestaurantDB (city: {restaurant_city})", flush=True)
+                    from app.domain.planner.city_copy import (
+                        WROCLAW_RESTAURANT_CITIES,
+                        normalize_city_name,
+                    )
+                    _rest_cities = [restaurant_city]
+                    if normalize_city_name(restaurant_city).replace("\u0142", "l").replace("ł", "l") in ("wroclaw",):
+                        _rest_cities = list(WROCLAW_RESTAURANT_CITIES)
+                    all_restaurants = []
+                    for _rc in _rest_cities:
+                        _rdb = restaurant_repo.get_by_city(_rc)
+                        all_restaurants.extend([restaurant_repo.to_dict(r) for r in _rdb])
+                    context["restaurants_available"] = all_restaurants
+                    print(
+                        f"[ROUTER] Loaded {len(all_restaurants)} restaurants from RestaurantDB "
+                        f"(cities: {_rest_cities})",
+                        flush=True,
+                    )
             except Exception as e:
                 import traceback
                 print(f"[ROUTER] ERROR: Failed to load restaurants: {e}", flush=True)
@@ -10447,10 +10493,18 @@ class PlanService:
             "gniezno", "gnieźnie", "kórnik", "kornik",
             "zabrze", "guido", "gliwice",
             "wojsławice", "wojslawice",
+            "niemcza", "dolina tatarska",
+            "ząbkowice", "zabkowice", "frankenstein",
+            "oława", "olawa", "brzegu",
         )
         blob = f"{frm} {to}".lower()
         _HOP_CAPS = (
             ("wojsławice", 50, 60), ("wojslawice", 50, 60),
+            ("niemcza", 50, 60),
+            ("dolina tatarska", 50, 60),
+            ("ząbkowice", 55, 70), ("zabkowice", 55, 70),
+            ("frankenstein", 55, 70),
+            ("brzegu", 40, 55),
             ("flyspot", 25, 40),
             ("fly spot", 25, 40),
             ("aerodynamicz", 25, 40),
@@ -10868,6 +10922,12 @@ class PlanService:
                 return "gliwice"
             if reg == "region_wojslawice" or _is_wojslawice_stop_name(nm):
                 return "wojslawice"
+            if reg == "region_olawa" or _is_olawa_stop_name(nm):
+                return "olawa"
+            if reg == "region_zabkowice" or _is_zabkowice_stop_name(nm):
+                return "zabkowice"
+            if reg == "region_brzeg" or _is_brzeg_stop_name(nm):
+                return "brzeg"
             return "city"
 
         kinds = [_kind(it) for it in attrs]
@@ -10878,6 +10938,9 @@ class PlanService:
         n_zabrze = kinds.count("zabrze")
         n_gliwice = kinds.count("gliwice")
         n_wojs = kinds.count("wojslawice")
+        n_olawa = kinds.count("olawa")
+        n_zabk = kinds.count("zabkowice")
+        n_brzeg = kinds.count("brzeg")
         n_city = kinds.count("city")
         keep = None
         far_counts = [
@@ -10888,6 +10951,9 @@ class PlanService:
             ("zabrze", n_zabrze),
             ("gliwice", n_gliwice),
             ("wojslawice", n_wojs),
+            ("olawa", n_olawa),
+            ("zabkowice", n_zabk),
+            ("brzeg", n_brzeg),
         ]
         far_present = [(k, n) for k, n in far_counts if n]
         if len(far_present) >= 2:
@@ -10909,11 +10975,15 @@ class PlanService:
         # Morning city is allowed only when the excursion starts after noon.
         whole_day = first_far is not None and first_far <= 12 * 60
         # FIX #272: Gniezno/Kórnik — full-day cluster, or drop a late add-on.
-        if keep in ("gniezno", "kornik", "zabrze", "gliwice", "wojslawice") and first_far is not None:
+        if keep in (
+            "gniezno", "kornik", "zabrze", "gliwice",
+            "wojslawice", "olawa", "zabkowice", "brzeg",
+        ) and first_far is not None:
             n_far = {
                 "gniezno": n_gniez, "kornik": n_korn,
                 "zabrze": n_zabrze, "gliwice": n_gliwice,
-                "wojslawice": n_wojs,
+                "wojslawice": n_wojs, "olawa": n_olawa,
+                "zabkowice": n_zabk, "brzeg": n_brzeg,
             }[keep]
             if first_far <= 12 * 60 or n_far >= max(n_city, 1):
                 whole_day = True
@@ -14500,7 +14570,10 @@ class PlanService:
             return items
         _named_daytrip = (
             "wojsławice", "wojslawice", "arboretum", "topacz", "galowice",
-            "powozów", "powozow", "oława", "olawa",
+            "powozów", "powozow", "oława", "olawa", "oławsk", "olawsk", "wena",
+            "niemcza", "dolina tatarska",
+            "ząbkowice", "zabkowice", "frankenstein",
+            "brzegu", "piastów śląskich",
         )
         out: List[Any] = []
         for it in items:
@@ -18638,7 +18711,7 @@ class PlanService:
             ("arboretum wojslawice", 50.7250, 16.8520, "Wojsławice"),
             ("wojsławice", 50.7250, 16.8520, "Wojsławice"),
             ("flyspot", 51.0478, 16.9719, "Bielany Wrocławskie"),
-            ("muzeum motoryzacji wena", 51.0920, 17.0480, "Wrocław"),
+            ("muzeum motoryzacji wena", 50.9329, 17.2924, "Oława"),
         )
         out: List[Any] = []
         for it in items:
@@ -21385,6 +21458,14 @@ class PlanService:
                     last_pt = _ZABRZE_DEFAULT_COORDS
                 elif _is_gliwice_stop_name(nm):
                     last_pt = _GLIWICE_DEFAULT_COORDS
+                elif _is_wojslawice_stop_name(nm):
+                    last_pt = _WOJSLAWICE_DEFAULT_COORDS
+                elif _is_olawa_stop_name(nm):
+                    last_pt = _OLAWA_DEFAULT_COORDS
+                elif _is_zabkowice_stop_name(nm):
+                    last_pt = _ZABKOWICE_DEFAULT_COORDS
+                elif _is_brzeg_stop_name(nm):
+                    last_pt = _BRZEG_DEFAULT_COORDS
                 else:
                     last_pt = None
                 out.append(it)

@@ -82,12 +82,61 @@ def poi_hub_norm(poi: Dict[str, Any]) -> str:
     )
 
 
+# FIX #276: Wrocław day-trip towns from the client's expanded sheet.
+# Ząbkowice rows stay Hub=Kłodzko (Kotlina) — Wrocław may borrow them by City.
+WROCLAW_SATELLITE_CITIES = (
+    "Niemcza",
+    "Oława",
+    "Brzeg",
+    "Ząbkowice Śląskie",
+    "Mirosławice",
+    "Ślęza",
+    "Galowice",
+    "Paniowice",
+    "Żórawina",
+)
+WROCLAW_SATELLITE_NORMS = frozenset(
+    normalize_city_name(c) for c in WROCLAW_SATELLITE_CITIES
+)
+WROCLAW_RESTAURANT_CITIES = (
+    "Wrocław",
+    "Oława",
+    "Niemcza",
+    "Ząbkowice Śląskie",
+    "Żórawina",
+    "Brzeg",
+)
+
+
+def _fold_pl_city(name: str) -> str:
+    """NFKD leaves Polish ł intact — fold it for Wrocław / Oława keys."""
+    return normalize_city_name(name).replace("\u0142", "l").replace("ł", "l")
+
+
+def wroclaw_poi_load_cities(requested_city: str) -> List[str]:
+    """Cities to read from Excel for a Wrocław trip (hub + satellites)."""
+    if _fold_pl_city(requested_city) != "wroclaw":
+        return [requested_city] if requested_city else []
+    return ["Wrocław", *WROCLAW_SATELLITE_CITIES]
+
+
+def _poi_excel_city_norm(poi: Dict[str, Any]) -> str:
+    return normalize_city_name(poi.get("city_excel") or poi.get("City") or "")
+
+
 def poi_matches_city_filter(poi: Dict[str, Any], city_filter: str) -> bool:
     req = normalize_city_name(city_filter)
     if not req:
         return True
     hub = poi_hub_norm(poi)
     pc = poi_city_norm(poi)
+    excel_city = _poi_excel_city_norm(poi)
+    # FIX #276: Wrocław may use satellite towns (incl. Hub=Kłodzko Ząbkowice).
+    _sat = {_fold_pl_city(c) for c in WROCLAW_SATELLITE_CITIES}
+    if _fold_pl_city(city_filter) == "wroclaw" and (
+        _fold_pl_city(excel_city) in _sat or _fold_pl_city(pc) in _sat
+    ):
+        return True
     # FIX #200: hub is authoritative when set — wrong City column cannot pull POI into another trip
     # (e.g. Ogród Botaniczny Wrocławski with City=Kraków must not appear in Kraków plans).
     if hub:

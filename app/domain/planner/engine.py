@@ -1541,6 +1541,7 @@ def travel_time_minutes(a, b, context):
         "region_kampinos", "region_czersk", "region_modlin", "region_suntago",
         # FIX #269: Wrocław suburbs — 40 km / 15 min was a client P0.
         "region_olawa", "region_wojslawice", "region_galowice", "region_topacz",
+        "region_zabkowice", "region_brzeg",
         # FIX #271: Kraków — Ojców / Wieliczka must not collapse to 15 min.
         "region_ojcow", "region_wieliczka",
     }
@@ -1800,7 +1801,7 @@ _FAR_GEO_REGIONS = frozenset({
     "region_ojcow", "region_wieliczka",
     "region_gniezno", "region_gliwice", "region_suntago", "region_modlin",
     "region_zabrze", "region_olawa", "region_kampinos", "region_czersk",
-    "region_kornik",
+    "region_kornik", "region_zabkowice", "region_brzeg",
 })
 
 
@@ -1864,14 +1865,23 @@ def poi_geo_region_key(p: dict) -> str | None:
         )
     ):
         return "region_zabrze"
-    # FIX #269: Wrocław day-trips — Oława / Wojsławice / Galowice / Topacz.
+    # FIX #269/#276: Wrocław day-trips — Oława / Wojsławice / Niemcza / Galowice / Topacz.
     if any(k in blob for k in (
         "arboretum wojsławice", "arboretum wojslawice",
-        "wojsławice", "wojslawice",
+        "wojsławice", "wojslawice", "niemcza", "niemczy", "dolina tatarska",
     )):
         return "region_wojslawice"
     if "oława" in blob or "olawa" in blob:
         return "region_olawa"
+    if any(k in blob for k in (
+        "ząbkowice", "zabkowice", "frankenstein",
+        "krzywa wieża", "krzywa wieza",
+    )):
+        return "region_zabkowice"
+    if any(k in blob for k in (
+        "zamek piastów śląskich", "zamek piastow slaskich", "w brzegu",
+    )):
+        return "region_brzeg"
     if any(k in blob for k in (
         "galowice", "muzeum powozów", "muzeum powozow",
     )):
@@ -1922,17 +1932,39 @@ def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: di
         return False
     if poi_reg == "region_zabrze" and any(k in blob for k in ("katowice", "katowic")):
         return False
-    # FIX #269: after Oława / Galowice / Wojsławice — don't lunch back in Wrocław.
+    # FIX #269/#276: after Oława / Galowice / Wojsławice / Ząbkowice / Brzeg
+    # — don't lunch back in Wrocław.
     _wro_daytrips = {
         "region_olawa", "region_galowice", "region_wojslawice",
+        "region_zabkowice", "region_brzeg",
     }
     if poi_reg in _wro_daytrips:
         if any(k in blob for k in ("wrocław", "wroclaw")) and not any(
             k in blob for k in (
                 "oława", "olawa", "galowice", "wojsławice", "wojslawice",
+                "niemcza", "ząbkowice", "zabkowice", "żórawina", "zorawina",
+                "brzeg",
             )
         ):
             return False
+        if poi_reg == "region_wojslawice" and not any(
+            k in blob for k in ("niemcza", "wojsławice", "wojslawice")
+        ):
+            if any(k in blob for k in ("wrocław", "wroclaw", "oława", "olawa")):
+                return False
+        if poi_reg == "region_olawa" and not any(
+            k in blob for k in ("oława", "olawa")
+        ):
+            if any(k in blob for k in ("wrocław", "wroclaw")):
+                return False
+        if poi_reg == "region_zabkowice" and not any(
+            k in blob for k in ("ząbkowice", "zabkowice")
+        ):
+            if any(k in blob for k in ("wrocław", "wroclaw")):
+                return False
+        if poi_reg == "region_brzeg" and "brzeg" not in blob:
+            if any(k in blob for k in ("wrocław", "wroclaw")):
+                return False
     day_reg = (context or {}).get("day_geo_region")
     if day_reg == "region_czersk" and poi_reg == "region_czersk":
         if not any(k in blob for k in ("czersk", "góra kalwaria", "gora kalwaria")):
