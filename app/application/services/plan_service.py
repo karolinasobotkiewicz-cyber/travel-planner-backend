@@ -433,6 +433,40 @@ def _trim_long_free_time_blocks(items: list, *, max_min: int = 30) -> list:
     return out
 
 
+def _trim_midday_free_time_blocks(items: list, *, max_min: int = 30) -> list:
+    """FIX #275: cap mid-day free_time only — afternoon tail stays."""
+    if not items:
+        return items
+    from app.domain.planner.time_utils import time_to_minutes, minutes_to_time
+    content_end = _timeline_content_end_minutes(items)
+    out = []
+    for it in items:
+        if getattr(it, "type", None) != ItemType.FREE_TIME:
+            out.append(it)
+            continue
+        dur = int(getattr(it, "duration_min", 0) or 0)
+        st = getattr(it, "start_time", None)
+        try:
+            st_m = time_to_minutes(st) if st else 0
+        except Exception:
+            st_m = 0
+        trailing = content_end is not None and st_m >= content_end - 2
+        afternoon = st_m >= 15 * 60 + 30
+        if dur > max_min and not trailing and not afternoon:
+            if st and hasattr(it, "end_time"):
+                end_m = st_m + max_min
+                try:
+                    it = it.model_copy(update={
+                        "duration_min": max_min,
+                        "end_time": minutes_to_time(end_m),
+                    })
+                except Exception:
+                    setattr(it, "duration_min", max_min)
+                    setattr(it, "end_time", minutes_to_time(end_m))
+        out.append(it)
+    return out
+
+
 def _trim_gap_after_day_start(items: list, *, max_gap_min: int = 12) -> list:
     """FIX #229/#233: first attraction should follow day_start within max_gap_min."""
     if not items:
@@ -676,6 +710,31 @@ def _max_merged_free_time_cap(context: Dict[str, Any]) -> int:
     return 180
 
 
+def _quality_first_trip(context: Optional[Dict[str, Any]]) -> bool:
+    """FIX #275: 5+ day trips prefer quality over filling the window."""
+    try:
+        return int((context or {}).get("num_days") or 1) >= 5
+    except (TypeError, ValueError):
+        return False
+
+
+def _timeline_content_end_minutes(items: list) -> Optional[int]:
+    """Last attraction/lunch end — ignore free_time, dinner stuffing, day markers."""
+    last = None
+    for it in items:
+        tv = _item_type_value(it)
+        if tv not in (ItemType.ATTRACTION.value, ItemType.LUNCH_BREAK.value):
+            continue
+        en = getattr(it, "end_time", None)
+        if not en:
+            continue
+        try:
+            last = max(last or 0, time_to_minutes(en))
+        except Exception:
+            continue
+    return last
+
+
 def _generate_day_title(day_items: list, day_num: int, *, excursion_hint: bool = False) -> str:
     """Generate a short descriptive title for a day based on its attractions.
 
@@ -686,20 +745,41 @@ def _generate_day_title(day_items: list, day_num: int, *, excursion_hint: bool =
     - 3+ attractions → "Name1, Name2 i więcej"
     """
     names = [
-        item.name
+        (getattr(item, "name", None) or "").strip()
         for item in day_items
         if hasattr(item, "type") and item.type == ItemType.ATTRACTION
     ]
+    names = [n for n in names if n]
+    trailing_ft = 0
+    last_attr_en = _timeline_content_end_minutes(day_items)
+    if last_attr_en is not None:
+        for item in day_items:
+            if _item_type_value(item) != ItemType.FREE_TIME.value:
+                continue
+            try:
+                st = time_to_minutes(getattr(item, "start_time", None) or "")
+            except Exception:
+                continue
+            if st >= last_attr_en - 2:
+                trailing_ft += int(getattr(item, "duration_min", 0) or 0)
+    light = len(names) <= 2 and trailing_ft >= 90
     if not names:
-        return f"Dzień {day_num}"
+        return (
+            "Spokojniejszy dzień — czas na własne odkrywanie"
+            if light else f"Dzień {day_num}"
+        )
     if len(names) == 1:
-        return names[0]
+        return (
+            f"{names[0]} i spokojne popołudnie" if light else names[0]
+        )
     if len(names) == 2:
         base = f"{names[0]} i {names[1]}"
     else:
         base = f"{names[0]}, {names[1]} i więcej"
     if excursion_hint:
         return f"{base} — propozycja wycieczki poza miasto"
+    if light and len(names) == 2:
+        return f"{base} — luźniejszy dzień"
     return base
 
 # UAT Round 3 - FIX #1 (20.02.2026): Timeline Integrity Validator
@@ -2561,14 +2641,9 @@ class PlanService:
             # END FIX #113 / #166 / #167
             # ================================================================
 
-            # FIX #253 (G9/G12): fair share of a small city across a long trip.
-            # With a 6-attraction daily cap, days 1-4 consumed everything Wrocław
-            # had and day 7 was left with one 35-minute stop plus eight empty
-            # hours. When the admissible pool cannot feed every day at full
-            # speed, lower the daily cap so the content spreads evenly. Only 6+
-            # day trips need this; on shorter trips the pool still reaches the
-            # last day and capping made those plans thinner, not better.
-            if num_days >= 6 and contexts:
+            # FIX #275: do not starve days 1–4 to pad day 7. Quality-first
+            # means later days may be LIGHT when the city pool is exhausted.
+            if False and num_days >= 6 and contexts:
                 _admissible253 = self._count_available_pois(
                     all_pois_dict,
                     user=user,
@@ -3765,14 +3840,15 @@ class PlanService:
                 and day_plan.day >= 7
                 and _de247 - _last_end247 >= 180
             )
+            _n_attr247 = sum(
+                1 for it in _fitems if _is_timeline_attraction(it)
+            )
+            # FIX #275: early finish / leftover free_time on a long trip is an
+            # allowed LIGHT day — only seed a truly empty day (<2 attractions).
             if (
                 num_days >= 7
                 and day_plan.day >= 4
-                and (
-                    _ft_late247 >= 45
-                    or sum(1 for it in _fitems if _is_timeline_attraction(it)) < 3
-                    or _early_finish247
-                )
+                and _n_attr247 < 2
                 and all_pois_dict
             ):
                 _fitems = self._backfill_sparse_day_attractions(
@@ -3784,7 +3860,7 @@ class PlanService:
                     _trip_repeat_keys_so_far,
                     _trip_names_so_far,
                     day_num=day_plan.day,
-                    min_attr=3,
+                    min_attr=2,
                     cross_day_reuse=True,
                     last_guido_day=_last_guido_day,
                     last_luiza_day=_last_luiza_day,
@@ -9319,6 +9395,12 @@ class PlanService:
                     last_end = max(last_end or 0, time_to_minutes(en))
         if last_end is None or last_end > time_to_minutes("18:30"):
             return items
+        if (
+            _quality_first_trip(context)
+            and last_end < 17 * 60
+            and sum(1 for it in items if _is_timeline_attraction(it)) >= 2
+        ):
+            return items
         dinner_start = "18:00"
         dinner_end_min = min(time_to_minutes("19:00"), day_end_min)
         if dinner_end_min - time_to_minutes(dinner_start) < 30:
@@ -11631,8 +11713,8 @@ class PlanService:
                     user.get("target_group") == "solo"
                     and _num_days_bf >= 3
                 )
-                # FIX #255b: late-start sparse days on long trips (KAT test-08 d7).
-                or (_num_days_bf >= 7 and n_attr < max(min_attr, 3))
+                # FIX #275: only seed a truly empty long-trip day.
+                or (_num_days_bf >= 7 and n_attr < 2)
                 or (n_attr < min_attr and first_block_min >= 13 * 60)
                 # FIX #256/#258/#259: Wrocław/Warszawa — fill ≥60 min morning holes.
                 or (
@@ -11662,12 +11744,14 @@ class PlanService:
             for _st_b, _en_b in _blocks_md:
                 _largest_md = max(_largest_md, _st_b - _cur_md)
                 _cur_md = max(_cur_md, _en_b)
-            _largest_md = max(_largest_md, _de_md - _cur_md)
+            # FIX #275: tail to day_end is allowed rest on long trips, not a hole.
+            if not _quality_first_trip(context):
+                _largest_md = max(_largest_md, _de_md - _cur_md)
             need_midday = _largest_md >= 45
         target = min_attr
-        # FIX #255b: 7-day couples audits require ≥3 attrs from day 4 onward.
+        # FIX #275: do not force a 3rd filler on late long-trip days.
         if _num_days_bf >= 7 and day_num >= 4:
-            target = max(target, 3)
+            target = max(target, 2)
 
         if n_attr >= target and not need_morning and not need_midday:
             return items
@@ -12831,9 +12915,13 @@ class PlanService:
         items = self._strip_orphan_free_time_with_large_gaps(items, min_gap_min=90)
         items = self._strip_inter_attraction_free_time(items, max_min=max(20, cap))
         items = _strip_leading_free_time(items)
-        items = _trim_long_free_time_blocks(items, max_min=cap)
-        items = _strip_trailing_free_time(items, max_min=cap)
-        items = _cap_total_day_free_time(items, max_total=max_total)
+        if _quality_first_trip(context):
+            # FIX #275: keep an intentional afternoon tail; still cap mid-day FT.
+            items = _trim_midday_free_time_blocks(items, max_min=max(cap, 25))
+        else:
+            items = _trim_long_free_time_blocks(items, max_min=cap)
+            items = _strip_trailing_free_time(items, max_min=cap)
+            items = _cap_total_day_free_time(items, max_total=max_total)
         items = self._collapse_excessive_timeline_slack(items, max_slack_min=25)
         return items
 
@@ -18890,6 +18978,26 @@ class PlanService:
                 and time_to_minutes(getattr(it, "start_time", None) or "00:00")
                 >= last_meal_end
             ]
+        if (
+            _quality_first_trip(context)
+            and sum(1 for x in ordered_ft if _is_timeline_attraction(x)) >= 2
+        ):
+            _cend_inj = _timeline_content_end_minutes(ordered_ft)
+            if _cend_inj is not None:
+                kept_ft = []
+                for pair in ft_blocks:
+                    try:
+                        _fst = time_to_minutes(
+                            getattr(pair[1], "start_time", None) or ""
+                        )
+                    except Exception:
+                        kept_ft.append(pair)
+                        continue
+                    # FIX #275: do not plant leftovers into the afternoon tail.
+                    if _fst >= _cend_inj - 2 or _fst >= 15 * 60 + 30:
+                        continue
+                    kept_ft.append(pair)
+                ft_blocks = kept_ft
         if not ft_blocks:
             return items
         items = ordered_ft
@@ -19436,6 +19544,17 @@ class PlanService:
             return items
         if end_limit < 19 * 60:
             return items
+        # FIX #275: long-trip days that closed before evening stay closed.
+        # Window 9–19 is a ceiling, not a quota — do not invent kolacja at 18:00
+        # after the last real stop ended at 16:00.
+        if _quality_first_trip(context):
+            n_attr = sum(1 for it in items if _is_timeline_attraction(it))
+            content_end = _timeline_content_end_minutes(items)
+            if n_attr >= 2 and content_end is not None and content_end < 17 * 60:
+                return [
+                    it for it in items
+                    if _item_type_value(it) != ItemType.DINNER_BREAK.value
+                ]
         short_dinner = False
         kept: List[Any] = []
         for it in items:

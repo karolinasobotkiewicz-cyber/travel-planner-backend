@@ -9069,14 +9069,15 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
         if context.get("multi_city_density_mode") and attraction_count < 3:
             max_gap_fill = max(max_gap_fill, 5)
 
-        # FIX #187b: last day of 6–7d Zone C trip — keep filling afternoon (client sparse_day D7).
+        # FIX #275: last day of a long trip may stay LIGHT — do not boost fill.
         _f187_last_day = (
             context.get("current_day_num", 1) == context.get("num_days", 1)
             and context.get("num_days", 1) >= 6
             and bool(context.get("day_geo_region"))
+            and attraction_count < 2
         )
-        if _f187_last_day and (attraction_count < 4 or remaining_to_end > 120):
-            max_gap_fill = max(max_gap_fill, 6)
+        if _f187_last_day and remaining_to_end > 120:
+            max_gap_fill = max(max_gap_fill, 4)
 
         _f195_topup = should_afternoon_topup_before_free_time(
             now, remaining_to_end, trail_day_mode, max_poi_after_trail,
@@ -9087,15 +9088,16 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
             print(f"[FIX #195] Afternoon top-up: {remaining_to_end}min left, "
                   f"max_attempts={max_gap_fill}")
 
-        # FIX D (02.06.2026): Soften quality gates on late days of long trips (>=5 days, day 6+).
-        # When the sliding-window dedup (FIX D part 1) re-opens the early-day POI pool,
-        # the quality gates (FIX #136, #138) can still block them. Relax the thresholds
-        # so the re-opened pool can actually contribute.
+        # FIX #275: keep quality gates strict on late days — leftovers are not
+        # automatically better than an intentional lighter afternoon.
         _fixd_num_days = context.get("num_days", 1)
         _fixd_current_day = context.get("current_day_num", 1)
-        _fixd_is_late_trip = (_fixd_num_days >= 5 and _fixd_current_day >= 5)
-        if _fixd_is_late_trip:
-            print(f"[FIX D] Day {_fixd_current_day}/{_fixd_num_days}: Late-trip quality gates softened")
+        _fixd_is_late_trip = False
+        if _fixd_num_days >= 5 and _fixd_current_day >= 5:
+            print(
+                f"[FIX #275] Day {_fixd_current_day}/{_fixd_num_days}: "
+                f"late-trip quality gates stay strict"
+            )
         
         _f187_min_remain = 60 if _f187_last_day else 90
         while remaining_to_end > _f187_min_remain and gap_fill_attempts < max_gap_fill:
