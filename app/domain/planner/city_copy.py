@@ -82,8 +82,7 @@ def poi_hub_norm(poi: Dict[str, Any]) -> str:
     )
 
 
-# FIX #276: Wrocław day-trip towns from the client's expanded sheet.
-# Ząbkowice rows stay Hub=Kłodzko (Kotlina) — Wrocław may borrow them by City.
+# FIX #276/#277: hub city → satellite towns from the client's expanded sheets.
 WROCLAW_SATELLITE_CITIES = (
     "Niemcza",
     "Oława",
@@ -107,6 +106,42 @@ WROCLAW_RESTAURANT_CITIES = (
     "Brzeg",
 )
 
+HUB_SATELLITE_CITIES = {
+    "wroclaw": WROCLAW_SATELLITE_CITIES,
+    "krakow": (
+        "Wieliczka", "Bochnia", "Nowy Wiśnicz", "Czerna",
+        "Ojców", "Sułoszowa",
+    ),
+    "poznan": ("Gniezno", "Kórnik", "Lednogóra", "Dziekanowice"),
+    "warszawa": (
+        "Sochaczew", "Żelazowa Wola", "Pomiechówek", "Granica",
+        "Czosnów", "Góra Kalwaria", "Nowy Dwór Mazowiecki",
+        "Izabelin", "Kampinos", "Pawilony", "Kiścinne",
+    ),
+    "warsaw": (
+        "Sochaczew", "Żelazowa Wola", "Pomiechówek", "Granica",
+        "Czosnów", "Góra Kalwaria", "Nowy Dwór Mazowiecki",
+        "Izabelin", "Kampinos", "Pawilony", "Kiścinne",
+    ),
+}
+HUB_RESTAURANT_CITIES = {
+    "wroclaw": WROCLAW_RESTAURANT_CITIES,
+    "krakow": ("Kraków", "Wieliczka", "Bochnia", "Ojców"),
+    "poznan": ("Poznań", "Gniezno", "Kórnik"),
+    "warszawa": (
+        "Warszawa", "Góra Kalwaria", "Nowy Dwór Mazowiecki",
+        "Sochaczew", "Kampinos", "Żelazowa Wola", "Pawilony",
+    ),
+    "warsaw": (
+        "Warszawa", "Góra Kalwaria", "Nowy Dwór Mazowiecki",
+        "Sochaczew", "Kampinos", "Żelazowa Wola", "Pawilony",
+    ),
+    "katowice": (
+        "Katowice", "Gliwice", "Zabrze", "Tychy", "Chorzów",
+        "Dąbrowa Górnicza",
+    ),
+}
+
 
 def _fold_pl_city(name: str) -> str:
     """NFKD leaves Polish ł intact — fold it for Wrocław / Oława keys."""
@@ -120,6 +155,30 @@ def wroclaw_poi_load_cities(requested_city: str) -> List[str]:
     return ["Wrocław", *WROCLAW_SATELLITE_CITIES]
 
 
+def hub_poi_load_cities(requested_city: str) -> List[str]:
+    """FIX #277: hub + satellite towns for Wrocław / Kraków / Poznań / Warszawa."""
+    if not requested_city:
+        return []
+    sats = HUB_SATELLITE_CITIES.get(_fold_pl_city(requested_city))
+    if not sats:
+        return [requested_city]
+    seen = []
+    for c in (requested_city, *sats):
+        if c not in seen:
+            seen.append(c)
+    return seen
+
+
+def hub_restaurant_cities(requested_city: str) -> List[str]:
+    """FIX #277: restaurants for the hub plus day-trip towns."""
+    if not requested_city:
+        return []
+    cities = HUB_RESTAURANT_CITIES.get(_fold_pl_city(requested_city))
+    if not cities:
+        return [requested_city]
+    return list(cities)
+
+
 def _poi_excel_city_norm(poi: Dict[str, Any]) -> str:
     return normalize_city_name(poi.get("city_excel") or poi.get("City") or "")
 
@@ -131,9 +190,11 @@ def poi_matches_city_filter(poi: Dict[str, Any], city_filter: str) -> bool:
     hub = poi_hub_norm(poi)
     pc = poi_city_norm(poi)
     excel_city = _poi_excel_city_norm(poi)
-    # FIX #276: Wrocław may use satellite towns (incl. Hub=Kłodzko Ząbkowice).
-    _sat = {_fold_pl_city(c) for c in WROCLAW_SATELLITE_CITIES}
-    if _fold_pl_city(city_filter) == "wroclaw" and (
+    # FIX #276/#277: hub trips may use satellite towns (Wrocław/Kraków/Poznań/Warszawa).
+    _hub_key = _fold_pl_city(city_filter)
+    _sats = HUB_SATELLITE_CITIES.get(_hub_key) or ()
+    _sat = {_fold_pl_city(c) for c in _sats}
+    if _sat and (
         _fold_pl_city(excel_city) in _sat or _fold_pl_city(pc) in _sat
     ):
         return True

@@ -46,12 +46,13 @@ def test_fix262_stare_miasto_cap_120():
 
 
 def test_fix262_powstanie_covers_underground():
+    # FIX #266: uprising museum is not caves/mines underground coverage.
     poi = {
         "name": "Muzeum Powstania Warszawskiego",
         "city": "Warszawa",
         "tags": [],
     }
-    assert poi_covers_preference_report(poi, "underground")
+    assert not poi_covers_preference_report(poi, "underground")
 
 
 def test_fix262_clamp_drops_past_day_end_transit():

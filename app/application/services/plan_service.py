@@ -2011,8 +2011,8 @@ class PlanService:
                         # FIX: Fallback to multi_city_attractions.xlsx for cities not in zakopane.xlsx
                         # Supports: Kraków, Warszawa, Gdańsk, Wrocław, Poznań, etc.
                         multi_city_excel_path = os.path.join("data", "multi_city_attractions.xlsx")
-                        from app.domain.planner.city_copy import wroclaw_poi_load_cities
-                        _load_cities = wroclaw_poi_load_cities(requested_city) or [requested_city]
+                        from app.domain.planner.city_copy import hub_poi_load_cities
+                        _load_cities = hub_poi_load_cities(requested_city) or [requested_city]
                         pois_excel = load_multi_city_poi(multi_city_excel_path, _load_cities)
                         print(f"[ROUTER] Loaded {len(pois_excel)} POIs from multi_city Excel (city: {requested_city})")
                     else:
@@ -2124,13 +2124,8 @@ class PlanService:
                     print(f"[ROUTER] TOTAL restaurants for cluster: {len(all_restaurants)}", flush=True)
                 else:
                     # Single-city mode
-                    from app.domain.planner.city_copy import (
-                        WROCLAW_RESTAURANT_CITIES,
-                        normalize_city_name,
-                    )
-                    _rest_cities = [restaurant_city]
-                    if normalize_city_name(restaurant_city).replace("\u0142", "l").replace("ł", "l") in ("wroclaw",):
-                        _rest_cities = list(WROCLAW_RESTAURANT_CITIES)
+                    from app.domain.planner.city_copy import hub_restaurant_cities
+                    _rest_cities = hub_restaurant_cities(restaurant_city)
                     all_restaurants = []
                     for _rc in _rest_cities:
                         _rdb = restaurant_repo.get_by_city(_rc)
@@ -10496,6 +10491,8 @@ class PlanService:
             "niemcza", "dolina tatarska",
             "ząbkowice", "zabkowice", "frankenstein",
             "oława", "olawa", "brzegu",
+            "sochaczew", "żelazowa", "zelazowa", "lednick", "dziekanowic",
+            "wiśnicz", "wisnicz",
         )
         blob = f"{frm} {to}".lower()
         _HOP_CAPS = (
@@ -10505,6 +10502,11 @@ class PlanService:
             ("ząbkowice", 55, 70), ("zabkowice", 55, 70),
             ("frankenstein", 55, 70),
             ("brzegu", 40, 55),
+            ("sochaczew", 45, 60),
+            ("żelazowa", 45, 60), ("zelazowa", 45, 60),
+            ("lednick", 40, 55),
+            ("dziekanowic", 40, 55),
+            ("wiśnicz", 50, 70), ("wisnicz", 50, 70),
             ("flyspot", 25, 40),
             ("fly spot", 25, 40),
             ("aerodynamicz", 25, 40),
@@ -10928,6 +10930,10 @@ class PlanService:
                 return "zabkowice"
             if reg == "region_brzeg" or _is_brzeg_stop_name(nm):
                 return "brzeg"
+            if reg == "region_sochaczew":
+                return "sochaczew"
+            if reg == "region_lednica":
+                return "lednica"
             return "city"
 
         kinds = [_kind(it) for it in attrs]
@@ -10941,6 +10947,8 @@ class PlanService:
         n_olawa = kinds.count("olawa")
         n_zabk = kinds.count("zabkowice")
         n_brzeg = kinds.count("brzeg")
+        n_soch = kinds.count("sochaczew")
+        n_led = kinds.count("lednica")
         n_city = kinds.count("city")
         keep = None
         far_counts = [
@@ -10954,6 +10962,8 @@ class PlanService:
             ("olawa", n_olawa),
             ("zabkowice", n_zabk),
             ("brzeg", n_brzeg),
+            ("sochaczew", n_soch),
+            ("lednica", n_led),
         ]
         far_present = [(k, n) for k, n in far_counts if n]
         if len(far_present) >= 2:
@@ -10978,12 +10988,14 @@ class PlanService:
         if keep in (
             "gniezno", "kornik", "zabrze", "gliwice",
             "wojslawice", "olawa", "zabkowice", "brzeg",
+            "sochaczew", "lednica",
         ) and first_far is not None:
             n_far = {
                 "gniezno": n_gniez, "kornik": n_korn,
                 "zabrze": n_zabrze, "gliwice": n_gliwice,
                 "wojslawice": n_wojs, "olawa": n_olawa,
                 "zabkowice": n_zabk, "brzeg": n_brzeg,
+                "sochaczew": n_soch, "lednica": n_led,
             }[keep]
             if first_far <= 12 * 60 or n_far >= max(n_city, 1):
                 whole_day = True
@@ -14574,6 +14586,8 @@ class PlanService:
             "niemcza", "dolina tatarska",
             "ząbkowice", "zabkowice", "frankenstein",
             "brzegu", "piastów śląskich",
+            "sochaczew", "żelazowa", "zelazowa", "lednick", "dziekanowic",
+            "wiśnicz", "wisnicz", "eliaszówk", "eliaszowk",
         )
         out: List[Any] = []
         for it in items:

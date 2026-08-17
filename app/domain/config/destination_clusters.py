@@ -169,7 +169,7 @@ class DestinationClusters:
         "name": "Górny Śląsk",
         "display_name": "Górny Śląsk (Katowice+Gliwice+Zabrze+Chorzów+Tychy)",
         "type": ClusterType.URBAN_ORGANISM,
-        "cities": ["Katowice", "Gliwice", "Zabrze", "Chorzów", "Tychy"],
+        "cities": ["Katowice", "Gliwice", "Zabrze", "Chorzów", "Tychy", "Dąbrowa Górnicza"],
 
         "total_attractions": 50,  # Katowice 21, Gliwice 14, Zabrze 9, Chorzów 5, Tychy 1
         "total_restaurants": 0,
@@ -238,6 +238,7 @@ class DestinationClusters:
         "Zabrze": "gzm",
         "Chorzów": "gzm",
         "Tychy": "gzm",
+        "Dąbrowa Górnicza": "gzm",
     }
     
     @classmethod

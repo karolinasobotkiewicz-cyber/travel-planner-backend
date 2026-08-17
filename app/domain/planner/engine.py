@@ -1544,6 +1544,8 @@ def travel_time_minutes(a, b, context):
         "region_zabkowice", "region_brzeg",
         # FIX #271: Kraków — Ojców / Wieliczka must not collapse to 15 min.
         "region_ojcow", "region_wieliczka",
+        # FIX #277: Warszawa Sochaczew / Poznań Lednica.
+        "region_sochaczew", "region_lednica",
     }
     if distance_km >= 8.0 and (
         (reg_a in _daytrip_regs) != (reg_b in _daytrip_regs)
@@ -1802,6 +1804,7 @@ _FAR_GEO_REGIONS = frozenset({
     "region_gniezno", "region_gliwice", "region_suntago", "region_modlin",
     "region_zabrze", "region_olawa", "region_kampinos", "region_czersk",
     "region_kornik", "region_zabkowice", "region_brzeg",
+    "region_sochaczew", "region_lednica",
 })
 
 
@@ -1891,6 +1894,30 @@ def poi_geo_region_key(p: dict) -> str | None:
     # FIX #255: Poznań — Kórnik castle day-trip (avoid Gniezno+Kórnik same day).
     if any(k in blob for k in ("kórnik", "kornik", "zamek w kórniku", "zamek w korniku")):
         return "region_kornik"
+    # FIX #277: Poznań — Ostrów Lednicki / Dziekanowice.
+    if any(k in blob for k in (
+        "lednick", "lednogór", "lednogor", "dziekanowic",
+    )):
+        return "region_lednica"
+    # FIX #277: Warszawa — Sochaczew / Żelazowa Wola.
+    if any(k in blob for k in (
+        "sochaczew", "żelazowa", "zelazowa", "chopina",
+    )) and any(k in blob for k in (
+        "sochaczew", "żelazowa", "zelazowa", "dom urodzenia",
+        "kolei wąskotorowej", "kolei waskotorowej", "mazowieckich",
+        "ziemi sochaczew",
+    )):
+        return "region_sochaczew"
+    if any(k in blob for k in ("żelazowa wola", "zelazowa wola", "dom urodzenia fryderyka")):
+        return "region_sochaczew"
+    if "sochaczew" in blob:
+        return "region_sochaczew"
+    if any(k in blob for k in ("papczyńsk", "papczynsk", "góra kalwaria", "gora kalwaria")):
+        return "region_czersk"
+    if any(k in blob for k in ("nowy wiśnicz", "nowy wisnicz", "zamek w wiśniczu", "zamek w wisniczu")):
+        return "region_wieliczka"
+    if any(k in blob for k in ("eliaszówk", "eliaszowk", "czerna")):
+        return "region_ojcow"
     return None
 
 
@@ -1965,6 +1992,24 @@ def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: di
         if poi_reg == "region_brzeg" and "brzeg" not in blob:
             if any(k in blob for k in ("wrocław", "wroclaw")):
                 return False
+    if poi_reg == "region_sochaczew":
+        if any(k in blob for k in ("warszawa", "warsaw")) and not any(
+            k in blob for k in ("sochaczew", "żelazowa", "zelazowa")
+        ):
+            return False
+    if poi_reg == "region_lednica":
+        if any(k in blob for k in ("poznań", "poznan")) and not any(
+            k in blob for k in ("lednick", "lednogór", "lednogor", "dziekanowic")
+        ):
+            return False
+    if poi_reg == "region_gniezno":
+        if any(k in blob for k in ("poznań", "poznan")) and "gniezn" not in blob:
+            return False
+    if poi_reg == "region_kornik":
+        if any(k in blob for k in ("poznań", "poznan")) and not any(
+            k in blob for k in ("kórnik", "kornik")
+        ):
+            return False
     day_reg = (context or {}).get("day_geo_region")
     if day_reg == "region_czersk" and poi_reg == "region_czersk":
         if not any(k in blob for k in ("czersk", "góra kalwaria", "gora kalwaria")):
