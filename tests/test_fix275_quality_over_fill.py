@@ -173,7 +173,7 @@ def test_fix275_light_day_title():
     assert "luźniejszy" in title.lower() or "luzniejszy" in title.lower()
 
 
-def test_fix275_hygiene_keeps_afternoon_on_long_trip():
+def test_fix275_hygiene_strips_afternoon_tail_on_long_trip():
     svc = PlanService.__new__(PlanService)
     items = [
         _attr("Rynek", "09:00", "11:00", 120),
@@ -184,5 +184,4 @@ def test_fix275_hygiene_keeps_afternoon_on_long_trip():
         items, {"num_days": 7, "requested_city": "Wrocław"},
     )
     ft = [it for it in out if getattr(it, "type", None) == ItemType.FREE_TIME]
-    assert ft
-    assert sum(int(it.duration_min or 0) for it in ft) >= 90
+    assert sum(int(it.duration_min or 0) for it in ft) <= 12

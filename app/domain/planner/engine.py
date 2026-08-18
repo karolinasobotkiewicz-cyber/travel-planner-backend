@@ -2266,6 +2266,9 @@ def should_skip_poi_candidate(p: dict, context: dict | None) -> bool:
     if _centroid and p.get("lat") and p.get("lng") and not any(
         k in _nm255 for k in (
             "fort ", "bunkier", "schron", "kopalnia", "sztolnia", "guido", "luiza",
+            "baszta", "krzywa wież", "krzywa wiez", "rynek w ",
+            "laboratorium", "frankenstein", "zamek w ząbkow", "zamek w zabkow",
+            "izba muzealna", "wena",
         )
     ):
         try:

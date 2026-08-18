@@ -383,6 +383,10 @@ class DayPlan(BaseModel):
         default=None,
         description="Krótki tytuł dnia generowany na podstawie głównych atrakcji (np. 'Morskie Oko i Rysy')",
     )
+    note: Optional[str] = Field(
+        default=None,
+        description="FIX #278: komunikat przy wcześniejszym końcu dnia (spokojniejsze popołudnie)",
+    )
     items: List[PlanItem] = Field(
         default_factory=list, description="Lista items (7 typów)"
     )

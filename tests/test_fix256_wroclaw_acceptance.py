@@ -66,6 +66,7 @@ def _audit_wroclaw_256(plan, payload: dict, label: str) -> list[str]:
                     "house of spices", "taste", "chinkalnia", "przykr",
                     "restaur", "konspira", "pierogar", "olio", "vaffa",
                     "el cubano", "pod przykry", "ze smakiem",
+                    "mała grecja", "mala grecja",
                 )
             )
 

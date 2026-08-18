@@ -137,10 +137,17 @@ def test_fix263_strip_far_last_without_return():
         ),
     ]
     out = svc._strip_far_last_excursion(
-        items, {"requested_city": "Wrocław"}, day_num=5,
+        items, {"requested_city": "Wrocław", "day_end": "20:00"}, day_num=5,
     )
     names = [getattr(it, "name", "") for it in out if _is_attr(it)]
-    assert "Arboretum Wojsławice" not in names
+    assert "Arboretum Wojsławice" in names
+    trans = [
+        it for it in out
+        if str(getattr(getattr(it, "type", None), "value", it.type)).lower()
+        == "transit"
+    ]
+    assert trans
+    assert "wrocław" in (getattr(trans[-1], "to_location", "") or "").lower()
 
 
 def _is_attr(it) -> bool:
