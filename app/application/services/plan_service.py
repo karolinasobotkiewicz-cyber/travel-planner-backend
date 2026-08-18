@@ -153,6 +153,26 @@ def _poi_lat_lng(poi_dict: Dict[str, Any]):
     return lat, lng
 
 
+def _fold_place_label(name: Any) -> str:
+    """FIX #279: diacritic-insensitive place match (Ostrów / Ostrow)."""
+    s = str(name or "").strip().lower()
+    for a, b in (
+        ("ł", "l"), ("ó", "o"), ("ś", "s"), ("ź", "z"), ("ż", "z"),
+        ("ę", "e"), ("ą", "a"), ("ć", "c"), ("ń", "n"),
+    ):
+        s = s.replace(a, b)
+    return s
+
+
+def _straight_route_geometry(
+    lat1: float, lng1: float, lat2: float, lng2: float,
+) -> tuple:
+    """FIX #279: ORS-off fallback polyline (GeoJSON [lng,lat] + Leaflet [lat,lng])."""
+    geom = [[float(lng1), float(lat1)], [float(lng2), float(lat2)]]
+    gll = [[float(lat1), float(lng1)], [float(lat2), float(lng2)]]
+    return geom, gll
+
+
 def _last_attraction_name(items: list) -> str:
     """FIX #200: real origin label for gap-fill transits."""
     for it in reversed(items):
@@ -7026,6 +7046,42 @@ class PlanService:
                 except Exception:
                     pass
 
+        # FIX #279: last-word geometry after every late retarget/inject
+        # (client WRO json8 day 2: Movie Gate → Ostrów Tumski, ORS off).
+        try:
+            _ctx_geom279 = {
+                **(context or {}),
+                "requested_city": str(
+                    (context or {}).get("requested_city")
+                    or (_ctx_fields or {}).get("requested_city")
+                    or ""
+                ),
+            }
+            _days_geom279: List[DayPlan] = []
+            for _dg279 in days:
+                _itg279 = self._finalize_transit_geometry(
+                    list(_dg279.items or []),
+                    self._merge_coord_map(
+                        _final_coord_map, list(_dg279.items or []),
+                    ),
+                    _ctx_geom279,
+                )
+                _days_geom279.append(DayPlan(
+                    day=_dg279.day,
+                    title=_dg279.title,
+                    note=getattr(_dg279, "note", None),
+                    items=_itg279,
+                    quality_badges=_dg279.quality_badges,
+                    date=getattr(_dg279, "date", None),
+                    weekday=getattr(_dg279, "weekday", None),
+                ))
+            days = _days_geom279
+        except Exception as _exc279:
+            print(
+                f"[FIX #279] transit geometry finalize failed "
+                f"({type(_exc279).__name__}: {_exc279}) — keeping days as-is"
+            )
+
         return PlanResponse(
             plan_id=plan_id,
             version=1,
@@ -10376,15 +10432,30 @@ class PlanService:
         def _endpoint(label: str) -> Optional[dict]:
             # Exact / case-insensitive POI lookup, then city-centre fallback
             # for day_start legs labelled "Wrocław" / "Warszawa" (FIX #261).
+            # FIX #279: also fold diacritics and accept "Movie Gate" ⊂ Excel name.
             if not label:
                 return None
             hit = coord_map.get(label)
             if hit and _poi_lat_lng(hit)[0] is not None:
                 return hit
             low = label.strip().lower()
+            folded = _fold_place_label(label)
+            fuzzy: Optional[dict] = None
             for k, v in coord_map.items():
-                if str(k).strip().lower() == low and _poi_lat_lng(v)[0] is not None:
+                if _poi_lat_lng(v)[0] is None:
+                    continue
+                kn = str(k).strip().lower()
+                kf = _fold_place_label(k)
+                if kn == low or kf == folded:
                     return v
+                if (
+                    fuzzy is None
+                    and min(len(folded), len(kf)) >= 8
+                    and (folded in kf or kf in folded)
+                ):
+                    fuzzy = v
+            if fuzzy is not None:
+                return fuzzy
             cc = _city_center_coords(label) or _city_center_coords(
                 str((context or {}).get("requested_city") or "")
             )
@@ -10392,6 +10463,8 @@ class PlanService:
             if cc and (low in _CITY_CENTER_COORDS or (city and low == city)):
                 return {"name": label, "lat": cc[0], "lng": cc[1]}
             if cc and city and (low == city or city in low or low in city):
+                return {"name": label, "lat": cc[0], "lng": cc[1]}
+            if cc and ("centrum" in folded or "center" in folded or "centre" in folded):
                 return {"name": label, "lat": cc[0], "lng": cc[1]}
             return hit
 
@@ -10470,8 +10543,7 @@ class PlanService:
             geom2 and (_geom_start_stale(geom2) or _geom_end_stale(geom2))
         )
         if (not geom2 or still_stale) and lat1 is not None and lat2 is not None:
-            geom = [[float(lng1), float(lat1)], [float(lng2), float(lat2)]]
-            gll = [[float(lat1), float(lng1)], [float(lat2), float(lng2)]]
+            geom, gll = _straight_route_geometry(lat1, lng1, lat2, lng2)
             try:
                 it = it.model_copy(
                     update={
@@ -10487,6 +10559,128 @@ class PlanService:
                 except Exception:
                     pass
         return it
+
+    def _item_stop_latlng(self, it: Any) -> Optional[tuple]:
+        """FIX #279: (lat, lng) carried on an attraction or meal suggestion."""
+        if it is None:
+            return None
+        tv = _item_type_value(it)
+        if tv == ItemType.ATTRACTION.value or _is_timeline_attraction(it):
+            lat, lng = getattr(it, "lat", None), getattr(it, "lng", None)
+            if lat is not None and lng is not None:
+                try:
+                    return float(lat), float(lng)
+                except (TypeError, ValueError):
+                    return None
+        if tv in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+            for s in (getattr(it, "suggestions", None) or [])[:1]:
+                if isinstance(s, dict):
+                    lat, lng = s.get("lat"), s.get("lng")
+                else:
+                    lat, lng = getattr(s, "lat", None), getattr(s, "lng", None)
+                if lat is not None and lng is not None:
+                    try:
+                        return float(lat), float(lng)
+                    except (TypeError, ValueError):
+                        continue
+        return None
+
+    def _stamp_straight_geometry(
+        self, it: Any, lat1: float, lng1: float, lat2: float, lng2: float,
+    ) -> Any:
+        """FIX #279: force a drawable polyline onto a transit (ORS optional)."""
+        geom, gll = _straight_route_geometry(lat1, lng1, lat2, lng2)
+        src = getattr(it, "routing_source", None) or "estimated_road"
+        try:
+            return it.model_copy(
+                update={
+                    "geometry": geom,
+                    "geometry_latlng": gll,
+                    "routing_source": src,
+                }
+            )
+        except Exception:
+            try:
+                it.geometry = geom
+                it.geometry_latlng = gll
+                if not getattr(it, "routing_source", None):
+                    it.routing_source = src
+            except Exception:
+                pass
+            return it
+
+    def _finalize_transit_geometry(
+        self,
+        items: List[Any],
+        poi_coords: Dict[str, dict],
+        context: dict,
+    ) -> List[Any]:
+        """FIX #279: last-word geometry on every named transit, even with ORS off.
+
+        Late polish (_retarget_all_legs_to_prev_stop, _repair_transit_endpoints_late,
+        _ensure_stop_to_stop_legs) can wipe or inject legs after the routing pass.
+        Client WRO json8 day 2: Movie Gate → Ostrów Tumski arrived with
+        geometry=null. Neighbour coords on the timeline always suffice for a
+        straight estimated_road polyline.
+        """
+        if not items:
+            return items
+        cmap = self._merge_coord_map(poi_coords, items)
+        try:
+            ordered = self._sort_items_by_time(list(items))
+        except Exception:
+            ordered = list(items)
+        out: List[Any] = []
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            to = (getattr(it, "to_location", "") or "").strip()
+            if not frm or not to:
+                out.append(it)
+                continue
+            it = self._normalize_transit_routing_item(it, cmap, context)
+            if getattr(it, "geometry", None) or getattr(it, "geometry_latlng", None):
+                out.append(it)
+                continue
+            prev_pt = None
+            for j in range(i - 1, -1, -1):
+                prev_pt = self._item_stop_latlng(ordered[j])
+                if prev_pt:
+                    break
+            next_pt = None
+            for j in range(i + 1, len(ordered)):
+                next_pt = self._item_stop_latlng(ordered[j])
+                if next_pt:
+                    break
+            if prev_pt is None:
+                looked = self._lookup_coords(cmap, frm)
+                if looked:
+                    prev_pt = looked
+            if next_pt is None:
+                looked = self._lookup_coords(cmap, to)
+                if looked:
+                    next_pt = looked
+            if next_pt is None:
+                cc = _city_center_coords(to) or _city_center_coords(
+                    str((context or {}).get("requested_city") or "")
+                )
+                folded_to = _fold_place_label(to)
+                if cc and (
+                    "centrum" in folded_to
+                    or folded_to in _CITY_CENTER_COORDS
+                    or folded_to == _fold_place_label(
+                        str((context or {}).get("requested_city") or "")
+                    )
+                ):
+                    next_pt = cc
+            if prev_pt and next_pt:
+                it = self._stamp_straight_geometry(
+                    it, prev_pt[0], prev_pt[1], next_pt[0], next_pt[1],
+                )
+            out.append(it)
+        return out
 
     def _run_transit_routing_pass(
         self,
@@ -17789,10 +17983,23 @@ class PlanService:
         entry = poi_coords.get(key)
         if entry is None:
             low = key.lower()
+            folded = _fold_place_label(key)
+            fuzzy = None
             for k, v in poi_coords.items():
-                if str(k).strip().lower() == low:
+                kn = str(k).strip().lower()
+                kf = _fold_place_label(k)
+                if kn == low or kf == folded:
                     entry = v
                     break
+                if (
+                    fuzzy is None
+                    and min(len(folded), len(kf)) >= 8
+                    and (folded in kf or kf in folded)
+                ):
+                    fuzzy = v
+            else:
+                if fuzzy is not None:
+                    entry = fuzzy
         if not isinstance(entry, dict):
             return None
         lat, lng = entry.get("lat"), entry.get("lng")
@@ -18873,6 +19080,13 @@ class PlanService:
             distance_km=round(dist, 1) if dist else None,
             routing_source="estimated_road",
         )
+        if lat is not None and lng is not None and center:
+            try:
+                leg = self._stamp_straight_geometry(
+                    leg, float(lat), float(lng), center[0], center[1],
+                )
+            except Exception:
+                pass
         print(
             f"[FIX #278] Day {day_num}: return {getattr(last, 'name', '?')} "
             f"→ {dest} ({hop}min)"
@@ -20879,8 +21093,21 @@ class PlanService:
             try:
                 if pt_a and pt_b:
                     leg = self._attach_route_metadata(leg, from_d, to_d, ctx)
+                    if not (
+                        getattr(leg, "geometry", None)
+                        or getattr(leg, "geometry_latlng", None)
+                    ):
+                        leg = self._stamp_straight_geometry(
+                            leg, pt_a[0], pt_a[1], pt_b[0], pt_b[1],
+                        )
             except Exception:
-                pass
+                if pt_a and pt_b:
+                    try:
+                        leg = self._stamp_straight_geometry(
+                            leg, pt_a[0], pt_a[1], pt_b[0], pt_b[1],
+                        )
+                    except Exception:
+                        pass
             inserts.append((ib, leg))
             print(
                 f"[FIX #261] Day {day_num}: added missing leg "
@@ -22441,6 +22668,8 @@ class PlanService:
         working = self._name_remaining_holes(working, context, day_num=day_num)
         working = self._remove_timeline_overlaps(working, day_num)
         working = self._sort_items_by_time(working)
+        # FIX #279: seal retargets wipe geometry — restamp before the day leaves.
+        working = self._finalize_transit_geometry(working, coord_map, context)
         return working
 
     def _name_remaining_holes(
