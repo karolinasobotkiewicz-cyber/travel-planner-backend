@@ -164,6 +164,22 @@ def _fold_place_label(name: Any) -> str:
     return s
 
 
+_BIG_CITY_RYNEK_MARKERS = (
+    "rynek we wroclawiu", "rynek glowny", "stary rynek",
+    "rynek w katowicach", "rynek katowic",
+)
+
+
+def _satellite_market_square_cap(name: Any) -> Optional[int]:
+    """FIX #280: a small-town market square is a look-around, not half a day."""
+    folded = _fold_place_label(name)
+    if "rynek" not in folded:
+        return None
+    if any(marker in folded for marker in _BIG_CITY_RYNEK_MARKERS):
+        return None
+    return 75
+
+
 def _straight_route_geometry(
     lat1: float, lng1: float, lat2: float, lng2: float,
 ) -> tuple:
@@ -228,16 +244,21 @@ _ZABRZE_NAME_MARKERS = (
 _GLIWICE_NAME_MARKERS = ("gliwice", "gliwic")
 _ZABRZE_DEFAULT_COORDS = (50.3249, 18.7857)
 _GLIWICE_DEFAULT_COORDS = (50.2945, 18.6714)
+# FIX #280: stems, not exact forms — "Rynek w Oławie" / "w Ząbkowicach" never
+# matched "oława" / "ząbkowice", so region grouping silently dropped them.
 _WOJSLAWICE_NAME_MARKERS = (
-    "wojsławice", "wojslawice", "niemcza", "niemczy", "dolina tatarska",
+    "wojsławic", "wojslawic", "niemcz", "dolina tatarska",
 )
 _WOJSLAWICE_DEFAULT_COORDS = (50.7250, 16.8520)
 _FLYSPOT_DEFAULT_COORDS = (51.0478, 16.9719)
 # FIX #276: Wena is in Oława, not Wrocław centre.
 _WENA_DEFAULT_COORDS = (50.9329, 17.2924)
-_OLAWA_NAME_MARKERS = ("oława", "olawa", "wena")
+_OLAWA_NAME_MARKERS = ("oław", "olaw", "wena")
 _OLAWA_DEFAULT_COORDS = (50.9430, 17.2956)
 _ZABKOWICE_NAME_MARKERS = (
+    # Deliberately narrow: widening this to the "ząbkowic" stem packs all four
+    # Kotlina stops into one day and leaves the second Ząbkowice day with a
+    # single POI. Distance-based detection covers the rest.
     "ząbkowice", "zabkowice", "frankenstein",
     "krzywa wieża", "krzywa wieza",
 )
@@ -247,6 +268,14 @@ _BRZEG_NAME_MARKERS = (
     "w brzegu", "piastów śląskich w brzegu",
 )
 _BRZEG_DEFAULT_COORDS = (50.8637, 17.4667)
+# FIX #280: Wrocław's near satellites — close enough to miss the 28 km "far"
+# threshold, far enough that the client expects the drive home on the timeline
+# ("Po Topaczu planner nie pokazuje powrotu: Ślęza → Wrocław").
+_NEAR_SATELLITE_NAME_MARKERS = (
+    "topacz", "ślęza", "sleza", "ślęzy", "slezy",
+    "mirosławice", "miroslawice", "galowice",
+    "żórawina", "zorawina", "paniowice",
+)
 
 
 def _is_zabrze_stop_name(name: str) -> bool:
@@ -267,6 +296,11 @@ def _is_wojslawice_stop_name(name: str) -> bool:
 def _is_olawa_stop_name(name: str) -> bool:
     nm = (name or "").lower()
     return any(k in nm for k in _OLAWA_NAME_MARKERS)
+
+
+def _is_near_satellite_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in _NEAR_SATELLITE_NAME_MARKERS)
 
 
 def _is_zabkowice_stop_name(name: str) -> bool:
@@ -790,6 +824,36 @@ def _snap_day_end_up(end_min: int) -> int:
     return int(end_min) if rem == 0 else int(end_min) + (30 - rem)
 
 
+# Nominative → genitive for the day-1 early-close note
+# ("odkrywanie Wrocławia", never "odkrywanie Wrocław").
+_CITY_GENITIVE = {
+    "wroclaw": "Wrocławia",
+    "krakow": "Krakowa",
+    "warszawa": "Warszawy",
+    "poznan": "Poznania",
+    "gdansk": "Gdańska",
+    "gdynia": "Gdyni",
+    "sopot": "Sopotu",
+    "katowice": "Katowic",
+    "zakopane": "Zakopanego",
+    "karpacz": "Karpacza",
+    "jelenia gora": "Jeleniej Góry",
+    "klodzko": "Kłodzka",
+    "kudowa-zdroj": "Kudowy-Zdroju",
+    "polanica-zdroj": "Polanicy-Zdroju",
+    "szklarska poreba": "Szklarskiej Poręby",
+}
+
+
+def _city_genitive(city: str) -> str:
+    """FIX #280: inflect hub-city names used in 'odkrywanie X' copy."""
+    raw = (city or "").strip()
+    if not raw:
+        return "miasta"
+    folded = _fold_place_label(raw)
+    return _CITY_GENITIVE.get(folded, raw)
+
+
 def _early_close_note(
     items: list,
     *,
@@ -798,7 +862,7 @@ def _early_close_note(
     city: str,
 ) -> str:
     """FIX #278: honest copy when the day stops instead of fake free_time."""
-    city_name = (city or "miasta").strip() or "miasta"
+    city_name = _city_genitive(city)
     names = [
         (getattr(it, "name", None) or "").strip()
         for it in items
@@ -7045,6 +7109,81 @@ class PlanService:
                         )
                 except Exception:
                     pass
+
+        # FIX #280: last word on the day-level invariants the client reads —
+        # day_end vs real timeline end, returns from excursions, one named block
+        # per gap, no repeated restaurant, mode/routing_source coherence.
+        try:
+            _ctx280 = {
+                **(context or {}),
+                "num_days": int(
+                    (context or {}).get("num_days") or len(days) or 1
+                ),
+                "day_start": str(
+                    (context or {}).get("day_start")
+                    or (trip_input.daily_time_window.start if trip_input else "")
+                    or "09:00"
+                ),
+                "day_end": str(
+                    (context or {}).get("day_end")
+                    or (trip_input.daily_time_window.end if trip_input else "")
+                    or "20:00"
+                ),
+                "requested_city": str(
+                    (context or {}).get("requested_city")
+                    or (_ctx_fields or {}).get("requested_city")
+                    or ""
+                ),
+            }
+            # Never let the final densify pull a POI that another day already
+            # shows (client: "unikamy regresji duplikacji").
+            _used280 = {
+                _fold_place_label(getattr(_it, "name", None))
+                for _d in days for _it in (_d.items or [])
+                if _is_timeline_attraction(_it)
+            }
+            _pool280 = [
+                p for p in (all_pois_dict or [])
+                if _fold_place_label(p.get("name")) not in _used280
+            ]
+            _days280: List[DayPlan] = []
+            for _d280 in days:
+                _items280 = list(_d280.items or [])
+                _it280, _note280 = self._finalize_client_day_invariants(
+                    _items280,
+                    {**_ctx280, "date": getattr(_d280, "date", None)
+                        or _ctx280.get("date")},
+                    day_num=_d280.day,
+                    pool=_pool280,
+                    user=user,
+                    coord_map=self._merge_coord_map(
+                        _final_coord_map, _items280,
+                    ),
+                )
+                for _new280 in _it280:
+                    if _is_timeline_attraction(_new280):
+                        _used280.add(
+                            _fold_place_label(getattr(_new280, "name", None))
+                        )
+                _pool280 = [
+                    p for p in _pool280
+                    if _fold_place_label(p.get("name")) not in _used280
+                ]
+                _days280.append(DayPlan(
+                    day=_d280.day,
+                    title=_d280.title,
+                    note=_note280 or getattr(_d280, "note", None),
+                    items=_it280,
+                    quality_badges=_d280.quality_badges,
+                    date=getattr(_d280, "date", None),
+                    weekday=getattr(_d280, "weekday", None),
+                ))
+            days = _days280
+        except Exception as _exc280:
+            print(
+                f"[FIX #280] day invariants finalize failed "
+                f"({type(_exc280).__name__}: {_exc280}) — keeping days as-is"
+            )
 
         # FIX #279: last-word geometry after every late retarget/inject
         # (client WRO json8 day 2: Movie Gate → Ostrów Tumski, ORS off).
@@ -18761,11 +18900,14 @@ class PlanService:
         items: List[Any],
         *,
         day_num: int = 0,
+        max_gap: int = 1,
     ) -> List[Any]:
         """FIX #263: never emit two free_time blocks back-to-back.
 
         Absolute polish / hole-naming can leave abutting free_time with
         different labels (client: 52+35, 30+120+70). Merge regardless of label.
+        FIX #280: `max_gap` also swallows the 1–6 min slivers between them
+        (client D2: 19:00–19:27 plus 19:27–20:00 read as two separate blocks).
         """
         if not items:
             return items
@@ -18791,7 +18933,7 @@ class PlanService:
                     )
                 except Exception:
                     break
-                if gap > 1:
+                if gap > max_gap:
                     break
                 group.append(nxt)
                 j += 1
@@ -19018,6 +19160,7 @@ class PlanService:
         is_far = any(fn(nm) for fn in (
             _is_olawa_stop_name, _is_wojslawice_stop_name,
             _is_zabkowice_stop_name, _is_brzeg_stop_name,
+            _is_near_satellite_stop_name,
         ))
         lat, lng = getattr(last, "lat", None), getattr(last, "lng", None)
         dist = 0.0
@@ -19031,6 +19174,35 @@ class PlanService:
             last_end = time_to_minutes(getattr(last, "end_time", None) or "00:00")
         except Exception:
             return ordered
+        origin_name = getattr(last, "name", "") or "atrakcja"
+        # FIX #280: a local lunch after the last sight is still part of the
+        # excursion — the drive home starts there, not before it (client D4:
+        # return leg landed in front of the Oława lunch).
+        for it in ordered:
+            if _item_type_value(it) not in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            ):
+                continue
+            try:
+                meal_end = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
+            if meal_end <= last_end:
+                continue
+            pt = self._item_stop_latlng(it)
+            if pt is None or not center:
+                continue
+            meal_dist = haversine_distance(center[0], center[1], pt[0], pt[1])
+            if meal_dist < 20:
+                continue
+            last_end, lat, lng, dist = meal_end, pt[0], pt[1], meal_dist
+            for sug in (getattr(it, "suggestions", None) or [])[:1]:
+                cand = (
+                    sug.get("name") if isinstance(sug, dict)
+                    else getattr(sug, "name", None)
+                )
+                if cand:
+                    origin_name = str(cand)
         dest = f"{city} centrum"
         dest_key = city.lower()[:6]
         has_return = False
@@ -19055,6 +19227,11 @@ class PlanService:
             ("niemcza", 50, 60), ("wojsławice", 50, 60), ("wojslawice", 50, 60),
             ("ząbkowice", 55, 70), ("zabkowice", 55, 70), ("frankenstein", 55, 70),
             ("brzegu", 40, 55), ("oława", 30, 45), ("olawa", 30, 45), ("wena", 30, 45),
+            # FIX #280: near satellites are a 20–30 min drive, not 45.
+            ("topacz", 20, 30), ("ślęz", 20, 30), ("slez", 20, 30),
+            ("mirosławice", 20, 30), ("miroslawice", 20, 30),
+            ("galowice", 20, 30), ("żórawina", 20, 30), ("zorawina", 20, 30),
+            ("paniowice", 20, 30),
         ):
             if marker in blob:
                 hop = min(hi, max(lo, hop))
@@ -19066,7 +19243,13 @@ class PlanService:
         except Exception:
             window_end = 20 * 60
         if last_end + hop > window_end:
-            hop = max(20, window_end - last_end)
+            # FIX #280: never fabricate a 20-min drive home that also runs past
+            # the day window (client D3 showed 20:00→20:20 for 75 km).
+            print(
+                f"[FIX #280] Day {day_num}: no room for the drive home "
+                f"({hop}min needed, {window_end - last_end}min left)"
+            )
+            return ordered
         if hop < 20:
             return ordered
         leg = TransitItem(
@@ -19075,7 +19258,7 @@ class PlanService:
             end_time=minutes_to_time(last_end + hop),
             duration_min=hop,
             mode=TransitMode.CAR,
-            from_location=getattr(last, "name", "") or "atrakcja",
+            from_location=origin_name,
             to_location=dest,
             distance_km=round(dist, 1) if dist else None,
             routing_source="estimated_road",
@@ -19108,6 +19291,658 @@ class PlanService:
         return self._ensure_far_excursion_return(
             items, context, day_num=day_num,
         )
+
+    def _normalize_transit_mode_source(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #280: mode and routing_source must tell the same story.
+
+        Client D3: "transit Hala → Muzeum Pana Tadeusza ma mode = walk ale
+        routing_source = estimated_road".
+        """
+        if not items:
+            return items
+        out: List[Any] = []
+        fixed = 0
+        for it in items:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            mode = str(
+                getattr(
+                    getattr(it, "mode", None), "value", getattr(it, "mode", "")
+                ) or ""
+            ).lower()
+            src = str(getattr(it, "routing_source", "") or "").lower()
+            want = None
+            if "walk" in mode or "foot" in mode:
+                if src in ("estimated_road", "estimated", "haversine"):
+                    want = "estimated_walk"
+            elif mode and "walk" not in mode:
+                if src in ("estimated_walk", "estimated"):
+                    want = "estimated_road"
+            if want and want != src:
+                try:
+                    it = it.model_copy(update={"routing_source": want})
+                    fixed += 1
+                except Exception:
+                    pass
+            out.append(it)
+        if fixed:
+            print(
+                f"[FIX #280] Day {day_num}: aligned routing_source with mode "
+                f"on {fixed} transit(s)"
+            )
+        return out
+
+    def _sanitize_walk_leg_durations(
+        self,
+        items: List[Any],
+        coord_map: Optional[Dict[str, Any]],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #280: a 55-minute walk between neighbours reads as a bug.
+
+        Gap-snapping passes stretch a leg to cover idle minutes and keep
+        `mode=walk`, so two stops 200 m apart end up an hour apart. Recompute
+        from the endpoints; anything beyond walking range becomes a drive.
+        """
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        out: List[Any] = []
+        fixed = 0
+        for idx, it in enumerate(ordered):
+            mode = str(
+                getattr(
+                    getattr(it, "mode", None), "value", getattr(it, "mode", "")
+                ) or ""
+            ).lower()
+            dur = int(getattr(it, "duration_min", 0) or 0)
+            if (
+                _item_type_value(it) != ItemType.TRANSIT.value
+                or "walk" not in mode
+                or dur <= 35
+            ):
+                out.append(it)
+                continue
+            pair = self._transit_endpoint_coords(ordered, idx, coord_map or {})
+            if pair is None:
+                out.append(it)
+                continue
+            (lat1, lng1), (lat2, lng2) = pair
+            km = haversine_distance(lat1, lng1, lat2, lng2)
+            if km > 3.0:
+                new_dur = max(10, int(round(km / 45.0 * 60)) + 5)
+                update = {
+                    "mode": TransitMode.CAR,
+                    "routing_source": "estimated_road",
+                    "distance_km": round(km, 1),
+                }
+            else:
+                new_dur = max(5, int(round(km / 4.5 * 60)) + 3)
+                update = {
+                    "routing_source": "estimated_walk",
+                    "distance_km": round(km, 2),
+                }
+            # Only clearly broken legs — a genuine 35-min city walk stays.
+            if dur - new_dur < 20:
+                out.append(it)
+                continue
+            en = getattr(it, "end_time", None)
+            if not en:
+                out.append(it)
+                continue
+            try:
+                en_m = time_to_minutes(en)
+            except Exception:
+                out.append(it)
+                continue
+            update["duration_min"] = new_dur
+            # Anchor to the arrival so the leg still lands on the next stop.
+            update["start_time"] = minutes_to_time(en_m - new_dur)
+            try:
+                out.append(it.model_copy(update=update))
+                fixed += 1
+            except Exception:
+                out.append(it)
+        if fixed:
+            print(
+                f"[FIX #280] Day {day_num}: rebuilt {fixed} stretched walk "
+                f"leg(s) from real distances"
+            )
+        return out
+
+    def _transit_endpoint_coords(
+        self,
+        ordered: List[Any],
+        idx: int,
+        coord_map: Dict[str, Any],
+    ) -> Optional[tuple]:
+        """Coordinates of a transit's two endpoints, by name or by neighbour."""
+        it = ordered[idx]
+        start = self._lookup_coords(
+            coord_map, (getattr(it, "from_location", "") or "").strip(),
+        )
+        end = self._lookup_coords(
+            coord_map, (getattr(it, "to_location", "") or "").strip(),
+        )
+        if start is None:
+            for prev in reversed(ordered[:idx]):
+                start = self._item_stop_latlng(prev)
+                if start is not None:
+                    break
+        if end is None:
+            for nxt in ordered[idx + 1:]:
+                end = self._item_stop_latlng(nxt)
+                if end is not None:
+                    break
+        if start is None or end is None:
+            return None
+        return start, end
+
+    def _cap_satellite_market_squares(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #280: "3 godziny na sam rynek w Niemczy to za dużo" (client D6)."""
+        if not items:
+            return items
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            cap = _satellite_market_square_cap(getattr(it, "name", None))
+            st = getattr(it, "start_time", None)
+            en = getattr(it, "end_time", None)
+            if cap is None or not st or not en:
+                out.append(it)
+                continue
+            try:
+                st_m, en_m = time_to_minutes(st), time_to_minutes(en)
+            except Exception:
+                out.append(it)
+                continue
+            if en_m - st_m <= cap:
+                out.append(it)
+                continue
+            try:
+                out.append(it.model_copy(update={
+                    "end_time": minutes_to_time(st_m + cap),
+                    "duration_min": cap,
+                }))
+                print(
+                    f"[FIX #280] Day {day_num}: capped "
+                    f"{getattr(it, 'name', '?')} {en_m - st_m}→{cap}min"
+                )
+            except Exception:
+                out.append(it)
+        return out
+
+    def _drop_duplicate_meal_stop(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #280: the same restaurant must not host lunch and dinner.
+
+        The FIX #262 dedupe substitutes an alternative when the day pool has
+        one. On a satellite day-trip it often does not (client D7: "ta sama
+        restauracja jest dwa razy"), and then an honest earlier finish beats a
+        repeated table.
+        """
+        if not items:
+            return items
+
+        def _meal_name(it: Any) -> str:
+            for sug in (getattr(it, "suggestions", None) or [])[:1]:
+                cand = (
+                    sug.get("name") if isinstance(sug, dict)
+                    else getattr(sug, "name", None)
+                )
+                if cand:
+                    return _fold_place_label(cand)
+            return ""
+
+        lunch_name = ""
+        for it in items:
+            if _item_type_value(it) == ItemType.LUNCH_BREAK.value:
+                lunch_name = _meal_name(it)
+                break
+        if not lunch_name:
+            return items
+        doomed_starts: List[int] = []
+        for it in items:
+            if _item_type_value(it) != ItemType.DINNER_BREAK.value:
+                continue
+            if _meal_name(it) != lunch_name:
+                continue
+            try:
+                doomed_starts.append(
+                    time_to_minutes(getattr(it, "start_time", None) or "")
+                )
+            except Exception:
+                doomed_starts.append(-1)
+        if not doomed_starts:
+            return items
+        earliest = min(s for s in doomed_starts if s >= 0) if any(
+            s >= 0 for s in doomed_starts
+        ) else None
+        out: List[Any] = []
+        for it in items:
+            tv = _item_type_value(it)
+            if tv == ItemType.DINNER_BREAK.value and _meal_name(it) == lunch_name:
+                continue
+            if tv == ItemType.TRANSIT.value and earliest is not None:
+                endpoints = (
+                    _fold_place_label(getattr(it, "to_location", None)),
+                    _fold_place_label(getattr(it, "from_location", None)),
+                )
+                try:
+                    st_m = time_to_minutes(getattr(it, "start_time", None) or "")
+                except Exception:
+                    st_m = None
+                if (
+                    lunch_name in endpoints
+                    and st_m is not None
+                    and st_m >= earliest - 30
+                ):
+                    continue
+            out.append(it)
+        if len(out) != len(items):
+            print(
+                f"[FIX #280] Day {day_num}: dropped dinner repeating the lunch "
+                f"restaurant ({len(items) - len(out)} item(s))"
+            )
+        return out
+
+    def _pull_day_forward_to_start(
+        self,
+        items: List[Any],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #280: a day must not open with an hour of nothing.
+
+        Client D7 started with 09:00–10:43 free_time before the drive even left
+        Wrocław. Pulling the whole day forward keeps the sequence intact and
+        moves the spare time to the end, where an early day_end can own it.
+        Conservative floors keep sights and meals at sane hours.
+        """
+        if not items:
+            return items
+        try:
+            day_start = time_to_minutes(context.get("day_start") or "")
+        except Exception:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        markers = (ItemType.DAY_START.value, ItemType.DAY_END.value)
+        first_real = None
+        for it in ordered:
+            tv = _item_type_value(it)
+            if tv in markers or tv == ItemType.FREE_TIME.value:
+                continue
+            st = getattr(it, "start_time", None)
+            if not st:
+                continue
+            try:
+                first_real = time_to_minutes(st)
+            except Exception:
+                return items
+            break
+        if first_real is None:
+            return items
+        gap = first_real - day_start
+        if gap < 30:
+            return items
+        floors = {
+            ItemType.ATTRACTION.value: 10 * 60,
+            ItemType.LUNCH_BREAK.value: 11 * 60 + 30,
+            ItemType.DINNER_BREAK.value: 17 * 60 + 30,
+        }
+        shift = gap
+        for it in ordered:
+            tv = _item_type_value(it)
+            st = getattr(it, "start_time", None)
+            if tv in markers or not st:
+                continue
+            try:
+                st_m = time_to_minutes(st)
+            except Exception:
+                return items
+            if tv == ItemType.FREE_TIME.value and st_m < first_real:
+                continue
+            limit = max(floors.get(tv, day_start), day_start)
+            shift = min(shift, max(0, st_m - limit))
+            if shift < 20:
+                return items
+        if shift < 20:
+            return items
+        out: List[Any] = []
+        for it in ordered:
+            tv = _item_type_value(it)
+            if tv in markers:
+                out.append(it)
+                continue
+            st = getattr(it, "start_time", None)
+            en = getattr(it, "end_time", None)
+            if not st:
+                out.append(it)
+                continue
+            try:
+                st_m = time_to_minutes(st)
+            except Exception:
+                out.append(it)
+                continue
+            if tv == ItemType.FREE_TIME.value and st_m < first_real:
+                continue
+            update = {"start_time": minutes_to_time(st_m - shift)}
+            if en:
+                try:
+                    update["end_time"] = minutes_to_time(
+                        time_to_minutes(en) - shift
+                    )
+                except Exception:
+                    pass
+            try:
+                out.append(it.model_copy(update=update))
+            except Exception:
+                out.append(it)
+        print(
+            f"[FIX #280] Day {day_num}: pulled the day {shift}min forward "
+            f"(empty morning before {minutes_to_time(first_real)})"
+        )
+        return self._sort_items_by_time(out)
+
+    def _name_all_remaining_holes_final(
+        self,
+        items: List[Any],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #280: after the last word on day_end, no anonymous minutes left.
+
+        Client D3/D4 saw 15:01→17:27 and 13:49→18:44 as blank timeline. Unlike
+        FIX #261 this names each hole as a single block, so the day never shows
+        two or three stacked free_time entries for one gap.
+        """
+        if not items:
+            return items
+        try:
+            start_limit = time_to_minutes(context.get("day_start") or "")
+        except Exception:
+            return items
+        end_limit = None
+        for it in items:
+            if _item_type_value(it) == ItemType.DAY_END.value:
+                try:
+                    end_limit = time_to_minutes(getattr(it, "time", None) or "")
+                except Exception:
+                    end_limit = None
+                break
+        if end_limit is None:
+            try:
+                end_limit = time_to_minutes(context.get("day_end") or "")
+            except Exception:
+                return items
+        holes = [
+            h for h in self._find_day_holes(
+                items, end_limit, start_limit, min_span=10,
+            )
+            if h[1] - h[0] >= 10 and h[1] <= end_limit
+        ]
+        if not holes:
+            return items
+        winter = _is_winter_plan_context(context)
+        dinner_done_at = None
+        for it in items:
+            if _item_type_value(it) != ItemType.DINNER_BREAK.value:
+                continue
+            try:
+                dinner_done_at = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                dinner_done_at = None
+        filler: List[Any] = []
+        for idx, (hs, he) in enumerate(holes):
+            span = he - hs
+            if span < 20:
+                label, suggestions, tech = "Krótka przerwa / bufor", [], True
+            else:
+                post_dinner = dinner_done_at is not None and hs >= dinner_done_at - 5
+                if post_dinner:
+                    table = self._FT253_EVENING_POST_DINNER
+                elif hs >= 19 * 60:
+                    table = self._FT253_EVENING
+                elif hs < 12 * 60 and not any(
+                    _is_timeline_attraction(x) for x in items
+                ):
+                    table = self._FT253_MORNING
+                else:
+                    table = (
+                        self._FT253_AFTERNOON_WINTER if winter
+                        else self._FT253_AFTERNOON
+                    )
+                label, suggestions = table[(day_num + idx) % len(table)]
+                suggestions = list(suggestions)
+                tech = False
+            filler.append(FreeTimeItem(
+                type=ItemType.FREE_TIME,
+                start_time=minutes_to_time(hs),
+                end_time=minutes_to_time(he),
+                duration_min=span,
+                label=label,
+                suggestions=suggestions,
+                is_technical_buffer=tech,
+            ))
+        print(
+            f"[FIX #280] Day {day_num}: named {len(filler)} leftover gap(s) "
+            f"({sum(int(f.duration_min or 0) for f in filler)}min)"
+        )
+        return self._sort_items_by_time(list(items) + filler)
+
+    def _relabel_free_time_by_slot(
+        self,
+        items: List[Any],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #280: an evening block must not be called "w środku dnia".
+
+        Client D2 flagged 19:00–20:00 labelled "Oddech w środku dnia".
+        """
+        if not items:
+            return items
+        wrong_for_evening = (
+            "srodku dnia", "poludniow", "przedpoludn", "poranek", "rano",
+            "srodek dnia",
+        )
+        dinner_done_at = None
+        for it in items:
+            if _item_type_value(it) != ItemType.DINNER_BREAK.value:
+                continue
+            try:
+                dinner_done_at = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                dinner_done_at = None
+        out: List[Any] = []
+        for idx, it in enumerate(items):
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                out.append(it)
+                continue
+            try:
+                st_m = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                out.append(it)
+                continue
+            if st_m < 17 * 60 or int(getattr(it, "duration_min", 0) or 0) < 20:
+                out.append(it)
+                continue
+            folded = _fold_place_label(getattr(it, "label", None))
+            if not any(k in folded for k in wrong_for_evening):
+                out.append(it)
+                continue
+            table = (
+                self._FT253_EVENING_POST_DINNER
+                if dinner_done_at is not None and st_m >= dinner_done_at - 5
+                else self._FT253_EVENING
+            )
+            label, suggestions = table[(day_num + idx) % len(table)]
+            try:
+                out.append(it.model_copy(update={
+                    "label": label,
+                    "suggestions": list(suggestions),
+                }))
+                print(
+                    f"[FIX #280] Day {day_num}: relabelled evening free_time "
+                    f"@{getattr(it, 'start_time', '?')} → {label!r}"
+                )
+            except Exception:
+                out.append(it)
+        return out
+
+    def _reconcile_day_end_marker(
+        self,
+        items: List[Any],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #280: day_end never lands before the last thing on the timeline.
+
+        Client: "day_end nie może występować przed faktycznym końcem planu"
+        (D3 16:35 with dinner 18:00–19:00, D4 13:00 with dinner 18:44).
+        """
+        if not items:
+            return items
+        last_end = None
+        for it in items:
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                continue
+            en = getattr(it, "end_time", None)
+            if not en:
+                continue
+            try:
+                last_end = max(last_end or 0, time_to_minutes(en))
+            except Exception:
+                continue
+        if last_end is None:
+            return items
+        target = minutes_to_time(last_end)
+        out: List[Any] = []
+        seen = False
+        for it in items:
+            if _item_type_value(it) != ItemType.DAY_END.value:
+                out.append(it)
+                continue
+            if seen:
+                continue
+            seen = True
+            current = getattr(it, "time", None)
+            if current == target:
+                out.append(it)
+                continue
+            print(
+                f"[FIX #280] Day {day_num}: day_end {current} → {target} "
+                f"(last item ends {target})"
+            )
+            try:
+                out.append(it.model_copy(update={"time": target}))
+            except Exception:
+                out.append(DayEndItem(time=target))
+        if not seen:
+            out.append(DayEndItem(time=target))
+        return self._sort_items_by_time(out)
+
+    def _finalize_client_day_invariants(
+        self,
+        items: List[Any],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+        pool: Optional[List[Dict[str, Any]]] = None,
+        user: Optional[Dict[str, Any]] = None,
+        coord_map: Optional[Dict[str, Any]] = None,
+    ) -> tuple:
+        """FIX #280: last word on the invariants the client reads day by day.
+
+        Mid-pipeline passes already aim for this, but the FIX #268/#269 loops
+        run afterwards and re-add dinners or strip stops, which is how a day
+        ended up with `day_end=13:00` next to a 18:44 dinner. Everything here is
+        idempotent and runs after the final timeline mutation.
+
+        Returns (items, note) — note is set when the day closes early.
+        """
+        if not items:
+            return items, None
+        work = self._sort_items_by_time(list(items))
+        work = self._normalize_transit_mode_source(work, day_num=day_num)
+        work = self._sanitize_walk_leg_durations(
+            work, coord_map, day_num=day_num,
+        )
+        work = self._cap_satellite_market_squares(work, day_num=day_num)
+        work = self._drop_duplicate_meal_stop(work, day_num=day_num)
+        if pool:
+            before = len(work)
+            try:
+                work = self._complete_thin_daytrip(
+                    work,
+                    pool,
+                    # FIX #280: the pre-lunch buffer of an excursion is fair game
+                    # here because the leg repair below runs right after.
+                    {**context, "allow_pre_meal_inject": True},
+                    user or {},
+                    day_num=day_num,
+                )
+            except Exception as exc:
+                print(
+                    f"[FIX #280] Day {day_num}: day-trip completion skipped "
+                    f"({type(exc).__name__}: {exc})"
+                )
+            if len(work) != before:
+                try:
+                    work = self._retarget_all_legs_to_prev_stop(
+                        work, day_num=day_num,
+                    )
+                    work = self._ensure_stop_to_stop_legs(
+                        work, coord_map or {}, context, day_num=day_num,
+                    )
+                except Exception as exc:
+                    print(
+                        f"[FIX #280] Day {day_num}: leg repair after inject "
+                        f"failed ({type(exc).__name__}: {exc})"
+                    )
+        work = self._pull_day_forward_to_start(work, context, day_num=day_num)
+        work = self._ensure_far_excursion_return(work, context, day_num=day_num)
+        work = self._remove_timeline_overlaps(work, day_num)
+        work = self._merge_abutting_free_time_hard(
+            work, day_num=day_num, max_gap=6,
+        )
+        work, note, _ = self._apply_quality_first_early_close(
+            work, context, day_num=day_num,
+        )
+        work = self._reconcile_day_end_marker(work, context, day_num=day_num)
+        work = self._name_all_remaining_holes_final(
+            work, context, day_num=day_num,
+        )
+        work = self._merge_abutting_free_time_hard(
+            work, day_num=day_num, max_gap=6,
+        )
+        work = self._relabel_free_time_by_slot(work, context, day_num=day_num)
+        work = self._normalize_transit_mode_source(work, day_num=day_num)
+        work = self._reconcile_day_end_marker(work, context, day_num=day_num)
+        return work, note
 
     def _strip_misplaced_city_coords(
         self,

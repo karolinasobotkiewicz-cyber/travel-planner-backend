@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from app.application.services.plan_service import (
     PlanService,
+    _city_genitive,
     _early_close_note,
     _is_winter_plan_context,
     _quality_first_trip,
@@ -157,6 +158,18 @@ def test_fix278_early_close_note_day5():
         day_num=5, num_days=7, city="Wrocław",
     )
     assert "wcześniej" in note.lower() or "wczesniej" in note.lower()
+
+
+def test_fix280_day1_note_uses_city_genitive():
+    """Client-facing: 'odkrywanie Wrocławia', never nominative 'Wrocław'."""
+    assert _city_genitive("Wrocław") == "Wrocławia"
+    assert _city_genitive("Kraków") == "Krakowa"
+    note = _early_close_note(
+        [_attr("Rynek we Wrocławiu", "09:00", "11:00", 120)],
+        day_num=1, num_days=7, city="Wrocław",
+    )
+    assert "Wrocławia" in note
+    assert "odkrywanie Wrocław." not in note
 
 
 def test_fix278_trailing_strip_helper():

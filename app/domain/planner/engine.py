@@ -3051,6 +3051,10 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
     for marker, cap in _named_caps:
         if marker in name:
             return cap
+    # FIX #280: market squares of satellite towns are look-around stops. Big-city
+    # rynki have their own named caps above and are not reached here.
+    if "rynek" in name:
+        return 75
     if not for_scheduling:
         return None
     if any(k in name or k in poi_type for k in ("viewpoint", "widokowy", "wieża", "wieza", "tower")):
