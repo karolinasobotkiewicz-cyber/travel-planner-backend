@@ -1805,6 +1805,8 @@ _FAR_GEO_REGIONS = frozenset({
     "region_zabrze", "region_olawa", "region_kampinos", "region_czersk",
     "region_kornik", "region_zabkowice", "region_brzeg",
     "region_sochaczew", "region_lednica",
+    # FIX #281: Wrocław day-trips — don't reuse Niemcza/Wojsławice or Topacz.
+    "region_wojslawice", "region_galowice", "region_topacz",
 })
 
 
@@ -1874,10 +1876,12 @@ def poi_geo_region_key(p: dict) -> str | None:
         "wojsławice", "wojslawice", "niemcza", "niemczy", "dolina tatarska",
     )):
         return "region_wojslawice"
-    if "oława" in blob or "olawa" in blob:
+    if any(k in blob for k in (
+        "oława", "olawa", "wena", "muzeum motoryzacji",
+    )):
         return "region_olawa"
     if any(k in blob for k in (
-        "ząbkowice", "zabkowice", "frankenstein",
+        "ząbkowic", "zabkowic", "frankenstein",
         "krzywa wieża", "krzywa wieza",
     )):
         return "region_zabkowice"

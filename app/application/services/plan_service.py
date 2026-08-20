@@ -256,9 +256,8 @@ _WENA_DEFAULT_COORDS = (50.9329, 17.2924)
 _OLAWA_NAME_MARKERS = ("oław", "olaw", "wena")
 _OLAWA_DEFAULT_COORDS = (50.9430, 17.2956)
 _ZABKOWICE_NAME_MARKERS = (
-    # Deliberately narrow: widening this to the "ząbkowic" stem packs all four
-    # Kotlina stops into one day and leaves the second Ząbkowice day with a
-    # single POI. Distance-based detection covers the rest.
+    # Narrow on purpose: the "ząbkowic" stem packs every Kotlina stop into one
+    # day. Region detection for repeats uses _timeline_satellite_kind instead.
     "ząbkowice", "zabkowice", "frankenstein",
     "krzywa wieża", "krzywa wieza",
 )
@@ -311,6 +310,38 @@ def _is_zabkowice_stop_name(name: str) -> bool:
 def _is_brzeg_stop_name(name: str) -> bool:
     nm = (name or "").lower()
     return any(k in nm for k in _BRZEG_NAME_MARKERS)
+
+
+def _timeline_satellite_kind(name: str) -> Optional[str]:
+    """FIX #281: which Wrocław day-trip region a stop belongs to, if any."""
+    nm = (name or "").lower()
+    if _is_olawa_stop_name(nm):
+        return "olawa"
+    if _is_wojslawice_stop_name(nm):
+        return "wojslawice"
+    if any(k in nm for k in (
+        "ząbkowic", "zabkowic", "frankenstein",
+        "krzywa wieża", "krzywa wieza",
+    )):
+        return "zabkowice"
+    if _is_brzeg_stop_name(nm):
+        return "brzeg"
+    if _is_near_satellite_stop_name(nm):
+        return "near"
+    return None
+
+
+def _day_items_satellite_kind(items: list) -> Optional[str]:
+    counts: Dict[str, int] = {}
+    for it in items or []:
+        if not _is_timeline_attraction(it):
+            continue
+        k = _timeline_satellite_kind(getattr(it, "name", "") or "")
+        if k:
+            counts[k] = counts.get(k, 0) + 1
+    if not counts:
+        return None
+    return max(counts, key=counts.get)
 
 
 def _is_gniezno_stop_name(name: str) -> bool:
@@ -7137,22 +7168,24 @@ class PlanService:
             }
             # Never let the final densify pull a POI that another day already
             # shows (client: "unikamy regresji duplikacji").
-            _used280 = {
-                _fold_place_label(getattr(_it, "name", None))
-                for _d in days for _it in (_d.items or [])
-                if _is_timeline_attraction(_it)
-            }
-            _pool280 = [
-                p for p in (all_pois_dict or [])
-                if _fold_place_label(p.get("name")) not in _used280
-            ]
+            _used280: set = set()
+            _used_kinds280: set = set()
             _days280: List[DayPlan] = []
             for _d280 in days:
                 _items280 = list(_d280.items or [])
+                _pool280 = [
+                    p for p in (all_pois_dict or [])
+                    if _fold_place_label(p.get("name")) not in _used280
+                ]
                 _it280, _note280 = self._finalize_client_day_invariants(
                     _items280,
-                    {**_ctx280, "date": getattr(_d280, "date", None)
-                        or _ctx280.get("date")},
+                    {
+                        **_ctx280,
+                        "date": getattr(_d280, "date", None)
+                            or _ctx280.get("date"),
+                        "blocked_satellite_kinds": set(_used_kinds280),
+                        "trip_attraction_names": set(_used280),
+                    },
                     day_num=_d280.day,
                     pool=_pool280,
                     user=user,
@@ -7160,6 +7193,9 @@ class PlanService:
                         _final_coord_map, _items280,
                     ),
                 )
+                _kind280 = _day_items_satellite_kind(_it280)
+                if _kind280:
+                    _used_kinds280.add(_kind280)
                 for _new280 in _it280:
                     if _is_timeline_attraction(_new280):
                         _used280.add(
@@ -7179,6 +7215,14 @@ class PlanService:
                     weekday=getattr(_d280, "weekday", None),
                 ))
             days = _days280
+            try:
+                preference_coverage = self._compute_preference_coverage(
+                    days,
+                    list((user or {}).get("preferences") or []),
+                    all_pois_dict,
+                )
+            except Exception:
+                pass
         except Exception as _exc280:
             print(
                 f"[FIX #280] day invariants finalize failed "
@@ -16037,7 +16081,8 @@ class PlanService:
             # Don't paper over multi-hour blanks even with partial — attraction fill.
             if (hole_end - hole_start) > 150 and allow_partial:
                 continue
-            # FIX #260: morning holes must not get "Popołudniowa przerwa".
+            # FIX #260/#281: morning holes must not get "Popołudniowa przerwa"
+            # or "Oddech w środku dnia" even when attractions sit later that day.
             if _short_buf:
                 label, suggestions = ("Krótka przerwa / bufor", [])
                 is_tech = True
@@ -16045,9 +16090,7 @@ class PlanService:
                 table = self._FT253_EVENING
                 label, suggestions = table[(day_num + idx) % len(table)]
                 is_tech = False
-            elif hole_start < 12 * 60 and not any(
-                _is_timeline_attraction(x) for x in items
-            ):
+            elif hole_start < 12 * 60:
                 table = self._FT253_MORNING
                 label, suggestions = table[(day_num + idx) % len(table)]
                 is_tech = False
@@ -17186,11 +17229,50 @@ class PlanService:
                 out.append(it)
                 continue
             try:
+                new_end = time_to_minutes(st) + min_min
                 out.append(it.model_copy(update={
-                    "end_time": minutes_to_time(time_to_minutes(st) + min_min),
+                    "end_time": minutes_to_time(new_end),
                     "duration_min": min_min,
                 }))
-                print(f"[FIX #259] Day {day_num}: lunch {dur}→{min_min} min")
+                delta = min_min - dur
+                print(
+                    f"[FIX #259/#281] Day {day_num}: lunch {dur}→{min_min} min"
+                )
+                # Shift everything after this lunch so the extra minutes
+                # don't collide with the next transit / attraction.
+                shifted: List[Any] = []
+                for later in items[len(out):]:
+                    tv = _item_type_value(later)
+                    if tv == ItemType.DAY_END.value:
+                        t = getattr(later, "time", None)
+                        try:
+                            later = later.model_copy(update={
+                                "time": minutes_to_time(
+                                    time_to_minutes(t) + delta
+                                ),
+                            }) if t else later
+                        except Exception:
+                            pass
+                        shifted.append(later)
+                        continue
+                    upd = {}
+                    for fld in ("start_time", "end_time"):
+                        raw = getattr(later, fld, None)
+                        if not raw:
+                            continue
+                        try:
+                            upd[fld] = minutes_to_time(
+                                time_to_minutes(raw) + delta
+                            )
+                        except Exception:
+                            pass
+                    try:
+                        shifted.append(
+                            later.model_copy(update=upd) if upd else later
+                        )
+                    except Exception:
+                        shifted.append(later)
+                return out + shifted
             except Exception:
                 out.append(it)
         return out
@@ -17737,6 +17819,10 @@ class PlanService:
             except Exception:
                 slack = 0
             shift = min(dur - gap, slack)
+            if _timeline_satellite_kind(name) or dist_km >= 20:
+                # FIX #281: always make room for the hub → satellite drive,
+                # even when the evening is already full (clamp/early-close later).
+                shift = dur - gap
             if shift > 0:
                 ordered = self._shift_items_from(ordered, first_idx, shift)
                 attr_st += shift
@@ -19110,6 +19196,15 @@ class PlanService:
                     break
         if not kind:
             return items
+        blocked = {
+            str(x) for x in (context.get("blocked_satellite_kinds") or set())
+        }
+        if kind in blocked:
+            print(
+                f"[FIX #281] Day {day_num}: skip completing {kind} — "
+                f"region already used on an earlier day"
+            )
+            return items
         if day_num <= 1:
             return self._ensure_far_excursion_return(
                 items, context, day_num=day_num,
@@ -19587,6 +19682,7 @@ class PlanService:
         ordered = self._sort_items_by_time(list(items))
         markers = (ItemType.DAY_START.value, ItemType.DAY_END.value)
         first_real = None
+        first_it = None
         for it in ordered:
             tv = _item_type_value(it)
             if tv in markers or tv == ItemType.FREE_TIME.value:
@@ -19598,9 +19694,15 @@ class PlanService:
                 first_real = time_to_minutes(st)
             except Exception:
                 return items
+            first_it = it
             break
         if first_real is None:
             return items
+        # FIX #281: never eat the Wrocław → satellite drive by sliding a far
+        # attraction onto 09:00 (client D3 teleported into Ząbkowice).
+        if first_it is not None and _is_timeline_attraction(first_it):
+            if _timeline_satellite_kind(getattr(first_it, "name", "") or ""):
+                return items
         gap = first_real - day_start
         if gap < 30:
             return items
@@ -19723,9 +19825,7 @@ class PlanService:
                     table = self._FT253_EVENING_POST_DINNER
                 elif hs >= 19 * 60:
                     table = self._FT253_EVENING
-                elif hs < 12 * 60 and not any(
-                    _is_timeline_attraction(x) for x in items
-                ):
+                elif hs < 12 * 60:
                     table = self._FT253_MORNING
                 else:
                     table = (
@@ -19757,16 +19857,14 @@ class PlanService:
         *,
         day_num: int = 0,
     ) -> List[Any]:
-        """FIX #280: an evening block must not be called "w środku dnia".
+        """FIX #280/#281: free_time label must match the clock, not a leftover.
 
-        Client D2 flagged 19:00–20:00 labelled "Oddech w środku dnia".
+        Client D2: 09:00–09:35 labelled "Oddech w środku dnia".
+        Client D2 (prev): 19:00–20:00 with the same mid-day copy.
         """
         if not items:
             return items
-        wrong_for_evening = (
-            "srodku dnia", "poludniow", "przedpoludn", "poranek", "rano",
-            "srodek dnia",
-        )
+        winter = _is_winter_plan_context(context)
         dinner_done_at = None
         for it in items:
             if _item_type_value(it) != ItemType.DINNER_BREAK.value:
@@ -19775,9 +19873,15 @@ class PlanService:
                 dinner_done_at = time_to_minutes(getattr(it, "end_time", None) or "")
             except Exception:
                 dinner_done_at = None
+        mid_markers = ("srodku dnia", "srodek dnia", "poludniow", "popoludniow")
+        morning_markers = ("poranek", "poranna", "rano")
+        evening_markers = ("wieczor", "po kolacji")
         out: List[Any] = []
         for idx, it in enumerate(items):
             if _item_type_value(it) != ItemType.FREE_TIME.value:
+                out.append(it)
+                continue
+            if int(getattr(it, "duration_min", 0) or 0) < 15:
                 out.append(it)
                 continue
             try:
@@ -19785,18 +19889,29 @@ class PlanService:
             except Exception:
                 out.append(it)
                 continue
-            if st_m < 17 * 60 or int(getattr(it, "duration_min", 0) or 0) < 20:
-                out.append(it)
-                continue
             folded = _fold_place_label(getattr(it, "label", None))
-            if not any(k in folded for k in wrong_for_evening):
+            if st_m < 12 * 60:
+                slot = "morning"
+                table = self._FT253_MORNING
+                wrong = mid_markers + evening_markers
+            elif st_m >= 17 * 60:
+                slot = "evening"
+                table = (
+                    self._FT253_EVENING_POST_DINNER
+                    if dinner_done_at is not None and st_m >= dinner_done_at - 5
+                    else self._FT253_EVENING
+                )
+                wrong = mid_markers + morning_markers
+            else:
+                slot = "afternoon"
+                table = (
+                    self._FT253_AFTERNOON_WINTER if winter
+                    else self._FT253_AFTERNOON
+                )
+                wrong = morning_markers + evening_markers
+            if not any(k in folded for k in wrong):
                 out.append(it)
                 continue
-            table = (
-                self._FT253_EVENING_POST_DINNER
-                if dinner_done_at is not None and st_m >= dinner_done_at - 5
-                else self._FT253_EVENING
-            )
             label, suggestions = table[(day_num + idx) % len(table)]
             try:
                 out.append(it.model_copy(update={
@@ -19804,7 +19919,7 @@ class PlanService:
                     "suggestions": list(suggestions),
                 }))
                 print(
-                    f"[FIX #280] Day {day_num}: relabelled evening free_time "
+                    f"[FIX #281] Day {day_num}: relabelled {slot} free_time "
                     f"@{getattr(it, 'start_time', '?')} → {label!r}"
                 )
             except Exception:
@@ -19887,6 +20002,40 @@ class PlanService:
         if not items:
             return items, None
         work = self._sort_items_by_time(list(items))
+        blocked = {
+            str(x) for x in (context.get("blocked_satellite_kinds") or set())
+        }
+        dropped_names = {
+            (getattr(it, "name", "") or "").strip().lower()
+            for it in work
+            if _is_timeline_attraction(it)
+            and (_timeline_satellite_kind(getattr(it, "name", "") or "") or "")
+            in blocked
+        }
+        if dropped_names:
+            kept: List[Any] = []
+            for it in work:
+                if (
+                    _is_timeline_attraction(it)
+                    and (getattr(it, "name", "") or "").strip().lower()
+                    in dropped_names
+                ):
+                    continue
+                if _item_type_value(it) == ItemType.TRANSIT.value:
+                    frm = (getattr(it, "from_location", "") or "").strip().lower()
+                    to = (getattr(it, "to_location", "") or "").strip().lower()
+                    if frm in dropped_names or to in dropped_names:
+                        continue
+                kept.append(it)
+            print(
+                f"[FIX #281] Day {day_num}: dropped repeat satellite "
+                f"stops {sorted(dropped_names)}"
+            )
+            work = kept
+            try:
+                work = self._clear_far_daytrip_meals(work, day_num=day_num)
+            except Exception:
+                pass
         work = self._normalize_transit_mode_source(work, day_num=day_num)
         work = self._sanitize_walk_leg_durations(
             work, coord_map, day_num=day_num,
@@ -19923,9 +20072,37 @@ class PlanService:
                         f"[FIX #280] Day {day_num}: leg repair after inject "
                         f"failed ({type(exc).__name__}: {exc})"
                     )
+            n_attr = sum(1 for x in work if _is_timeline_attraction(x))
+            if n_attr < 2:
+                try:
+                    nxt = self._inject_attraction_into_free_time(
+                        work,
+                        pool,
+                        {
+                            **context,
+                            "allow_pre_meal_inject": True,
+                            "allow_soft_profile": True,
+                        },
+                        user or {},
+                        day_num=day_num,
+                    )
+                    if nxt is not work:
+                        work = nxt
+                except Exception:
+                    pass
         work = self._pull_day_forward_to_start(work, context, day_num=day_num)
+        try:
+            work = self._ensure_leading_transit(
+                work, coord_map or {}, context, day_num=day_num,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #281] Day {day_num}: leading transit skipped "
+                f"({type(exc).__name__}: {exc})"
+            )
         work = self._ensure_far_excursion_return(work, context, day_num=day_num)
         work = self._remove_timeline_overlaps(work, day_num)
+        work = self._enforce_minimum_lunch_duration(work, day_num=day_num)
         work = self._merge_abutting_free_time_hard(
             work, day_num=day_num, max_gap=6,
         )
@@ -20308,7 +20485,7 @@ class PlanService:
         for i, it in enumerate(ordered_ft):
             if _item_type_value(it) != ItemType.FREE_TIME.value:
                 continue
-            if int(getattr(it, "duration_min", 0) or 0) < 45:
+            if int(getattr(it, "duration_min", 0) or 0) < 40:
                 continue
             # FIX #263: never plant a POI into the buffer between a meal
             # approach and the meal (creates Mamuta with no Mamuta→lunch leg).
@@ -20356,7 +20533,7 @@ class PlanService:
             ft_blocks = [
                 (i, it) for i, it in enumerate(ordered_ft)
                 if _item_type_value(it) == ItemType.FREE_TIME.value
-                and int(getattr(it, "duration_min", 0) or 0) >= 45
+                and int(getattr(it, "duration_min", 0) or 0) >= 40
                 and time_to_minutes(getattr(it, "start_time", None) or "00:00")
                 >= last_meal_end
             ]
@@ -20445,6 +20622,25 @@ class PlanService:
             _is_kornik_stop_name(getattr(it, "name", "") or "")
             for it in items if _is_timeline_attraction(it)
         )
+        day_olawa = any(
+            _is_olawa_stop_name(getattr(it, "name", "") or "")
+            for it in items if _is_timeline_attraction(it)
+        )
+        day_wojs = any(
+            _is_wojslawice_stop_name(getattr(it, "name", "") or "")
+            for it in items if _is_timeline_attraction(it)
+        )
+        day_zabk = any(
+            _is_zabkowice_stop_name(getattr(it, "name", "") or "")
+            for it in items if _is_timeline_attraction(it)
+        )
+        day_brzeg = any(
+            _is_brzeg_stop_name(getattr(it, "name", "") or "")
+            for it in items if _is_timeline_attraction(it)
+        )
+        blocked_kinds = {
+            str(x) for x in (context.get("blocked_satellite_kinds") or set())
+        }
         ranked: List[tuple] = []
         for poi in pool:
             pname = (poi.get("name") or "").strip().lower()
@@ -20460,8 +20656,15 @@ class PlanService:
                 if not (
                     (day_korn and _is_kornik_stop_name(pname))
                     or (day_gniez and _is_gniezno_stop_name(pname))
+                    or (day_olawa and _is_olawa_stop_name(pname))
+                    or (day_wojs and _is_wojslawice_stop_name(pname))
+                    or (day_zabk and _is_zabkowice_stop_name(pname))
+                    or (day_brzeg and _is_brzeg_stop_name(pname))
                 ):
                     continue
+            cand_kind = _timeline_satellite_kind(poi.get("name") or pname)
+            if cand_kind and cand_kind in blocked_kinds:
+                continue
             # FIX #263: density rescue may soften profile denies (empty afternoons).
             if (
                 should_deny_poi_for_profile(poi, user)
@@ -20535,6 +20738,17 @@ class PlanService:
                     continue
             # Prefer greens / soft culture for relax solo.
             score = 1.0  # any valid city POI beats leaving a 3h hole
+            if "nature_landscape" in _prefs_cap and any(k in pname for k in (
+                "arboretum", "dolina tatarska", "park szczytnicki",
+                "wyspa słodowa", "wyspa slodowa", "ogród japoński",
+                "ogrod japonski", "ogród botaniczny", "ogrod botaniczny",
+                "pergola",
+            )):
+                score += 12.0
+            if day_wojs and any(k in pname for k in (
+                "arboretum", "dolina tatarska", "wojsław", "wojslaw",
+            )):
+                score += 80.0
             tg = str((user or {}).get("target_group") or "").lower()
             if tg != "family_kids" and any(k in pname for k in (
                 "loopy", "pixel", "trampoline", "sala zabaw", "park rozrywki",
@@ -20694,8 +20908,12 @@ class PlanService:
             ):
                 continue
             try:
-                if context.get("date") and not _is_open_inj(
-                    poi, ft_st, span, context.get("season") or "winter", context,
+                if (
+                    context.get("date")
+                    and not context.get("complete_daytrip")
+                    and not _is_open_inj(
+                        poi, ft_st, span, context.get("season") or "winter", context,
+                    )
                 ):
                     continue
             except Exception:

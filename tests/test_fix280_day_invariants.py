@@ -258,6 +258,73 @@ def test_evening_block_is_not_labelled_mid_day():
     assert "srodku dnia" not in _fold_place_label(label)
 
 
+def test_morning_block_is_not_labelled_mid_day():
+    """Client D2: 09:00–09:35 'Oddech w środku dnia'."""
+    items = [
+        DayStartItem(time="09:00"),
+        _ft("09:00", "09:35", 35, "Oddech w środku dnia"),
+        _attr("ZOO Wrocław", "09:35", "11:36", 121),
+    ]
+    out = _svc()._relabel_free_time_by_slot(items, CTX, day_num=2)
+    label = next(
+        it.label for it in out
+        if getattr(it, "type", None) == ItemType.FREE_TIME
+    )
+    folded = _fold_place_label(label)
+    assert "srodku dnia" not in folded
+    assert "popoludniow" not in folded
+
+
+def test_short_lunch_is_stretched_to_40():
+    """Client D4: lunch only 25 min."""
+    items = [
+        _attr("Rynek w Oławie", "12:19", "12:49", 30, lat=50.94, lng=17.29),
+        _lunch("14:08", "14:33", 25, "Przystanek ze smakiem",
+               lat=50.94, lng=17.29),
+        _transit("14:33", "15:18", 45, "Przystanek ze smakiem",
+                 "Wrocław centrum", TransitMode.CAR, "estimated_road"),
+        DayEndItem(time="15:18"),
+    ]
+    out = _svc()._enforce_minimum_lunch_duration(items, day_num=4)
+    lunch = next(
+        it for it in out
+        if getattr(it, "type", None) == ItemType.LUNCH_BREAK
+    )
+    assert lunch.duration_min >= 40
+    trans = next(
+        it for it in out if getattr(it, "type", None) == ItemType.TRANSIT
+    )
+    assert trans.start_time >= lunch.end_time
+
+
+def test_wena_is_an_olawa_stop():
+    assert _is_olawa_stop_name("Muzeum Motoryzacji Wena")
+    from app.domain.planner.engine import poi_geo_region_key
+    assert poi_geo_region_key({"name": "Muzeum Motoryzacji Wena", "city": "Wrocław"}) == "region_olawa"
+
+
+def test_repeat_olawa_day_is_stripped():
+    """Client D7: Wena again after an Oława day, with no Wrocław drive."""
+    items = [
+        DayStartItem(time="09:00"),
+        _attr("Muzeum Motoryzacji Wena", "09:00", "10:30", 90,
+              lat=50.9329, lng=17.2924),
+        DayEndItem(time="10:30"),
+    ]
+    out, _ = _svc()._finalize_client_day_invariants(
+        items,
+        {**CTX, "blocked_satellite_kinds": {"olawa"}},
+        day_num=7,
+        pool=[],
+        coord_map={},
+    )
+    names = [
+        getattr(it, "name", "") for it in out
+        if getattr(it, "type", None) == ItemType.ATTRACTION
+    ]
+    assert not any("Wena" in (n or "") for n in names)
+
+
 def test_every_gap_gets_a_name():
     """Client D4: 14:40–15:02 free, then nothing until 16:02."""
     items = [
@@ -438,6 +505,13 @@ def test_olawa_name_variants_group_together():
     assert _is_olawa_stop_name("Izba Muzealna Ziemi Oławskiej")
     assert _is_olawa_stop_name("Muzeum Motoryzacji Wena")
     assert not _is_olawa_stop_name("Rynek we Wrocławiu")
+
+
+def test_zabkowice_inflected_name_groups():
+    from app.application.services.plan_service import _timeline_satellite_kind
+    assert _timeline_satellite_kind("Rynek w Ząbkowicach Śląskich") == "zabkowice"
+    assert _timeline_satellite_kind("Słoneczny Park Wodny w Ząbkowicach Śląskich") == "zabkowice"
+    assert _timeline_satellite_kind("Laboratorium dr. Frankensteina") == "zabkowice"
 
 
 # --- 7. the pass as a whole is idempotent --------------------------------

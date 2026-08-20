@@ -85,6 +85,7 @@ def poi_hub_norm(poi: Dict[str, Any]) -> str:
 # FIX #276/#277: hub city → satellite towns from the client's expanded sheets.
 WROCLAW_SATELLITE_CITIES = (
     "Niemcza",
+    "Wojsławice",
     "Oława",
     "Brzeg",
     "Ząbkowice Śląskie",
