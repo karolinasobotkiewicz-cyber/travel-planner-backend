@@ -833,6 +833,21 @@ def _quality_first_trip(context: Optional[Dict[str, Any]]) -> bool:
         return False
 
 
+def _early_close_enabled(context: Optional[Dict[str, Any]]) -> bool:
+    """FIX #282: short city trips must not pad to 20:00 with empty free_time.
+
+    Inject-skipping still uses `_quality_first_trip` (5+ only) so 2–3 day
+    Wrocław days keep filling real holes.
+    """
+    if _quality_first_trip(context):
+        return True
+    try:
+        from app.domain.planner.city_copy import is_city_tourism_trip
+        return is_city_tourism_trip(context)
+    except Exception:
+        return False
+
+
 def _is_winter_plan_context(context: Optional[Dict[str, Any]]) -> bool:
     """FIX #278: Feb/winter copy must not suggest ice cream or picnic blankets."""
     ctx = context or {}
@@ -847,6 +862,45 @@ def _is_winter_plan_context(context: Optional[Dict[str, Any]]) -> bool:
         return month in (11, 12, 1, 2, 3)
     except Exception:
         return False
+
+
+_WINTER_PICNIC_MARKERS = (
+    "koc", "food truck", "foodtruck", "cień pod", "cien pod",
+    "w ciepłe dni", "w cieple dni", "piknik", "kocem",
+)
+
+
+def _sanitize_winter_attraction_copy(
+    name: Any,
+    desc: Optional[str],
+    tip: Optional[str],
+    *,
+    user: Optional[Dict[str, Any]] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> tuple:
+    """FIX #282: Wyspa Słodowa in February must not get a summer picnic tip."""
+    ctx = dict(context or {})
+    if user:
+        ctx.setdefault("date", user.get("start_date") or user.get("date"))
+        ctx.setdefault("start_date", user.get("start_date") or user.get("date"))
+        ctx.setdefault("season", user.get("season"))
+    if not _is_winter_plan_context(ctx):
+        return desc, tip
+    nm = str(name or "").lower()
+    wyspa = "wyspa słodowa" in nm or "wyspa slodowa" in nm
+    winter_wyspa = (
+        "Zimą wyspa jest na krótki spacer — ciepła kurtka i kawa "
+        "w okolicy wystarczą."
+    )
+
+    def _scrub(text: Optional[str]) -> Optional[str]:
+        if not text:
+            return text
+        if not any(k in text.lower() for k in _WINTER_PICNIC_MARKERS):
+            return text
+        return winter_wyspa if wyspa else None
+
+    return _scrub(desc), _scrub(tip)
 
 
 def _snap_day_end_up(end_min: int) -> int:
@@ -891,7 +945,7 @@ def _early_close_note(
     day_num: int,
     num_days: int,
     city: str,
-) -> str:
+) -> Optional[str]:
     """FIX #278: honest copy when the day stops instead of fake free_time."""
     city_name = _city_genitive(city)
     names = [
@@ -901,7 +955,28 @@ def _early_close_note(
     ]
     names = [n for n in names if n]
     blob = " ".join(n.lower() for n in names)
+    lunch_end = None
+    for it in items:
+        if _item_type_value(it) != ItemType.LUNCH_BREAK.value:
+            continue
+        try:
+            lunch_end = time_to_minutes(getattr(it, "end_time", None) or "")
+        except Exception:
+            continue
+    after_lunch = []
+    if lunch_end is not None:
+        for it in items:
+            if not _is_timeline_attraction(it):
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                continue
+            if st >= lunch_end - 2:
+                after_lunch.append(it)
     if day_num <= 1:
+        if after_lunch:
+            return None
         return (
             f"Dziś trochę spokojniej. Po zwiedzaniu centrum zostawiamy Ci "
             f"popołudnie na własne odkrywanie {city_name}."
@@ -927,6 +1002,8 @@ def _early_close_note(
         joined = bits[0]
     else:
         joined = "zwiedzaniu"
+    if after_lunch:
+        return None
     return (
         f"Spokojniejsze popołudnie: po {joined} zostawiamy Ci resztę dnia "
         f"na odpoczynek albo spontaniczne odkrywanie centrum."
@@ -997,7 +1074,36 @@ def _generate_day_title(day_items: list, day_num: int, *, excursion_hint: bool =
         return f"{base} — luźniejszy dzień"
     return base
 
-# UAT Round 3 - FIX #1 (20.02.2026): Timeline Integrity Validator
+def _day_note_matches_timeline(note: Optional[str], items: list) -> Optional[str]:
+    """FIX #282: drop copy that claims an empty afternoon when POIs still follow."""
+    if not note:
+        return note
+    low = note.lower()
+    if not any(k in low for k in (
+        "reszta dnia", "popołudnie na własne", "zostawiamy ci",
+        "spokojne popołudnie", "luźniejsze popołudnie",
+    )):
+        return note
+    lunch_end = None
+    for it in items:
+        if _item_type_value(it) != ItemType.LUNCH_BREAK.value:
+            continue
+        try:
+            lunch_end = time_to_minutes(getattr(it, "end_time", None) or "")
+        except Exception:
+            continue
+    if lunch_end is None:
+        return note
+    for it in items:
+        if not _is_timeline_attraction(it):
+            continue
+        try:
+            st = time_to_minutes(getattr(it, "start_time", None) or "")
+        except Exception:
+            continue
+        if st >= lunch_end - 2:
+            return None
+    return note
 # Validates all items form non-overlapping sequential timeline
 # Detects overlaps: parking↔attraction, lunch↔attraction, free_time↔attraction
 # Client feedback: ALL 10 tests had parking overlaps, walk_time ignored
@@ -7183,6 +7289,7 @@ class PlanService:
                         **_ctx280,
                         "date": getattr(_d280, "date", None)
                             or _ctx280.get("date"),
+                        "current_day_num": _d280.day,
                         "blocked_satellite_kinds": set(_used_kinds280),
                         "trip_attraction_names": set(_used280),
                     },
@@ -7205,10 +7312,20 @@ class PlanService:
                     p for p in _pool280
                     if _fold_place_label(p.get("name")) not in _used280
                 ]
+                _title280 = _generate_day_title(
+                    _it280, _d280.day, excursion_hint=bool(_kind280),
+                )
+                _raw_note280 = (
+                    _note280 if _note280 is not None
+                    else getattr(_d280, "note", None)
+                )
+                _kept_note280 = _day_note_matches_timeline(
+                    _raw_note280, _it280,
+                )
                 _days280.append(DayPlan(
                     day=_d280.day,
-                    title=_d280.title,
-                    note=_note280 or getattr(_d280, "note", None),
+                    title=_title280 or _d280.title,
+                    note=_kept_note280,
                     items=_it280,
                     quality_badges=_d280.quality_badges,
                     date=getattr(_d280, "date", None),
@@ -10996,7 +11113,7 @@ class PlanService:
             ("wena", 30, 45),
         )
         named = next(((lo, hi) for m, lo, hi in _HOP_CAPS if m in blob), None)
-        if named:
+        if named and (item_dist >= 12 or item_dist <= 0.05):
             lo, hi = named
             need = min(hi, max(lo, cur))
             if need != cur:
@@ -11009,6 +11126,17 @@ class PlanService:
                 except Exception:
                     pass
             return it
+        if (not is_walk) and 0.4 <= item_dist <= 8 and cur >= 35:
+            need = max(8, int(item_dist / 35.0 * 60) + 8)
+            if cur > need + 15:
+                st = time_to_minutes(getattr(it, "start_time", "09:00") or "09:00")
+                try:
+                    return it.model_copy(update={
+                        "duration_min": need,
+                        "end_time": minutes_to_time(st + need),
+                    })
+                except Exception:
+                    pass
         if (not is_walk) and item_dist >= 25 and cur > 75:
             need = min(75, max(45, int(item_dist / 60.0 * 60 + 10)))
             if cur > need:
@@ -11038,9 +11166,11 @@ class PlanService:
                 need = min(90, int(item_dist * 1.4) + 10)
             elif item_dist >= 8:
                 need = 35
+            elif item_dist >= 3:
+                need = max(cur, min(25, int(item_dist / 35.0 * 60) + 8))
             else:
-                need = 45
-            if cur < need:
+                need = cur
+            if need != cur and cur < need:
                 st = time_to_minutes(getattr(it, "start_time", "09:00") or "09:00")
                 try:
                     print(
@@ -11449,10 +11579,37 @@ class PlanService:
             ("lednica", n_led),
         ]
         far_present = [(k, n) for k, n in far_counts if n]
+        if not far_present:
+            return items
+
+        def _first_start(kind: str) -> Optional[int]:
+            first = None
+            for it, knd in zip(attrs, kinds):
+                if knd != kind:
+                    continue
+                try:
+                    st = time_to_minutes(getattr(it, "start_time", None) or "")
+                except Exception:
+                    continue
+                if first is None or st < first:
+                    first = st
+            return first
+
+        keep = None
         if len(far_present) >= 2:
             keep = max(far_present, key=lambda x: x[1])[0]
         elif len(far_present) == 1 and n_city:
-            keep = far_present[0][0]
+            keep_far, n_far = far_present[0]
+            first_far_pre = _first_start(keep_far)
+            _wro_sats = ("zabkowice", "brzeg", "wojslawice", "olawa")
+            # FIX #282: Wrocław mid-day hops / single-castle trips stay in the city.
+            # Ojców/Wieliczka keep the previous "the excursion wins" rule.
+            if keep_far in _wro_sats and first_far_pre is not None and first_far_pre > 12 * 60:
+                keep = "city"
+            elif keep_far in _wro_sats and n_far < 2:
+                keep = "city"
+            else:
+                keep = keep_far
         if keep is None:
             return items
         first_far = None
@@ -13805,6 +13962,9 @@ class PlanService:
                 "warsztat", "rodzin", "z dziećmi", "z dziecmi",
             )):
                 tip = None
+        desc, tip = _sanitize_winter_attraction_copy(
+            poi_dict.get("name") or "", desc, tip, user=user,
+        )
         return desc, tip
 
     def _strip_weak_preference_fillers(
@@ -17020,7 +17180,8 @@ class PlanService:
                 floor = max(floor, 60)
             if (
                 ("ogród zoologiczny" in nm_l or "ogrod zoologiczny" in nm_l
-                 or ("zoo" in nm_l and "mini" not in nm_l))
+                 or ("zoo" in nm_l and "mini" not in nm_l
+                     and "zoo team" not in nm_l and "zooteam" not in nm_l))
                 and (style == "relax" or group in ("family_kids", "seniors"))
             ):
                 # FIX #267: family kids need ≥150; seniors/relax keep 120.
@@ -17046,6 +17207,14 @@ class PlanService:
                 floor = max(floor, 60)
             if "laser tag" in nm_l or "lasertag" in nm_l:
                 floor = max(floor, 60)
+            if "kolejkowo" in nm_l:
+                floor = max(floor, 60)
+            if "panorama racławicka" in nm_l or "panorama raclawicka" in nm_l:
+                floor = max(floor, 30)
+            if "świat iluzji" in nm_l or "swiat iluzji" in nm_l or "muzeum iluzji" in nm_l:
+                floor = max(floor, 45)
+            if "rynek we wrocławiu" in nm_l or "rynek we wroclawiu" in nm_l:
+                floor = max(floor, 45)
             if "pieskowa" in nm_l:
                 floor = max(floor, 75)
                 # FIX #271: a 33-min castle look is worse than dropping it.
@@ -17056,6 +17225,16 @@ class PlanService:
                     )
                     i += 1
                     continue
+            if (
+                ("aquapark" in nm_l or "park wodny" in nm_l)
+                and dur < 60
+            ):
+                print(
+                    f"[FIX #282] Day {day_num}: dropped crushed water park "
+                    f"{nm} ({dur}min)"
+                )
+                i += 1
+                continue
 
             target = dur
             if cap is not None and target > cap:
@@ -19165,6 +19344,166 @@ class PlanService:
             out.append(it)
         return out
 
+    def _strip_disallowed_wro_daytrips(
+        self,
+        items: List[Any],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #282: drop satellite stops the quota forbids (2–3 day Wrocław)."""
+        if not items:
+            return items
+        try:
+            from app.domain.planner.engine import city_daytrip_quota
+            quota = city_daytrip_quota(context)
+        except Exception:
+            quota = 99
+        kind = _day_items_satellite_kind(items)
+        blocked = {
+            str(x) for x in (context.get("blocked_satellite_kinds") or set())
+        }
+        drop = False
+        if kind and quota <= 0:
+            drop = True
+        if kind and day_num <= 1 and quota < 99:
+            drop = True
+        if kind and kind in blocked:
+            drop = True
+        if not drop:
+            return items
+        dropped = set()
+        out: List[Any] = []
+        for it in items:
+            if _is_timeline_attraction(it):
+                k = _timeline_satellite_kind(getattr(it, "name", "") or "")
+                if k:
+                    dropped.add((getattr(it, "name", "") or "").strip().lower())
+                    continue
+            if _item_type_value(it) == ItemType.TRANSIT.value:
+                frm = (getattr(it, "from_location", "") or "").strip().lower()
+                to = (getattr(it, "to_location", "") or "").strip().lower()
+                if any(
+                    _timeline_satellite_kind(x)
+                    for x in (frm, to)
+                    if x
+                ):
+                    continue
+            out.append(it)
+        if dropped:
+            print(
+                f"[FIX #282] Day {day_num}: stripped disallowed day-trip "
+                f"({kind}: {sorted(dropped)[:4]})"
+            )
+            try:
+                out = self._clear_far_daytrip_meals(out, day_num=day_num)
+            except Exception:
+                pass
+        return out
+
+    def _apply_seasonal_copy_to_items(
+        self,
+        items: List[Any],
+        context: Dict[str, Any],
+        *,
+        user: Optional[Dict[str, Any]] = None,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #282: rewrite summer picnic tips on winter city POIs."""
+        if not items or not _is_winter_plan_context(context):
+            return items
+        out: List[Any] = []
+        n = 0
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            desc, tip = _sanitize_winter_attraction_copy(
+                getattr(it, "name", "") or "",
+                getattr(it, "description_short", None),
+                getattr(it, "pro_tip", None),
+                user=user,
+                context=context,
+            )
+            upd = {}
+            if desc != getattr(it, "description_short", None):
+                upd["description_short"] = desc
+            if tip != getattr(it, "pro_tip", None):
+                upd["pro_tip"] = tip
+            if not upd:
+                out.append(it)
+                continue
+            try:
+                out.append(it.model_copy(update=upd))
+                n += 1
+            except Exception:
+                out.append(it)
+        if n:
+            print(f"[FIX #282] Day {day_num}: winter-scrubbed {n} POI tip(s)")
+        return out
+
+    def _drop_over_budget_paid_attractions(
+        self,
+        items: List[Any],
+        user: Optional[Dict[str, Any]],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #282: drop the dearest paid stop when the day blows the limit."""
+        if not items or not user:
+            return items
+        limit = user.get("daily_limit")
+        if limit is None:
+            budget = user.get("budget") or {}
+            if isinstance(budget, dict):
+                limit = budget.get("daily_limit")
+        try:
+            limit = float(limit)
+        except (TypeError, ValueError):
+            return items
+        if limit <= 0:
+            return items
+        paid = []
+        total = 0.0
+        for it in items:
+            if not _is_timeline_attraction(it):
+                continue
+            try:
+                cost = float(getattr(it, "cost_estimate", 0) or 0)
+            except (TypeError, ValueError):
+                cost = 0.0
+            total += cost
+            if cost > 0:
+                paid.append((cost, it))
+        if total <= limit * 1.05 or not paid:
+            return items
+        paid.sort(key=lambda x: x[0], reverse=True)
+        drop_names = set()
+        running = total
+        for cost, it in paid:
+            if running <= limit:
+                break
+            nm = (getattr(it, "name", "") or "").lower()
+            if any(k in nm for k in ("rynek", "panorama", "must")):
+                continue
+            drop_names.add((getattr(it, "name", "") or "").strip().lower())
+            running -= cost
+        if not drop_names:
+            return items
+        out = []
+        for it in items:
+            if (
+                _is_timeline_attraction(it)
+                and (getattr(it, "name", "") or "").strip().lower() in drop_names
+            ):
+                continue
+            out.append(it)
+        print(
+            f"[FIX #282] Day {day_num}: dropped over-budget "
+            f"{sorted(drop_names)} ({total:.0f}→{running:.0f}/{limit:.0f})"
+        )
+        return out
+
     def _complete_thin_daytrip(
         self,
         items: List[Any],
@@ -19196,6 +19535,17 @@ class PlanService:
                     break
         if not kind:
             return items
+        try:
+            from app.domain.planner.engine import city_daytrip_quota
+            if city_daytrip_quota(context) <= 0 or day_num <= 1:
+                return self._ensure_far_excursion_return(
+                    items, context, day_num=day_num,
+                )
+        except Exception:
+            if day_num <= 1:
+                return self._ensure_far_excursion_return(
+                    items, context, day_num=day_num,
+                )
         blocked = {
             str(x) for x in (context.get("blocked_satellite_kinds") or set())
         }
@@ -19458,11 +19808,7 @@ class PlanService:
                 ) or ""
             ).lower()
             dur = int(getattr(it, "duration_min", 0) or 0)
-            if (
-                _item_type_value(it) != ItemType.TRANSIT.value
-                or "walk" not in mode
-                or dur <= 35
-            ):
+            if _item_type_value(it) != ItemType.TRANSIT.value or "walk" not in mode:
                 out.append(it)
                 continue
             pair = self._transit_endpoint_coords(ordered, idx, coord_map or {})
@@ -19471,6 +19817,11 @@ class PlanService:
                 continue
             (lat1, lng1), (lat2, lng2) = pair
             km = haversine_distance(lat1, lng1, lat2, lng2)
+            # FIX #282: 38 m walked in 35 min is still broken — don't skip
+            # just because duration is already "only" 35.
+            if dur <= 12 and km >= 0.15:
+                out.append(it)
+                continue
             if km > 3.0:
                 new_dur = max(10, int(round(km / 45.0 * 60)) + 5)
                 update = {
@@ -20002,6 +20353,10 @@ class PlanService:
         if not items:
             return items, None
         work = self._sort_items_by_time(list(items))
+        try:
+            work = self._force_known_good_poi_coords(work, day_num=day_num)
+        except Exception:
+            pass
         blocked = {
             str(x) for x in (context.get("blocked_satellite_kinds") or set())
         }
@@ -20041,6 +20396,19 @@ class PlanService:
             work, coord_map, day_num=day_num,
         )
         work = self._cap_satellite_market_squares(work, day_num=day_num)
+        if user is not None:
+            try:
+                work = self._cap_stretched_attraction_durations(
+                    work, day_num=day_num, user=user,
+                )
+            except Exception:
+                pass
+        try:
+            work = self._strip_disallowed_wro_daytrips(
+                work, context, day_num=day_num,
+            )
+        except Exception:
+            pass
         work = self._drop_duplicate_meal_stop(work, day_num=day_num)
         if pool:
             before = len(work)
@@ -20102,7 +20470,42 @@ class PlanService:
             )
         work = self._ensure_far_excursion_return(work, context, day_num=day_num)
         work = self._remove_timeline_overlaps(work, day_num)
+        try:
+            work = self._resit_late_lunch_after_morning_stop(
+                work, user, day_num=day_num,
+            )
+            work = _fix_late_lunch(work, latest_min=_lunch_latest_min(user))
+            work = self._convert_late_lunch_past_four(work, day_num=day_num)
+        except Exception:
+            pass
         work = self._enforce_minimum_lunch_duration(work, day_num=day_num)
+        try:
+            work = self._ensure_stop_to_stop_legs(
+                work, coord_map or {}, context, day_num=day_num, min_km=0.08,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._clamp_timeline_to_day_end(
+                work, context, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._apply_seasonal_copy_to_items(
+                work, context, user=user, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._drop_over_budget_paid_attractions(
+                work, user, day_num=day_num,
+            )
+            work = self._strip_transits_to_unscheduled_destinations(
+                work, day_num=day_num,
+            )
+        except Exception:
+            pass
         work = self._merge_abutting_free_time_hard(
             work, day_num=day_num, max_gap=6,
         )
@@ -20162,11 +20565,14 @@ class PlanService:
         _FIXES = (
             ("browary warszawskie", 52.2345, 20.9877, "Grzybowska 72A, 00-844 Warszawa"),
             ("pijalnia czekolady", 52.2335, 21.0168, "Szpitalna 8, 00-031 Warszawa"),
-            # FIX #265: Muzeum Świat Iluzji we Wrocławiu must not keep Warsaw GPS
-            ("muzeum świat iluzji we wrocławiu", 51.1069, 17.0773, "Świdnicka 36, 50-066 Wrocław"),
-            ("muzeum swiat iluzji we wroclawiu", 51.1069, 17.0773, "Świdnicka 36, 50-066 Wrocław"),
-            ("świat iluzji we wrocławiu", 51.1069, 17.0773, "Świdnicka 36, 50-066 Wrocław"),
-            ("swiat iluzji we wroclawiu", 51.1069, 17.0773, "Świdnicka 36, 50-066 Wrocław"),
+            # FIX #265/#282: Muzeum Świat Iluzji we Wrocławiu — Świdnicka 36
+            # is next to the Rynek, not Hala Stulecia (51.1069, 17.0773).
+            ("muzeum świat iluzji we wrocławiu", 51.1070, 17.0325, "Świdnicka 36, 50-066 Wrocław"),
+            ("muzeum swiat iluzji we wroclawiu", 51.1070, 17.0325, "Świdnicka 36, 50-066 Wrocław"),
+            ("świat iluzji we wrocławiu", 51.1070, 17.0325, "Świdnicka 36, 50-066 Wrocław"),
+            ("swiat iluzji we wroclawiu", 51.1070, 17.0325, "Świdnicka 36, 50-066 Wrocław"),
+            ("muzeum świat iluzji", 51.1070, 17.0325, "Świdnicka 36, 50-066 Wrocław"),
+            ("muzeum swiat iluzji", 51.1070, 17.0325, "Świdnicka 36, 50-066 Wrocław"),
             # FIX #271: Ojców NP — Excel sometimes stores these in Kraków.
             ("zamek w ojcowie", 50.2128, 19.8294, "Ojców 9, 32-047 Ojców"),
             ("zamek w ojcow", 50.2128, 19.8294, "Ojców 9, 32-047 Ojców"),
@@ -20210,6 +20616,10 @@ class PlanService:
                 if marker in nm:
                     # Wedel only — avoid other "pijalnia" rows.
                     if marker == "pijalnia czekolady" and "wedel" not in nm:
+                        continue
+                    if "iluzji" in marker and any(
+                        k in nm for k in ("warszaw", "warsaw")
+                    ):
                         continue
                     fixed = (lat, lng, addr)
                     break
@@ -20496,8 +20906,11 @@ class PlanService:
                     break
             ntv = _item_type_value(nxt) if nxt is not None else ""
             allow_pre_meal = bool(context.get("allow_pre_meal_inject"))
+            ft_dur = int(getattr(it, "duration_min", 0) or 0)
+            # FIX #282: a 3.5h hole before dinner is a real slot, not a buffer.
             if (
                 not allow_pre_meal
+                and ft_dur < 90
                 and ntv in (
                     ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
                 )
@@ -20665,6 +21078,17 @@ class PlanService:
             cand_kind = _timeline_satellite_kind(poi.get("name") or pname)
             if cand_kind and cand_kind in blocked_kinds:
                 continue
+            try:
+                from app.domain.planner.engine import should_block_city_daytrip_poi
+                if (
+                    should_block_city_daytrip_poi(
+                        poi, {**context, "current_day_num": day_num},
+                    )
+                    and not context.get("complete_daytrip")
+                ):
+                    continue
+            except Exception:
+                pass
             # FIX #263: density rescue may soften profile denies (empty afternoons).
             if (
                 should_deny_poi_for_profile(poi, user)
@@ -20678,6 +21102,8 @@ class PlanService:
                 if _rk_hard or any(k in pname for k in (
                     "świat iluzji", "swiat iluzji", "muzeum iluzji",
                     "hala stulecia", "topacz", "aquapark",
+                    "laser tag", "lasertag", "laser arena", "paintball",
+                    "park wodny", "słoneczny park",
                 )):
                     continue
             # FIX #266: never soft-inject rope parks / pool filler — client bans.
@@ -22794,9 +23220,17 @@ class PlanService:
                     f"[FIX #273] Day {day_num}: dropped crushed Zamek Piastowski ({dur}m)"
                 )
                 continue
-            if "wodny park tychy" in nm and dur < 40:
+            if (
+                ("aquapark" in nm or "park wodny" in nm or "wodny park" in nm)
+                and dur < 60
+            ):
                 print(
-                    f"[FIX #273] Day {day_num}: dropped crushed Wodny Park Tychy ({dur}m)"
+                    f"[FIX #282] Day {day_num}: dropped crushed water park ({dur}m)"
+                )
+                continue
+            if "kolejkowo" in nm and dur < 40:
+                print(
+                    f"[FIX #282] Day {day_num}: dropped crushed Kolejkowo ({dur}m)"
                 )
                 continue
             if "muzeum historii katowic" in nm and dur < 40:
@@ -23834,7 +24268,7 @@ class PlanService:
 
         Returns (items, note, day_end_hhmm). note/day_end are None when unchanged.
         """
-        if not items or not _quality_first_trip(context):
+        if not items or not _early_close_enabled(context):
             return items, None, None
         try:
             window_end = time_to_minutes(context.get("day_end") or "")
@@ -23905,7 +24339,7 @@ class PlanService:
         )
         print(
             f"[FIX #278] Day {day_num}: early day_end "
-            f"{minutes_to_time(new_end)} ({note[:48]}…)"
+            f"{minutes_to_time(new_end)} ({(note or '')[:48]}…)"
         )
         return self._sort_items_by_time(out), note, minutes_to_time(new_end)
 

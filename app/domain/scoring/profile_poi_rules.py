@@ -126,6 +126,9 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("swiat iluzji", "wro_swiat_iluzji"),
         ("muzeum iluzji", "wro_swiat_iluzji"),
         ("aquapark", "wro_aquapark"),
+        ("park wodny", "wro_aquapark"),
+        ("słoneczny park", "wro_aquapark"),
+        ("sloneczny park", "wro_aquapark"),
         ("zamek topacz", "wro_topacz"),
         ("muzeum motoryzacji i techniki zamek topacz", "wro_topacz"),
         ("topacz", "wro_topacz"),
@@ -241,6 +244,15 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
                     return False
                 return True
 
+    # FIX #282: water parks off city-sightseeing profiles (Wrocław json4 D4).
+    if any(k in name for k in ("aquapark", "park wodny", "wodny park", "słoneczny park")):
+        if "water_attractions" not in prefs and "kids_attractions" not in prefs:
+            if "active_sport" not in prefs:
+                if tg in ("solo", "seniors", "couples") or style in (
+                    "cultural", "balanced", "relax",
+                ):
+                    return True
+
     # FIX #265: Park Mamuta is kids-only — never for adult profiles.
     if "mamuta" in name and tg not in ("family_kids", "family"):
         return True
@@ -257,7 +269,13 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     # FIX #274: Flyspot / Laser Tag off seniors; Laser Tag needs active_sport.
     if tg == "seniors" and any(k in name for k in ("flyspot", "laser tag", "lasertag", "kosmopark")):
         return True
-    if any(k in name for k in ("laser tag", "lasertag")) and "active_sport" not in prefs:
+    _laser = (
+        "laser tag" in name or "lasertag" in name or "laser-tag" in name
+        or ("laser" in name and any(k in name for k in ("tag", "arena", "game", "factory")))
+    )
+    if _laser and "active_sport" not in prefs:
+        return True
+    if _laser and (style == "cultural" or tg == "couples") and "active_sport" not in prefs:
         return True
     if "flyspot" in name:
         limit = user.get("daily_limit")

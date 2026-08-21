@@ -661,6 +661,15 @@ def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
         "ogrod botaniczny", "bulwar", "aquapark",
     )):
         return True
+    # FIX #282: Wrocław history icons must actually cover history_mystery.
+    if pref == "history_mystery" and any(m in name for m in (
+        "panorama racławicka", "panorama raclawicka",
+        "ostrów tumski", "ostrow tumski",
+        "krypta", "arsenał", "arsenal",
+        "centrum historii zajezdnia", "zajezdnia",
+        "fort ", "twierdz",
+    )):
+        return True
     # FIX #262/#266 Warszawa: real underground = Cytadela / casemates / tunnels.
     # Client FIX #266: Muzeum Powstania + Kopiec must NOT fake-cover underground.
     if pref == "underground" and "park cytadela" not in name and any(m in name for m in (

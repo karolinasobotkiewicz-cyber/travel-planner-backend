@@ -2215,8 +2215,70 @@ def _is_signature_valley_hike(p: dict) -> bool:
     ))
 
 
+def city_daytrip_quota(context: dict | None) -> int:
+    """FIX #282: how many distinct far regions a city trip may visit.
+
+    99 = mountain / non-city trips keep the old far-region logic.
+    Wrocław: 2–3 days stay in the city; 4–5 days get at most one full
+    day-trip; 6+ days get at most two. Never used as a Day-1 opener.
+    Other city hubs: only the 2-day hard stop (Kraków 3-day Wieliczka stays).
+    """
+    if not context:
+        return 99
+    from app.domain.planner.city_copy import is_city_tourism_trip as _city282
+    if not _city282(context):
+        return 99
+    try:
+        n = int(context.get("num_days") or 1)
+    except (TypeError, ValueError):
+        n = 1
+    city = str(context.get("requested_city") or context.get("city") or "").lower()
+    wro = "wrocław" in city or "wroclaw" in city
+    if not wro:
+        return 0 if n <= 2 else 99
+    if n <= 3:
+        return 0
+    if n <= 5:
+        return 1
+    return 2
+
+
+def should_block_city_daytrip_poi(p: dict, context: dict | None) -> bool:
+    """FIX #282: day-trips are extras, never a mid-day hop, never Day 1."""
+    if not context:
+        return False
+    quota = city_daytrip_quota(context)
+    reg = poi_geo_region_key(p)
+    if not reg or reg not in _FAR_GEO_REGIONS:
+        return False
+    day_reg = context.get("day_geo_region")
+    if day_reg == reg:
+        return False
+    if quota >= 99:
+        return False
+    try:
+        day_num = int(context.get("current_day_num") or 0)
+    except (TypeError, ValueError):
+        day_num = 0
+    if quota <= 0:
+        return True
+    if day_num <= 1:
+        return True
+    used = context.get("global_geo_region_use_count") or {}
+    used_far = sum(
+        int(used.get(r) or 0) for r in _FAR_GEO_REGIONS if used.get(r)
+    )
+    if int(used.get(reg) or 0) >= 1:
+        return True
+    if used_far >= quota:
+        return True
+    return False
+
+
 def should_skip_poi_candidate(p: dict, context: dict | None) -> bool:
     """FIX #179: Combined hard filters for POI candidate selection."""
+    if should_block_city_daytrip_poi(p, context):
+        return True
     if should_block_consecutive_cluster_repeat(p, context):
         return True
     if should_block_geo_region_repeat(p, context):
@@ -2296,6 +2358,8 @@ def should_skip_gap_fill_candidate(
     allow_region_revisit: bool = False,
 ) -> bool:
     """Gap-fill filters; FIX #187b relaxes Spisz+Słowacja mix on last sparse Zone C day."""
+    if should_block_city_daytrip_poi(p, context):
+        return True
     if should_block_consecutive_cluster_repeat(p, context):
         return True
     if not allow_region_revisit and should_block_geo_region_repeat(p, context):
@@ -2972,6 +3036,11 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("pana tadeusza", 90),
         ("park mamuta", 75),
         ("kolejkowo", 60),
+        # FIX #282: ZOO TEAM is a workshop, not the city zoo.
+        ("zoo team", 60),
+        ("zooteam", 60),
+        ("baszta miejska", 60),
+        ("baszta", 60),
         ("movie gate", 90),
         # FIX #256: aquapark must not hit the generic "park " 90-min category cap.
         ("aquapark", 180),
@@ -3183,6 +3252,15 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("wena", 90),
         ("laser tag", 60),
         ("lasertag", 60),
+        # FIX #282: client visit lengths — don't trust a too-low Excel time_min.
+        ("kolejkowo", 60),
+        ("panorama racławicka", 30),
+        ("panorama raclawicka", 30),
+        ("świat iluzji", 45),
+        ("swiat iluzji", 45),
+        ("muzeum iluzji", 45),
+        ("rynek we wrocławiu", 60),
+        ("rynek we wroclawiu", 60),
         ("muzeum narodowe", 60),
         ("muzeum powozów", 60),
         ("muzeum powozow", 60),
@@ -3198,19 +3276,34 @@ def choose_duration(p, now, end, lunch_done, user=None):
             tmin = max(tmin, 90)
         if any(k in _poi_name_lower for k in ("wilanów", "wilanow", "wilanowie")):
             tmin = max(tmin, 120)
-        if "zoo" in _poi_name_lower and "mini" not in _poi_name_lower:
+        if (
+            "zoo" in _poi_name_lower
+            and "mini" not in _poi_name_lower
+            and "zoo team" not in _poi_name_lower
+            and "zooteam" not in _poi_name_lower
+        ):
             tmin = max(tmin, 120)
     # FIX #266: relax style — Łazienki/ZOO must not be micro-stops.
     if user and str(user.get("travel_style") or "").lower() == "relax":
         if any(k in _poi_name_lower for k in ("łazienki", "lazienki")):
             tmin = max(tmin, 90)
-        if "zoo" in _poi_name_lower and "mini" not in _poi_name_lower:
+        if (
+            "zoo" in _poi_name_lower
+            and "mini" not in _poi_name_lower
+            and "zoo team" not in _poi_name_lower
+            and "zooteam" not in _poi_name_lower
+        ):
             tmin = max(tmin, 120)
         if any(k in _poi_name_lower for k in ("ogród botaniczny", "ogrod botaniczny")):
             tmin = max(tmin, 60)
     # FIX #267: family with kids — ZOO needs a real half-day block.
     if user and str(user.get("target_group") or "") == "family_kids":
-        if "zoo" in _poi_name_lower and "mini" not in _poi_name_lower:
+        if (
+            "zoo" in _poi_name_lower
+            and "mini" not in _poi_name_lower
+            and "zoo team" not in _poi_name_lower
+            and "zooteam" not in _poi_name_lower
+        ):
             tmin = max(tmin, 150)
     # FIX #267: adventure — parks are look-around, not 90–155 min fillers.
     if user and str(user.get("travel_style") or "").lower() == "adventure":
@@ -3247,6 +3340,11 @@ def choose_duration(p, now, end, lunch_done, user=None):
     # Use the HIGHER of: POI's time_min OR type-based minimum
     # This ensures Excel data can set higher requirements, but types enforce floor
     effective_min = max(tmin, type_min_duration)
+    if _hard_cap is not None:
+        effective_min = min(effective_min, _hard_cap)
+        tmin = min(tmin, _hard_cap)
+        tmax = min(tmax, _hard_cap)
+        tmax = max(tmax, tmin)
     
     if end - now < effective_min:
         if type_min_duration > 0:
