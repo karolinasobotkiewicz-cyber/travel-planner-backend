@@ -7382,6 +7382,13 @@ class PlanService:
                 f"({type(_exc279).__name__}: {_exc279}) — keeping days as-is"
             )
 
+        try:
+            plan_warnings = self._scrub_unscheduled_poi_warnings(
+                plan_warnings, days,
+            )
+        except Exception:
+            pass
+
         return PlanResponse(
             plan_id=plan_id,
             version=1,
@@ -8203,6 +8210,16 @@ class PlanService:
         _pk_lng = poi_dict.get("parking_lng")
         if _pk_lng is None or _pk_lng == 0.0:
             _pk_lng = lng_value or None
+        # FIX #283: Świat Iluzji parking must sit on Świdnicka, not Hala.
+        _nm_iluz = (poi_dict.get("name") or "").lower()
+        if (
+            "iluzji" in _nm_iluz
+            and not any(k in _nm_iluz for k in ("warszaw", "warsaw"))
+            and any(k in _nm_iluz + " " + (poi_dict.get("city") or "").lower()
+                    for k in ("wrocław", "wroclaw"))
+        ):
+            lat_value, lng_value = 51.1070, 17.0325
+            _pk_lat, _pk_lng = 51.1070, 17.0325
         
         # CLIENT FEEDBACK (30.01.2026 - Requirement #5): Ticket prices mapping
         # Extract ticket_normal/ticket_reduced with fallback (same pattern as lat/lng)
@@ -10689,9 +10706,11 @@ class PlanService:
                 lat = getattr(it, "lat", None)
                 lng = getattr(it, "lng", None)
                 if nm and lat is not None and lng is not None:
-                    existing = coord_map.get(nm) or {}
-                    if _poi_lat_lng(existing)[0] is None:
-                        coord_map[nm] = {"lat": lat, "lng": lng, "name": nm}
+                    # FIX #283: item pins (after _force_known_good) win over
+                    # stale Excel/Hala coords still sitting in the POI map.
+                    coord_map[nm] = {
+                        "lat": float(lat), "lng": float(lng), "name": nm,
+                    }
             elif tv in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
                 # FIX #251: restaurant coords for meal-aware transit routing
                 for sug in (getattr(it, "suggestions", None) or [])[:1]:
@@ -17215,6 +17234,12 @@ class PlanService:
                 floor = max(floor, 45)
             if "rynek we wrocławiu" in nm_l or "rynek we wroclawiu" in nm_l:
                 floor = max(floor, 45)
+            if "ogród japoński" in nm_l or "ogrod japonski" in nm_l:
+                floor = max(floor, 45)
+            if "hydropolis" in nm_l:
+                floor = max(floor, 90)
+            if style == "adventure" and "rynek" in nm_l:
+                cap = 75 if cap is None else min(int(cap), 75)
             if "pieskowa" in nm_l:
                 floor = max(floor, 75)
                 # FIX #271: a 33-min castle look is worse than dropping it.
@@ -19486,6 +19511,23 @@ class PlanService:
             nm = (getattr(it, "name", "") or "").lower()
             if any(k in nm for k in ("rynek", "panorama", "must")):
                 continue
+            # FIX #283: never drop the only water-park when water is a pref
+            # (json10 ghost-stripped Aquapark and then warned about it).
+            _prefs_drop = {
+                str(p).lower() for p in (user.get("preferences") or [])
+            }
+            if "water_attractions" in _prefs_drop and any(
+                k in nm for k in ("aquapark", "park wodny", "wodny park")
+            ):
+                _water_n = sum(
+                    1 for _, x in paid
+                    if any(
+                        k in (getattr(x, "name", "") or "").lower()
+                        for k in ("aquapark", "park wodny", "wodny park")
+                    )
+                )
+                if _water_n <= 1:
+                    continue
             drop_names.add((getattr(it, "name", "") or "").strip().lower())
             running -= cost
         if not drop_names:
@@ -19662,8 +19704,16 @@ class PlanService:
                 continue
             to_l = (getattr(it, "to_location", "") or "").lower()
             if dest_key and dest_key in to_l:
-                has_return = True
-                break
+                try:
+                    dkm = float(getattr(it, "distance_km", None) or 0)
+                except (TypeError, ValueError):
+                    dkm = 0.0
+                hop_dur = int(getattr(it, "duration_min", 0) or 0)
+                # FIX #283: a 38 m hop whose label contains "Wrocław" is not
+                # the Oława → hub return.
+                if dkm >= 15 or (dkm == 0 and hop_dur >= 25):
+                    has_return = True
+                    break
         if has_return:
             return ordered
         blob = nm
@@ -19688,13 +19738,30 @@ class PlanService:
         except Exception:
             window_end = 20 * 60
         if last_end + hop > window_end:
-            # FIX #280: never fabricate a 20-min drive home that also runs past
-            # the day window (client D3 showed 20:00→20:20 for 75 km).
-            print(
-                f"[FIX #280] Day {day_num}: no room for the drive home "
-                f"({hop}min needed, {window_end - last_end}min left)"
-            )
-            return ordered
+            # FIX #283: borrow from the last sight so Oława→Wrocław still
+            # appears (json8 D7 ended on Izba at 20:00 with no return).
+            try:
+                last_st = time_to_minutes(
+                    getattr(last, "start_time", None) or ""
+                )
+            except Exception:
+                last_st = last_end
+            need = last_end + hop - window_end
+            can = max(0, last_end - last_st - 30)
+            shrink = min(need, can)
+            if shrink:
+                last_end -= shrink
+                try:
+                    for i, it in enumerate(ordered):
+                        if it is last:
+                            ordered[i] = it.model_copy(update={
+                                "end_time": minutes_to_time(last_end),
+                                "duration_min": last_end - last_st,
+                            })
+                            last = ordered[i]
+                            break
+                except Exception:
+                    pass
         if hop < 20:
             return ordered
         leg = TransitItem(
@@ -19808,7 +19875,40 @@ class PlanService:
                 ) or ""
             ).lower()
             dur = int(getattr(it, "duration_min", 0) or 0)
-            if _item_type_value(it) != ItemType.TRANSIT.value or "walk" not in mode:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            try:
+                km_dec = getattr(it, "distance_km", None)
+                km_dec = float(km_dec) if km_dec is not None else None
+            except (TypeError, ValueError):
+                km_dec = None
+            # FIX #283: 38 m must never ship as a 10-min car hop.
+            if km_dec is not None and km_dec < 0.15 and (
+                "car" in mode or dur >= 8
+            ):
+                en = getattr(it, "end_time", None)
+                try:
+                    en_m = time_to_minutes(en) if en else None
+                except Exception:
+                    en_m = None
+                new_dur = 5
+                upd_micro = {
+                    "mode": TransitMode.WALK,
+                    "routing_source": "estimated_walk",
+                    "distance_km": round(km_dec, 3),
+                    "duration_min": new_dur,
+                }
+                if en_m is not None:
+                    upd_micro["start_time"] = minutes_to_time(en_m - new_dur)
+                try:
+                    out.append(it.model_copy(update=upd_micro))
+                    fixed += 1
+                    continue
+                except Exception:
+                    out.append(it)
+                    continue
+            if "walk" not in mode:
                 out.append(it)
                 continue
             pair = self._transit_endpoint_coords(ordered, idx, coord_map or {})
@@ -20331,6 +20431,300 @@ class PlanService:
             out.append(DayEndItem(time=target))
         return self._sort_items_by_time(out)
 
+    def _fill_long_city_holes(
+        self,
+        items: List[Any],
+        pool: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        user: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #283: plant into 75+ min free_time holes before early close.
+
+        Finalize used to inject only when n_attr < 2, so a 3-icon day with
+        3-hour gaps never refilled (Wrocław json 1/3/5/7/10).
+        """
+        if not items or not pool:
+            return items
+        working = list(items)
+        quality = False
+        try:
+            quality = _quality_first_trip(context)
+        except Exception:
+            pass
+        try:
+            window_end = time_to_minutes(context.get("day_end") or "20:00")
+        except Exception:
+            window_end = 20 * 60
+
+        def _n_attr(seq: List[Any]) -> int:
+            return sum(1 for x in seq if _is_timeline_attraction(x))
+
+        def _last_real_end(seq: List[Any]) -> Optional[int]:
+            last = None
+            for it in seq:
+                tv = _item_type_value(it)
+                if tv in (
+                    ItemType.FREE_TIME.value,
+                    ItemType.DAY_START.value,
+                    ItemType.DAY_END.value,
+                ):
+                    continue
+                en = getattr(it, "end_time", None)
+                if not en:
+                    continue
+                try:
+                    last = max(last or 0, time_to_minutes(en))
+                except Exception:
+                    continue
+            return last
+
+        last_real = _last_real_end(working)
+        n_now = _n_attr(working)
+        if (
+            last_real is not None
+            and last_real < 16 * 60
+            and window_end - last_real >= 90
+            and n_now < 5
+        ):
+            has_tail = False
+            for it in working:
+                if _item_type_value(it) != ItemType.FREE_TIME.value:
+                    continue
+                try:
+                    st = time_to_minutes(getattr(it, "start_time", None) or "")
+                except Exception:
+                    continue
+                if st >= last_real - 5:
+                    has_tail = True
+                    break
+            if not has_tail:
+                try:
+                    working.append(FreeTimeItem(
+                        type=ItemType.FREE_TIME,
+                        start_time=minutes_to_time(last_real),
+                        end_time=minutes_to_time(window_end),
+                        duration_min=window_end - last_real,
+                        label="Czas dla siebie",
+                        suggestions=[],
+                    ))
+                    working = self._sort_items_by_time(working)
+                except Exception:
+                    pass
+
+        inj_ctx = {
+            **context,
+            "allow_pre_meal_inject": True,
+            "allow_soft_profile": True,
+            "hole_fill": True,
+        }
+        try:
+            sat = _day_items_satellite_kind(working)
+            if sat:
+                inj_ctx["complete_daytrip"] = True
+            else:
+                inj_ctx["city_holes_only"] = True
+        except Exception:
+            inj_ctx["city_holes_only"] = True
+
+        for _ in range(3):
+            if _n_attr(working) >= 6:
+                break
+            ft_blocks = []
+            for it in working:
+                if _item_type_value(it) != ItemType.FREE_TIME.value:
+                    continue
+                dur = int(getattr(it, "duration_min", 0) or 0)
+                if dur < 75:
+                    continue
+                try:
+                    st = time_to_minutes(getattr(it, "start_time", None) or "")
+                except Exception:
+                    continue
+                if quality and st >= 16 * 60:
+                    continue
+                ft_blocks.append((dur, st, it))
+            if not ft_blocks:
+                break
+            nxt = self._inject_attraction_into_free_time(
+                working, pool, inj_ctx, user, day_num=day_num,
+            )
+            if nxt is working:
+                break
+            working = nxt
+        return working
+
+    def _ensure_wroclaw_nature_daytrip(
+        self,
+        items: List[Any],
+        pool: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        user: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #283: last unused day-trip slot + nature → Niemcza/Arboretum."""
+        city = str(context.get("requested_city") or "").lower()
+        if "wrocław" not in city and "wroclaw" not in city:
+            return items
+        prefs = {
+            str(p).lower()
+            for p in ((user or {}).get("preferences") or [])
+        }
+        if "nature_landscape" not in prefs:
+            return items
+        try:
+            from app.domain.planner.engine import city_daytrip_quota
+            if city_daytrip_quota(context) <= 0 or day_num <= 1:
+                return items
+        except Exception:
+            return items
+        if context.get("blocked_satellite_kinds"):
+            return items
+        if _day_items_satellite_kind(items):
+            return items
+        try:
+            num_days = int(context.get("num_days") or 0)
+        except (TypeError, ValueError):
+            num_days = 0
+        if num_days and day_num < num_days:
+            return items
+        wojs = [
+            p for p in (pool or [])
+            if _is_wojslawice_stop_name(p.get("name") or "")
+        ]
+        if not wojs:
+            return items
+        working = list(items)
+        last = None
+        for it in working:
+            tv = _item_type_value(it)
+            if tv in (
+                ItemType.FREE_TIME.value,
+                ItemType.DAY_START.value,
+                ItemType.DAY_END.value,
+            ):
+                continue
+            en = getattr(it, "end_time", None)
+            if not en:
+                continue
+            try:
+                last = max(last or 0, time_to_minutes(en))
+            except Exception:
+                continue
+        try:
+            window_end = time_to_minutes(context.get("day_end") or "18:00")
+        except Exception:
+            window_end = 18 * 60
+        if last is None:
+            last = time_to_minutes(context.get("day_start") or "09:30")
+        lunch_end = None
+        for it in working:
+            if _item_type_value(it) != ItemType.LUNCH_BREAK.value:
+                continue
+            try:
+                lunch_end = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
+        if lunch_end:
+            last = lunch_end
+            kept: List[Any] = []
+            for it in working:
+                if _is_timeline_attraction(it):
+                    try:
+                        st = time_to_minutes(
+                            getattr(it, "start_time", None) or ""
+                        )
+                    except Exception:
+                        kept.append(it)
+                        continue
+                    if st >= lunch_end - 2:
+                        continue
+                kept.append(it)
+            working = kept
+        has_tail = False
+        for it in working:
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                continue
+            if st >= last - 5:
+                has_tail = True
+                break
+        if not has_tail:
+            try:
+                working.append(FreeTimeItem(
+                    type=ItemType.FREE_TIME,
+                    start_time=minutes_to_time(last),
+                    end_time=minutes_to_time(window_end),
+                    duration_min=max(90, window_end - last),
+                    label="Czas dla siebie",
+                    suggestions=[],
+                ))
+                working = self._sort_items_by_time(working)
+            except Exception:
+                return items
+        ctx = {
+            **context,
+            "complete_daytrip": True,
+            "allow_soft_profile": True,
+            "allow_pre_meal_inject": True,
+            "hole_fill": True,
+        }
+        for _ in range(2):
+            nxt = self._inject_attraction_into_free_time(
+                working, wojs, ctx, user, day_num=day_num,
+            )
+            if nxt is working:
+                break
+            working = nxt
+        if not _day_items_satellite_kind(working):
+            return items
+        return self._complete_thin_daytrip(
+            working, wojs, ctx, user, day_num=day_num,
+        )
+
+    def _scrub_unscheduled_poi_warnings(
+        self,
+        warnings: List[Any],
+        days: List[Any],
+    ) -> List[Any]:
+        """FIX #283: drop warnings that name a POI not in the final plan."""
+        names = set()
+        for day in days or []:
+            for it in getattr(day, "items", None) or []:
+                if _is_timeline_attraction(it):
+                    names.add(
+                        (getattr(it, "name", "") or "").strip().lower()
+                    )
+        out: List[Any] = []
+        for w in warnings or []:
+            if not isinstance(w, dict):
+                out.append(w)
+                continue
+            exp = (w.get("expensive_item") or "").strip().lower()
+            if exp and exp not in names:
+                continue
+            msg = w.get("message") or ""
+            quoted = []
+            if "'" in msg:
+                try:
+                    import re as _re_w
+                    quoted = _re_w.findall(r"'([^']+)'", msg)
+                except Exception:
+                    quoted = []
+            if (
+                w.get("type") == "budget_constraint_active"
+                and quoted
+                and all(q.strip().lower() not in names for q in quoted)
+            ):
+                continue
+            out.append(w)
+        return out
+
     def _finalize_client_day_invariants(
         self,
         items: List[Any],
@@ -20509,9 +20903,45 @@ class PlanService:
         work = self._merge_abutting_free_time_hard(
             work, day_num=day_num, max_gap=6,
         )
+        # FIX #283: name gaps BEFORE fill — otherwise a 3h hole is still
+        # invisible (not yet a free_time item) and inject never fires.
+        work = self._name_all_remaining_holes_final(
+            work, context, day_num=day_num,
+        )
+        if pool:
+            try:
+                work = self._fill_long_city_holes(
+                    work, pool, context, user or {}, day_num=day_num,
+                )
+                try:
+                    work = self._strip_mixed_opn_krakow_attractions(
+                        work, None, day_num=day_num,
+                    )
+                    work = self._strip_disallowed_wro_daytrips(
+                        work, context, day_num=day_num,
+                    )
+                except Exception:
+                    pass
+                try:
+                    work = self._ensure_wroclaw_nature_daytrip(
+                        work, pool, context, user or {}, day_num=day_num,
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
         work, note, _ = self._apply_quality_first_early_close(
             work, context, day_num=day_num,
         )
+        try:
+            work = self._strip_transits_to_unscheduled_destinations(
+                work, day_num=day_num,
+            )
+            work = self._ensure_far_excursion_return(
+                work, context, day_num=day_num,
+            )
+        except Exception:
+            pass
         work = self._reconcile_day_end_marker(work, context, day_num=day_num)
         work = self._name_all_remaining_holes_final(
             work, context, day_num=day_num,
@@ -20666,6 +21096,26 @@ class PlanService:
                     or cur_addr != fixed[2].lower()
                 ):
                     upd["address"] = fixed[2]
+            # FIX #283: parking pin must follow the attraction (Iluzja used
+            # Hala Stulecia 17.0773 while the item sat on Świdnicka 17.0325).
+            park = getattr(it, "parking", None)
+            if park is not None:
+                try:
+                    plat = getattr(park, "lat", None)
+                    plng = getattr(park, "lng", None)
+                    need_pk = plat is None or plng is None
+                    if not need_pk:
+                        need_pk = (
+                            abs(float(plat) - fixed[0]) >= 0.0008
+                            or abs(float(plng) - fixed[1]) >= 0.0008
+                        )
+                    if need_pk:
+                        upd["parking"] = park.model_copy(update={
+                            "lat": fixed[0],
+                            "lng": fixed[1],
+                        })
+                except Exception:
+                    pass
             if not upd:
                 out.append(it)
                 continue
@@ -21078,6 +21528,10 @@ class PlanService:
             cand_kind = _timeline_satellite_kind(poi.get("name") or pname)
             if cand_kind and cand_kind in blocked_kinds:
                 continue
+            # FIX #283: city hole-fill must not steal the day-trip quota
+            # (json4 D2 swallowed Ząbkowice and D5 lost Niemcza).
+            if context.get("city_holes_only") and cand_kind:
+                continue
             try:
                 from app.domain.planner.engine import should_block_city_daytrip_poi
                 if (
@@ -21104,6 +21558,8 @@ class PlanService:
                     "hala stulecia", "topacz", "aquapark",
                     "laser tag", "lasertag", "laser arena", "paintball",
                     "park wodny", "słoneczny park",
+                    "gojump", "go jump", "trampolin", "flyspot",
+                    "citypaintball",
                 )):
                     continue
             # FIX #266: never soft-inject rope parks / pool filler — client bans.
@@ -21293,10 +21749,7 @@ class PlanService:
             if "house of air" in pname and "active_sport" not in _prefs_cap:
                 continue
             if (
-                any(k in pname for k in (
-                    "arboretum wojsławice", "arboretum wojslawice",
-                    "grabowy labirynt", "dolina tatarska",
-                ))
+                "grabowy labirynt" in pname
                 and str((context or {}).get("season") or "").lower() == "winter"
             ):
                 continue
@@ -21305,7 +21758,17 @@ class PlanService:
             if "kosmopark" in pname and _tg_cap in ("solo", "seniors", "couples"):
                 continue
             if _tg_cap == "seniors" and any(
-                k in pname for k in ("flyspot", "laser tag", "lasertag")
+                k in pname for k in (
+                    "flyspot", "laser tag", "lasertag",
+                    "gojump", "paintball", "trampolin",
+                )
+            ):
+                continue
+            if _style_cap in ("relax", "cultural") and any(
+                k in pname for k in (
+                    "gojump", "paintball", "flyspot", "trampolin",
+                    "citypaintball",
+                )
             ):
                 continue
             if ("św. anny" in pname or "sw. anny" in pname) and _prefs_cap & {
@@ -21337,6 +21800,7 @@ class PlanService:
                 if (
                     context.get("date")
                     and not context.get("complete_daytrip")
+                    and not context.get("hole_fill")
                     and not _is_open_inj(
                         poi, ft_st, span, context.get("season") or "winter", context,
                     )
@@ -21356,6 +21820,16 @@ class PlanService:
                     (user or {}).get("preferences") or context.get("preferences") or []
                 )
             }
+            if "active_sport" in _prefs_inj and _style_cap == "adventure":
+                if any(k in pname for k in (
+                    "paintball", "gojump", "quad", "laser",
+                    "park linowy", "gokart", "fort przygody", "pitlane",
+                )):
+                    score += 90.0
+            if "water_attractions" in _prefs_inj and any(
+                k in pname for k in ("aquapark", "park wodny", "wodny park")
+            ):
+                score += 90.0
             if "underground" in _prefs_inj and any(
                 k in pname for k in ("cytadel", "x pawilon", "gazowni", "podziem")
             ):
@@ -22477,12 +22951,13 @@ class PlanService:
             if name_a.strip().lower() == name_b.strip().lower():
                 continue
             km = 0.5
+            micro = False
             if pt_a and pt_b:
                 km = haversine_distance(pt_a[0], pt_a[1], pt_b[0], pt_b[1])
-                # Distinct named stops always get a visible hop. Old-town pins
-                # (Stare Miasto → Zamek) can sit < min_km and used to teleport.
-                if km < 0.04:
-                    km = 0.25
+                # FIX #283: 38 m is a walk, never inflate to 0.25 km / 10 min car.
+                if km < 0.15:
+                    micro = True
+                    km = max(km, 0.03)
             elif not pt_a or not pt_b:
                 km = max(km, 0.4)
             try:
@@ -22503,15 +22978,18 @@ class PlanService:
                 "lng": pt_b[1] if pt_b else None,
             }
             try:
-                if pt_a and pt_b:
+                if micro and pt_a and pt_b:
+                    dur = 5 if km < 0.08 else 8
+                    mode_str = "walking"
+                elif pt_a and pt_b:
                     dur = max(5, int(travel_time_minutes(from_d, to_d, ctx)))
                     mode_str = get_transport_mode(from_d, to_d, ctx)
                 else:
                     dur = 10
                     mode_str = "walking"
             except Exception:
-                dur = max(5, int(km * 15) if km else 10)
-                mode_str = "walking" if km < 1.2 else "car"
+                dur = 5 if micro else max(5, int(km * 15) if km else 10)
+                mode_str = "walking" if micro or km < 1.2 else "car"
             gap = b_start - a_end
             if gap < dur:
                 need = dur - max(gap, 0)

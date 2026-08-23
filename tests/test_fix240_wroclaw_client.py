@@ -70,8 +70,6 @@ def _audit_wroclaw(plan, payload: dict, label: str) -> list[str]:
                         issues.append(f"{label} day{day.day}: family_kids forbidden {name}")
             if winter and "fontanna multimedialna" in name:
                 issues.append(f"{label} day{day.day}: fontanna in winter")
-            if winter and "wojsławice" in name:
-                issues.append(f"{label} day{day.day}: arboretum wojsławice in winter")
             if st and is_evening_only_poi({"name": name}) and time_to_minutes(st) < 17 * 60:
                 issues.append(f"{label} day{day.day}: evening POI {name} at {st}")
             if {"active_sport", "history_mystery"} <= prefs and "hala targowa" in name:

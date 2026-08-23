@@ -295,16 +295,27 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
         if limit is not None and ticket > float(limit):
             return True
 
-    # FIX #274: winter-only outdoor / far garden closed late February.
+    # FIX #283: GoJump / paintball / Flyspot are active-play, not
+    # cultural / relax / seniors days (Wrocław json 2/6/9).
+    _active_play = any(k in name for k in (
+        "gojump", "go jump", "trampolin", "paintball",
+        "citypaintball", "city paintball", "flyspot", "fly spot",
+    ))
+    if _active_play:
+        if tg == "seniors":
+            return True
+        if style in ("relax", "cultural"):
+            return True
+        if "relaxation" in prefs and "active_sport" not in prefs and not adv:
+            return True
+
+    # FIX #274/#283: Grabowy Labirynt stays winter-closed. Arboretum
+    # Wojsławice is now allowed on the Niemcza nature day (client json4 D5).
     _date = user.get("start_date") or user.get("date")
     if _date:
         try:
             from app.domain.filters.seasonality import derive_season
-            if derive_season(_date) == "winter" and any(
-                k in name for k in (
-                    "wojsławice", "wojslawice", "grabowy labirynt",
-                )
-            ):
+            if derive_season(_date) == "winter" and "grabowy labirynt" in name:
                 return True
         except Exception:
             pass
@@ -2015,6 +2026,19 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             delta += 105.0
         if "muzeum" in name and int(ctx.get("day_museum_count") or 0) >= 2:
             delta -= 95.0
+
+    # FIX #283: 5-day Wrocław + nature should pick Niemcza/Arboretum
+    # as the one allowed trip, not a random Brzeg hop.
+    try:
+        _days_ctx = int(ctx.get("num_days") or ctx.get("trip_days") or 0)
+    except (TypeError, ValueError):
+        _days_ctx = 0
+    if "nature_landscape" in prefs and _days_ctx >= 5:
+        if any(k in name for k in (
+            "niemcz", "wojsław", "wojslaw", "dolina tatarska",
+            "arboretum wojsław", "arboretum wojslaw",
+        )):
+            delta += 95.0
 
     if tg == "solo" and nat_relax:
         if any(k in name for k in (

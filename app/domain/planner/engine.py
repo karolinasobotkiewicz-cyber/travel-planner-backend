@@ -3036,6 +3036,11 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("pana tadeusza", 90),
         ("park mamuta", 75),
         ("kolejkowo", 60),
+        # FIX #283: spider exhibit stretched to 139 min — look-around, max 60.
+        ("wystawa pająków", 60),
+        ("wystawa pajakow", 60),
+        ("pająków", 60),
+        ("pajakow", 60),
         # FIX #282: ZOO TEAM is a workshop, not the city zoo.
         ("zoo team", 60),
         ("zooteam", 60),
@@ -3265,6 +3270,10 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("muzeum powozów", 60),
         ("muzeum powozow", 60),
         ("topacz", 60),
+        # FIX #283: client floors — Japoński 21 min, Hydropolis 47 min.
+        ("ogród japoński", 45),
+        ("ogrod japonski", 45),
+        ("hydropolis", 90),
     )
     for _marker, _nmin in _named_mins:
         if _marker in _poi_name_lower:
@@ -3309,6 +3318,10 @@ def choose_duration(p, now, end, lunch_done, user=None):
     if user and str(user.get("travel_style") or "").lower() == "adventure":
         if "skaryszewsk" in _poi_name_lower:
             tmax = min(tmax, 60)
+            tmin = min(tmin, tmax)
+        # FIX #283: ~2h Rynek is too long on an adventure day.
+        if "rynek" in _poi_name_lower:
+            tmax = min(tmax, 75)
             tmin = min(tmin, tmax)
     # FIX #254: clamp absurd Excel time_max before preferred_duration uses it.
     _hard_cap = visit_duration_hard_cap(p)

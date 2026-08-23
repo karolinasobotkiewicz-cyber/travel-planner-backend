@@ -610,24 +610,23 @@ def normalize_poi(p, index):
         _norm_result["lat"] = 52.2345
         _norm_result["lng"] = 20.9877
         _norm_result["address"] = "Grzybowska 72A, 00-844 Warszawa"
-    # FIX #265: Wrocław Świat Iluzji must not keep Warsaw GPS (~302 km).
-    if "iluzji" in _nm234 and "wrocław" in (
-        (_norm_result.get("city") or "").lower()
-        + " "
-        + _nm234
+    # FIX #265/#283: Wrocław Świat Iluzji — Świdnicka 36 (not Hala Stulecia
+    # 51.1069/17.0773, which parking + routing used to keep).
+    if "iluzji" in _nm234 and not any(
+        k in _nm234 for k in ("warszaw", "warsaw")
     ):
-        try:
-            _ilat = float(_norm_result.get("lat") or 0)
-            _ilng = float(_norm_result.get("lng") or 0)
-        except Exception:
-            _ilat, _ilng = 0.0, 0.0
-        # Warsaw-ish coords or absurd distance from Wrocław centre.
+        _city234 = (_norm_result.get("city") or "").lower()
         if (
-            abs(_ilat - 52.23) < 0.15 and abs(_ilng - 21.01) < 0.15
-        ) or abs(_ilat - 51.11) > 0.5:
-            _norm_result["lat"] = 51.1069
-            _norm_result["lng"] = 17.0773
-        _norm_result["address"] = "Świdnicka 36, 50-066 Wrocław"
+            "wrocław" in _nm234 or "wroclaw" in _nm234
+            or "wrocław" in _city234 or "wroclaw" in _city234
+        ):
+            _norm_result["lat"] = 51.1070
+            _norm_result["lng"] = 17.0325
+            _norm_result["parking_lat"] = 51.1070
+            _norm_result["parking_lng"] = 17.0325
+            _norm_result["address"] = "Świdnicka 36, 50-066 Wrocław"
+            if "warszaw" in _city234 or not (_norm_result.get("city") or "").strip():
+                _norm_result["city"] = "Wrocław"
     if "fontanna multimedialna" in _nm234:
         _norm_result["description_short"] = (
             "Nowoczesny park z efektownymi pokazami fontann, światła i dźwięku we Wrocławiu."

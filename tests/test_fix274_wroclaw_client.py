@@ -45,14 +45,15 @@ def test_fix274_winter_wojslawice_and_labirynt_denied():
         "travel_style": "balanced",
         "start_date": "2026-02-20",
     }
-    assert should_deny_poi_for_profile({"name": "Arboretum Wojsławice"}, user)
+    # FIX #283: Arboretum is wanted on the Niemcza nature day even in February.
+    assert not should_deny_poi_for_profile({"name": "Arboretum Wojsławice"}, user)
     assert should_deny_poi_for_profile({"name": "Grabowy Labirynt"}, user)
     kept = filter_by_season(
         [{"name": "Arboretum Wojsławice"}, {"name": "Grabowy Labirynt"}, {"name": "Rynek"}],
         "2026-02-20",
     )
     names = " ".join(p["name"].lower() for p in kept)
-    assert "wojsławice" not in names and "wojslawice" not in names
+    assert "wojsławice" in names or "wojslawice" in names or "arboretum" in names
     assert "grabowy" not in names
 
 
