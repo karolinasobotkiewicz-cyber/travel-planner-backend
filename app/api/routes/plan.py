@@ -36,9 +36,49 @@ from app.infrastructure.database.models import User
 from app.application.services.plan_service import PlanService
 from app.application.services.plan_editor import PlanEditor
 from app.application.services.edit_helpers import load_pois_for_plan
+from app.application.services.plan_preview import (
+    PlanSafePreviewResponse,
+    build_safe_plan_preview,
+)
 
 
 router = APIRouter()
+
+
+def _generate_and_persist_plan(
+    trip_input: TripInput,
+    plan_repo: PlanRepository,
+    poi_repo: POIRepository,
+    version_repo: PlanVersionRepository,
+    owner: OwnerIdentity,
+) -> PlanResponse:
+    """Generate a plan and persist it. Caller decides what to return over HTTP."""
+    print("\n" + "="*80, flush=True)
+    print("[ROUTER] generate_and_persist() START", flush=True)
+    print(f"[ROUTER] Days requested: {trip_input.trip_length.days}", flush=True)
+    print("="*80 + "\n", flush=True)
+
+    plan_service = PlanService(poi_repo)
+    plan = plan_service.generate_plan(trip_input)
+    plan_repo.save(
+        plan,
+        user_id=owner.user_id,
+        guest_id=owner.guest_id,
+        trip_input=trip_input,
+    )
+    try:
+        days_json = {
+            "days": [day.dict() for day in plan.days]
+        }
+        version_repo.save_version(
+            plan_id=plan.plan_id,
+            days_json=days_json,
+            change_type="generated",
+            change_summary="Initial plan generation (version 1)"
+        )
+    except Exception as e:
+        print(f"Warning: Failed to save version #1: {e}")
+    return plan
 
 
 @router.post(
@@ -115,44 +155,41 @@ def preview_plan(
     If guest:
     - Plan is linked to guest_id
     - Guest can claim plans after signup via /claim-guest-plans
+
+    Web may keep using this endpoint. Mobile before payment must use
+    ``POST /plan/safe-preview`` instead — this response contains the full itinerary.
     """
-    print("\n" + "="*80, flush=True)
-    print("[ROUTER] preview_plan() START", flush=True)
-    print(f"[ROUTER] Days requested: {trip_input.trip_length.days}", flush=True)
-    print("="*80 + "\n", flush=True)
-    
-    # Utworz service z POI repository
-    plan_service = PlanService(poi_repo)
-    
-    # Generuj plan z prawdziwego silnika (4.10, 4.11, 4.12)
-    plan = plan_service.generate_plan(trip_input)
-    
-    # Zapisz w repository z user_id OR guest_id
-    # FIX (01.07.2026): przekaż trip_input, aby zapisać miasto/grupę/budżet/daty
-    # (wcześniej plan zapisywał się jako "Unknown").
-    plan_repo.save(
-        plan,
-        user_id=owner.user_id,
-        guest_id=owner.guest_id,
-        trip_input=trip_input,
+    return _generate_and_persist_plan(
+        trip_input, plan_repo, poi_repo, version_repo, owner,
     )
-    
-    # ETAP 2: Auto-save version #1
-    try:
-        days_json = {
-            "days": [day.dict() for day in plan.days]
-        }
-        version_repo.save_version(
-            plan_id=plan.plan_id,
-            days_json=days_json,
-            change_type="generated",
-            change_summary="Initial plan generation (version 1)"
-        )
-    except Exception as e:
-        # Log error but don't fail request (version is secondary)
-        print(f"Warning: Failed to save version #1: {e}")
-    
-    return plan
+
+
+@router.post(
+    "/safe-preview",
+    response_model=PlanSafePreviewResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Generate plan, return paywall teaser only",
+    description="""
+    Same generation as ``POST /plan/preview``, but the HTTP body never contains
+    the paid itinerary (no ``days[].items``, times, addresses, or coordinates).
+
+    Use this from the mobile app before checkout. After payment call
+    ``GET /plan/{plan_id}`` for the full plan.
+
+    Auth: Bearer token **or** ``X-Guest-ID``.
+    """,
+)
+def generate_safe_plan_preview(
+    trip_input: TripInput,
+    plan_repo: PlanRepository = Depends(get_plan_repository),
+    poi_repo: POIRepository = Depends(get_poi_repository),
+    version_repo: PlanVersionRepository = Depends(get_version_repository),
+    owner: OwnerIdentity = Depends(get_owner_id),
+):
+    plan = _generate_and_persist_plan(
+        trip_input, plan_repo, poi_repo, version_repo, owner,
+    )
+    return build_safe_plan_preview(plan)
 
 
 @router.get("/my-plans")
@@ -328,6 +365,42 @@ def _enforce_plan_access(plan_id: str, plan_repo: PlanRepository, owner: Optiona
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail="Plan nie został opłacony. Dokończ płatność, aby zobaczyć pełny plan.",
         )
+
+
+@router.get(
+    "/{plan_id}/safe-preview",
+    response_model=PlanSafePreviewResponse,
+    summary="Paywall teaser for an existing plan",
+    description="""
+    Returns city / dates / day titles and up to 3 highlight names.
+    Never returns the itinerary. Owner only (Bearer or X-Guest-ID).
+    Others get 404 so a guessed UUID does not confirm the plan exists.
+
+    After payment the app should call ``GET /plan/{plan_id}``.
+    """,
+)
+def get_safe_plan_preview(
+    plan_id: str,
+    plan_repo: PlanRepository = Depends(get_plan_repository),
+    owner: OwnerIdentity = Depends(get_owner_id),
+):
+    owner_ids = (
+        plan_repo.get_owner_ids(plan_id)
+        if hasattr(plan_repo, "get_owner_ids")
+        else None
+    )
+    if not owner_ids or not _owner_matches(owner, owner_ids):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Plan {plan_id} not found",
+        )
+    plan = plan_repo.get_by_id(plan_id)
+    if plan is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Plan {plan_id} not found",
+        )
+    return build_safe_plan_preview(plan)
 
 
 @router.get("/{plan_id}", response_model=PlanResponse)
