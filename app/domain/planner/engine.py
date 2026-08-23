@@ -1542,8 +1542,9 @@ def travel_time_minutes(a, b, context):
         # FIX #269: Wrocław suburbs — 40 km / 15 min was a client P0.
         "region_olawa", "region_wojslawice", "region_galowice", "region_topacz",
         "region_zabkowice", "region_brzeg",
-        # FIX #271: Kraków — Ojców / Wieliczka must not collapse to 15 min.
+        # FIX #271/#284: Kraków — Ojców / mines / Tenczyn / Wiśnicz.
         "region_ojcow", "region_wieliczka",
+        "region_bochnia", "region_tenczyn", "region_wisnicz",
         # FIX #277: Warszawa Sochaczew / Poznań Lednica.
         "region_sochaczew", "region_lednica",
     }
@@ -1801,6 +1802,7 @@ _FAMILY_ICON_MARKERS = (
 _FAR_GEO_REGIONS = frozenset({
     "region_pieniny", "region_spisz_bukowina", "region_slowacja",
     "region_ojcow", "region_wieliczka",
+    "region_bochnia", "region_tenczyn", "region_wisnicz",
     "region_gniezno", "region_gliwice", "region_suntago", "region_modlin",
     "region_zabrze", "region_olawa", "region_kampinos", "region_czersk",
     "region_kornik", "region_zabkowice", "region_brzeg",
@@ -1838,12 +1840,18 @@ def poi_geo_region_key(p: dict) -> str | None:
         "prądnik", "pradnik",
     )):
         return "region_ojcow"
-    # FIX #225: Wieliczka / Bochnia salt-mine cluster (Kraków day-trip).
+    # FIX #284: two salt mines the same day is poor variety — split them.
+    if any(k in blob for k in ("bochnia", "bochni", "bocheńsk", "bochensk")):
+        return "region_bochnia"
+    # FIX #225: Wieliczka salt-mine cluster (Kraków day-trip).
     if any(k in blob for k in (
-        "wieliczka", "wieliczce", "bochnia", "bocheńsk", "bochensk",
-        "kopalnia soli",
+        "wieliczka", "wieliczce",
     )):
         return "region_wieliczka"
+    if any(k in blob for k in (
+        "tenczyn", "tęczyn", "tenczyna", "zamek tenczyn",
+    )):
+        return "region_tenczyn"
     # FIX #233: Poznań/Gniezno, Katowice/Gliwice, Warszawa day-trips
     if any(k in blob for k in (
         "gniezno", "gnieźnie", "gniezn",
@@ -1919,7 +1927,7 @@ def poi_geo_region_key(p: dict) -> str | None:
     if any(k in blob for k in ("papczyńsk", "papczynsk", "góra kalwaria", "gora kalwaria")):
         return "region_czersk"
     if any(k in blob for k in ("nowy wiśnicz", "nowy wisnicz", "zamek w wiśniczu", "zamek w wisniczu")):
-        return "region_wieliczka"
+        return "region_wisnicz"
     if any(k in blob for k in ("eliaszówk", "eliaszowk", "czerna")):
         return "region_ojcow"
     return None
@@ -1934,22 +1942,30 @@ def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: di
     r_name = str(restaurant.get("name") or "").lower()
     blob = f"{r_city} {r_name}"
     _wieliczka_rest = (
-        "wieliczka", "bochnia", "kopalnia soli", "salina",
+        "wieliczka", "kopalnia soli", "salina",
         "wielką sol", "wielka sol", "pod wielk",
     )
+    _bochnia_rest = ("bochnia", "bochni", "bocheńsk", "bochensk")
     # Never pull mine-town restaurants after a Kraków-city stop.
     if poi_reg != "region_wieliczka" and any(k in blob for k in _wieliczka_rest):
         return False
+    if poi_reg != "region_bochnia" and any(k in blob for k in _bochnia_rest):
+        return False
     if poi_reg != "region_ojcow" and any(k in blob for k in ("ojców", "ojcow", "ojcówie")):
+        return False
+    if poi_reg != "region_tenczyn" and any(k in blob for k in ("tenczyn", "tęczyn")):
         return False
     # FIX #255: while still at OPN — refuse Kraków-city restaurants.
     if poi_reg == "region_ojcow" and any(
         k in blob for k in ("kraków", "krakow", "krak ")
     ) and not any(k in blob for k in ("ojców", "ojcow", "ojcówie", "pieskow")):
         return False
-    # FIX #255: while still at the mine — lunch must stay near Wieliczka/Bochnia.
+    # FIX #255/#284: lunch stays in the same mine town, not the other one.
     if poi_reg == "region_wieliczka" and not any(k in blob for k in _wieliczka_rest):
-        if any(k in blob for k in ("kraków", "krakow", "krak")):
+        if any(k in blob for k in ("kraków", "krakow", "krak", "bochnia")):
+            return False
+    if poi_reg == "region_bochnia" and not any(k in blob for k in _bochnia_rest):
+        if any(k in blob for k in ("kraków", "krakow", "krak", "wieliczka")):
             return False
     # FIX #254: Czersk day-trip must not pull Śródmieście Warsaw restaurants.
     if poi_reg != "region_czersk" and any(k in blob for k in ("czersk", "zamek w czersku")):
@@ -2221,7 +2237,8 @@ def city_daytrip_quota(context: dict | None) -> int:
     99 = mountain / non-city trips keep the old far-region logic.
     Wrocław: 2–3 days stay in the city; 4–5 days get at most one full
     day-trip; 6+ days get at most two. Never used as a Day-1 opener.
-    Other city hubs: only the 2-day hard stop (Kraków 3-day Wieliczka stays).
+    Other city hubs: 2-day hard stop; Kraków now matches Wrocław
+    (3-day Ojców/Tenczyn is a poor use of a short city stay).
     """
     if not context:
         return 99
@@ -2234,7 +2251,8 @@ def city_daytrip_quota(context: dict | None) -> int:
         n = 1
     city = str(context.get("requested_city") or context.get("city") or "").lower()
     wro = "wrocław" in city or "wroclaw" in city
-    if not wro:
+    krak = "kraków" in city or "krakow" in city
+    if not wro and not krak:
         return 0 if n <= 2 else 99
     if n <= 3:
         return 0
@@ -2264,6 +2282,15 @@ def should_block_city_daytrip_poi(p: dict, context: dict | None) -> bool:
         return True
     if day_num <= 1:
         return True
+    # FIX #284: Kraków 5+ — a day-2 excursion is too early (json8 D2).
+    city = str(context.get("requested_city") or context.get("city") or "").lower()
+    if ("kraków" in city or "krakow" in city) and day_num <= 2:
+        try:
+            n = int(context.get("num_days") or 1)
+        except (TypeError, ValueError):
+            n = 1
+        if n >= 5:
+            return True
     used = context.get("global_geo_region_use_count") or {}
     used_far = sum(
         int(used.get(r) or 0) for r in _FAR_GEO_REGIONS if used.get(r)
@@ -3036,6 +3063,20 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("pana tadeusza", 90),
         ("park mamuta", 75),
         ("kolejkowo", 60),
+        # FIX #284: Kraków visit lengths the client called out.
+        ("wawel", 150),
+        ("kopiec wandy", 60),
+        ("kopiec piłsudskiego", 75),
+        ("kopiec pilsudskiego", 75),
+        ("muzeum lotnictwa", 120),
+        ("zamek tenczyn", 90),
+        ("tenczyn", 90),
+        ("zamek w wiśniczu", 90),
+        ("zamek w wisniczu", 90),
+        ("dolina eliaszówki", 75),
+        ("dolina eliaszowki", 75),
+        ("eliaszówk", 75),
+        ("eliaszowk", 75),
         # FIX #283: spider exhibit stretched to 139 min — look-around, max 60.
         ("wystawa pająków", 60),
         ("wystawa pajakow", 60),
@@ -3274,6 +3315,19 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("ogród japoński", 45),
         ("ogrod japonski", 45),
         ("hydropolis", 90),
+        # FIX #284: Kraków floors.
+        ("wawel", 90),
+        ("kopiec piłsudskiego", 45),
+        ("kopiec pilsudskiego", 45),
+        ("muzeum lotnictwa", 75),
+        ("kopalnia soli w bochni", 90),
+        ("bochnia", 90),
+        ("bochni", 90),
+        ("zamek tenczyn", 60),
+        ("zamek w wiśniczu", 60),
+        ("zamek w wisniczu", 60),
+        ("eliaszówk", 45),
+        ("eliaszowk", 45),
     )
     for _marker, _nmin in _named_mins:
         if _marker in _poi_name_lower:

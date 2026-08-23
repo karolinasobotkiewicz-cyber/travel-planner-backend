@@ -308,6 +308,14 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
             return True
         if "relaxation" in prefs and "active_sport" not in prefs and not adv:
             return True
+        # FIX #284: GoJump is not a nature/food/museum filler (Kraków json8/9).
+        if "active_sport" not in prefs and not adv and "kids_attractions" not in prefs:
+            return True
+
+    # FIX #284: Bricks & Figs is a kids/LEGO stop, not nature+museum days.
+    if any(k in name for k in ("bricks & figs", "bricks and figs", "bricks&figs")):
+        if tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
+            return True
 
     # FIX #274/#283: Grabowy Labirynt stays winter-closed. Arboretum
     # Wojsławice is now allowed on the Niemcza nature day (client json4 D5).

@@ -627,6 +627,25 @@ def normalize_poi(p, index):
             _norm_result["address"] = "Świdnicka 36, 50-066 Wrocław"
             if "warszaw" in _city234 or not (_norm_result.get("city") or "").strip():
                 _norm_result["city"] = "Wrocław"
+    # FIX #284: Kraków Bulwary Wiślane must not keep the Warsaw address.
+    if any(k in _nm234 for k in ("bulwary wiślane", "bulwary wislane")):
+        _city284 = (_norm_result.get("city") or "").lower()
+        _addr284 = (_norm_result.get("address") or "").lower()
+        _lat284 = _safe_float(_norm_result.get("lat"), 0.0)
+        _is_krak = (
+            "krak" in _city284
+            or "krak" in _nm234
+            or (49.9 <= _lat284 <= 50.25)
+        )
+        if _is_krak or (
+            "warszaw" in _addr284 and "krak" in _city284
+        ):
+            _norm_result["lat"] = 50.0520
+            _norm_result["lng"] = 19.9566
+            _norm_result["parking_lat"] = 50.0520
+            _norm_result["parking_lng"] = 19.9566
+            _norm_result["address"] = "Bulwar Czerwieński, 31-101 Kraków"
+            _norm_result["city"] = "Kraków"
     if "fontanna multimedialna" in _nm234:
         _norm_result["description_short"] = (
             "Nowoczesny park z efektownymi pokazami fontann, światła i dźwięku we Wrocławiu."

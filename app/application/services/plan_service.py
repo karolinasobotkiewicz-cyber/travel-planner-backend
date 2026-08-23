@@ -215,7 +215,10 @@ _OJCOW_NAME_MARKERS = (
     "łokietka", "lokietka",
 )
 _OJCOW_DEFAULT_COORDS = (50.2103, 19.8294)
-_WIELICZKA_NAME_MARKERS = ("wieliczka", "wieliczce", "kopalnia soli", "bochnia")
+_WIELICZKA_NAME_MARKERS = ("wieliczka", "wieliczce")
+_BOCHNIA_NAME_MARKERS = ("bochnia", "bochni", "bocheńsk", "bochensk")
+_TENCZYN_NAME_MARKERS = ("tenczyn", "tęczyn", "tenczyna")
+_WISNICZ_NAME_MARKERS = ("wiśnicz", "wisnicz")
 
 
 def _is_ojcow_stop_name(name: str) -> bool:
@@ -226,6 +229,28 @@ def _is_ojcow_stop_name(name: str) -> bool:
 def _is_wieliczka_stop_name(name: str) -> bool:
     nm = (name or "").lower()
     return any(k in nm for k in _WIELICZKA_NAME_MARKERS)
+
+
+def _is_bochnia_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in _BOCHNIA_NAME_MARKERS)
+
+
+def _is_tenczyn_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in _TENCZYN_NAME_MARKERS)
+
+
+def _is_wisnicz_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in _WISNICZ_NAME_MARKERS)
+
+
+def _is_wawel_hill_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in (
+        "wawel", "katedra wawel", "smok wawelsk", "smoka wawelsk",
+    ))
 
 
 # FIX #272: Poznań day-trips — Gniezno / Kórnik stay local (no lunch ping-pong).
@@ -328,6 +353,18 @@ def _timeline_satellite_kind(name: str) -> Optional[str]:
         return "brzeg"
     if _is_near_satellite_stop_name(nm):
         return "near"
+    if _is_ojcow_stop_name(nm) or any(
+        k in nm for k in ("eliaszówk", "eliaszowk", "czerna")
+    ):
+        return "ojcow"
+    if _is_bochnia_stop_name(nm):
+        return "bochnia"
+    if _is_wieliczka_stop_name(nm):
+        return "wieliczka"
+    if _is_tenczyn_stop_name(nm):
+        return "tenczyn"
+    if _is_wisnicz_stop_name(nm):
+        return "wisnicz"
     return None
 
 
@@ -8138,7 +8175,10 @@ class PlanService:
                         "zamek krolewski", "polin", "pałac kultury", "palac kultury",
                     )
                     _floor225 = 30
-                    if any(k in _nm225 for k in _flagship_kw) or _ms225 >= 9:
+                    if "wawel" in _nm225:
+                        # FIX #284: 50 min on Wawel is a look, not a visit.
+                        _floor225 = 90
+                    elif any(k in _nm225 for k in _flagship_kw) or _ms225 >= 9:
                         _floor225 = 60
                     elif "muzeum" in _nm225 or "museum" in str(
                         poi_dict.get("type", "")
@@ -8220,6 +8260,24 @@ class PlanService:
         ):
             lat_value, lng_value = 51.1070, 17.0325
             _pk_lat, _pk_lng = 51.1070, 17.0325
+        # FIX #284: Kraków riverside walk — never pin to Warsaw Bulwary.
+        if any(k in _nm_iluz for k in ("bulwary wiślane", "bulwary wislane")):
+            _city_bul = (poi_dict.get("city") or "").lower()
+            _addr_bul = (poi_dict.get("address") or poi_dict.get("Address") or "").lower()
+            _is_krak_bul = (
+                "krak" in _city_bul
+                or "krak" in _nm_iluz
+                or (49.9 <= float(lat_value or 0) <= 50.25)
+                or ("warszaw" in _addr_bul and "krak" in _city_bul)
+            )
+            if _is_krak_bul:
+                lat_value, lng_value = 50.0520, 19.9566
+                _pk_lat, _pk_lng = 50.0520, 19.9566
+                poi_dict = {
+                    **poi_dict,
+                    "address": "Bulwar Czerwieński, 31-101 Kraków",
+                    "city": poi_dict.get("city") or "Kraków",
+                }
         
         # CLIENT FEEDBACK (30.01.2026 - Requirement #5): Ticket prices mapping
         # Extract ticket_normal/ticket_reduced with fallback (same pattern as lat/lng)
@@ -11546,6 +11604,12 @@ class PlanService:
                 return "ojcow"
             if reg == "region_wieliczka" or _is_wieliczka_stop_name(nm):
                 return "wieliczka"
+            if reg == "region_bochnia" or _is_bochnia_stop_name(nm):
+                return "bochnia"
+            if reg == "region_tenczyn" or _is_tenczyn_stop_name(nm):
+                return "tenczyn"
+            if reg == "region_wisnicz" or _is_wisnicz_stop_name(nm):
+                return "wisnicz"
             if reg == "region_gniezno" or _is_gniezno_stop_name(nm):
                 return "gniezno"
             if reg == "region_kornik" or _is_kornik_stop_name(nm):
@@ -11571,6 +11635,9 @@ class PlanService:
         kinds = [_kind(it) for it in attrs]
         n_opn = kinds.count("ojcow")
         n_wiel = kinds.count("wieliczka")
+        n_boch = kinds.count("bochnia")
+        n_tenc = kinds.count("tenczyn")
+        n_wisn = kinds.count("wisnicz")
         n_gniez = kinds.count("gniezno")
         n_korn = kinds.count("kornik")
         n_zabrze = kinds.count("zabrze")
@@ -11586,6 +11653,9 @@ class PlanService:
         far_counts = [
             ("ojcow", n_opn),
             ("wieliczka", n_wiel),
+            ("bochnia", n_boch),
+            ("tenczyn", n_tenc),
+            ("wisnicz", n_wisn),
             ("gniezno", n_gniez),
             ("kornik", n_korn),
             ("zabrze", n_zabrze),
@@ -11621,11 +11691,25 @@ class PlanService:
             keep_far, n_far = far_present[0]
             first_far_pre = _first_start(keep_far)
             _wro_sats = ("zabkowice", "brzeg", "wojslawice", "olawa")
+            # FIX #284: Tenczyn / Bochnia / Wiśnicz are mid-day hops, not a day.
+            _krak_sats = ("tenczyn", "bochnia", "wisnicz")
             # FIX #282: Wrocław mid-day hops / single-castle trips stay in the city.
-            # Ojców/Wieliczka keep the previous "the excursion wins" rule.
+            # Ojców/Wieliczka keep the previous "the excursion wins" rule —
+            # except a lone afternoon Eliaszówka/Czerna hop (json8 D7).
             if keep_far in _wro_sats and first_far_pre is not None and first_far_pre > 12 * 60:
                 keep = "city"
             elif keep_far in _wro_sats and n_far < 2:
+                keep = "city"
+            elif keep_far in _krak_sats and first_far_pre is not None and first_far_pre > 12 * 60:
+                keep = "city"
+            elif keep_far in _krak_sats and n_far < 2:
+                keep = "city"
+            elif (
+                keep_far == "ojcow"
+                and n_far < 2
+                and first_far_pre is not None
+                and first_far_pre > 13 * 60
+            ):
                 keep = "city"
             else:
                 keep = keep_far
@@ -17238,6 +17322,21 @@ class PlanService:
                 floor = max(floor, 45)
             if "hydropolis" in nm_l:
                 floor = max(floor, 90)
+            # FIX #284: Kraków visit lengths.
+            if "wawel" in nm_l:
+                floor = max(floor, 90)
+            if "kopiec piłsudskiego" in nm_l or "kopiec pilsudskiego" in nm_l:
+                floor = max(floor, 45)
+            if "muzeum lotnictwa" in nm_l:
+                floor = max(floor, 75)
+            if "bochnia" in nm_l or "bochni" in nm_l:
+                floor = max(floor, 90)
+            if "tenczyn" in nm_l or "tęczyn" in nm_l:
+                floor = max(floor, 60)
+            if "wiśnicz" in nm_l or "wisnicz" in nm_l:
+                floor = max(floor, 60)
+            if "eliaszówk" in nm_l or "eliaszowk" in nm_l:
+                floor = max(floor, 45)
             if style == "adventure" and "rynek" in nm_l:
                 cap = 75 if cap is None else min(int(cap), 75)
             if "pieskowa" in nm_l:
@@ -19369,6 +19468,98 @@ class PlanService:
             out.append(it)
         return out
 
+    def _cluster_wawel_hill_stops(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #284: Zamek / Katedra / Smok stay as one Wawel hill block."""
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        attrs = [it for it in ordered if _is_timeline_attraction(it)]
+
+        def _st(it) -> Optional[int]:
+            try:
+                return time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                return None
+
+        def _dur(it) -> int:
+            d = int(getattr(it, "duration_min", 0) or 0)
+            if d > 0:
+                return d
+            try:
+                return max(
+                    30,
+                    time_to_minutes(getattr(it, "end_time", None) or "")
+                    - time_to_minutes(getattr(it, "start_time", None) or ""),
+                )
+            except Exception:
+                return 45
+
+        hill = [it for it in attrs if _is_wawel_hill_name(getattr(it, "name", ""))]
+        if len(hill) < 2:
+            return items
+        starts = [s for s in (_st(it) for it in hill) if s is not None]
+        if len(starts) < 2:
+            return items
+        first_st, last_st = min(starts), max(starts)
+        between = [
+            it for it in attrs
+            if it not in hill
+            and _st(it) is not None
+            and first_st < _st(it) < last_st
+        ]
+        if not between:
+            return items
+
+        def _rank(it) -> int:
+            n = (getattr(it, "name", "") or "").lower()
+            if "smok" in n:
+                return 2
+            if "katedra" in n:
+                return 1
+            return 0
+
+        hill_block = sorted(hill, key=_rank)
+        later = [
+            it for it in attrs
+            if it not in hill
+            and _st(it) is not None
+            and _st(it) >= first_st
+        ]
+        cursor = first_st
+        moved: Dict[int, tuple] = {}
+        for it in hill_block:
+            d = _dur(it)
+            moved[id(it)] = (cursor, cursor + d)
+            cursor += d + 5
+        for it in later:
+            d = _dur(it)
+            moved[id(it)] = (cursor, cursor + d)
+            cursor += d + 10
+        out: List[Any] = []
+        for it in ordered:
+            pair = moved.get(id(it))
+            if not pair:
+                out.append(it)
+                continue
+            try:
+                out.append(it.model_copy(update={
+                    "start_time": minutes_to_time(pair[0]),
+                    "end_time": minutes_to_time(pair[1]),
+                    "duration_min": pair[1] - pair[0],
+                }))
+            except Exception:
+                out.append(it)
+        print(
+            f"[FIX #284] Day {day_num}: clustered Wawel hill "
+            f"({', '.join(getattr(x, 'name', '?') for x in hill_block)})"
+        )
+        return self._sort_items_by_time(out)
+
     def _strip_disallowed_wro_daytrips(
         self,
         items: List[Any],
@@ -19376,7 +19567,7 @@ class PlanService:
         *,
         day_num: int = 0,
     ) -> List[Any]:
-        """FIX #282: drop satellite stops the quota forbids (2–3 day Wrocław)."""
+        """FIX #282/#284: drop satellite stops the quota forbids."""
         if not items:
             return items
         try:
@@ -19388,10 +19579,18 @@ class PlanService:
         blocked = {
             str(x) for x in (context.get("blocked_satellite_kinds") or set())
         }
+        city = str((context or {}).get("requested_city") or "").lower()
+        krak = "kraków" in city or "krakow" in city
+        try:
+            n_days = int((context or {}).get("num_days") or 1)
+        except (TypeError, ValueError):
+            n_days = 1
         drop = False
         if kind and quota <= 0:
             drop = True
         if kind and day_num <= 1 and quota < 99:
+            drop = True
+        if kind and krak and n_days >= 5 and day_num <= 2 and quota < 99:
             drop = True
         if kind and kind in blocked:
             drop = True
@@ -20798,6 +20997,16 @@ class PlanService:
             except Exception:
                 pass
         try:
+            work = self._cluster_wawel_hill_stops(work, day_num=day_num)
+            work = self._retarget_all_legs_to_prev_stop(
+                work, day_num=day_num,
+            )
+            work = self._ensure_stop_to_stop_legs(
+                work, coord_map or {}, context, day_num=day_num, min_km=0.08,
+            )
+        except Exception:
+            pass
+        try:
             work = self._strip_disallowed_wro_daytrips(
                 work, context, day_num=day_num,
             )
@@ -20920,6 +21129,14 @@ class PlanService:
                     work = self._strip_disallowed_wro_daytrips(
                         work, context, day_num=day_num,
                     )
+                    work = self._cluster_wawel_hill_stops(work, day_num=day_num)
+                    work = self._retarget_all_legs_to_prev_stop(
+                        work, day_num=day_num,
+                    )
+                    work = self._ensure_stop_to_stop_legs(
+                        work, coord_map or {}, context, day_num=day_num,
+                        min_km=0.08,
+                    )
                 except Exception:
                     pass
                 try:
@@ -20952,6 +21169,8 @@ class PlanService:
         work = self._relabel_free_time_by_slot(work, context, day_num=day_num)
         work = self._normalize_transit_mode_source(work, day_num=day_num)
         work = self._reconcile_day_end_marker(work, context, day_num=day_num)
+        # FIX #284: last name-pass can stamp free_time on top of a transit.
+        work = self._remove_timeline_overlaps(work, day_num)
         return work, note
 
     def _strip_misplaced_city_coords(
@@ -21034,6 +21253,9 @@ class PlanService:
             ("wojsławice", 50.7250, 16.8520, "Wojsławice"),
             ("flyspot", 51.0478, 16.9719, "Bielany Wrocławskie"),
             ("muzeum motoryzacji wena", 50.9329, 17.2924, "Oława"),
+            # FIX #284: Kraków Bulwary Wiślane must not inherit the Warsaw address.
+            ("bulwary wiślane", 50.0520, 19.9566, "Bulwar Czerwieński, 31-101 Kraków"),
+            ("bulwary wislane", 50.0520, 19.9566, "Bulwar Czerwieński, 31-101 Kraków"),
         )
         out: List[Any] = []
         for it in items:
@@ -21051,6 +21273,25 @@ class PlanService:
                         k in nm for k in ("warszaw", "warsaw")
                     ):
                         continue
+                    if "bulwary" in marker:
+                        addr_l = (getattr(it, "address", "") or "").lower()
+                        city_l = (getattr(it, "city", "") or "").lower()
+                        lat_now = getattr(it, "lat", None)
+                        warsaw_row = (
+                            "warszaw" in addr_l
+                            or "warszaw" in city_l
+                            or "warsaw" in city_l
+                            or (lat_now is not None and float(lat_now) > 51.6)
+                        )
+                        krak_row = (
+                            "krak" in addr_l
+                            or "krak" in city_l
+                            or "krak" in nm
+                            or (lat_now is not None and 49.9 <= float(lat_now) <= 50.25)
+                        )
+                        # Warsaw plans keep their own Bulwary pin.
+                        if warsaw_row and not krak_row:
+                            continue
                     fixed = (lat, lng, addr)
                     break
             if not fixed:
@@ -21532,6 +21773,16 @@ class PlanService:
             # (json4 D2 swallowed Ząbkowice and D5 lost Niemcza).
             if context.get("city_holes_only") and cand_kind:
                 continue
+            if context.get("city_holes_only"):
+                try:
+                    from app.domain.planner.engine import (
+                        poi_geo_region_key as _reg_hole,
+                        _FAR_GEO_REGIONS as _far_hole,
+                    )
+                    if _reg_hole(poi) in _far_hole:
+                        continue
+                except Exception:
+                    pass
             try:
                 from app.domain.planner.engine import should_block_city_daytrip_poi
                 if (
@@ -21771,6 +22022,17 @@ class PlanService:
                 )
             ):
                 continue
+            # FIX #284: GoJump / Bricks are not nature+museum fillers.
+            if any(k in pname for k in ("gojump", "go jump", "trampolin")):
+                if (
+                    "active_sport" not in _prefs_cap
+                    and _style_cap != "adventure"
+                    and "kids_attractions" not in _prefs_cap
+                ):
+                    continue
+            if any(k in pname for k in ("bricks & figs", "bricks and figs", "bricks&figs")):
+                if _tg_cap not in ("family_kids", "family") and "kids_attractions" not in _prefs_cap:
+                    continue
             if ("św. anny" in pname or "sw. anny" in pname) and _prefs_cap & {
                 "water_attractions", "nature_landscape", "relaxation",
                 "mountain_trails", "kids_attractions", "local_food_experience",
@@ -21830,6 +22092,25 @@ class PlanService:
                 k in pname for k in ("aquapark", "park wodny", "wodny park")
             ):
                 score += 90.0
+            if context.get("hole_fill"):
+                if "relaxation" in _prefs_inj and any(
+                    k in pname for k in (
+                        "ogród", "ogrod", "bulwar", "park ", "planty",
+                        "spa", "termy", "zakrz",
+                    )
+                ):
+                    score += 70.0
+                if "nature_landscape" in _prefs_inj and any(
+                    k in pname for k in (
+                        "ogród", "ogrod", "las ", "park ", "rezerwat",
+                        "zakrz", "błonia", "blonia",
+                    )
+                ):
+                    score += 55.0
+                if "local_food_experience" in _prefs_inj and any(
+                    k in pname for k in ("manufaktura", "czekolad", "pijalnia")
+                ):
+                    score += 40.0
             if "underground" in _prefs_inj and any(
                 k in pname for k in ("cytadel", "x pawilon", "gazowni", "podziem")
             ):
