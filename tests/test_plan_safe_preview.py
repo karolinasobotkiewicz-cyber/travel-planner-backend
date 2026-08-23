@@ -48,6 +48,8 @@ def _plan() -> PlanResponse:
                         address="plac Zamkowy 4",
                         city="Warszawa",
                         cost_estimate=40,
+                        image_key="poi_zamek_krolewski",
+                        image_url="https://cdn.example/poi_zamek_krolewski.webp",
                     ),
                     TransitItem(
                         type=ItemType.TRANSIT,
@@ -73,6 +75,8 @@ def _plan() -> PlanResponse:
                         address="Anielewicza 6",
                         city="Warszawa",
                         cost_estimate=30,
+                        image_key="poi_polin",
+                        image_url="https://cdn.example/poi_polin.webp",
                     ),
                 ],
             ),
@@ -120,6 +124,18 @@ def test_preview_has_teaser_not_itinerary():
     assert len(dump["days_preview"]) == 2
     assert dump["days_preview"][0]["title"] == "Stare Miasto"
     assert dump["days_preview"][0]["attraction_count"] == 2
+    assert dump["preview_attractions"] == [
+        {
+            "name": "Zamek Królewski",
+            "image_key": "poi_zamek_krolewski",
+            "image_url": "https://cdn.example/poi_zamek_krolewski.webp",
+        },
+        {
+            "name": "POLIN",
+            "image_key": "poi_polin",
+            "image_url": "https://cdn.example/poi_polin.webp",
+        },
+    ]
 
     assert "days" not in dump
     blob = str(dump)
@@ -159,8 +175,43 @@ def test_preview_caps_highlights_at_three():
         PlanResponse(plan_id="p", days=days, paid=True, payment_status="paid")
     )
     assert preview.highlights == ["POI 0", "POI 1", "POI 2"]
+    assert [a.name for a in preview.preview_attractions] == ["POI 0", "POI 1"]
     assert preview.full_plan_unlocked is True
     assert preview.attraction_count_total == 5
+
+
+def test_preview_rebuilds_image_url_from_key():
+    plan = PlanResponse(
+        plan_id="p",
+        days=[
+            DayPlan(
+                day=1,
+                items=[
+                    AttractionItem.model_construct(
+                        type=ItemType.ATTRACTION,
+                        poi_id="p1",
+                        name="Zamek",
+                        description_short="",
+                        start_time="10:00",
+                        end_time="11:00",
+                        duration_min=60,
+                        lat=52.2,
+                        lng=21.0,
+                        address="secret",
+                        city="Warszawa",
+                        cost_estimate=0,
+                        image_key="poi_zamek_krolewski",
+                    )
+                ],
+            )
+        ],
+    )
+    preview = build_safe_plan_preview(plan)
+    assert preview.preview_attractions[0].image_key == "poi_zamek_krolewski"
+    url = preview.preview_attractions[0].image_url
+    assert url is None or (
+        "poi_zamek_krolewski" in url and url.endswith(".webp")
+    )
 
 
 def test_openapi_exposes_safe_preview_routes():
@@ -182,3 +233,4 @@ def test_safe_preview_schema_has_no_days_items():
     assert "days" not in props
     assert "items" not in props
     assert "days_preview" in props
+    assert "preview_attractions" in props

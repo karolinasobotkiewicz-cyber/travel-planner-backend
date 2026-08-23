@@ -6,9 +6,11 @@ from typing import Any, List, Optional
 from pydantic import BaseModel, Field
 
 from app.domain.models.plan import ItemType, PlanResponse
+from app.infrastructure.storage import build_poi_image_url
 
 
 _MAX_HIGHLIGHTS = 3
+_MAX_PREVIEW_ATTRACTIONS = 2
 
 
 class PlanDayTeaser(BaseModel):
@@ -19,6 +21,14 @@ class PlanDayTeaser(BaseModel):
     weekday: Optional[str] = None
     title: Optional[str] = None
     attraction_count: int = 0
+
+
+class PlanPreviewAttraction(BaseModel):
+    """First attractions on the paywall — name + image only."""
+
+    name: str
+    image_key: Optional[str] = None
+    image_url: Optional[str] = None
 
 
 class PlanSafePreviewResponse(BaseModel):
@@ -46,6 +56,10 @@ class PlanSafePreviewResponse(BaseModel):
         default_factory=list,
         description="Up to 3 attraction names to sell the plan — no times or addresses",
     )
+    preview_attractions: List[PlanPreviewAttraction] = Field(
+        default_factory=list,
+        description="First 2 attractions with images for the mobile paywall",
+    )
     attraction_count_total: int = 0
 
 
@@ -55,9 +69,26 @@ def _is_attraction(item: Any) -> bool:
     return value == ItemType.ATTRACTION.value or value == "attraction"
 
 
+def _preview_image(item: Any) -> tuple[Optional[str], Optional[str]]:
+    """Return (image_key, image_url). Rebuild URL from key when the snapshot omitted it."""
+    raw_key = getattr(item, "image_key", None)
+    key = str(raw_key).strip() if raw_key else None
+    if key and key.lower() in ("nan", "none", "null"):
+        key = None
+    url = getattr(item, "image_url", None)
+    url = str(url).strip() if url else None
+    if not url and key:
+        try:
+            url = build_poi_image_url(key)
+        except Exception:
+            url = None
+    return key, url or None
+
+
 def build_safe_plan_preview(plan: PlanResponse) -> PlanSafePreviewResponse:
     """Strip a stored PlanResponse down to paywall-safe fields."""
     highlights: List[str] = []
+    preview_attractions: List[PlanPreviewAttraction] = []
     days_preview: List[PlanDayTeaser] = []
     total = 0
     for day in plan.days or []:
@@ -69,6 +100,15 @@ def build_safe_plan_preview(plan: PlanResponse) -> PlanSafePreviewResponse:
             name = (getattr(it, "name", None) or "").strip()
             if name and len(highlights) < _MAX_HIGHLIGHTS:
                 highlights.append(name)
+            if name and len(preview_attractions) < _MAX_PREVIEW_ATTRACTIONS:
+                image_key, image_url = _preview_image(it)
+                preview_attractions.append(
+                    PlanPreviewAttraction(
+                        name=name,
+                        image_key=image_key,
+                        image_url=image_url,
+                    )
+                )
         total += n_attr
         days_preview.append(
             PlanDayTeaser(
@@ -104,5 +144,6 @@ def build_safe_plan_preview(plan: PlanResponse) -> PlanSafePreviewResponse:
         full_plan_unlocked=paid,
         days_preview=days_preview,
         highlights=highlights,
+        preview_attractions=preview_attractions,
         attraction_count_total=total,
     )
