@@ -610,6 +610,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         # FIX #255b: urban recreation lakes ≠ water park (KAT couples audit).
         "dolina trzech", "park kościuszki", "park kosciuszki",
         "park śląski", "park slaski",
+        # FIX #287: food hall is not a water attraction.
+        "koszyki", "hala koszyki",
     ),
     # FIX #204: Katowice marked urban recreation parks as mountain trails.
     "mountain_trails": (
@@ -790,12 +792,14 @@ _STRONG_RELAX_NAME_MARKERS = (
 _STRONG_ACTIVE_NAME_MARKERS = (
     "tepfactor", "park linowy", "kajak", "trampolin", "gojump", "paintball",
     "escape room", "gokart", "wspinacz", "obstacle", "house of air",
+    "stacja grawitacja", "grawitacja", "flyspot", "jumpcity", "jump arena",
 )
 
 _STRONG_WATER_NAME_MARKERS = (
     "park wodny", "wodny park", "warszawianka", "aquapark", "hydropolis",
     "nemo", "wodny park tychy",
     "bulwary wiślane", "bulwary wislane", "kajak",
+    "park fontann", "fontanna multimedialna", "jeziorko czerniakowskie",
 )
 
 

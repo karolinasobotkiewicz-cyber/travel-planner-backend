@@ -395,6 +395,12 @@ def _timeline_satellite_kind(name: str) -> Optional[str]:
         return "rogalin"
     if _is_puszczykowo_stop_name(nm):
         return "puszczykowo"
+    if _is_kampinos_stop_name(nm):
+        return "kampinos"
+    if _is_czersk_stop_name(nm):
+        return "czersk"
+    if _is_sochaczew_stop_name(nm):
+        return "sochaczew"
     return None
 
 
@@ -424,6 +430,25 @@ def _is_kornik_stop_name(name: str) -> bool:
 def _is_rogalin_stop_name(name: str) -> bool:
     nm = (name or "").lower()
     return any(k in nm for k in _ROGALIN_NAME_MARKERS)
+
+
+def _is_kampinos_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in ("kampinos", "łomna", "lomna", "palmiry"))
+
+
+def _is_czersk_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in (
+        "czersk", "zamek w czersku", "góra kalwaria", "gora kalwaria",
+    ))
+
+
+def _is_sochaczew_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in (
+        "sochaczew", "żelazowa", "zelazowa",
+    ))
 
 
 def _is_puszczykowo_stop_name(name: str) -> bool:
@@ -1643,7 +1668,10 @@ class PlanService:
             if pref == "water_attractions":
                 if any(
                     x in (poi.get("name") or "").lower()
-                    for x in ("browar", "wedel", "czekolad", "lotnictwa", "łazienki", "lazienki")
+                    for x in (
+                        "browar", "wedel", "czekolad", "lotnictwa",
+                        "łazienki", "lazienki", "koszyki",
+                    )
                 ):
                     return False
                 return is_water_attraction_poi(poi) or poi_covers_preference_report(poi, pref)
@@ -10632,7 +10660,7 @@ class PlanService:
                 mode_str = "walking"
                 ideal_min = max(5, int(dist_km * 15))
 
-            if dist_km < 1.0:
+            if dist_km < 1.5:
                 ideal_min = max(5, int(dist_km * 15))
                 mode = TransitMode.WALK
             else:
@@ -11747,7 +11775,7 @@ class PlanService:
                 return "zabkowice"
             if reg == "region_brzeg" or _is_brzeg_stop_name(nm):
                 return "brzeg"
-            if reg == "region_sochaczew":
+            if reg == "region_sochaczew" or _is_sochaczew_stop_name(nm):
                 return "sochaczew"
             if reg == "region_lednica":
                 return "lednica"
@@ -11755,6 +11783,10 @@ class PlanService:
                 return "rogalin"
             if reg == "region_puszczykowo" or _is_puszczykowo_stop_name(nm):
                 return "puszczykowo"
+            if reg == "region_kampinos" or _is_kampinos_stop_name(nm):
+                return "kampinos"
+            if reg == "region_czersk" or _is_czersk_stop_name(nm):
+                return "czersk"
             return "city"
 
         kinds = [_kind(it) for it in attrs]
@@ -11775,6 +11807,8 @@ class PlanService:
         n_led = kinds.count("lednica")
         n_rogalin = kinds.count("rogalin")
         n_puszcz = kinds.count("puszczykowo")
+        n_kampinos = kinds.count("kampinos")
+        n_czersk = kinds.count("czersk")
         n_city = kinds.count("city")
         keep = None
         far_counts = [
@@ -11795,6 +11829,8 @@ class PlanService:
             ("lednica", n_led),
             ("rogalin", n_rogalin),
             ("puszczykowo", n_puszcz),
+            ("kampinos", n_kampinos),
+            ("czersk", n_czersk),
         ]
         far_present = [(k, n) for k, n in far_counts if n]
         if not far_present:
@@ -11867,6 +11903,7 @@ class PlanService:
             "gniezno", "kornik", "zabrze", "gliwice",
             "wojslawice", "olawa", "zabkowice", "brzeg",
             "sochaczew", "lednica", "rogalin", "puszczykowo",
+            "kampinos", "czersk",
         ) and first_far is not None:
             n_far = {
                 "gniezno": n_gniez, "kornik": n_korn,
@@ -11875,6 +11912,7 @@ class PlanService:
                 "zabkowice": n_zabk, "brzeg": n_brzeg,
                 "sochaczew": n_soch, "lednica": n_led,
                 "rogalin": n_rogalin, "puszczykowo": n_puszcz,
+                "kampinos": n_kampinos, "czersk": n_czersk,
             }[keep]
             if first_far <= 12 * 60 or n_far >= max(n_city, 1):
                 whole_day = True
@@ -15716,7 +15754,9 @@ class PlanService:
                 n_days_meal = int((context or {}).get("num_days") or 0)
             except (TypeError, ValueError):
                 n_days_meal = 0
-            max_uses = 1 if n_days_meal >= 7 else 2
+            city_meal = str((context or {}).get("requested_city") or "").lower()
+            war_meal = "warszawa" in city_meal or "warsaw" in city_meal
+            max_uses = 1 if (n_days_meal >= 7 or war_meal) else 2
             if use_counts.get(primary, 0) >= max_uses and len(ordered) > 1:
                 for alt in ordered[1:]:
                     alt_nm = (alt.name or "").lower()
@@ -17061,7 +17101,7 @@ class PlanService:
                 dist_km = 0.0
             # FIX #254: short urban hops stay on foot (client: car on 250–500 m).
             # Wrocław car-teleport after a walk-away is fixed via parking logistics.
-            if dist_km > 0 and dist_km < 1.0:
+            if dist_km <= 0 or dist_km < 1.5:
                 continue
             old_mode = getattr(leg, "mode", None)
             leg.mode = TransitMode.CAR
@@ -17586,6 +17626,21 @@ class PlanService:
                 floor = max(floor, 75)
             if "zamek cesarski" in nm_l:
                 floor = max(floor, 45)
+            # FIX #287: Warszawa visit lengths the client called out.
+            if any(k in nm_l for k in ("wedel", "pijalnia czekolady", "pijalnia wedla")):
+                floor = max(floor, 45)
+            if "muzeum powstania" in nm_l:
+                floor = max(floor, 75)
+            if "muzeum wojska" in nm_l:
+                floor = max(floor, 60)
+            if "etnograficzn" in nm_l:
+                floor = max(floor, 60)
+            if "smart kids" in nm_l:
+                cap = 120 if cap is None else min(int(cap), 120)
+            if "hala koszyki" in nm_l:
+                cap = 75 if cap is None else min(int(cap), 75)
+            if "sochaczew" in nm_l:
+                cap = 90 if cap is None else min(int(cap), 90)
             _city_cap = (getattr(it, "city", "") or "").lower()
             if (
                 ("zamek królewski" in nm_l or "zamek krolewski" in nm_l)
@@ -17593,6 +17648,9 @@ class PlanService:
             ):
                 floor = max(floor, 45)
                 cap = 75 if cap is None else min(int(cap), 75)
+            elif "zamek królewski" in nm_l or "zamek krolewski" in nm_l:
+                if "wawel" not in nm_l:
+                    floor = max(floor, 90)
             if "stary rynek w poznaniu" in nm_l:
                 cap = 75 if cap is None else min(int(cap), 75)
             if "genius loci" in nm_l:
@@ -20091,6 +20149,7 @@ class PlanService:
         krak = "kraków" in city or "krakow" in city
         kat = "katowice" in city or "katowic" in city
         poz = "poznań" in city or "poznan" in city
+        war = "warszawa" in city or "warsaw" in city
         try:
             n_days = int((context or {}).get("num_days") or 1)
         except (TypeError, ValueError):
@@ -20110,7 +20169,7 @@ class PlanService:
                 drop = False
         if kind and day_num <= 1 and quota < 99:
             drop = True
-        if kind and (krak or kat or poz) and n_days >= 5 and day_num <= 2 and quota < 99:
+        if kind and (krak or kat or poz or war) and n_days >= 5 and day_num <= 2 and quota < 99:
             drop = True
         if kind and kind in blocked:
             drop = True
@@ -20330,6 +20389,9 @@ class PlanService:
             ("kornik", _is_kornik_stop_name),
             ("rogalin", _is_rogalin_stop_name),
             ("puszczykowo", _is_puszczykowo_stop_name),
+            ("kampinos", _is_kampinos_stop_name),
+            ("czersk", _is_czersk_stop_name),
+            ("sochaczew", _is_sochaczew_stop_name),
         )
         far_items = []
         kind = None
@@ -20388,6 +20450,36 @@ class PlanService:
         working = self._ensure_far_excursion_return(
             working, context, day_num=day_num,
         )
+        n_far = sum(
+            1 for x in working
+            if _is_timeline_attraction(x)
+            and check_fn(getattr(x, "name", "") or "")
+        )
+        if n_far == 1:
+            only = next(
+                x for x in working
+                if _is_timeline_attraction(x)
+                and check_fn(getattr(x, "name", "") or "")
+            )
+            if int(getattr(only, "duration_min", 0) or 0) < 45:
+                dropped = (getattr(only, "name", "") or "").strip().lower()
+                print(
+                    f"[FIX #287] Day {day_num}: dropped thin lonely "
+                    f"{kind} stop {getattr(only, 'name', '?')}"
+                )
+                cleaned = []
+                for it in working:
+                    if _is_timeline_attraction(it) and check_fn(
+                        getattr(it, "name", "") or ""
+                    ):
+                        continue
+                    if _item_type_value(it) == ItemType.TRANSIT.value:
+                        frm = (getattr(it, "from_location", "") or "").lower()
+                        to = (getattr(it, "to_location", "") or "").lower()
+                        if dropped in frm or dropped in to:
+                            continue
+                    cleaned.append(it)
+                return cleaned
         return working
 
     def _ensure_far_excursion_return(
@@ -20415,6 +20507,8 @@ class PlanService:
             _is_olawa_stop_name, _is_wojslawice_stop_name,
             _is_zabkowice_stop_name, _is_brzeg_stop_name,
             _is_near_satellite_stop_name,
+            _is_kampinos_stop_name, _is_czersk_stop_name,
+            _is_sochaczew_stop_name,
         ))
         lat, lng = getattr(last, "lat", None), getattr(last, "lng", None)
         dist = 0.0
@@ -20616,6 +20710,116 @@ class PlanService:
                 f"on {fixed} transit(s)"
             )
         return out
+
+    def _force_short_city_hops_walk(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #287: sub-1.5 km city hops stay walk, never a 40-min car."""
+        if not items:
+            return items
+        out: List[Any] = []
+        fixed = 0
+        for idx, it in enumerate(items):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            try:
+                km = float(getattr(it, "distance_km", None) or 0)
+            except (TypeError, ValueError):
+                km = 0.0
+            if km <= 0:
+                pair = self._transit_endpoint_coords(items, idx, {})
+                if pair:
+                    (lat1, lng1), (lat2, lng2) = pair
+                    km = haversine_distance(lat1, lng1, lat2, lng2)
+            if km <= 0 or km >= 1.5:
+                out.append(it)
+                continue
+            mode = str(
+                getattr(
+                    getattr(it, "mode", None), "value", getattr(it, "mode", "")
+                ) or ""
+            ).lower()
+            dur = int(getattr(it, "duration_min", 0) or 0)
+            walk_min = max(5, int(round(km / 4.5 * 60)) + 3)
+            if "walk" in mode and dur <= walk_min + 15:
+                out.append(it)
+                continue
+            upd = {
+                "mode": TransitMode.WALK,
+                "routing_source": "estimated_walk",
+                "distance_km": round(km, 2),
+                "duration_min": walk_min,
+            }
+            try:
+                en = getattr(it, "end_time", None)
+                if en:
+                    en_m = time_to_minutes(en)
+                    upd["start_time"] = minutes_to_time(en_m - walk_min)
+            except Exception:
+                pass
+            try:
+                out.append(it.model_copy(update=upd))
+                fixed += 1
+            except Exception:
+                out.append(it)
+        if fixed:
+            print(
+                f"[FIX #287] Day {day_num}: forced walk on {fixed} "
+                f"sub-1.5 km hop(s)"
+            )
+        return out
+
+    def _strip_free_time_before_long_far_hop(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #287: no 57 min free_time immediately before a 90 min drive."""
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        drop_ft = set()
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                continue
+            try:
+                dur = int(getattr(it, "duration_min", 0) or 0)
+            except (TypeError, ValueError):
+                dur = 0
+            if dur < 60:
+                continue
+            to_l = (getattr(it, "to_location", "") or "")
+            far = bool(_timeline_satellite_kind(to_l))
+            if not far:
+                try:
+                    km = float(getattr(it, "distance_km", None) or 0)
+                except (TypeError, ValueError):
+                    km = 0.0
+                far = km >= 40
+            if not far:
+                continue
+            for j in range(i - 1, -1, -1):
+                prev = ordered[j]
+                if _item_type_value(prev) == ItemType.FREE_TIME.value:
+                    drop_ft.add(id(prev))
+                    break
+                if _is_timeline_attraction(prev) or _item_type_value(prev) in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                ):
+                    break
+        if not drop_ft:
+            return items
+        print(
+            f"[FIX #287] Day {day_num}: stripped free_time before a long "
+            f"day-trip hop"
+        )
+        return [it for it in ordered if id(it) not in drop_ft]
 
     def _sanitize_walk_leg_durations(
         self,
@@ -21311,9 +21515,10 @@ class PlanService:
 
         city_l = str((context or {}).get("requested_city") or "").lower()
         poz = "poznań" in city_l or "poznan" in city_l
-        min_hole = 55 if poz else 75
-        max_rounds = 5 if poz else 3
-        max_attr = 7 if poz else 6
+        war = "warszawa" in city_l or "warsaw" in city_l
+        min_hole = 55 if (poz or war) else 75
+        max_rounds = 5 if (poz or war) else 3
+        max_attr = 7 if (poz or war) else 6
         for _ in range(max_rounds):
             if _n_attr(working) >= max_attr:
                 break
@@ -21507,6 +21712,17 @@ class PlanService:
                 and quoted
                 and all(q.strip().lower() not in names for q in quoted)
             ):
+                continue
+            # FIX #287: drop closed/shortage warnings that name a POI
+            # the final plan never scheduled (client: Norblin).
+            msg_l = msg.lower()
+            named_bits = [q.strip().lower() for q in quoted if q.strip()]
+            extra = (w.get("poi") or w.get("name") or w.get("attraction") or "")
+            if extra:
+                named_bits.append(str(extra).strip().lower())
+            if named_bits and all(q not in names for q in named_bits):
+                continue
+            if "norblin" in msg_l and not any("norblin" in n for n in names):
                 continue
             out.append(w)
         return out
@@ -21780,9 +21996,12 @@ class PlanService:
             work = self._strip_duplicate_same_leg(work, day_num=day_num)
         except Exception:
             pass
-        # FIX #286: last name-pass can recreate a 3h city hole after early close.
+        # FIX #286/#287: last name-pass can recreate a 3h city hole after early close.
         _city_end = str((context or {}).get("requested_city") or "").lower()
-        if pool and ("poznań" in _city_end or "poznan" in _city_end):
+        if pool and (
+            "poznań" in _city_end or "poznan" in _city_end
+            or "warszawa" in _city_end or "warsaw" in _city_end
+        ):
             huge = any(
                 _item_type_value(it) == ItemType.FREE_TIME.value
                 and int(getattr(it, "duration_min", 0) or 0) >= 90
@@ -21804,6 +22023,18 @@ class PlanService:
                     pass
         # FIX #284: last name-pass can stamp free_time on top of a transit.
         work = self._remove_timeline_overlaps(work, day_num)
+        try:
+            work = self._force_short_city_hops_walk(work, day_num=day_num)
+            work = self._strip_free_time_before_long_far_hop(
+                work, context, day_num=day_num,
+            )
+            work = self._retarget_all_legs_to_prev_stop(work, day_num=day_num)
+            work = self._cap_stretched_attraction_durations(
+                work, day_num=day_num, user=user,
+            )
+            work = self._remove_timeline_overlaps(work, day_num)
+        except Exception:
+            pass
         return work, note
 
     def _strip_misplaced_city_coords(
@@ -21904,15 +22135,48 @@ class PlanService:
                 continue
             nm = (getattr(it, "name", "") or "").lower()
             fixed = None
+            city_now = (getattr(it, "city", "") or "").lower()
+            addr_now = (getattr(it, "address", "") or "").lower()
+            lng_now = getattr(it, "lng", None)
+            # FIX #287: Warsaw Iluzja is Rynek 21 — never inherit Wrocław Świdnicka.
+            if "iluzji" in nm:
+                is_wro = any(
+                    k in nm or k in city_now
+                    for k in ("wrocław", "wroclaw")
+                )
+                is_waw = (
+                    "warszaw" in city_now
+                    or "warsaw" in city_now
+                    or "warszaw" in addr_now
+                    or (lng_now is not None and float(lng_now or 0) > 20)
+                )
+                if is_waw and not is_wro:
+                    fixed = (
+                        52.2495, 21.0119,
+                        "Rynek Starego Miasta 21, 00-272 Warszawa",
+                    )
             for marker, lat, lng, addr in _FIXES:
                 if marker in nm:
                     # Wedel only — avoid other "pijalnia" rows.
                     if marker == "pijalnia czekolady" and "wedel" not in nm:
                         continue
-                    if "iluzji" in marker and any(
-                        k in nm for k in ("warszaw", "warsaw")
-                    ):
-                        continue
+                    if "iluzji" in marker:
+                        city_l = (getattr(it, "city", "") or "").lower()
+                        lng_it = getattr(it, "lng", None)
+                        warsaw_iluzja = (
+                            any(k in nm for k in ("warszaw", "warsaw"))
+                            or "warszaw" in city_l
+                            or "warsaw" in city_l
+                            or (lng_it is not None and float(lng_it or 0) > 20)
+                        )
+                        wro_named = any(
+                            k in nm or k in marker
+                            for k in ("wrocław", "wroclaw")
+                        )
+                        if warsaw_iluzja and not wro_named:
+                            continue
+                    if fixed:
+                        break
                     if "wedel" in marker or "pijalnia" in marker:
                         city_l = (getattr(it, "city", "") or "").lower()
                         addr_l = (getattr(it, "address", "") or "").lower()

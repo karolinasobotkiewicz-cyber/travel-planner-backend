@@ -196,11 +196,15 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     if _is_zoo(poi) and tg == "couples" and style == "cultural":
         return True
 
-    # FIX #233 Warszawa family_kids — Cmentarz Powązkowski
-    if tg == "family_kids" and any(k in name for k in (
+    # FIX #233/#287 Warszawa — Cmentarz Powązkowski
+    if any(k in name for k in (
         "cmentarz powązkowski", "cmentarz powazkowski", "powązk", "powazk",
     )):
-        return True
+        if tg == "family_kids":
+            return True
+        # Nature + relax opener is a cemetery — never a match.
+        if nat_relax and style == "relax":
+            return True
 
     # FIX #258: MiniCiti is for ages 7–15 — never for toddlers (boosts used to win).
     if any(k in name for k in ("miniciti", "mini citi")):
@@ -2144,6 +2148,31 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
         if any(k in name for k in ("aquapark", "city golf", "movie gate", "pigcasso")):
             delta -= 85.0
 
+    # FIX #287 Warszawa — water / active / food-hall opener / history spread.
+    if "water_attractions" in prefs:
+        if any(k in name for k in (
+            "warszawianka", "park fontann", "fontanna multimedialna",
+            "jeziorko czerniakowskie", "kajak",
+            "bulwary wiślane", "bulwary wislane",
+        )):
+            delta += 180.0
+        if "koszyki" in name:
+            delta -= 200.0
+    if "koszyki" in name and int(ctx.get("day_attraction_count") or 0) == 0:
+        delta -= 160.0
+    if "active_sport" in prefs:
+        if any(k in name for k in (
+            "tepfactor", "stacja grawitacja", "grawitacja", "flyspot",
+            "jumpcity", "jump arena", "gojump",
+        )):
+            delta += 170.0
+    if "history_mystery" in prefs and day >= 2:
+        if any(k in name for k in (
+            "muzeum powstania", "muzeum wojska", "cytadel",
+            "zamek królewski", "zamek krolewski", "gazowni", "x pawilon",
+        )):
+            delta += 90.0
+
     return delta
 
 
@@ -2172,5 +2201,6 @@ def is_active_city_poi(poi: dict) -> bool:
         "gojump", "aquapark", "hydropolis", "bungee", "park linowy", "trampolin",
         "kopalnia", "sztolnia", "guido", "carboneum", "spływ", "spluw", "ponton",
         "pixel xl", "escape", "paintball", "linowa", "kajak", "gokart", "tepfactor",
+        "grawitacja", "flyspot", "jumpcity",
     )
     return any(n in name for n in _active_names)

@@ -993,7 +993,7 @@ def is_water_attraction_poi(p: dict) -> bool:
     if any(m in name for m in (
         "muzeum", "browar", "wedel", "czekolad", "pijalnia", "lotnictwa",
         "łazienki królewskie", "lazienki krolewskie", "planty", "katedra",
-        "koryto warty", "mariacki",
+        "koryto warty", "mariacki", "koszyki", "hala koszyki",
     )):
         return False
     if any(m in name for m in _WATER_NAME_MARKERS):
@@ -1181,6 +1181,7 @@ def is_afternoon_only_poi(poi: dict) -> bool:
         "fabryka wódki", "fabryka wodki",
         "muzeum polskiej wódki", "muzeum polskiej wodki",
         "polish vodka museum",
+        "hala koszyki",
     )):
         return True
     tod = str(poi.get("recommended_time_of_day") or poi.get("best_time") or "").lower()
@@ -2267,8 +2268,8 @@ def city_daytrip_quota(context: dict | None) -> int:
     99 = mountain / non-city trips keep the old far-region logic.
     Wrocław: 2–3 days stay in the city; 4–5 days get at most one full
     day-trip; 6+ days get at most two. Never used as a Day-1 opener.
-    Other city hubs: 2-day hard stop; Kraków / Katowice match Wrocław
-    (3-day Gliwice/Zabrze hops are a poor use of a short city stay).
+    Other city hubs: 2-day hard stop; Kraków / Katowice / Poznań / Warszawa
+    match Wrocław (3-day Czersk/Kampinos hops are a poor use of a short stay).
     """
     if not context:
         return 99
@@ -2284,7 +2285,8 @@ def city_daytrip_quota(context: dict | None) -> int:
     krak = "kraków" in city or "krakow" in city
     kat = "katowice" in city or "katowic" in city
     poz = "poznań" in city or "poznan" in city
-    if not wro and not krak and not kat and not poz:
+    war = "warszawa" in city or "warsaw" in city
+    if not wro and not krak and not kat and not poz and not war:
         return 0 if n <= 2 else 99
     if n <= 3:
         return 0
@@ -2344,6 +2346,7 @@ def should_block_city_daytrip_poi(p: dict, context: dict | None) -> bool:
     krak = "kraków" in city or "krakow" in city
     kat = "katowice" in city or "katowic" in city
     poz = "poznań" in city or "poznan" in city
+    war = "warszawa" in city or "warsaw" in city
     prefs = _context_pref_set(context)
     used = context.get("global_geo_region_use_count") or {}
     used_far = sum(
@@ -2373,7 +2376,7 @@ def should_block_city_daytrip_poi(p: dict, context: dict | None) -> bool:
     if day_num <= 1:
         return True
     # FIX #284/#285: 5+ day city trips — a day-2 excursion is too early.
-    if (krak or kat or poz) and day_num <= 2 and n >= 5:
+    if (krak or kat or poz or war) and day_num <= 2 and n >= 5:
         return True
     if int(used.get(reg) or 0) >= 1:
         return True
@@ -3114,6 +3117,11 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("stacja grawitacja", 90),
         # FIX #270: Tepfactor/Czersk must not absorb a whole afternoon.
         ("tepfactor", 120),
+        ("smart kids", 120),
+        ("hala koszyki", 75),
+        ("sochaczew", 90),
+        ("żelazowa", 90),
+        ("zelazowa", 90),
         ("czersk", 150),
         ("suntago", 180),
         ("park skaryszewsk", 75),
@@ -3455,11 +3463,27 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("muzeum początków państwa", 75),
         ("muzeum poczatkow panstwa", 75),
         ("zamek cesarski", 45),
+        # FIX #287: Warszawa floors the client called out.
+        ("pijalnia czekolady", 45),
+        ("pijalnia wedla", 45),
+        ("wedel", 45),
+        ("muzeum powstania", 75),
+        ("muzeum wojska", 60),
+        ("etnograficzn", 60),
     )
     for _marker, _nmin in _named_mins:
         if _marker in _poi_name_lower:
             tmin = max(tmin, _nmin)
             break
+    # FIX #287: Warsaw castle is a 90+ min visit; Poznań keeps the 75 cap.
+    _poi_city = safe_str(p.get("city", "") or p.get("City", "")).lower()
+    if (
+        ("zamek królewski" in _poi_name_lower or "zamek krolewski" in _poi_name_lower)
+        and "wawel" not in _poi_name_lower
+        and "poznań" not in _poi_city
+        and "poznan" not in _poi_city
+    ):
+        tmin = max(tmin, 90)
     # FIX #260: seniors + relax need longer landmark visits in Warszawa.
     if user and str(user.get("target_group") or "") == "seniors":
         if any(k in _poi_name_lower for k in ("łazienki", "lazienki")):
