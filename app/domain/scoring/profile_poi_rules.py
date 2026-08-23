@@ -317,6 +317,31 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
         if tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
             return True
 
+    # FIX #285: Funzeum / FunHouse is a kids indoor park, not adult days.
+    if any(k in name for k in ("funzeum", "funhouse", "fun house", "fun-house")):
+        if tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
+            return True
+
+    if "papugarn" in name:
+        if tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
+            return True
+
+    if any(k in name for k in (
+        "aquapark", "park wodny", "wodny park", "wodny park tychy", "nemo",
+    )):
+        if "water_attractions" not in prefs and "kids_attractions" not in prefs:
+            return True
+
+    if any(k in name for k in ("królowa luiza", "krolowa luiza")):
+        if tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
+            return True
+    if ("kopalnia guido" in name or name.strip() == "guido") and tg == "family_kids":
+        return True
+
+    if any(k in name for k in ("muzeum śląskie", "muzeum slaskie")):
+        if tg == "family_kids" and (style == "relax" or "relaxation" in prefs):
+            return True
+
     # FIX #274/#283: Grabowy Labirynt stays winter-closed. Arboretum
     # Wojsławice is now allowed on the Niemcza nature day (client json4 D5).
     _date = user.get("start_date") or user.get("date")
@@ -1204,7 +1229,7 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
     if tg == "friends" and adv and "history_mystery" in prefs:
         if any(k in name for k in (
             "kopalnia guido", "guido", "królowa luiza", "krolowa luiza",
-            "carboneum", "sztolnia", "jumpcity", "funhouse",
+            "carboneum", "sztolnia", "jumpcity",
         )):
             delta += 115.0
         if "kopalnia guido" in name or (name.strip() == "guido"):

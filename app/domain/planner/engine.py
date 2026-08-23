@@ -1545,6 +1545,8 @@ def travel_time_minutes(a, b, context):
         # FIX #271/#284: Kraków — Ojców / mines / Tenczyn / Wiśnicz.
         "region_ojcow", "region_wieliczka",
         "region_bochnia", "region_tenczyn", "region_wisnicz",
+        # FIX #285: Katowice sats — never walk a 5 km hop as 68 min.
+        "region_gliwice", "region_zabrze", "region_tychy", "region_dabrowa",
         # FIX #277: Warszawa Sochaczew / Poznań Lednica.
         "region_sochaczew", "region_lednica",
     }
@@ -1804,7 +1806,8 @@ _FAR_GEO_REGIONS = frozenset({
     "region_ojcow", "region_wieliczka",
     "region_bochnia", "region_tenczyn", "region_wisnicz",
     "region_gniezno", "region_gliwice", "region_suntago", "region_modlin",
-    "region_zabrze", "region_olawa", "region_kampinos", "region_czersk",
+    "region_zabrze", "region_tychy", "region_dabrowa",
+    "region_olawa", "region_kampinos", "region_czersk",
     "region_kornik", "region_zabkowice", "region_brzeg",
     "region_sochaczew", "region_lednica",
     # FIX #281: Wrocław day-trips — don't reuse Niemcza/Wojsławice or Topacz.
@@ -1860,6 +1863,26 @@ def poi_geo_region_key(p: dict) -> str | None:
         return "region_gniezno"
     if "gliwice" in blob:
         return "region_gliwice"
+    # FIX #285: Gliwice icons often stored as City=Katowice.
+    if any(k in blob for k in (
+        "palmiarnia miejska", "willa caro", "park chopina",
+    )):
+        return "region_gliwice"
+    if "kolejkowo" in blob and not any(
+        k in blob for k in ("wrocław", "wroclaw")
+    ):
+        return "region_gliwice"
+    if "tychy" in city or "wodny park tychy" in blob:
+        return "region_tychy"
+    if any(k in blob for k in ("park wodny nemo", "nemo")) or any(
+        k in city for k in ("dąbrowa", "dabrowa")
+    ):
+        return "region_dabrowa"
+    if any(k in blob for k in (
+        "kopalnia guido", "kopalnia wegla", "królowa luiza", "krolowa luiza",
+        "carboneum",
+    )) or ( "guido" in blob and "gliwice" not in blob):
+        return "region_zabrze"
     if "suntago" in blob:
         return "region_suntago"
     if any(k in blob for k in ("modlin", "twierdza modlin")):
@@ -2237,8 +2260,8 @@ def city_daytrip_quota(context: dict | None) -> int:
     99 = mountain / non-city trips keep the old far-region logic.
     Wrocław: 2–3 days stay in the city; 4–5 days get at most one full
     day-trip; 6+ days get at most two. Never used as a Day-1 opener.
-    Other city hubs: 2-day hard stop; Kraków now matches Wrocław
-    (3-day Ojców/Tenczyn is a poor use of a short city stay).
+    Other city hubs: 2-day hard stop; Kraków / Katowice match Wrocław
+    (3-day Gliwice/Zabrze hops are a poor use of a short city stay).
     """
     if not context:
         return 99
@@ -2252,7 +2275,8 @@ def city_daytrip_quota(context: dict | None) -> int:
     city = str(context.get("requested_city") or context.get("city") or "").lower()
     wro = "wrocław" in city or "wroclaw" in city
     krak = "kraków" in city or "krakow" in city
-    if not wro and not krak:
+    kat = "katowice" in city or "katowic" in city
+    if not wro and not krak and not kat:
         return 0 if n <= 2 else 99
     if n <= 3:
         return 0
@@ -2261,13 +2285,39 @@ def city_daytrip_quota(context: dict | None) -> int:
     return 2
 
 
+def _context_pref_set(context: dict | None) -> set[str]:
+    raw = (context or {}).get("preferences")
+    if not raw:
+        user = (context or {}).get("user")
+        if isinstance(user, dict):
+            raw = user.get("preferences")
+    return {str(x).lower() for x in (raw or [])}
+
+
+def _katowice_coord_far(p: dict, context: dict | None) -> bool:
+    """FIX #285: unnamed 28 km+ hops (Park Sensoryczny) are still day-trips."""
+    city = str((context or {}).get("requested_city") or (context or {}).get("city") or "").lower()
+    if "katowice" not in city and "katowic" not in city:
+        return False
+    try:
+        lat = float(p.get("lat") or 0)
+        lng = float(p.get("lng") or 0)
+    except (TypeError, ValueError):
+        return False
+    if lat == 0 or lng == 0 or lat > 51.6:
+        return False
+    return haversine_distance(50.2640, 19.0238, lat, lng) >= 28.0
+
+
 def should_block_city_daytrip_poi(p: dict, context: dict | None) -> bool:
     """FIX #282: day-trips are extras, never a mid-day hop, never Day 1."""
     if not context:
         return False
     quota = city_daytrip_quota(context)
     reg = poi_geo_region_key(p)
-    if not reg or reg not in _FAR_GEO_REGIONS:
+    if (not reg or reg not in _FAR_GEO_REGIONS) and _katowice_coord_far(p, context):
+        reg = "region_silesia_far"
+    if not reg or (reg not in _FAR_GEO_REGIONS and reg != "region_silesia_far"):
         return False
     day_reg = context.get("day_geo_region")
     if day_reg == reg:
@@ -2278,23 +2328,44 @@ def should_block_city_daytrip_poi(p: dict, context: dict | None) -> bool:
         day_num = int(context.get("current_day_num") or 0)
     except (TypeError, ValueError):
         day_num = 0
-    if quota <= 0:
-        return True
-    if day_num <= 1:
-        return True
-    # FIX #284: Kraków 5+ — a day-2 excursion is too early (json8 D2).
+    try:
+        n = int(context.get("num_days") or 1)
+    except (TypeError, ValueError):
+        n = 1
     city = str(context.get("requested_city") or context.get("city") or "").lower()
-    if ("kraków" in city or "krakow" in city) and day_num <= 2:
-        try:
-            n = int(context.get("num_days") or 1)
-        except (TypeError, ValueError):
-            n = 1
-        if n >= 5:
-            return True
+    krak = "kraków" in city or "krakow" in city
+    kat = "katowice" in city or "katowic" in city
+    prefs = _context_pref_set(context)
     used = context.get("global_geo_region_use_count") or {}
     used_far = sum(
         int(used.get(r) or 0) for r in _FAR_GEO_REGIONS if used.get(r)
     )
+    if used.get("region_silesia_far"):
+        used_far += int(used.get("region_silesia_far") or 0)
+
+    def _already_used() -> bool:
+        return int(used.get(reg) or 0) >= 1 or used_far >= max(quota, 1)
+
+    # FIX #285: 2–3 day Katowice may keep ONE themed satellite.
+    if kat and quota <= 0:
+        if day_num <= 1:
+            return True
+        if _already_used():
+            return True
+        if reg == "region_zabrze" and (
+            "underground" in prefs or "history_mystery" in prefs
+        ):
+            return False
+        if reg in ("region_tychy", "region_dabrowa") and "water_attractions" in prefs:
+            return False
+        return True
+    if quota <= 0:
+        return True
+    if day_num <= 1:
+        return True
+    # FIX #284/#285: 5+ day city trips — a day-2 excursion is too early.
+    if (krak or kat) and day_num <= 2 and n >= 5:
+        return True
     if int(used.get(reg) or 0) >= 1:
         return True
     if used_far >= quota:
@@ -2304,6 +2375,21 @@ def should_block_city_daytrip_poi(p: dict, context: dict | None) -> bool:
 
 def should_skip_poi_candidate(p: dict, context: dict | None) -> bool:
     """FIX #179: Combined hard filters for POI candidate selection."""
+    # FIX #285: Katowice must not pick the Warsaw Wedel row.
+    if context:
+        _req = str(context.get("requested_city") or context.get("city") or "").lower()
+        _nm = str(p.get("name") or "").lower()
+        _pc = str(p.get("city") or "").lower()
+        if (
+            ("katowice" in _req or "katowic" in _req)
+            and any(k in _nm for k in ("wedel", "pijalnia czekolady", "pijalnia wedla"))
+            and (
+                "warszaw" in _pc
+                or "warsaw" in _pc
+                or float(p.get("lat") or 0) > 51.6
+            )
+        ):
+            return True
     if should_block_city_daytrip_poi(p, context):
         return True
     if should_block_consecutive_cluster_repeat(p, context):
@@ -3328,6 +3414,12 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("zamek w wisniczu", 60),
         ("eliaszówk", 45),
         ("eliaszowk", 45),
+        # FIX #285: Katowice floors.
+        ("muzeum śląskie", 75),
+        ("muzeum slaskie", 75),
+        ("willa caro", 45),
+        ("guliwer", 60),
+        ("park chopina", 40),
     )
     for _marker, _nmin in _named_mins:
         if _marker in _poi_name_lower:

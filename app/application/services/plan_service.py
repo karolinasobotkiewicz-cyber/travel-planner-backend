@@ -365,6 +365,19 @@ def _timeline_satellite_kind(name: str) -> Optional[str]:
         return "tenczyn"
     if _is_wisnicz_stop_name(nm):
         return "wisnicz"
+    if _is_zabrze_stop_name(nm):
+        return "zabrze"
+    if (
+        _is_gliwice_stop_name(nm)
+        or "willa caro" in nm
+        or "park chopina" in nm
+        or "palmiarnia miejska" in nm
+    ):
+        return "gliwice"
+    if "wodny park tychy" in nm or ("tychy" in nm and "wodny" in nm):
+        return "tychy"
+    if "nemo" in nm:
+        return "dabrowa"
     return None
 
 
@@ -7308,11 +7321,17 @@ class PlanService:
                     or (_ctx_fields or {}).get("requested_city")
                     or ""
                 ),
+                "preferences": list(
+                    (user or {}).get("preferences")
+                    or (context or {}).get("preferences")
+                    or []
+                ),
             }
             # Never let the final densify pull a POI that another day already
             # shows (client: "unikamy regresji duplikacji").
             _used280: set = set()
             _used_kinds280: set = set()
+            _water280 = 0
             _days280: List[DayPlan] = []
             for _d280 in days:
                 _items280 = list(_d280.items or [])
@@ -7329,6 +7348,7 @@ class PlanService:
                         "current_day_num": _d280.day,
                         "blocked_satellite_kinds": set(_used_kinds280),
                         "trip_attraction_names": set(_used280),
+                        "trip_water_count": _water280,
                     },
                     day_num=_d280.day,
                     pool=_pool280,
@@ -7345,6 +7365,12 @@ class PlanService:
                         _used280.add(
                             _fold_place_label(getattr(_new280, "name", None))
                         )
+                        _nm280 = (getattr(_new280, "name", "") or "").lower()
+                        if any(
+                            k in _nm280
+                            for k in ("aquapark", "park wodny", "wodny park", "nemo")
+                        ):
+                            _water280 += 1
                 _pool280 = [
                     p for p in _pool280
                     if _fold_place_label(p.get("name")) not in _used280
@@ -8278,6 +8304,18 @@ class PlanService:
                     "address": "Bulwar Czerwieński, 31-101 Kraków",
                     "city": poi_dict.get("city") or "Kraków",
                 }
+        _req_wed = str((context or {}).get("requested_city") or "").lower()
+        if (
+            ("katowice" in _req_wed or "katowic" in _req_wed)
+            and any(k in _nm_iluz for k in ("wedel", "pijalnia czekolady", "pijalnia wedla"))
+        ):
+            lat_value, lng_value = 50.2584, 19.0184
+            _pk_lat, _pk_lng = 50.2584, 19.0184
+            poi_dict = {
+                **poi_dict,
+                "address": "ul. 3 Maja 30, 40-094 Katowice",
+                "city": "Katowice",
+            }
         
         # CLIENT FEEDBACK (30.01.2026 - Requirement #5): Ticket prices mapping
         # Extract ticket_normal/ticket_reduced with fallback (same pattern as lat/lng)
@@ -9657,6 +9695,40 @@ class PlanService:
                         continue
                     type_i, type_j = di.get("type"), dj.get("type")
                     ti_s, tj_s = _type_str(type_i), _type_str(type_j)
+                    _meals = {
+                        ItemType.LUNCH_BREAK.value,
+                        ItemType.DINNER_BREAK.value,
+                    }
+                    # FIX #285: lunch/dinner must not share a slot with a transit
+                    # (Katowice json 3/4/9/10).
+                    if (
+                        (ti_s in _meals and tj_s == ItemType.TRANSIT.value)
+                        or (tj_s in _meals and ti_s == ItemType.TRANSIT.value)
+                    ):
+                        meal_it, meal_d, meal_s, meal_e = (
+                            (item_i, di, si, ei) if ti_s in _meals
+                            else (item_j, dj, sj, ej)
+                        )
+                        tr_it, tr_d, tr_s, tr_e = (
+                            (item_j, dj, sj, ej) if tj_s == ItemType.TRANSIT.value
+                            else (item_i, di, si, ei)
+                        )
+                        dur = max(1, int(tr_d.get("duration_min") or (tr_e - tr_s) or 10))
+                        new_en = meal_s
+                        new_st = max(0, new_en - dur)
+                        if new_en <= new_st:
+                            new_st, new_en = max(0, meal_s - 10), meal_s
+                        try:
+                            working[working.index(tr_it)] = tr_it.model_copy(update={
+                                "start_time": minutes_to_time(new_st),
+                                "end_time": minutes_to_time(new_en),
+                                "duration_min": new_en - new_st,
+                            })
+                            overlaps_shifted += 1
+                            shifted = True
+                        except Exception:
+                            pass
+                        continue
                     # FIX #259: shift transit off the previous attraction/meal
                     # instead of dropping the logistics leg (Movie Gate vs walk).
                     if (
@@ -13340,11 +13412,11 @@ class PlanService:
         for it in items:
             if _is_timeline_attraction(it):
                 nm = (getattr(it, "name", "") or "").lower()
-                if has_guido and ("królowa luiza" in nm or "krolowa luiza" in nm):
+                if has_guido and has_luiza and (
+                    "królowa luiza" in nm or "krolowa luiza" in nm
+                ):
+                    # FIX #285: keep Guido (adult mine); Luiza is the kids variant.
                     print(f"[FIX #245] Day {day_num}: stripped Luiza after Guido same day")
-                    continue
-                if has_luiza and ("kopalnia guido" in nm or nm.strip() == "guido"):
-                    print(f"[FIX #245] Day {day_num}: stripped Guido after Luiza same day")
                     continue
                 if ("kopalnia guido" in nm or nm.strip() == "guido") and last_luiza_day and day_num - last_luiza_day == 1:
                     print(f"[FIX #245] Day {day_num}: stripped Guido day after Luiza")
@@ -13352,6 +13424,89 @@ class PlanService:
                 if ("królowa luiza" in nm or "krolowa luiza" in nm) and last_guido_day and day_num - last_guido_day == 1:
                     print(f"[FIX #245] Day {day_num}: stripped Luiza day after Guido")
                     continue
+            out.append(it)
+        return out
+
+    def _strip_extra_water_parks(
+        self,
+        items: List[Any],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #285: one aquapark per day and per trip."""
+        def _water(nm: str) -> bool:
+            n = (nm or "").lower()
+            return any(k in n for k in ("aquapark", "park wodny", "wodny park", "nemo"))
+
+        waters = [
+            it for it in items
+            if _is_timeline_attraction(it) and _water(getattr(it, "name", ""))
+        ]
+        if not waters:
+            return items
+        trip_n = int((context or {}).get("trip_water_count") or 0)
+        drop = set()
+        if trip_n >= 1:
+            drop.update((getattr(it, "name", "") or "").strip().lower() for it in waters)
+        elif len(waters) > 1:
+            drop.update(
+                (getattr(it, "name", "") or "").strip().lower() for it in waters[1:]
+            )
+        if not drop:
+            return items
+        out = []
+        for it in items:
+            if _is_timeline_attraction(it) and (
+                (getattr(it, "name", "") or "").strip().lower() in drop
+            ):
+                print(
+                    f"[FIX #285] Day {day_num}: stripped extra water park "
+                    f"{getattr(it, 'name', '?')}"
+                )
+                continue
+            out.append(it)
+        return out
+
+    def _strip_excess_green_stops(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #285: max two park/green icons in one Katowice day."""
+        def _green(nm: str) -> bool:
+            n = (nm or "").lower()
+            if any(k in n for k in ("wodny", "aquapark", "nemo")):
+                return False
+            return any(
+                k in n for k in (
+                    "park ", "park.", "ogród", "ogrod", "dolina",
+                    "las ", "błonia", "blonia", "tężnia", "teznia",
+                )
+            ) or n.startswith("park")
+
+        greens = [
+            it for it in items
+            if _is_timeline_attraction(it) and _green(getattr(it, "name", ""))
+        ]
+        if len(greens) <= 2:
+            return items
+        extras = sorted(
+            greens[2:],
+            key=lambda it: int(getattr(it, "duration_min", 0) or 0),
+        )
+        drop = {(getattr(it, "name", "") or "").strip().lower() for it in extras}
+        out = []
+        for it in items:
+            if _is_timeline_attraction(it) and (
+                (getattr(it, "name", "") or "").strip().lower() in drop
+            ):
+                print(
+                    f"[FIX #285] Day {day_num}: stripped extra green "
+                    f"{getattr(it, 'name', '?')}"
+                )
+                continue
             out.append(it)
         return out
 
@@ -17337,6 +17492,16 @@ class PlanService:
                 floor = max(floor, 60)
             if "eliaszówk" in nm_l or "eliaszowk" in nm_l:
                 floor = max(floor, 45)
+            if "muzeum śląskie" in nm_l or "muzeum slaskie" in nm_l:
+                floor = max(floor, 75)
+            if "willa caro" in nm_l:
+                floor = max(floor, 45)
+            if "guliwer" in nm_l:
+                floor = max(floor, 60)
+            if "kopalnia guido" in nm_l or nm_l.strip() == "guido":
+                floor = max(floor, 90)
+            if "park chopina" in nm_l:
+                floor = max(floor, 40)
             if style == "adventure" and "rynek" in nm_l:
                 cap = 75 if cap is None else min(int(cap), 75)
             if "pieskowa" in nm_l:
@@ -19581,20 +19746,70 @@ class PlanService:
         }
         city = str((context or {}).get("requested_city") or "").lower()
         krak = "kraków" in city or "krakow" in city
+        kat = "katowice" in city or "katowic" in city
         try:
             n_days = int((context or {}).get("num_days") or 1)
         except (TypeError, ValueError):
             n_days = 1
+        prefs = {
+            str(p).lower()
+            for p in ((context or {}).get("preferences") or [])
+        }
         drop = False
         if kind and quota <= 0:
             drop = True
+            if kat and kind == "zabrze" and (
+                "underground" in prefs or "history_mystery" in prefs
+            ) and day_num > 1:
+                drop = False
+            if kat and kind in ("tychy", "dabrowa") and "water_attractions" in prefs and day_num > 1:
+                drop = False
         if kind and day_num <= 1 and quota < 99:
             drop = True
-        if kind and krak and n_days >= 5 and day_num <= 2 and quota < 99:
+        if kind and (krak or kat) and n_days >= 5 and day_num <= 2 and quota < 99:
             drop = True
         if kind and kind in blocked:
             drop = True
         if not drop:
+            # Still drop individual far POIs the quota forbids (Gliwice
+            # Palmiarnia stored as City=Katowice, unnamed 30 km hops).
+            try:
+                from app.domain.planner.engine import should_block_city_daytrip_poi
+                extra = []
+                for it in items:
+                    if not _is_timeline_attraction(it):
+                        continue
+                    poi = {
+                        "name": getattr(it, "name", "") or "",
+                        "city": getattr(it, "city", "") or "",
+                        "lat": getattr(it, "lat", None),
+                        "lng": getattr(it, "lng", None),
+                    }
+                    if should_block_city_daytrip_poi(
+                        poi, {**context, "current_day_num": day_num},
+                    ):
+                        extra.append((getattr(it, "name", "") or "").strip().lower())
+                if extra:
+                    dropped = set(extra)
+                    out = []
+                    for it in items:
+                        if _is_timeline_attraction(it) and (
+                            (getattr(it, "name", "") or "").strip().lower() in dropped
+                        ):
+                            continue
+                        if _item_type_value(it) == ItemType.TRANSIT.value:
+                            frm = (getattr(it, "from_location", "") or "").strip().lower()
+                            to = (getattr(it, "to_location", "") or "").strip().lower()
+                            if frm in dropped or to in dropped:
+                                continue
+                        out.append(it)
+                    print(
+                        f"[FIX #285] Day {day_num}: stripped forbidden sats "
+                        f"{sorted(dropped)[:4]}"
+                    )
+                    return out
+            except Exception:
+                pass
             return items
         dropped = set()
         out: List[Any] = []
@@ -19762,6 +19977,11 @@ class PlanService:
             ("wojslawice", _is_wojslawice_stop_name),
             ("zabkowice", _is_zabkowice_stop_name),
             ("brzeg", _is_brzeg_stop_name),
+            ("gliwice", lambda n: _is_gliwice_stop_name(n) or any(
+                k in (n or "").lower()
+                for k in ("willa caro", "park chopina", "palmiarnia miejska")
+            )),
+            ("zabrze", _is_zabrze_stop_name),
         )
         far_items = []
         kind = None
@@ -20560,6 +20780,20 @@ class PlanService:
                 )
                 wrong = morning_markers + evening_markers
             if not any(k in folded for k in wrong):
+                # FIX #285: a 75 min block is not "krótka przerwa / bufor".
+                lab = (getattr(it, "label", "") or "").lower()
+                if int(getattr(it, "duration_min", 0) or 0) >= 45 and any(
+                    k in lab for k in ("krótk", "krotk", "bufor")
+                ):
+                    label, suggestions = table[(day_num + idx) % len(table)]
+                    try:
+                        out.append(it.model_copy(update={
+                            "label": label,
+                            "suggestions": list(suggestions),
+                        }))
+                        continue
+                    except Exception:
+                        pass
                 out.append(it)
                 continue
             label, suggestions = table[(day_num + idx) % len(table)]
@@ -21012,6 +21246,16 @@ class PlanService:
             )
         except Exception:
             pass
+        try:
+            work = self._strip_guido_luiza_same_day(work, day_num=day_num)
+            work = self._strip_extra_water_parks(
+                work, context, day_num=day_num,
+            )
+            _city_fin = str((context or {}).get("requested_city") or "").lower()
+            if "katowice" in _city_fin or "katowic" in _city_fin:
+                work = self._strip_excess_green_stops(work, day_num=day_num)
+        except Exception:
+            pass
         work = self._drop_duplicate_meal_stop(work, day_num=day_num)
         if pool:
             before = len(work)
@@ -21253,6 +21497,10 @@ class PlanService:
             ("wojsławice", 50.7250, 16.8520, "Wojsławice"),
             ("flyspot", 51.0478, 16.9719, "Bielany Wrocławskie"),
             ("muzeum motoryzacji wena", 50.9329, 17.2924, "Oława"),
+            # FIX #285: Katowice Wedel — not the Warsaw Pijalnia pin.
+            ("pijalnia czekolady e.wedel", 50.2584, 19.0184, "ul. 3 Maja 30, 40-094 Katowice"),
+            ("pijalnia czekolady e. wedel", 50.2584, 19.0184, "ul. 3 Maja 30, 40-094 Katowice"),
+            ("pijalnia wedla", 50.2584, 19.0184, "ul. 3 Maja 30, 40-094 Katowice"),
             # FIX #284: Kraków Bulwary Wiślane must not inherit the Warsaw address.
             ("bulwary wiślane", 50.0520, 19.9566, "Bulwar Czerwieński, 31-101 Kraków"),
             ("bulwary wislane", 50.0520, 19.9566, "Bulwar Czerwieński, 31-101 Kraków"),
@@ -21273,6 +21521,25 @@ class PlanService:
                         k in nm for k in ("warszaw", "warsaw")
                     ):
                         continue
+                    if "wedel" in marker or "pijalnia" in marker:
+                        city_l = (getattr(it, "city", "") or "").lower()
+                        addr_l = (getattr(it, "address", "") or "").lower()
+                        nm_l = nm
+                        kat_row = (
+                            "katowic" in city_l
+                            or "katowic" in addr_l
+                            or "katowic" in nm_l
+                        )
+                        war_row = (
+                            "warszaw" in city_l
+                            or "warsaw" in city_l
+                            or (
+                                "warszaw" in addr_l
+                                and not kat_row
+                            )
+                        )
+                        if war_row and not kat_row:
+                            continue
                     if "bulwary" in marker:
                         addr_l = (getattr(it, "address", "") or "").lower()
                         city_l = (getattr(it, "city", "") or "").lower()

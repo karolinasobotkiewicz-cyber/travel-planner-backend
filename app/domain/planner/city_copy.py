@@ -252,6 +252,7 @@ def is_city_tourism_trip(context: Optional[Dict[str, Any]] = None) -> bool:
         k in city for k in (
             "kraków", "krakow", "wrocław", "wroclaw", "warszawa", "warsaw",
             "poznań", "poznan", "gdańsk", "gdansk",
+            "katowice", "katowic",
         )
     )
 

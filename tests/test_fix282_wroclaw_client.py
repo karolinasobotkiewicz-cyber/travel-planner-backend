@@ -85,6 +85,10 @@ def test_wroclaw_daytrip_quota():
     assert city_daytrip_quota({"requested_city": "Kraków", "num_days": 2}) == 0
     assert city_daytrip_quota({"requested_city": "Kraków", "num_days": 5}) == 1
     assert city_daytrip_quota({"requested_city": "Kraków", "num_days": 7}) == 2
+    assert city_daytrip_quota({"requested_city": "Katowice", "num_days": 2}) == 0
+    assert city_daytrip_quota({"requested_city": "Katowice", "num_days": 3}) == 0
+    assert city_daytrip_quota({"requested_city": "Katowice", "num_days": 5}) == 1
+    assert city_daytrip_quota({"requested_city": "Katowice", "num_days": 7}) == 2
 
 
 def test_two_day_wroclaw_blocks_zabkowice():

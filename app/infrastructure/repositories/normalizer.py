@@ -646,6 +646,25 @@ def normalize_poi(p, index):
             _norm_result["parking_lng"] = 19.9566
             _norm_result["address"] = "Bulwar Czerwieński, 31-101 Kraków"
             _norm_result["city"] = "Kraków"
+    # FIX #285: Katowice Pijalnia Wedla must not keep the Warsaw pin.
+    if any(k in _nm234 for k in ("wedel", "pijalnia czekolady", "pijalnia wedla")):
+        _city285 = (_norm_result.get("city") or "").lower()
+        _addr285 = (_norm_result.get("address") or "").lower()
+        _lat285 = _safe_float(_norm_result.get("lat"), 0.0)
+        _is_kat = (
+            "katowic" in _city285
+            or "katowic" in _nm234
+            or "katowic" in _addr285
+        )
+        if _is_kat or (
+            "warszaw" in _addr285 and "katowic" in _city285
+        ):
+            _norm_result["lat"] = 50.2584
+            _norm_result["lng"] = 19.0184
+            _norm_result["parking_lat"] = 50.2584
+            _norm_result["parking_lng"] = 19.0184
+            _norm_result["address"] = "ul. 3 Maja 30, 40-094 Katowice"
+            _norm_result["city"] = "Katowice"
     if "fontanna multimedialna" in _nm234:
         _norm_result["description_short"] = (
             "Nowoczesny park z efektownymi pokazami fontann, światła i dźwięku we Wrocławiu."
