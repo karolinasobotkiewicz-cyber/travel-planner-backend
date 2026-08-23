@@ -1547,6 +1547,7 @@ def travel_time_minutes(a, b, context):
         "region_bochnia", "region_tenczyn", "region_wisnicz",
         # FIX #285: Katowice sats — never walk a 5 km hop as 68 min.
         "region_gliwice", "region_zabrze", "region_tychy", "region_dabrowa",
+        "region_gniezno", "region_kornik", "region_rogalin", "region_puszczykowo",
         # FIX #277: Warszawa Sochaczew / Poznań Lednica.
         "region_sochaczew", "region_lednica",
     }
@@ -1806,6 +1807,7 @@ _FAR_GEO_REGIONS = frozenset({
     "region_ojcow", "region_wieliczka",
     "region_bochnia", "region_tenczyn", "region_wisnicz",
     "region_gniezno", "region_gliwice", "region_suntago", "region_modlin",
+    "region_rogalin", "region_puszczykowo",
     "region_zabrze", "region_tychy", "region_dabrowa",
     "region_olawa", "region_kampinos", "region_czersk",
     "region_kornik", "region_zabkowice", "region_brzeg",
@@ -1953,6 +1955,11 @@ def poi_geo_region_key(p: dict) -> str | None:
         return "region_wisnicz"
     if any(k in blob for k in ("eliaszówk", "eliaszowk", "czerna")):
         return "region_ojcow"
+    # FIX #286: Poznań satellites — Rogalin palace / Puszczykowo beach.
+    if "rogalin" in blob:
+        return "region_rogalin"
+    if "puszczykow" in blob:
+        return "region_puszczykowo"
     return None
 
 
@@ -2276,7 +2283,8 @@ def city_daytrip_quota(context: dict | None) -> int:
     wro = "wrocław" in city or "wroclaw" in city
     krak = "kraków" in city or "krakow" in city
     kat = "katowice" in city or "katowic" in city
-    if not wro and not krak and not kat:
+    poz = "poznań" in city or "poznan" in city
+    if not wro and not krak and not kat and not poz:
         return 0 if n <= 2 else 99
     if n <= 3:
         return 0
@@ -2335,6 +2343,7 @@ def should_block_city_daytrip_poi(p: dict, context: dict | None) -> bool:
     city = str(context.get("requested_city") or context.get("city") or "").lower()
     krak = "kraków" in city or "krakow" in city
     kat = "katowice" in city or "katowic" in city
+    poz = "poznań" in city or "poznan" in city
     prefs = _context_pref_set(context)
     used = context.get("global_geo_region_use_count") or {}
     used_far = sum(
@@ -2364,7 +2373,7 @@ def should_block_city_daytrip_poi(p: dict, context: dict | None) -> bool:
     if day_num <= 1:
         return True
     # FIX #284/#285: 5+ day city trips — a day-2 excursion is too early.
-    if (krak or kat) and day_num <= 2 and n >= 5:
+    if (krak or kat or poz) and day_num <= 2 and n >= 5:
         return True
     if int(used.get(reg) or 0) >= 1:
         return True
@@ -3043,6 +3052,14 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
     """
     name = safe_str(p.get("name", "")).lower()
     poi_type = safe_str(p.get("type", "")).lower()
+    city = safe_str(p.get("city", "") or p.get("City", "")).lower()
+    # FIX #286: bare "Zamek Królewski" in Poznań is not the Warsaw 120-min visit.
+    if (
+        ("zamek królewski" in name or "zamek krolewski" in name)
+        and ("poznań" in city or "poznan" in city)
+        and "wawel" not in name
+    ):
+        return 75
     _named_caps = (
         ("sky tower", 60),
         ("punkt widokowy", 60),
@@ -3081,6 +3098,13 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("archikatedr", 45),
         ("bazylika", 45),
         ("katedra", 90),
+        # FIX #286: Poznań castle is a hill look — before generic Warsaw 120.
+        ("zamek królewski w poznaniu", 75),
+        ("zamek krolewski w poznaniu", 75),
+        ("stary rynek w poznaniu", 75),
+        ("genius loci", 75),
+        ("pręgierz", 20),
+        ("pregierz", 20),
         # FIX #267 Warszawa: stretch must not turn Zamek/Browary into 2–4h blocks.
         ("zamek królewski", 120),
         ("zamek krolewski", 120),
@@ -3120,6 +3144,8 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("rynek we wroclawiu", 120),
         ("rynek główny", 120),
         ("rynek glowny", 120),
+        # FIX #286: Poznań square after Ratusz — before generic 120.
+        ("stary rynek w poznaniu", 75),
         ("stary rynek", 120),
         ("muzeum armii krajowej", 90),
         ("ogród botaniczny", 90),
@@ -3420,6 +3446,15 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("willa caro", 45),
         ("guliwer", 60),
         ("park chopina", 40),
+        # FIX #286: Poznań floors the client called out.
+        ("park cytadela", 45),
+        ("cytadela", 45),
+        ("szachty", 45),
+        ("park wodziczki", 40),
+        ("park adama wodziczki", 40),
+        ("muzeum początków państwa", 75),
+        ("muzeum poczatkow panstwa", 75),
+        ("zamek cesarski", 45),
     )
     for _marker, _nmin in _named_mins:
         if _marker in _poi_name_lower:

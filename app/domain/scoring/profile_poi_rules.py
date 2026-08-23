@@ -606,6 +606,28 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
             if "museum_heritage" not in prefs and "history_mystery" not in prefs:
                 return True
 
+    # FIX #286: Cesarski is a weak water+food+relax couples match.
+    if "zamek cesarski" in name:
+        if {"water_attractions", "local_food_experience", "relaxation"} <= prefs:
+            if "museum_heritage" not in prefs and "history_mystery" not in prefs:
+                return True
+
+    # FIX #286: Bazylika off friends+adventure (json 3).
+    if tg == "friends" and adv and any(k in name for k in ("bazylika",)):
+        if "museum_heritage" not in prefs:
+            return True
+
+    # FIX #286: parks off underground/history adventure when nature is not asked.
+    if tg == "friends" and adv and {"underground", "history_mystery"} <= prefs:
+        if "nature_landscape" not in prefs and any(
+            k in name for k in (
+                "park ", "park.", "ogród", "ogrod", "wilson", "sołack", "solack",
+                "wodziczk", "cytadela",
+            )
+        ):
+            if not any(k in name for k in ("fort ", "podziem", "szachty")):
+                return True
+
     # FIX #271 Kraków — Park Lotników is not adventure/underground/history.
     if "park lotników" in name or "park lotnikow" in name:
         if adv and ({"underground", "history_mystery"} & prefs) and "nature_landscape" not in prefs:
@@ -1644,8 +1666,26 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
     if _day_mus >= 2 and "muzeum" in name:
         if tg == "couples" and style == "cultural" and "relaxation" in prefs:
             delta -= 110.0
+        elif tg == "seniors" and "relaxation" in prefs:
+            delta -= 110.0
         elif style == "balanced" and "museum_heritage" not in top_prefs:
             delta -= 100.0
+    if _day_mus >= 2 and tg == "seniors" and "relaxation" in prefs:
+        if any(k in name for k in (
+            "park ", "ogród", "ogrod", "wilson", "sołack", "solack", "cytadel",
+        )):
+            delta += 90.0
+
+    # FIX #286 json 10: keep water + local food on day 2, not a dry castle day.
+    if tg == "couples" and {"water_attractions", "local_food_experience"} <= prefs:
+        if any(k in name for k in (
+            "malta", "termy", "plaża", "plaza", "wartostrada", "jezioro",
+        )):
+            delta += 95.0
+        if "zamek cesarski" in name:
+            delta -= 140.0
+        if any(k in name for k in ("rogalowe", "pyra", "kuchnia", "food", "targ")):
+            delta += 70.0
 
     if num_days >= 7 and day >= 7:
         if any(k in name for k in (
@@ -1721,9 +1761,10 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
     if "active_sport" in prefs and adv:
         if any(k in name for k in (
             "flypark", "jump arena", "wartostrada", "park linowy", "trampolin",
-            "paintball", "escape", "gokart",
+            "paintball", "escape", "gokart", "fort va", "fort bonin",
+            "letni tor", "saneczkowy",
         )):
-            delta += 105.0
+            delta += 130.0
         if any(k in name for k in ("park adama mickiewicza", "makieta dawnego poznania")):
             delta -= 110.0
 

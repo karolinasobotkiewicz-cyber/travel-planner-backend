@@ -716,6 +716,46 @@ def normalize_poi(p, index):
                 f"Pijalnia Czekolady E. Wedel w {_norm_result.get('city') or 'mieście'} to miejsce "
                 "degustacji wyrobów czekoladowych marki Wedel w stylowym wnętrzu."
             )
+    if (
+        ("zamek królewski" in _nm234 or "zamek krolewski" in _nm234)
+        and "wawel" not in _nm234
+    ):
+        _city286 = (_norm_result.get("city") or "").lower()
+        _addr286 = (_norm_result.get("address") or "").lower()
+        _lat286 = _safe_float(_norm_result.get("lat"), 0.0)
+        _lng286 = _safe_float(_norm_result.get("lng"), 0.0)
+        _is_poz = (
+            "poznań" in _city286
+            or "poznan" in _city286
+            or (52.35 <= _lat286 <= 52.48 and 16.80 <= _lng286 <= 17.10)
+        )
+        _is_waw = (
+            "warszaw" in _city286
+            or "warsaw" in _city286
+            or _lng286 > 20.5
+        )
+        if _is_poz and not _is_waw:
+            _norm_result["address"] = "Góra Przemysła 1, 61-101 Poznań"
+            _norm_result["city"] = "Poznań"
+            _norm_result["description_short"] = (
+                "Odbudowany zamek na Górze Przemysła z ekspozycją o średniowiecznym Poznaniu."
+            )
+            _norm_result["description_long"] = (
+                "Zamek Królewski w Poznaniu stoi na Górze Przemysła nad Starym Miastem. "
+                "Współczesna bryła nawiązuje do średniowiecznej siedziby Przemysła II. "
+                "Wewnątrz muzeum opowiada o historii grodu i wielkopolskich Piastów."
+            )
+            if not _norm_result.get("why_visit") or "warszaw" in str(
+                _norm_result.get("why_visit") or ""
+            ).lower() or "zamkowy" in str(_norm_result.get("why_visit") or "").lower():
+                _norm_result["why_visit"] = (
+                    "Widok na starówkę i zwarta opowieść o piastowskim Poznaniu."
+                )
+            _tip286 = str(_norm_result.get("pro_tip") or "")
+            if "warszaw" in _tip286.lower() or "zamkowy" in _tip286.lower() or not _tip286.strip():
+                _norm_result["pro_tip"] = (
+                    "Wejdź rano — z tarasu widać Stary Rynek i Ostrów Tumski."
+                )
     if "obwarzank" in _nm234:
         _norm_result["description_short"] = (
             "Muzeum Obwarzanka Krakowskiego — historia i wypiek symbolu Krakowa."

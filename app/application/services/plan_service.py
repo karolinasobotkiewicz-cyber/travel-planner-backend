@@ -261,6 +261,15 @@ _GNIEZNO_NAME_MARKERS = (
 _KORNIK_NAME_MARKERS = (
     "kórnik", "kornik", "arboretum kór", "arboretum kor",
 )
+# FIX #286: Poznań satellites — Rogalin palace / Puszczykowo Warta beach.
+_ROGALIN_NAME_MARKERS = ("rogalin",)
+_PUSZCZYKOWO_NAME_MARKERS = (
+    "puszczykow",
+    "plaża miejska nad wartą",
+    "plaza miejska nad wartą",
+    "plaza miejska nad warta",
+    "plaża miejska nad warta",
+)
 _GNIEZNO_DEFAULT_COORDS = (52.5347, 17.5826)
 _KORNIK_DEFAULT_COORDS = (52.2442, 17.0903)
 _ZABRZE_NAME_MARKERS = (
@@ -378,6 +387,14 @@ def _timeline_satellite_kind(name: str) -> Optional[str]:
         return "tychy"
     if "nemo" in nm:
         return "dabrowa"
+    if _is_gniezno_stop_name(nm):
+        return "gniezno"
+    if _is_kornik_stop_name(nm):
+        return "kornik"
+    if _is_rogalin_stop_name(nm):
+        return "rogalin"
+    if _is_puszczykowo_stop_name(nm):
+        return "puszczykowo"
     return None
 
 
@@ -402,6 +419,25 @@ def _is_gniezno_stop_name(name: str) -> bool:
 def _is_kornik_stop_name(name: str) -> bool:
     nm = (name or "").lower()
     return any(k in nm for k in _KORNIK_NAME_MARKERS)
+
+
+def _is_rogalin_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in _ROGALIN_NAME_MARKERS)
+
+
+def _is_puszczykowo_stop_name(name: str) -> bool:
+    nm = (name or "").lower()
+    return any(k in nm for k in _PUSZCZYKOWO_NAME_MARKERS)
+
+
+def _is_poznan_old_town_name(name: str) -> bool:
+    """FIX #286: Ratusz + Stary Rynek are one microcluster."""
+    nm = (name or "").lower()
+    return any(k in nm for k in (
+        "ratusz w poznaniu",
+        "stary rynek w poznaniu",
+    ))
 
 
 # FIX #261: origin for the "day_start → first POI" leg when no hotel is given.
@@ -9743,6 +9779,19 @@ class PlanService:
                         dur = max(1, ej - sj)
                         new_st = ei
                         new_en = new_st + dur
+                        # FIX #286: don't slide the hop back onto the next meal.
+                        for _ok, _od, _os, _oe in timed:
+                            _ots = _type_str(_od.get("type"))
+                            if _ots not in (
+                                ItemType.LUNCH_BREAK.value,
+                                ItemType.DINNER_BREAK.value,
+                            ):
+                                continue
+                            if _os >= ei and _os < new_en:
+                                new_en = _os
+                                if new_en - new_st < 5:
+                                    new_st = max(0, new_en - max(5, min(dur, 20)))
+                                break
                         try:
                             working[working.index(item_j)] = item_j.model_copy(update={
                                 "start_time": minutes_to_time(new_st),
@@ -11702,6 +11751,10 @@ class PlanService:
                 return "sochaczew"
             if reg == "region_lednica":
                 return "lednica"
+            if reg == "region_rogalin" or _is_rogalin_stop_name(nm):
+                return "rogalin"
+            if reg == "region_puszczykowo" or _is_puszczykowo_stop_name(nm):
+                return "puszczykowo"
             return "city"
 
         kinds = [_kind(it) for it in attrs]
@@ -11720,6 +11773,8 @@ class PlanService:
         n_brzeg = kinds.count("brzeg")
         n_soch = kinds.count("sochaczew")
         n_led = kinds.count("lednica")
+        n_rogalin = kinds.count("rogalin")
+        n_puszcz = kinds.count("puszczykowo")
         n_city = kinds.count("city")
         keep = None
         far_counts = [
@@ -11738,6 +11793,8 @@ class PlanService:
             ("brzeg", n_brzeg),
             ("sochaczew", n_soch),
             ("lednica", n_led),
+            ("rogalin", n_rogalin),
+            ("puszczykowo", n_puszcz),
         ]
         far_present = [(k, n) for k, n in far_counts if n]
         if not far_present:
@@ -11765,6 +11822,8 @@ class PlanService:
             _wro_sats = ("zabkowice", "brzeg", "wojslawice", "olawa")
             # FIX #284: Tenczyn / Bochnia / Wiśnicz are mid-day hops, not a day.
             _krak_sats = ("tenczyn", "bochnia", "wisnicz")
+            # FIX #286: Rogalin / Puszczykowo are mid-day hops on a city day.
+            _poz_sats = ("rogalin", "puszczykowo")
             # FIX #282: Wrocław mid-day hops / single-castle trips stay in the city.
             # Ojców/Wieliczka keep the previous "the excursion wins" rule —
             # except a lone afternoon Eliaszówka/Czerna hop (json8 D7).
@@ -11775,6 +11834,10 @@ class PlanService:
             elif keep_far in _krak_sats and first_far_pre is not None and first_far_pre > 12 * 60:
                 keep = "city"
             elif keep_far in _krak_sats and n_far < 2:
+                keep = "city"
+            elif keep_far in _poz_sats and first_far_pre is not None and first_far_pre > 12 * 60:
+                keep = "city"
+            elif keep_far in _poz_sats and n_far < 2:
                 keep = "city"
             elif (
                 keep_far == "ojcow"
@@ -11803,7 +11866,7 @@ class PlanService:
         if keep in (
             "gniezno", "kornik", "zabrze", "gliwice",
             "wojslawice", "olawa", "zabkowice", "brzeg",
-            "sochaczew", "lednica",
+            "sochaczew", "lednica", "rogalin", "puszczykowo",
         ) and first_far is not None:
             n_far = {
                 "gniezno": n_gniez, "kornik": n_korn,
@@ -11811,6 +11874,7 @@ class PlanService:
                 "wojslawice": n_wojs, "olawa": n_olawa,
                 "zabkowice": n_zabk, "brzeg": n_brzeg,
                 "sochaczew": n_soch, "lednica": n_led,
+                "rogalin": n_rogalin, "puszczykowo": n_puszcz,
             }[keep]
             if first_far <= 12 * 60 or n_far >= max(n_city, 1):
                 whole_day = True
@@ -15508,6 +15572,8 @@ class PlanService:
             "brzegu", "piastów śląskich",
             "sochaczew", "żelazowa", "zelazowa", "lednick", "dziekanowic",
             "wiśnicz", "wisnicz", "eliaszówk", "eliaszowk",
+            "rogalin", "puszczykow", "plaża miejska nad wartą",
+            "plaza miejska nad wartą", "gniezno", "kórnik", "kornik",
         )
         out: List[Any] = []
         for it in items:
@@ -15643,13 +15709,18 @@ class PlanService:
             if not ordered:
                 out.append(it)
                 continue
-            # Prefer never-used; allow a venue at most twice per trip.
+            # Prefer never-used; allow a venue at most twice — once on 7-day trips.
             primary = (ordered[0].name or "").lower()
             use_counts = context.setdefault("trip_restaurant_counts", {})
-            if primary in used and use_counts.get(primary, 0) >= 2 and len(ordered) > 1:
+            try:
+                n_days_meal = int((context or {}).get("num_days") or 0)
+            except (TypeError, ValueError):
+                n_days_meal = 0
+            max_uses = 1 if n_days_meal >= 7 else 2
+            if use_counts.get(primary, 0) >= max_uses and len(ordered) > 1:
                 for alt in ordered[1:]:
                     alt_nm = (alt.name or "").lower()
-                    if use_counts.get(alt_nm, 0) < 2:
+                    if use_counts.get(alt_nm, 0) < max_uses:
                         ordered = [alt] + [s for s in ordered if s is not alt]
                         primary = alt_nm
                         break
@@ -17502,6 +17573,32 @@ class PlanService:
                 floor = max(floor, 90)
             if "park chopina" in nm_l:
                 floor = max(floor, 40)
+            # FIX #286: Poznań visit lengths.
+            if "palmiarnia" in nm_l:
+                floor = max(floor, 60)
+            if "cytadel" in nm_l:
+                floor = max(floor, 45)
+            if "szachty" in nm_l:
+                floor = max(floor, 45)
+            if "wodziczk" in nm_l:
+                floor = max(floor, 40)
+            if "początków państwa" in nm_l or "poczatkow panstwa" in nm_l:
+                floor = max(floor, 75)
+            if "zamek cesarski" in nm_l:
+                floor = max(floor, 45)
+            _city_cap = (getattr(it, "city", "") or "").lower()
+            if (
+                ("zamek królewski" in nm_l or "zamek krolewski" in nm_l)
+                and ("poznań" in _city_cap or "poznan" in _city_cap)
+            ):
+                floor = max(floor, 45)
+                cap = 75 if cap is None else min(int(cap), 75)
+            if "stary rynek w poznaniu" in nm_l:
+                cap = 75 if cap is None else min(int(cap), 75)
+            if "genius loci" in nm_l:
+                cap = 75 if cap is None else min(int(cap), 75)
+            if "pręgierz" in nm_l or "pregierz" in nm_l:
+                cap = 20 if cap is None else min(int(cap), 20)
             if style == "adventure" and "rynek" in nm_l:
                 cap = 75 if cap is None else min(int(cap), 75)
             if "pieskowa" in nm_l:
@@ -19725,6 +19822,252 @@ class PlanService:
         )
         return self._sort_items_by_time(out)
 
+    def _cluster_poznan_old_town_stops(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #286: Ratusz and Stary Rynek stay as one Old Town block."""
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        attrs = [it for it in ordered if _is_timeline_attraction(it)]
+
+        def _st(it) -> Optional[int]:
+            try:
+                return time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                return None
+
+        def _dur(it) -> int:
+            d = int(getattr(it, "duration_min", 0) or 0)
+            if d > 0:
+                return d
+            try:
+                return max(
+                    30,
+                    time_to_minutes(getattr(it, "end_time", None) or "")
+                    - time_to_minutes(getattr(it, "start_time", None) or ""),
+                )
+            except Exception:
+                return 45
+
+        cluster = [
+            it for it in attrs if _is_poznan_old_town_name(getattr(it, "name", ""))
+        ]
+        if len(cluster) < 2:
+            return items
+        starts = [s for s in (_st(it) for it in cluster) if s is not None]
+        if len(starts) < 2:
+            return items
+        first_st, last_st = min(starts), max(starts)
+        between = [
+            it for it in attrs
+            if it not in cluster
+            and _st(it) is not None
+            and first_st < _st(it) < last_st
+        ]
+        if not between:
+            return items
+
+        def _rank(it) -> int:
+            n = (getattr(it, "name", "") or "").lower()
+            if "ratusz" in n:
+                return 0
+            return 1
+
+        block = sorted(cluster, key=_rank)
+        later = [
+            it for it in attrs
+            if it not in cluster
+            and _st(it) is not None
+            and _st(it) >= first_st
+        ]
+        cursor = first_st
+        moved: Dict[int, tuple] = {}
+        for it in block:
+            d = _dur(it)
+            moved[id(it)] = (cursor, cursor + d)
+            cursor += d + 5
+        for it in later:
+            d = _dur(it)
+            moved[id(it)] = (cursor, cursor + d)
+            cursor += d + 10
+        out: List[Any] = []
+        for it in ordered:
+            pair = moved.get(id(it))
+            if not pair:
+                out.append(it)
+                continue
+            try:
+                out.append(it.model_copy(update={
+                    "start_time": minutes_to_time(pair[0]),
+                    "end_time": minutes_to_time(pair[1]),
+                    "duration_min": pair[1] - pair[0],
+                }))
+            except Exception:
+                out.append(it)
+        print(
+            f"[FIX #286] Day {day_num}: clustered Poznań Old Town "
+            f"({', '.join(getattr(x, 'name', '?') for x in block)})"
+        )
+        return self._sort_items_by_time(out)
+
+    def _strip_similar_poznan_parks(
+        self,
+        items: List[Any],
+        user: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #286: Cytadela+Wilson is the same relaxation; no park pair on
+        underground/history days."""
+        attrs = [it for it in items if _is_timeline_attraction(it)]
+
+        def _parkish(nm: str) -> bool:
+            n = (nm or "").lower()
+            if any(k in n for k in ("wodny", "aquapark", "nemo", "termy")):
+                return False
+            return any(
+                k in n for k in (
+                    "park ", "park.", "ogród", "ogrod", "dolina",
+                    "cytadela", "szachty", "wilson", "sołack", "solack",
+                    "wodziczk",
+                )
+            ) or n.startswith("park")
+
+        parks = [
+            it for it in attrs if _parkish(getattr(it, "name", "") or "")
+        ]
+        drop: set[str] = set()
+        named = [(getattr(it, "name", "") or "").lower() for it in parks]
+        if any("cytadel" in n for n in named) and any(
+            any(k in n for k in ("wilson", "sołack", "solack", "wodziczk"))
+            for n in named
+        ):
+            for it in parks[1:]:
+                n = (getattr(it, "name", "") or "").lower()
+                if any(k in n for k in ("wilson", "sołack", "solack", "wodziczk", "cytadel")):
+                    drop.add((getattr(it, "name", "") or "").strip().lower())
+                    break
+        prefs = {
+            str(p).lower()
+            for p in ((user or {}).get("preferences") or [])
+        }
+        style = str((user or {}).get("travel_style") or "").lower()
+        hist_heavy = (
+            {"underground", "history_mystery", "museum_heritage"} <= prefs
+            or (
+                style == "adventure"
+                and {"underground", "history_mystery"} <= prefs
+                and "nature_landscape" not in prefs
+            )
+        )
+        if hist_heavy and len(parks) >= 2:
+            for it in parks[1:]:
+                drop.add((getattr(it, "name", "") or "").strip().lower())
+        if not drop:
+            return items
+        out: List[Any] = []
+        for it in items:
+            if _is_timeline_attraction(it) and (
+                (getattr(it, "name", "") or "").strip().lower() in drop
+            ):
+                print(
+                    f"[FIX #286] Day {day_num}: stripped similar park "
+                    f"{getattr(it, 'name', '?')}"
+                )
+                continue
+            out.append(it)
+        return out
+
+    def _sync_meal_label_to_primary(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #286: lunch label / inbound transit must match suggestions[0]."""
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        out: List[Any] = []
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) not in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            ):
+                out.append(it)
+                continue
+            primary = _meal_primary_restaurant_name(it)
+            if not primary:
+                out.append(it)
+                continue
+            upd: Dict[str, Any] = {}
+            cur_label = (getattr(it, "label", None) or "").strip()
+            if cur_label.lower() != primary.lower():
+                upd["label"] = primary
+            if upd:
+                try:
+                    it = it.model_copy(update=upd)
+                    print(
+                        f"[FIX #286] Day {day_num}: meal label "
+                        f"{cur_label!r} → {primary!r}"
+                    )
+                except Exception:
+                    pass
+            out.append(it)
+            if i > 0:
+                prev = out[i - 1]
+                if _item_type_value(prev) == ItemType.TRANSIT.value:
+                    to = (getattr(prev, "to_location", "") or "").strip()
+                    if to and to.lower() != primary.lower():
+                        try:
+                            out[i - 1] = prev.model_copy(update={
+                                "to_location": primary,
+                            })
+                        except Exception:
+                            pass
+        return out
+
+    def _strip_duplicate_same_leg(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #286: drop a later copy of the same from→to hop (Plaża→NOOKS)."""
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        seen: set[tuple[str, str]] = set()
+        drop: set[int] = set()
+
+        def _norm(n: Any) -> str:
+            return " ".join(str(n or "").strip().lower().split())
+
+        for it in ordered:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                continue
+            key = (
+                _norm(getattr(it, "from_location", "")),
+                _norm(getattr(it, "to_location", "")),
+            )
+            if not key[0] or not key[1]:
+                continue
+            if key in seen:
+                drop.add(id(it))
+                print(
+                    f"[FIX #286] Day {day_num}: dropped duplicate leg "
+                    f"{getattr(it, 'from_location', '')} → "
+                    f"{getattr(it, 'to_location', '')}"
+                )
+                continue
+            seen.add(key)
+        if not drop:
+            return ordered
+        return [it for it in ordered if id(it) not in drop]
+
     def _strip_disallowed_wro_daytrips(
         self,
         items: List[Any],
@@ -19747,6 +20090,7 @@ class PlanService:
         city = str((context or {}).get("requested_city") or "").lower()
         krak = "kraków" in city or "krakow" in city
         kat = "katowice" in city or "katowic" in city
+        poz = "poznań" in city or "poznan" in city
         try:
             n_days = int((context or {}).get("num_days") or 1)
         except (TypeError, ValueError):
@@ -19766,7 +20110,7 @@ class PlanService:
                 drop = False
         if kind and day_num <= 1 and quota < 99:
             drop = True
-        if kind and (krak or kat) and n_days >= 5 and day_num <= 2 and quota < 99:
+        if kind and (krak or kat or poz) and n_days >= 5 and day_num <= 2 and quota < 99:
             drop = True
         if kind and kind in blocked:
             drop = True
@@ -19982,6 +20326,10 @@ class PlanService:
                 for k in ("willa caro", "park chopina", "palmiarnia miejska")
             )),
             ("zabrze", _is_zabrze_stop_name),
+            ("gniezno", _is_gniezno_stop_name),
+            ("kornik", _is_kornik_stop_name),
+            ("rogalin", _is_rogalin_stop_name),
+            ("puszczykowo", _is_puszczykowo_stop_name),
         )
         far_items = []
         kind = None
@@ -20760,7 +21108,7 @@ class PlanService:
                 out.append(it)
                 continue
             folded = _fold_place_label(getattr(it, "label", None))
-            if st_m < 12 * 60:
+            if st_m < 11 * 60:
                 slot = "morning"
                 table = self._FT253_MORNING
                 wrong = mid_markers + evening_markers
@@ -20961,15 +21309,20 @@ class PlanService:
         except Exception:
             inj_ctx["city_holes_only"] = True
 
-        for _ in range(3):
-            if _n_attr(working) >= 6:
+        city_l = str((context or {}).get("requested_city") or "").lower()
+        poz = "poznań" in city_l or "poznan" in city_l
+        min_hole = 55 if poz else 75
+        max_rounds = 5 if poz else 3
+        max_attr = 7 if poz else 6
+        for _ in range(max_rounds):
+            if _n_attr(working) >= max_attr:
                 break
             ft_blocks = []
             for it in working:
                 if _item_type_value(it) != ItemType.FREE_TIME.value:
                     continue
                 dur = int(getattr(it, "duration_min", 0) or 0)
-                if dur < 75:
+                if dur < min_hole:
                     continue
                 try:
                     st = time_to_minutes(getattr(it, "start_time", None) or "")
@@ -21232,6 +21585,7 @@ class PlanService:
                 pass
         try:
             work = self._cluster_wawel_hill_stops(work, day_num=day_num)
+            work = self._cluster_poznan_old_town_stops(work, day_num=day_num)
             work = self._retarget_all_legs_to_prev_stop(
                 work, day_num=day_num,
             )
@@ -21254,6 +21608,11 @@ class PlanService:
             _city_fin = str((context or {}).get("requested_city") or "").lower()
             if "katowice" in _city_fin or "katowic" in _city_fin:
                 work = self._strip_excess_green_stops(work, day_num=day_num)
+            if "poznań" in _city_fin or "poznan" in _city_fin:
+                work = self._strip_excess_green_stops(work, day_num=day_num)
+                work = self._strip_similar_poznan_parks(
+                    work, user, day_num=day_num,
+                )
         except Exception:
             pass
         work = self._drop_duplicate_meal_stop(work, day_num=day_num)
@@ -21374,6 +21733,9 @@ class PlanService:
                         work, context, day_num=day_num,
                     )
                     work = self._cluster_wawel_hill_stops(work, day_num=day_num)
+                    work = self._cluster_poznan_old_town_stops(
+                        work, day_num=day_num,
+                    )
                     work = self._retarget_all_legs_to_prev_stop(
                         work, day_num=day_num,
                     )
@@ -21413,6 +21775,33 @@ class PlanService:
         work = self._relabel_free_time_by_slot(work, context, day_num=day_num)
         work = self._normalize_transit_mode_source(work, day_num=day_num)
         work = self._reconcile_day_end_marker(work, context, day_num=day_num)
+        try:
+            work = self._sync_meal_label_to_primary(work, day_num=day_num)
+            work = self._strip_duplicate_same_leg(work, day_num=day_num)
+        except Exception:
+            pass
+        # FIX #286: last name-pass can recreate a 3h city hole after early close.
+        _city_end = str((context or {}).get("requested_city") or "").lower()
+        if pool and ("poznań" in _city_end or "poznan" in _city_end):
+            huge = any(
+                _item_type_value(it) == ItemType.FREE_TIME.value
+                and int(getattr(it, "duration_min", 0) or 0) >= 90
+                for it in work
+            )
+            if huge:
+                try:
+                    work = self._fill_long_city_holes(
+                        work, pool, context, user or {}, day_num=day_num,
+                    )
+                    work = self._strip_disallowed_wro_daytrips(
+                        work, context, day_num=day_num,
+                    )
+                    work = self._remove_timeline_overlaps(work, day_num)
+                    work = self._name_all_remaining_holes_final(
+                        work, context, day_num=day_num,
+                    )
+                except Exception:
+                    pass
         # FIX #284: last name-pass can stamp free_time on top of a transit.
         work = self._remove_timeline_overlaps(work, day_num)
         return work, note
@@ -21504,6 +21893,9 @@ class PlanService:
             # FIX #284: Kraków Bulwary Wiślane must not inherit the Warsaw address.
             ("bulwary wiślane", 50.0520, 19.9566, "Bulwar Czerwieński, 31-101 Kraków"),
             ("bulwary wislane", 50.0520, 19.9566, "Bulwar Czerwieński, 31-101 Kraków"),
+            # FIX #286: Poznań Zamek Królewski — not Plac Zamkowy in Warsaw.
+            ("zamek królewski", 52.4094, 16.9315, "Góra Przemysła 1, 61-101 Poznań"),
+            ("zamek krolewski", 52.4094, 16.9315, "Góra Przemysła 1, 61-101 Poznań"),
         )
         out: List[Any] = []
         for it in items:
@@ -21559,6 +21951,42 @@ class PlanService:
                         # Warsaw plans keep their own Bulwary pin.
                         if warsaw_row and not krak_row:
                             continue
+                    if "zamek kr" in marker:
+                        addr_l = (getattr(it, "address", "") or "").lower()
+                        city_l = (getattr(it, "city", "") or "").lower()
+                        lat_now = getattr(it, "lat", None)
+                        lng_now = getattr(it, "lng", None)
+                        warsaw_castle = (
+                            "warszaw" in city_l
+                            or "warsaw" in city_l
+                            or (
+                                "zamkowy" in addr_l
+                                and ("warszaw" in addr_l or "00-277" in addr_l)
+                                and "poznan" not in city_l
+                                and "poznań" not in city_l
+                            )
+                            or (
+                                lat_now is not None
+                                and lng_now is not None
+                                and float(lng_now) > 20.5
+                            )
+                        )
+                        poznan_castle = (
+                            "poznań" in city_l
+                            or "poznan" in city_l
+                            or (
+                                lat_now is not None
+                                and lng_now is not None
+                                and 52.35 <= float(lat_now) <= 52.48
+                                and 16.80 <= float(lng_now) <= 17.10
+                            )
+                            or (
+                                "zamkowy" in addr_l
+                                and ("poznań" in city_l or "poznan" in city_l)
+                            )
+                        )
+                        if warsaw_castle and not poznan_castle:
+                            continue
                     fixed = (lat, lng, addr)
                     break
             if not fixed:
@@ -21604,6 +22032,17 @@ class PlanService:
                     or cur_addr != fixed[2].lower()
                 ):
                     upd["address"] = fixed[2]
+                if "góra przemysła" in fixed[2].lower() or "gora przemysla" in fixed[2].lower():
+                    desc = (getattr(it, "description_short", None) or "").lower()
+                    if (
+                        "warszaw" in desc
+                        or "zamkowy" in desc
+                        or "plac zamkowy" in cur_addr
+                    ):
+                        upd["description_short"] = (
+                            "Odbudowany zamek na Górze Przemysła z ekspozycją "
+                            "o średniowiecznym Poznaniu."
+                        )
             # FIX #283: parking pin must follow the attraction (Iluzja used
             # Hala Stulecia 17.0773 while the item sat on Świdnicka 17.0325).
             park = getattr(it, "parking", None)
