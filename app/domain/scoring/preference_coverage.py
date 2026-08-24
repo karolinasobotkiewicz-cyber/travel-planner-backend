@@ -575,6 +575,9 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "park mamuta", "mamuta",
         # FIX #273: parrot house is kids/animals, not a museum.
         "papugarnia",
+        # FIX #288: curiosity / entertainment exhibits are not museum_heritage.
+        "wystawa pająków", "wystawa pajakow", "pająków", "pajakow",
+        "movie gate",
     ),
     "kids_attractions": (
         "podziemia rynku",

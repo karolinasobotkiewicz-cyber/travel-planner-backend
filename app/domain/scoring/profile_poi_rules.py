@@ -166,6 +166,18 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("swiat w budowie", "krk_lego_cluster"),
         ("legoland", "krk_lego_cluster"),
         ("wielka wystawa klock", "krk_lego_cluster"),
+        # FIX #288: trip-level icons the client saw twice in a row.
+        ("loopys", "wro_loopys"),
+        ("katedra wawelska", "krk_katedra_wawel"),
+        ("zakrzówek", "krk_zakrzowek"),
+        ("zakrzowek", "krk_zakrzowek"),
+        ("błonia", "krk_blonia"),
+        ("blonia", "krk_blonia"),
+        ("ogród doświadczeń", "krk_doswiadczen"),
+        ("ogrod doswiadczen", "krk_doswiadczen"),
+        ("funhouse", "kat_funhouse"),
+        ("fun house", "kat_funhouse"),
+        ("fun-house", "kat_funhouse"),
     )
     for marker, key in _markers:
         if marker in n:
@@ -301,9 +313,13 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
 
     # FIX #283: GoJump / paintball / Flyspot are active-play, not
     # cultural / relax / seniors days (Wrocław json 2/6/9).
+    # FIX #288: go-karts / escape rooms are active-play, not cultural or relax.
     _active_play = any(k in name for k in (
         "gojump", "go jump", "trampolin", "paintball",
         "citypaintball", "city paintball", "flyspot", "fly spot",
+        "gokart", "go-kart", "go kart", "karting",
+        "let me out", "escape room", "escape-room",
+        "spływ", "splyw", "ponton",
     ))
     if _active_play:
         if tg == "seniors":
@@ -329,6 +345,77 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     if "papugarn" in name:
         if tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
             return True
+        # FIX #288: parrot house is not nature/relax/underground coverage.
+        if "kids_attractions" not in prefs and not (
+            {"nature_landscape", "relaxation"} <= prefs
+        ):
+            if style in ("relax", "cultural") or tg in ("solo", "seniors", "couples"):
+                if "active_sport" not in prefs:
+                    return True
+
+    # FIX #288: Wystawa Pająków is a curiosity exhibit, not museum_heritage.
+    if any(k in name for k in ("wystawa pająków", "wystawa pajakow", "pająków", "pajakow")):
+        if "kids_attractions" not in prefs and tg not in ("family_kids", "family"):
+            if style in ("cultural", "relax") or "museum_heritage" in prefs:
+                if "active_sport" not in prefs and "kids_attractions" not in prefs:
+                    # Keep for families; drop as a fake museum on cultural days.
+                    if tg in ("couples", "seniors", "solo"):
+                        return True
+
+    if any(k in name for k in ("panorama racławicka", "panorama raclawicka")):
+        if "museum_heritage" not in prefs and "history_mystery" not in prefs:
+            return True
+
+    if "polin" in name or "muzeum historii żydów" in name or "muzeum historii zydow" in name:
+        if "museum_heritage" not in prefs and "history_mystery" not in prefs:
+            if tg == "family_kids" and "kids_attractions" in prefs:
+                pass
+            else:
+                return True
+
+    if "muzeum powstania" in name:
+        if tg == "family_kids":
+            return True
+        if nat_relax and "history_mystery" not in prefs and "museum_heritage" not in prefs:
+            return True
+
+    if any(k in name for k in ("górka szczęśliwick", "gorka szczesliwick")):
+        if "active_sport" not in prefs and "kids_attractions" not in prefs:
+            return True
+
+    if any(k in name for k in ("fabryka czekolady", "manufaktura czekolady")):
+        if "local_food_experience" not in prefs and "kids_attractions" not in prefs:
+            if style in ("relax", "cultural") or nat_relax:
+                return True
+
+    if any(k in name for k in ("muzeum polskiej wódki", "muzeum polskiej wodki", "polskiej wódki")):
+        if "local_food_experience" not in prefs and "museum_heritage" not in prefs:
+            return True
+
+    if "paprocany" in name:
+        if "underground" in prefs and "nature_landscape" not in prefs:
+            return True
+        if style == "relax" and "nature_landscape" not in prefs and "water_attractions" not in prefs:
+            return True
+
+    if any(k in name for k in ("kopiec powstania",)):
+        if "water_attractions" in prefs and "museum_heritage" not in prefs and "history_mystery" not in prefs:
+            return True
+
+    # FIX #274/#283/#288: winter-closed outdoor / seasonal sites.
+    _date = user.get("start_date") or user.get("date")
+    if _date:
+        try:
+            from app.domain.filters.seasonality import derive_season
+            if derive_season(_date) == "winter":
+                if any(k in name for k in (
+                    "grabowy labirynt",
+                    "ogród doświadczeń", "ogrod doswiadczen",
+                    "jaskinia ciemna",
+                )):
+                    return True
+        except Exception:
+            pass
 
     if any(k in name for k in (
         "aquapark", "park wodny", "wodny park", "wodny park tychy", "nemo",
@@ -345,17 +432,6 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     if any(k in name for k in ("muzeum śląskie", "muzeum slaskie")):
         if tg == "family_kids" and (style == "relax" or "relaxation" in prefs):
             return True
-
-    # FIX #274/#283: Grabowy Labirynt stays winter-closed. Arboretum
-    # Wojsławice is now allowed on the Niemcza nature day (client json4 D5).
-    _date = user.get("start_date") or user.get("date")
-    if _date:
-        try:
-            from app.domain.filters.seasonality import derive_season
-            if derive_season(_date) == "winter" and "grabowy labirynt" in name:
-                return True
-        except Exception:
-            pass
 
     # Kraków: Podziemia Rynku for family with young child
     if tg == "family_kids" and "podziemia rynku" in name:

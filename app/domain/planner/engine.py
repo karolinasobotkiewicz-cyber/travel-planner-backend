@@ -2072,6 +2072,35 @@ def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: di
         if req and r_city and req[:4] not in r_city and r_city[:4] not in req:
             if any(k in blob for k in ("wieliczka", "bochnia", "czersk", "ojców", "ojcow", "salina")):
                 return False
+    # FIX #288: don't pull Kórnik/Niemcza restaurants after a hub-city stop.
+    if poi_reg != "region_kornik" and any(
+        k in blob for k in ("kórnik", "kornik", "podzamcze")
+    ):
+        return False
+    if poi_reg != "region_wojslawice" and any(
+        k in blob for k in ("niemcza", "wojsławice", "wojslawice")
+    ):
+        return False
+    # A city-centre lunch must not bounce 8–30 km away (U Jakuba / Just Friends).
+    try:
+        plat = float((last_poi or {}).get("lat") or 0)
+        plng = float((last_poi or {}).get("lng") or 0)
+        rlat = float(restaurant.get("lat") or 0)
+        rlng = float(restaurant.get("lng") or 0)
+    except (TypeError, ValueError):
+        plat = plng = rlat = rlng = 0.0
+    if plat and plng and rlat and rlng:
+        far_regs = {
+            "region_kornik", "region_gniezno", "region_wojslawice",
+            "region_olawa", "region_czersk", "region_kampinos",
+            "region_wieliczka", "region_bochnia", "region_ojcow",
+            "region_gliwice", "region_zabrze", "region_zabkowice",
+            "region_sochaczew", "region_lednica",
+        }
+        if poi_reg not in far_regs:
+            hop = haversine_distance(plat, plng, rlat, rlng)
+            if hop >= 6.0:
+                return False
     return True
 
 
@@ -2375,8 +2404,12 @@ def should_block_city_daytrip_poi(p: dict, context: dict | None) -> bool:
         return True
     if day_num <= 1:
         return True
-    # FIX #284/#285: 5+ day city trips — a day-2 excursion is too early.
-    if (krak or kat or poz or war) and day_num <= 2 and n >= 5:
+    # FIX #284/#285/#288: 5+ day city trips — a day-2 excursion is too early.
+    # 6+ days: first outing on day 4 (client: D3 outing then D4 back in the hub).
+    wro = "wrocław" in city or "wroclaw" in city
+    if (wro or krak or kat or poz or war) and day_num <= 2 and n >= 5:
+        return True
+    if (wro or krak or kat or poz or war) and day_num <= 3 and n >= 6:
         return True
     if int(used.get(reg) or 0) >= 1:
         return True
@@ -3100,7 +3133,21 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         # FIX #266: before generic "katedra" — "archikatedralna" contains "katedra".
         ("archikatedr", 45),
         ("bazylika", 45),
+        # FIX #288: Wawel cathedral for a 5-year-old is 30–40 min, not 90.
+        ("katedra wawelska", 40),
         ("katedra", 90),
+        ("barbakan", 40),
+        ("smok wawelski", 15),
+        ("smoka wawelsk", 15),
+        ("pomnik smoka", 15),
+        ("krzysztofory", 90),
+        ("muzeum motyla", 50),
+        ("żywego motyla", 50),
+        ("zywego motyla", 50),
+        ("domy kupieckie", 15),
+        ("zamek cesarski", 75),
+        ("plac jana matejki", 45),
+        ("matejki", 45),
         # FIX #286: Poznań castle is a hill look — before generic Warsaw 120.
         ("zamek królewski w poznaniu", 75),
         ("zamek krolewski w poznaniu", 75),
@@ -3139,6 +3186,10 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("galeria szyb wilson", 90),
         ("szyb wilson", 90),
         ("cybermagia", 75),
+        ("legendia", 150),
+        ("bajka pana kleksa", 90),
+        ("pana kleksa", 90),
+        ("stacja muzeum", 90),
         ("park chopina", 60),
         ("kościół św. anny", 20),
         ("kosciol sw. anny", 20),
@@ -3440,6 +3491,13 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("kopiec piłsudskiego", 45),
         ("kopiec pilsudskiego", 45),
         ("muzeum lotnictwa", 75),
+        ("fabryka schindlera", 60),
+        ("schindlera", 60),
+        ("muzeum motyla", 40),
+        ("żywego motyla", 40),
+        ("zywego motyla", 40),
+        ("zakrzówek", 45),
+        ("zakrzowek", 45),
         ("kopalnia soli w bochni", 90),
         ("bochnia", 90),
         ("bochni", 90),
@@ -3463,6 +3521,22 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("muzeum początków państwa", 75),
         ("muzeum poczatkow panstwa", 75),
         ("zamek cesarski", 45),
+        ("legendia", 120),
+        ("bajka pana kleksa", 90),
+        ("pana kleksa", 90),
+        ("centrum historii zajezdnia", 60),
+        ("zajezdnia", 60),
+        ("stacja muzeum", 60),
+        ("cybermagia", 45),
+        ("park śląski", 45),
+        ("park slaski", 45),
+        ("muzeum motyla", 40),
+        ("żywego motyla", 40),
+        ("zywego motyla", 40),
+        ("fabryka schindlera", 60),
+        ("schindlera", 60),
+        ("zakrzówek", 45),
+        ("zakrzowek", 45),
         # FIX #287: Warszawa floors the client called out.
         ("pijalnia czekolady", 45),
         ("pijalnia wedla", 45),

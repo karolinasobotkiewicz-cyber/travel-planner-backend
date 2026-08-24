@@ -300,6 +300,12 @@ def _explain_category_highlight(
         return "Podziemna trasa w naturalnej jaskini"
     if "genius loci" in poi_name:
         return "Rezerwat archeologiczny i podziemna ekspozycja"
+    if any(k in poi_name for k in ("wystawa pająków", "wystawa pajakow", "pająk", "pajak")):
+        return "Nietypowa wystawa — ciekawostka, nie klasyczne muzeum"
+    if "movie gate" in poi_name:
+        return "Park rozrywki z atrakcjami filmowymi"
+    if "pana tadeusza" in poi_name:
+        return "Muzeum literackie poświęcone Panu Tadeuszowi"
     if "nikiszowiec" in poi_name:
         return "Historyczne osiedle robotnicze z ceglaną zabudową"
     if any(k in poi_name for k in (
