@@ -197,6 +197,9 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("muzeum slaskie", "kat_muzeum_slaskie"),
         ("muzeum historii katowic", "kat_mhk"),
         ("muzeum czekolady", "poz_muzeum_czekolady"),
+        ("żywego motyla", "krk_motyl"),
+        ("zywego motyla", "krk_motyl"),
+        ("muzeum motyla", "krk_motyl"),
     )
     for marker, key in _markers:
         if marker in n:
@@ -295,10 +298,27 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     # FIX #274 Wrocław: Bobolandia / Kosmopark are kids-only.
     if "bobolandia" in name and tg not in ("family_kids", "family"):
         return True
-    if "kosmopark" in name and tg in ("solo", "seniors", "couples"):
-        return True
-    if "kosmopark" in name and tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
-        if "active_sport" not in prefs:
+    if "kosmopark" in name:
+        if tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
+            return True
+
+    if any(k in name for k in ("wioski świata", "wioski swiata", "ogród doświadczeń", "ogrod doswiadczen")):
+        if tg == "couples" and style == "cultural":
+            return True
+
+    if any(k in name for k in ("katedra wawelska",)):
+        if tg == "family_kids" and (style == "relax" or "relaxation" in prefs):
+            if "history_mystery" not in prefs and "museum_heritage" not in prefs:
+                return True
+
+    if "hala stulecia" in name:
+        if "museum_heritage" not in prefs and "history_mystery" not in prefs:
+            if prefs & {"water_attractions", "local_food_experience", "relaxation",
+                        "active_sport", "kids_attractions", "nature_landscape"}:
+                return True
+
+    if "muzeum narodowe" in name:
+        if "museum_heritage" not in prefs and "history_mystery" not in prefs:
             return True
 
     # FIX #274: Flyspot / Laser Tag off seniors; Laser Tag needs active_sport.
@@ -379,8 +399,13 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
                 return True
 
     if any(k in name for k in ("bazylika", "archikatedr")):
-        if tg == "family_kids" and (style == "relax" or "relaxation" in prefs):
-            if "history_mystery" not in prefs and "museum_heritage" not in prefs:
+        if "history_mystery" not in prefs and "museum_heritage" not in prefs:
+            if (
+                tg == "family_kids"
+                or style in ("relax", "adventure")
+                or "relaxation" in prefs
+                or "kids_attractions" in prefs
+            ):
                 return True
 
     if "papugarn" in name:

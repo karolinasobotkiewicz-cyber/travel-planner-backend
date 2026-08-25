@@ -2084,7 +2084,18 @@ def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: di
     ):
         return False
     if poi_reg != "region_wojslawice" and any(
-        k in blob for k in ("niemcza", "wojsławice", "wojslawice")
+        k in blob for k in (
+            "niemcza", "wojsławice", "wojslawice",
+            "łabędziem", "labedziem", "pod łabędziem", "pod labedziem",
+        )
+    ):
+        return False
+    if poi_reg != "region_czersk" and any(
+        k in blob for k in ("góra kalwaria", "gora kalwaria", "kalwarii")
+    ):
+        return False
+    if poi_reg != "region_zabkowice" and any(
+        k in blob for k in ("ząbkowice", "zabkowice")
     ):
         return False
     # FIX #290: no satellite-town lunch after a hub stop (Wieliczka/Ojców/Gliwice).
@@ -3138,7 +3149,7 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("sky tower", 60),
         ("punkt widokowy", 60),
         ("zatoka gondoli", 60),
-        ("pergola", 75),
+        ("pergola", 45),
         ("laser tag", 120),
         ("paintball", 120),
         ("quad", 120),
@@ -3212,9 +3223,19 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("park skaryszewsk", 75),
         ("ostrów tumski", 90),
         ("ostrow tumski", 90),
-        ("muzeum uniwersytetu", 90),
-        ("muzeum narodowe", 120),
-        ("hala stulecia", 90),
+        ("muzeum uniwersytetu", 60),
+        ("uniwersytet wrocławski", 60),
+        ("uniwersytet wroclawski", 60),
+        ("muzeum narodowe", 90),
+        ("hala stulecia", 60),
+        ("browar stu mostów", 60),
+        ("browar stu mostow", 60),
+        ("ogród saski", 60),
+        ("ogrod saski", 60),
+        ("świat w budowie", 60),
+        ("swiat w budowie", 60),
+        ("zamek w ząbkowicach", 90),
+        ("zamek w zabkowicach", 90),
         # FIX #255: client — absurd multi-hour stops.
         ("gojump", 90),
         # FIX #268: "krótki przystanek" — 75 min looked absurd vs copy.

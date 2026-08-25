@@ -89,6 +89,7 @@ def filter_by_season(pois, current_date):
                 "muzeum powozów", "muzeum powozow", "galowice",
                 "ogród doświadczeń", "ogrod doswiadczen",
                 "jaskinia łokietka", "jaskinia lokietka",
+                "strefa wakacji",
             )
         ):
             continue
