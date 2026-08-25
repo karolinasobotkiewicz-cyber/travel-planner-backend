@@ -87,6 +87,8 @@ def filter_by_season(pois, current_date):
                 "park linowy partynice", "partynice",
                 # FIX #257 Wrocław: carriage museum / Galowice closed in winter.
                 "muzeum powozów", "muzeum powozow", "galowice",
+                "ogród doświadczeń", "ogrod doswiadczen",
+                "jaskinia łokietka", "jaskinia lokietka",
             )
         ):
             continue

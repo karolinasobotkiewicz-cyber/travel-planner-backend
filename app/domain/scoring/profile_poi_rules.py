@@ -89,6 +89,7 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("park wodny warszaw", "waw_warszawianka"),
         # FIX #267: iconic WAWA museums/palaces — never D1+D3 duplicates.
         # Must appear BEFORE Poznań "zamek królewski" marker (shared name).
+        ("zamek królewski na wawelu", "krk_wawel"),
         ("zamek królewski", "waw_zamek_krolewski"),
         ("zamek krolewski", "waw_zamek_krolewski"),
         ("wilanów", "waw_wilanow"),
@@ -183,6 +184,19 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("funhouse", "kat_funhouse"),
         ("fun house", "kat_funhouse"),
         ("fun-house", "kat_funhouse"),
+        # FIX #290: leftover trip icons across WAWA / KRK / KAT / POZ.
+        ("archikatedr", "waw_archikatedra"),
+        ("zamek ujazdowski", "waw_ujazdowski"),
+        ("wioski świata", "krk_wioski"),
+        ("wioski swiata", "krk_wioski"),
+        ("funzeum", "kat_funzeum"),
+        ("park chopina", "kat_park_chopina"),
+        ("park śląski", "kat_park_slaski"),
+        ("park slaski", "kat_park_slaski"),
+        ("muzeum śląskie", "kat_muzeum_slaskie"),
+        ("muzeum slaskie", "kat_muzeum_slaskie"),
+        ("muzeum historii katowic", "kat_mhk"),
+        ("muzeum czekolady", "poz_muzeum_czekolady"),
     )
     for marker, key in _markers:
         if marker in n:
@@ -342,10 +356,32 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
         if tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
             return True
 
-    # FIX #285: Funzeum / FunHouse is a kids indoor park, not adult days.
-    if any(k in name for k in ("funzeum", "funhouse", "fun house", "fun-house")):
+    # FIX #285/#290: Funzeum / FunHouse / JUMPCITY are kids indoor parks.
+    if any(k in name for k in (
+        "funzeum", "funhouse", "fun house", "fun-house",
+        "jumpcity", "jump city", "jump-city",
+    )):
         if tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
             return True
+
+    if "grawitacja" in name or "parkour" in name:
+        if style in ("relax", "cultural") or "relaxation" in prefs:
+            if "active_sport" not in prefs and not adv:
+                return True
+
+    if any(k in name for k in ("bajkowy labirynt", "bajkowy labirynt")):
+        if tg in ("solo", "seniors", "couples") and "kids_attractions" not in prefs:
+            return True
+
+    if "cybermagia" in name:
+        if style == "relax" or nat_relax:
+            if "active_sport" not in prefs:
+                return True
+
+    if any(k in name for k in ("bazylika", "archikatedr")):
+        if tg == "family_kids" and (style == "relax" or "relaxation" in prefs):
+            if "history_mystery" not in prefs and "museum_heritage" not in prefs:
+                return True
 
     if "papugarn" in name:
         if tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
@@ -417,6 +453,7 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
                     "grabowy labirynt",
                     "ogród doświadczeń", "ogrod doswiadczen",
                     "jaskinia ciemna",
+                    "jaskinia łokietka", "jaskinia lokietka",
                 )):
                     return True
         except Exception:

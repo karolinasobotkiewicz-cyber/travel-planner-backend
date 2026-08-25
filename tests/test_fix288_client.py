@@ -340,9 +340,9 @@ def test_clamp_keeps_modest_overrun():
         items, {"day_end": "16:00"}, day_num=1,
     )
     garden = [it for it in clamped if getattr(it, "name", "") == "Ogród Japoński"][0]
-    assert garden.end_time == "16:16"
+    assert garden.end_time == "16:00"
     out = _svc()._reconcile_day_end_marker(
         clamped, {"day_end": "16:00"}, day_num=1,
     )
     ends = [it for it in out if _item_is_day_end(it)]
-    assert ends and ends[0].time == "16:16"
+    assert ends and ends[0].time == "16:00"

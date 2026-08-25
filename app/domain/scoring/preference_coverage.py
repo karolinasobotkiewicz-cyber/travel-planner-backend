@@ -507,6 +507,7 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         # FIX #261: Pergola / greens ARE the client's relaxation cover in Wrocław —
         # keep denying Hydropolis (museum) but credit the outdoor pergola.
         "hydropolis",
+        "grawitacja", "trampolin", "jumpcity", "funzeum", "parkour",
         # FIX #221: palace museums outside city are not relaxation (Rogalin miscredit).
         "rogalin", "pałac w rogalin", "palac w rogalin", "muzeum pałac w rogalin",
         "muzeum palac w rogalin",
@@ -677,8 +678,10 @@ def poi_covers_preference_report(poi: Dict[str, Any], pref: str) -> bool:
         return True
     # FIX #262/#266 Warszawa: real underground = Cytadela / casemates / tunnels.
     # Client FIX #266: Muzeum Powstania + Kopiec must NOT fake-cover underground.
+    if pref == "underground" and "park cytadela" in name:
+        return False
     if pref == "underground" and "park cytadela" not in name and any(m in name for m in (
-        "cytadel", "x pawilon", "muzeum katyńskie", "muzeum katynskie",
+        "x pawilon", "muzeum katyńskie", "muzeum katynskie",
         "podziemia", "kanał", "kanal", "gazowni", "schron", "bunkier",
     )):
         return True

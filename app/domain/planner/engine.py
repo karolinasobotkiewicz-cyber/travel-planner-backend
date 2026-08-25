@@ -1035,8 +1035,10 @@ def is_underground_poi(p: dict) -> bool:
     # FIX #267 Warszawa: Cytadela casemates / Gazownia are the honest underground
     # cover (no caves/mines in the city Excel). Must win over the generic
     # "muze…" deny below.
-    if any(m in name for m in (
-        "cytadel", "x pawilon", "muzeum gazowni", "gazowni warszaw",
+    if "park cytadela" in name:
+        pass
+    elif any(m in name for m in (
+        "x pawilon", "muzeum gazowni", "gazowni warszaw",
         "podziemia", "schron", "bunkier",
     )):
         return True
@@ -1870,6 +1872,7 @@ def poi_geo_region_key(p: dict) -> str | None:
     # FIX #285: Gliwice icons often stored as City=Katowice.
     if any(k in blob for k in (
         "palmiarnia miejska", "willa caro", "park chopina",
+        "funzeum",
     )):
         return "region_gliwice"
     if "kolejkowo" in blob and not any(
@@ -1937,6 +1940,7 @@ def poi_geo_region_key(p: dict) -> str | None:
     # FIX #277: Poznań — Ostrów Lednicki / Dziekanowice.
     if any(k in blob for k in (
         "lednick", "lednogór", "lednogor", "dziekanowic",
+        "owińsk", "owinsk", "park orientacji",
     )):
         return "region_lednica"
     # FIX #277: Warszawa — Sochaczew / Żelazowa Wola.
@@ -2083,6 +2087,21 @@ def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: di
         k in blob for k in ("niemcza", "wojsławice", "wojslawice")
     ):
         return False
+    # FIX #290: no satellite-town lunch after a hub stop (Wieliczka/Ojców/Gliwice).
+    if poi_reg != "region_wieliczka" and any(
+        k in blob for k in ("wieliczka", "bochnia", "salina")
+    ):
+        return False
+    if poi_reg != "region_gliwice" and "gliwice" in blob:
+        return False
+    if poi_reg != "region_zabrze" and any(
+        k in blob for k in ("zabrze", "fajrant")
+    ):
+        return False
+    if poi_reg not in ("region_owińska", "region_lednica") and any(
+        k in blob for k in ("owińsk", "owinsk")
+    ):
+        return False
     # A city-centre lunch must not bounce 8–30 km away (U Jakuba / Just Friends).
     try:
         plat = float((last_poi or {}).get("lat") or 0)
@@ -2101,7 +2120,7 @@ def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: di
         }
         if poi_reg not in far_regs:
             hop = haversine_distance(plat, plng, rlat, rlng)
-            if hop >= 6.0:
+            if hop >= 4.0:
                 return False
     return True
 
@@ -3209,7 +3228,7 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("bajka pana kleksa", 90),
         ("pana kleksa", 90),
         ("stacja muzeum", 90),
-        ("park chopina", 60),
+        ("park chopina", 45),
         ("kościół św. anny", 20),
         ("kosciol sw. anny", 20),
         ("kosciol sw anny", 20),
@@ -3641,10 +3660,15 @@ def choose_duration(p, now, end, lunch_done, user=None):
                 for k in (
                     "ostrów tumski", "ostrow tumski", "katedra", "kościół",
                     "kosciol", "rynek", "muzeum", "panorama", "aula",
+                    "wilanów", "wilanow", "wilanowie",
                 )
             )
             if _sightseeing:
                 tmax = min(tmax, 60)
+                tmin = min(tmin, tmax)
+            if any(k in _poi_name_lower for k in ("wilanów", "wilanow", "wilanowie")):
+                tmax = min(tmax, 70)
+                tmin = min(tmin, 60)
                 tmin = min(tmin, tmax)
     tmax = max(tmax, tmin)
 
