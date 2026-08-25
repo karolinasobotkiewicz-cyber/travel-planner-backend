@@ -168,6 +168,11 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("wielka wystawa klock", "krk_lego_cluster"),
         # FIX #288: trip-level icons the client saw twice in a row.
         ("loopys", "wro_loopys"),
+        # FIX #289: Wrocław icons that densify re-planted after the trip strip.
+        ("ogród japoński", "wro_ogrod_japonski"),
+        ("ogrod japonski", "wro_ogrod_japonski"),
+        ("muzeum przyrodnicze", "wro_muzeum_przyrodnicze"),
+        ("przyrodnicze we wrocławiu", "wro_muzeum_przyrodnicze"),
         ("katedra wawelska", "krk_katedra_wawel"),
         ("zakrzówek", "krk_zakrzowek"),
         ("zakrzowek", "krk_zakrzowek"),

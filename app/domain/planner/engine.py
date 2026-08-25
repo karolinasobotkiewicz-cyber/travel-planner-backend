@@ -1815,6 +1815,7 @@ _FAR_GEO_REGIONS = frozenset({
     "region_sochaczew", "region_lednica",
     # FIX #281: Wrocław day-trips — don't reuse Niemcza/Wojsławice or Topacz.
     "region_wojslawice", "region_galowice", "region_topacz",
+    "region_wro_far",
 })
 
 
@@ -1908,6 +1909,7 @@ def poi_geo_region_key(p: dict) -> str | None:
     if any(k in blob for k in (
         "arboretum wojsławice", "arboretum wojslawice",
         "wojsławice", "wojslawice", "niemcza", "niemczy", "dolina tatarska",
+        "grabowy labirynt",
     )):
         return "region_wojslawice"
     if any(k in blob for k in (
@@ -2348,6 +2350,21 @@ def _katowice_coord_far(p: dict, context: dict | None) -> bool:
     return haversine_distance(50.2640, 19.0238, lat, lng) >= 28.0
 
 
+def _wroclaw_coord_far(p: dict, context: dict | None) -> bool:
+    """FIX #289: unnamed 28 km+ hops (Grabowy / Złotniki mix) are still day-trips."""
+    city = str((context or {}).get("requested_city") or (context or {}).get("city") or "").lower()
+    if "wrocław" not in city and "wroclaw" not in city:
+        return False
+    try:
+        lat = float(p.get("lat") or 0)
+        lng = float(p.get("lng") or 0)
+    except (TypeError, ValueError):
+        return False
+    if lat == 0 or lng == 0:
+        return False
+    return haversine_distance(51.1099, 17.0325, lat, lng) >= 28.0
+
+
 def should_block_city_daytrip_poi(p: dict, context: dict | None) -> bool:
     """FIX #282: day-trips are extras, never a mid-day hop, never Day 1."""
     if not context:
@@ -2356,6 +2373,8 @@ def should_block_city_daytrip_poi(p: dict, context: dict | None) -> bool:
     reg = poi_geo_region_key(p)
     if (not reg or reg not in _FAR_GEO_REGIONS) and _katowice_coord_far(p, context):
         reg = "region_silesia_far"
+    if (not reg or reg not in _FAR_GEO_REGIONS) and _wroclaw_coord_far(p, context):
+        reg = "region_wro_far"
     if not reg or (reg not in _FAR_GEO_REGIONS and reg != "region_silesia_far"):
         return False
     day_reg = context.get("day_geo_region")
@@ -3287,8 +3306,8 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("pkin", 120),
         # FIX #262 Warszawa: client — Świat Iluzji 120 min too long after ZOO;
         # Stare Miasto must not stretch to 3h+ to fill a hole.
-        ("świat iluzji", 90),
-        ("swiat iluzji", 90),
+        ("świat iluzji", 60),
+        ("swiat iluzji", 60),
         ("stare miasto w warszawie", 120),
         ("stare miasto", 120),
         # FIX #264 Warszawa: client — Kopiec / Most / Jeziorko too long.
