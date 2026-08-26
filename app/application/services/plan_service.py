@@ -382,6 +382,10 @@ def _timeline_satellite_kind(name: str) -> Optional[str]:
         _is_gliwice_stop_name(nm)
         or "willa caro" in nm
         or "park chopina" in nm
+        or "park chrobrego" in nm
+        or "park pileckiego" in nm
+        or "park pilecki" in nm
+        or "pileckiego" in nm
         or "palmiarnia miejska" in nm
     ):
         return "gliwice"
@@ -13518,6 +13522,9 @@ class PlanService:
             "funzeum",
             "park chopina",
             "park śląski", "park slaski",
+            "park chrobrego",
+            "park pileckiego", "park pilecki", "pileckiego",
+            "pileckiego",
             "muzeum śląskie", "muzeum slaskie",
             "muzeum historii katowic",
             "muzeum czekolady",
@@ -21246,7 +21253,9 @@ class PlanService:
             if any(k in nm for k in (
                 "paniowic", "pomiech", "animalworld", "animal world",
                 "szyb wilson", "dolina wkry", "wkry",
-            )) and tdur >= 35 and dur <= 50:
+                "park chopina", "park chrobrego", "park pileckiego",
+                "park pilecki", "pileckiego", "park sensoryczny",
+            )) and tdur >= 35 and dur <= 55:
                 drop_names.add((getattr(it, "name", "") or "").strip().lower())
                 print(
                     f"[FIX #292] Day {day_num}: dropped thin far stop "
@@ -21282,11 +21291,20 @@ class PlanService:
             long_thin = bool(
                 prev_transit and (tdur >= 90 or tkm >= 40) and dur <= 45
             )
+            kat_park_hop = bool(
+                prev_transit
+                and any(k in nm for k in (
+                    "park chopina", "park chrobrego", "park pileckiego",
+                    "park pilecki", "pileckiego", "tężnia", "teznia",
+                ))
+                and (tkm >= 25 or tdur >= 40)
+            )
             if prev_transit and (
                 (tdur >= 40 and dur <= 35 and lonely)
                 or thin_filler
                 or roundtrip_thin
                 or long_thin
+                or kat_park_hop
             ):
                 drop_names.add((getattr(it, "name", "") or "").strip().lower())
                 print(
@@ -21310,20 +21328,27 @@ class PlanService:
         *,
         day_num: int = 0,
     ) -> List[Any]:
-        """FIX #295: after Kampinos, don't drive 50+ km back for a single city POI."""
+        """FIX #295/#296: after a far satellite, don't drive 30+ km for one hub POI."""
         if not items:
             return items
         try:
             ordered = self._sort_items_by_time(list(items))
         except Exception:
             ordered = list(items)
+        _GENERIC_PARK = (
+            "park chopina", "park chrobrego", "park pileckiego",
+            "park pilecki", "pileckiego", "park sensoryczny",
+        )
         far_idx = None
+        far_kind = None
         for i, it in enumerate(ordered):
             if not _is_timeline_attraction(it):
                 continue
             nm = getattr(it, "name", "") or ""
-            if _is_kampinos_stop_name(nm) or _timeline_satellite_kind(nm) == "kampinos":
+            kind = _timeline_satellite_kind(nm)
+            if kind:
                 far_idx = i
+                far_kind = kind
         if far_idx is None:
             return ordered
         later = [
@@ -21334,7 +21359,8 @@ class PlanService:
             return ordered
         idx, dest = later[0]
         dest_nm = (getattr(dest, "name", "") or "").strip()
-        if _is_kampinos_stop_name(dest_nm):
+        dest_kind = _timeline_satellite_kind(dest_nm)
+        if dest_kind and dest_kind == far_kind:
             return ordered
         prev_tr = None
         for j in range(idx - 1, far_idx, -1):
@@ -21352,15 +21378,136 @@ class PlanService:
                 tkm = float(getattr(prev_tr, "distance_km", 0) or 0)
             except (TypeError, ValueError):
                 tkm = 0.0
-        if tkm < 35 and tdur < 80:
+        if tkm < 25 and tdur < 50:
             return ordered
+        far_nm = (getattr(ordered[far_idx], "name", "") or "").lower()
+        drop_idx = idx
+        # Generic Gliwice lawn → 40 km back to Nikiszowiec: drop the lawn.
+        if dest_kind is None and any(k in far_nm for k in _GENERIC_PARK):
+            drop_idx = far_idx
+        drop_nm = (getattr(ordered[drop_idx], "name", "") or "").strip()
         print(
-            f"[FIX #295] Day {day_num}: dropped lonely city stop "
-            f"{dest_nm} after far excursion ({tkm:.0f} km / {tdur} min)"
+            f"[FIX #296] Day {day_num}: dropped lonely stop {drop_nm} "
+            f"after far excursion ({tkm:.0f} km / {tdur} min)"
         )
         out = [
             it for i, it in enumerate(ordered)
-            if not (i == idx and _is_timeline_attraction(it))
+            if not (i == drop_idx and _is_timeline_attraction(it))
+        ]
+        return self._strip_transits_to_unscheduled_destinations(out, day_num=day_num)
+
+    def _cap_same_day_satellite_kinds(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #296: one Silesian satellite city per day (no Gliwice↔Zabrze ping-pong)."""
+        if not items:
+            return items
+        counts: dict = {}
+        for it in items:
+            if not _is_timeline_attraction(it):
+                continue
+            k = _timeline_satellite_kind(getattr(it, "name", "") or "")
+            if k:
+                counts[k] = counts.get(k, 0) + 1
+        if len(counts) <= 1:
+            return items
+        keep = max(counts, key=counts.get)
+        drop = {
+            (getattr(it, "name", "") or "").strip().lower()
+            for it in items
+            if _is_timeline_attraction(it)
+            and _timeline_satellite_kind(getattr(it, "name", "") or "") not in (None, keep)
+        }
+        if not drop:
+            return items
+        print(
+            f"[FIX #296] Day {day_num}: kept satellite {keep}, "
+            f"dropped {sorted(drop)}"
+        )
+        out = []
+        for it in items:
+            if _is_timeline_attraction(it) and (
+                (getattr(it, "name", "") or "").strip().lower() in drop
+            ):
+                continue
+            out.append(it)
+        return self._strip_transits_to_unscheduled_destinations(out, day_num=day_num)
+
+    def _drop_park_only_far_satellite(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #296: 33 km to Gliwice only for municipal parks is not a day-trip."""
+        _PARK = (
+            "park chopina", "park chrobrego", "park pileckiego",
+            "park pilecki", "pileckiego", "park sensoryczny",
+        )
+        _KEEP_ICON = (
+            "palmiarnia", "willa caro", "funzeum", "guido", "nemo",
+            "carboneum", "luiza",
+        )
+        if not items:
+            return items
+        try:
+            ordered = self._sort_items_by_time(list(items))
+        except Exception:
+            ordered = list(items)
+        by_kind: dict = {}
+        for it in ordered:
+            if not _is_timeline_attraction(it):
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            k = _timeline_satellite_kind(nm)
+            if not k:
+                continue
+            by_kind.setdefault(k, []).append(it)
+        drop_names = set()
+        for kind, attrs in by_kind.items():
+            names = [(getattr(it, "name", "") or "").lower() for it in attrs]
+            if any(any(ic in n for ic in _KEEP_ICON) for n in names):
+                continue
+            if not all(any(p in n for p in _PARK) for n in names):
+                continue
+            first = attrs[0]
+            prev_tr = None
+            fi = next(
+                (i for i, it in enumerate(ordered) if it is first),
+                None,
+            )
+            if fi is None:
+                continue
+            for j in range(fi - 1, -1, -1):
+                if _item_type_value(ordered[j]) == ItemType.TRANSIT.value:
+                    prev_tr = ordered[j]
+                    break
+                if _is_timeline_attraction(ordered[j]):
+                    break
+            tdur = int(getattr(prev_tr, "duration_min", 0) or 0) if prev_tr else 0
+            try:
+                tkm = float(getattr(prev_tr, "distance_km", 0) or 0) if prev_tr else 0.0
+            except (TypeError, ValueError):
+                tkm = 0.0
+            if tkm < 25 and tdur < 40:
+                continue
+            for it in attrs:
+                drop_names.add((getattr(it, "name", "") or "").strip().lower())
+            print(
+                f"[FIX #296] Day {day_num}: dropped park-only {kind} "
+                f"satellite ({tkm:.0f} km)"
+            )
+        if not drop_names:
+            return ordered
+        out = [
+            it for it in ordered
+            if not (
+                _is_timeline_attraction(it)
+                and (getattr(it, "name", "") or "").strip().lower() in drop_names
+            )
         ]
         return self._strip_transits_to_unscheduled_destinations(out, day_num=day_num)
 
@@ -21585,13 +21732,19 @@ class PlanService:
         *,
         day_num: int = 0,
     ) -> List[Any]:
-        """FIX #292: relax/family lunch under 40 min is too short."""
+        """FIX #292/#296: lunch under 40 min is too short; 4+ people need 45."""
         style = str((user or {}).get("travel_style") or "").lower()
         tg = str((user or {}).get("target_group") or "").lower()
+        try:
+            gsize = int((user or {}).get("group_size") or (user or {}).get("size") or 0)
+        except (TypeError, ValueError):
+            gsize = 0
         if style not in ("relax",) and tg not in ("family_kids", "family", "seniors"):
             floor = 35
         else:
             floor = 40
+        if gsize >= 4:
+            floor = max(floor, 45)
         out: List[Any] = []
         for it in items:
             if _item_type_value(it) != ItemType.LUNCH_BREAK.value:
@@ -21968,6 +22121,12 @@ class PlanService:
                 items, day_num=getattr(day, "day", 0) or 0,
             )
             items = self._drop_post_far_excursion_lonely_city_stop(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._cap_same_day_satellite_kinds(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._drop_park_only_far_satellite(
                 items, day_num=getattr(day, "day", 0) or 0,
             )
             items = self._strip_transits_to_unscheduled_destinations(
@@ -24041,6 +24200,7 @@ class PlanService:
         if pool and (
             "poznań" in _city_end or "poznan" in _city_end
             or "warszawa" in _city_end or "warsaw" in _city_end
+            or "katowice" in _city_end or "katowic" in _city_end
         ):
             huge = any(
                 _item_type_value(it) == ItemType.FREE_TIME.value

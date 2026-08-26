@@ -193,6 +193,10 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("park chopina", "kat_park_chopina"),
         ("park śląski", "kat_park_slaski"),
         ("park slaski", "kat_park_slaski"),
+        ("park chrobrego", "kat_park_chrobrego"),
+        ("park pileckiego", "kat_park_pilecki"),
+        ("park pilecki", "kat_park_pilecki"),
+        ("pileckiego", "kat_park_pilecki"),
         ("muzeum śląskie", "kat_muzeum_slaskie"),
         ("muzeum slaskie", "kat_muzeum_slaskie"),
         ("muzeum historii katowic", "kat_mhk"),
@@ -444,12 +448,26 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
             if prefs & {"water_attractions", "local_food_experience", "relaxation"}:
                 return True
 
+    # FIX #296: dry civic museum / skansen are a poor fit for young kids.
+    if tg == "family_kids":
+        if "muzeum historii katowic" in name:
+            return True
+        if child_age is not None and isinstance(child_age, (int, float)) and child_age <= 6:
+            if any(k in name for k in (
+                "skansen", "etnograficzn", "nikiszowiec",
+                "górnośląski park etnograficzny", "gornoslaski park etnograficzny",
+            )):
+                return True
+
     if any(k in name for k in (
         "park chopina", "park chrobrego", "park sensoryczny",
-        "pogoria", "park pileckiego", "park pilecki",
+        "pogoria", "park pileckiego", "park pilecki", "pileckiego",
     )):
+        # FIX #296: adventure / active_sport must not burn a 30 km hop on a lawn.
         if "nature_landscape" not in prefs and (
-            {"underground", "history_mystery"} <= prefs
+            style == "adventure"
+            or "active_sport" in prefs
+            or {"underground", "history_mystery"} <= prefs
             or ("museum_heritage" in prefs and "active_sport" not in prefs)
         ):
             return True

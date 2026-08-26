@@ -316,6 +316,9 @@ def _explain_category_highlight(
     # FIX #295: a modern river bridge is not "Zabytek z bogatą historią".
     if any(k in poi_name for k in ("most świętokrzyski", "most swietokrzyski")):
         return "Panorama miasta z góry"
+    # FIX #296: a brewery at lunch is not "Dobre miejsce na wieczór".
+    if "browar" in poi_name:
+        return "Przerwa na lokalny browar i jedzenie"
     # FIX #268: Pixel XL is adult entertainment, not a kids playground reason.
     if "pixel" in poi_name and cat in ("playground", "amusement", "entertainment"):
         return "Interaktywna rozrywka w dużym formacie"
