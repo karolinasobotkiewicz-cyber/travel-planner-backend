@@ -200,6 +200,14 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("żywego motyla", "krk_motyl"),
         ("zywego motyla", "krk_motyl"),
         ("muzeum motyla", "krk_motyl"),
+        # FIX #292: leftover trip icons WRO/KRK/WAWA/KAT/POZ.
+        ("park decjusza", "krk_park_decjusza"),
+        ("cytadela", "waw_cytadela"),
+        ("park sensoryczny", "kat_sensoryczny"),
+        ("animalworld", "kat_animalworld"),
+        ("animal world", "kat_animalworld"),
+        ("pomnik bamberki", "poz_stary_rynek"),
+        ("bamberki", "poz_stary_rynek"),
     )
     for marker, key in _markers:
         if marker in n:
@@ -389,8 +397,8 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
             if "active_sport" not in prefs and not adv:
                 return True
 
-    if any(k in name for k in ("bajkowy labirynt", "bajkowy labirynt")):
-        if tg in ("solo", "seniors", "couples") and "kids_attractions" not in prefs:
+    if any(k in name for k in ("bajkowy labirynt", "guliwer", "holiday park")):
+        if tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
             return True
 
     if "cybermagia" in name:
@@ -427,6 +435,21 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
                     # Keep for families; drop as a fake museum on cultural days.
                     if tg in ("couples", "seniors", "solo"):
                         return True
+
+    if any(k in name for k in ("muzeum śląskie", "muzeum slaskie")):
+        if "museum_heritage" not in prefs and "history_mystery" not in prefs:
+            if prefs & {"water_attractions", "local_food_experience", "relaxation"}:
+                return True
+
+    if any(k in name for k in (
+        "park chopina", "park chrobrego", "park sensoryczny",
+        "pogoria", "park pileckiego", "park pilecki",
+    )):
+        if "nature_landscape" not in prefs and (
+            {"underground", "history_mystery"} <= prefs
+            or ("museum_heritage" in prefs and "active_sport" not in prefs)
+        ):
+            return True
 
     if any(k in name for k in ("panorama racławicka", "panorama raclawicka")):
         if "museum_heritage" not in prefs and "history_mystery" not in prefs:

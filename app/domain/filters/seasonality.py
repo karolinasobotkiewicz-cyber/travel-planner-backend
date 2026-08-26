@@ -88,6 +88,7 @@ def filter_by_season(pois, current_date):
                 # FIX #257 Wrocław: carriage museum / Galowice closed in winter.
                 "muzeum powozów", "muzeum powozow", "galowice",
                 "ogród doświadczeń", "ogrod doswiadczen",
+                "wioski świata", "wioski swiata",
                 "jaskinia łokietka", "jaskinia lokietka",
                 "strefa wakacji",
             )

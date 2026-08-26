@@ -3396,6 +3396,17 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("park chrobrego", 60),
         ("papugarnia", 75),
         ("planetarium", 90),
+        ("pałac prezydencki", 20),
+        ("palac prezydencki", 20),
+        ("pomnik bamberki", 15),
+        ("bamberki", 15),
+        ("pixel xl", 90),
+        ("jezioro rusałka", 90),
+        ("jezioro rusalka", 90),
+        ("rusałka", 90),
+        ("rusalka", 90),
+        ("animalworld", 45),
+        ("animal world", 45),
     )
     for marker, cap in _named_caps:
         if marker in name:
