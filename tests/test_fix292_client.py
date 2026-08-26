@@ -279,9 +279,8 @@ def test_hala_pergola_clustered():
         _attr("Hala Stulecia", "14:00", "15:00", 60),
     ]
     out = _svc()._cluster_adjacent_icons(items, day_num=2)
-    names = [it.name for it in out if _is_attr(it)]
-    pi, hi = names.index("Pergola przy Hali Stulecia"), names.index("Hala Stulecia")
-    assert abs(hi - pi) == 1
+    hala = next(it for it in out if it.name == "Hala Stulecia")
+    assert hala.start_time <= "11:55"
 
 
 def test_third_park_dropped():

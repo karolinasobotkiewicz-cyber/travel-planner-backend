@@ -13482,6 +13482,7 @@ class PlanService:
             "cytadela",
             "park sensoryczny",
             "bamberki",
+            "hydropolis",
         )
         out_days: List[Any] = []
         for day in days:
@@ -16884,7 +16885,11 @@ class PlanService:
                 table = self._FT253_EVENING
                 label, suggestions = table[(day_num + idx) % len(table)]
                 is_tech = False
-            elif hole_start < 12 * 60:
+            elif hole_start < 10 * 60 + 30 and not any(
+                _is_timeline_attraction(x)
+                and time_to_minutes(getattr(x, "end_time", None) or "00:00") <= hole_start
+                for x in items
+            ):
                 table = self._FT253_MORNING
                 label, suggestions = table[(day_num + idx) % len(table)]
                 is_tech = False
@@ -17884,6 +17889,10 @@ class PlanService:
                 cap = 20 if cap is None else min(int(cap), 20)
             if "bamberki" in nm_l:
                 cap = 15 if cap is None else min(int(cap), 15)
+            if "katedra" in nm_l and "wawel" not in nm_l:
+                cap = 60 if cap is None else min(int(cap), 60)
+            if "most tumski" in nm_l:
+                cap = 20 if cap is None else min(int(cap), 20)
             if "neon side" in nm_l or "galeria neon" in nm_l:
                 try:
                     st_m = time_to_minutes(st)
@@ -21036,6 +21045,20 @@ class PlanService:
                 )
                 prev_transit = None
                 continue
+            if (
+                "kopalnia" in nm
+                and "wieliczka" not in nm
+                and "bochnia" not in nm
+                and tdur >= 35
+                and dur <= 55
+            ):
+                drop_names.add((getattr(it, "name", "") or "").strip().lower())
+                print(
+                    f"[FIX #293] Day {day_num}: dropped thin Kopalnia "
+                    f"{getattr(it, 'name', '?')} ({tdur}m drive / {dur}m visit)"
+                )
+                prev_transit = None
+                continue
             lonely = rk.startswith("region_") and region_counts.get(rk, 0) <= 1
             thin_filler = tdur >= 32 and dur <= 25
             roundtrip_thin = bool(
@@ -21200,13 +21223,39 @@ class PlanService:
         if len(idxs) < 2:
             return ordered
         a, b = idxs[0], idxs[-1]
-        if b <= a + 1:
+        earlier, later = ordered[a], ordered[b]
+        try:
+            e_en = time_to_minutes(getattr(earlier, "end_time", None) or "")
+            l_st = time_to_minutes(getattr(later, "start_time", None) or "")
+            l_dur = int(getattr(later, "duration_min", 0) or 40)
+        except Exception:
             return ordered
-        # Move the later icon to immediately after the earlier one.
-        mover = ordered.pop(b)
-        ordered.insert(a + 1, mover)
-        print(f"[FIX #292] Day {day_num}: clustered Pergola/Hala Stulecia")
-        return ordered
+        walk = 8
+        new_st = e_en + walk
+        if l_st <= new_st + 5:
+            return ordered
+        try:
+            ordered[b] = later.model_copy(update={
+                "start_time": minutes_to_time(new_st),
+                "end_time": minutes_to_time(new_st + l_dur),
+                "duration_min": l_dur,
+            })
+            print(f"[FIX #293] Day {day_num}: retimed Hala/Pergola as a pair")
+        except Exception:
+            return ordered
+        # Drop bounce-transits that sat between the pair.
+        lo, hi = new_st, new_st + l_dur
+        out = []
+        for it in ordered:
+            if _item_type_value(it) == ItemType.TRANSIT.value:
+                try:
+                    ts = time_to_minutes(getattr(it, "start_time", None) or "")
+                except Exception:
+                    ts = 0
+                if e_en <= ts < hi:
+                    continue
+            out.append(it)
+        return out
 
     def _cap_same_day_green_stops(
         self,
@@ -21366,6 +21415,221 @@ class PlanService:
         print(f"[FIX #292] Day {day_num}: named {len(extra)} anonymous gap(s)")
         return self._sort_items_by_time(ordered + extra)
 
+    def _fix_inverted_item_clocks(self, items: List[Any], *, day_num: int = 0) -> List[Any]:
+        """FIX #293: Neon Side 18:27–18:05 is not a visit."""
+        out: List[Any] = []
+        for it in items:
+            st = getattr(it, "start_time", None)
+            en = getattr(it, "end_time", None)
+            if not st or not en:
+                out.append(it)
+                continue
+            try:
+                st_m = time_to_minutes(st)
+                en_m = time_to_minutes(en)
+            except Exception:
+                out.append(it)
+                continue
+            if en_m >= st_m:
+                out.append(it)
+                continue
+            dur = int(getattr(it, "duration_min", 0) or 0)
+            if dur <= 0:
+                dur = max(5, st_m - en_m)
+            try:
+                out.append(it.model_copy(update={
+                    "end_time": minutes_to_time(st_m + dur),
+                    "duration_min": dur,
+                }))
+                print(
+                    f"[FIX #293] Day {day_num}: repaired inverted clock "
+                    f"{getattr(it, 'name', None) or _item_type_value(it)}"
+                )
+            except Exception:
+                out.append(it)
+        return out
+
+    def _relabel_free_time_by_context(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #293: no 'śniadanie kawowe' at 11:00 after a finished attraction."""
+        _morning = (
+            "śniadanie", "sniadanie", "kawa na start", "poranna przerwa",
+            "spokojny poranek",
+        )
+        out: List[Any] = []
+        for it in items:
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                out.append(it)
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                dur = int(getattr(it, "duration_min", 0) or 0)
+            except Exception:
+                out.append(it)
+                continue
+            label = (getattr(it, "label", None) or "").lower()
+            sugs = list(getattr(it, "suggestions", None) or [])
+            blob = label + " " + " ".join(str(s).lower() for s in sugs)
+            upd = {}
+            prior = False
+            for other in items:
+                if not _is_timeline_attraction(other):
+                    continue
+                try:
+                    if time_to_minutes(getattr(other, "end_time", None) or "") <= st + 2:
+                        prior = True
+                        break
+                except Exception:
+                    continue
+            if prior and any(k in blob for k in _morning):
+                upd["label"] = "Krótka przerwa"
+                upd["suggestions"] = [
+                    "Kawa albo woda w okolicy",
+                    "Chwila na zdjęcia",
+                    "Krótki odpoczynek przed kolejnym punktem",
+                ]
+            elif st < 13 * 60 and "popołudniow" in blob:
+                upd["label"] = "Przerwa w środku dnia"
+            elif dur >= 70 and ("oddech" in blob or "środku dnia" in blob):
+                upd["label"] = "Czas wolny"
+            if upd:
+                try:
+                    out.append(it.model_copy(update=upd))
+                    continue
+                except Exception:
+                    pass
+            out.append(it)
+        return out
+
+    def _eat_free_time_to_fit_day_end(
+        self,
+        items: List[Any],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #293: 47 min FT before dinner must yield before a 19:32 overrun."""
+        try:
+            end_limit = time_to_minutes(context.get("day_end") or "")
+        except Exception:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        last_end = 0
+        for it in ordered:
+            if _item_type_value(it) in (
+                ItemType.DAY_START.value, ItemType.DAY_END.value,
+            ):
+                continue
+            try:
+                last_end = max(
+                    last_end,
+                    time_to_minutes(getattr(it, "end_time", None) or ""),
+                )
+            except Exception:
+                continue
+        if last_end <= end_limit + 8:
+            return ordered
+        need = last_end - end_limit
+        ft_idx = None
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                continue
+            if int(getattr(it, "duration_min", 0) or 0) >= 15:
+                ft_idx = i
+        if ft_idx is None:
+            return ordered
+        ft = ordered[ft_idx]
+        try:
+            ft_st = time_to_minutes(getattr(ft, "start_time", None) or "")
+            ft_dur = int(getattr(ft, "duration_min", 0) or 0)
+        except Exception:
+            return ordered
+        cut = min(need, ft_dur - 10) if ft_dur > 15 else 0
+        if cut < 8:
+            return ordered
+        new_dur = ft_dur - cut
+        ordered[ft_idx] = ft.model_copy(update={
+            "end_time": minutes_to_time(ft_st + new_dur),
+            "duration_min": new_dur,
+        })
+        for i in range(ft_idx + 1, len(ordered)):
+            it = ordered[i]
+            st = getattr(it, "start_time", None)
+            en = getattr(it, "end_time", None)
+            if not st:
+                continue
+            try:
+                st_m = time_to_minutes(st) - cut
+                upd = {"start_time": minutes_to_time(max(0, st_m))}
+                if en:
+                    en_m = time_to_minutes(en) - cut
+                    upd["end_time"] = minutes_to_time(max(0, en_m))
+                ordered[i] = it.model_copy(update=upd)
+            except Exception:
+                continue
+        print(f"[FIX #293] Day {day_num}: ate {cut} min free_time to fit day_end")
+        return ordered
+
+    def _eat_long_free_time_before_attraction(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+        keep: int = 20,
+        min_ft: int = 55,
+    ) -> List[Any]:
+        """FIX #293: 79 min break then 86 min Zajezdnia is padding, not a plan."""
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                continue
+            dur = int(getattr(it, "duration_min", 0) or 0)
+            if dur < min_ft:
+                continue
+            j = i + 1
+            while j < len(ordered) and _item_type_value(ordered[j]) in (
+                ItemType.TRANSIT.value, ItemType.DAY_END.value,
+            ):
+                j += 1
+            if j >= len(ordered) or not _is_timeline_attraction(ordered[j]):
+                continue
+            cut = dur - keep
+            if cut < 20:
+                continue
+            try:
+                ft_st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                continue
+            ordered[i] = it.model_copy(update={
+                "end_time": minutes_to_time(ft_st + keep),
+                "duration_min": keep,
+            })
+            for k in range(i + 1, j + 1):
+                nxt = ordered[k]
+                st = getattr(nxt, "start_time", None)
+                en = getattr(nxt, "end_time", None)
+                if not st:
+                    continue
+                try:
+                    upd = {"start_time": minutes_to_time(time_to_minutes(st) - cut)}
+                    if en:
+                        upd["end_time"] = minutes_to_time(time_to_minutes(en) - cut)
+                    ordered[k] = nxt.model_copy(update=upd)
+                except Exception:
+                    continue
+            print(
+                f"[FIX #293] Day {day_num}: pulled attraction over "
+                f"{cut} min free_time"
+            )
+            break
+        return ordered
+
     def _polish_final_trip_hygiene(
         self,
         days: List[Any],
@@ -21387,6 +21651,9 @@ class PlanService:
         out_days: List[Any] = []
         for day in days:
             items = list(day.items or [])
+            items = self._fix_inverted_item_clocks(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
             ctx = {
                 **(context or {}),
                 "date": getattr(day, "date", None) or (context or {}).get("date"),
@@ -21474,6 +21741,9 @@ class PlanService:
             items = self._drop_dangling_meal_transits(
                 items, day_num=getattr(day, "day", 0) or 0,
             )
+            items = self._sanitize_walk_leg_durations(
+                items, cm, day_num=getattr(day, "day", 0) or 0, context=ctx,
+            )
             items = self._sync_transit_duration_to_clock(
                 items, day_num=getattr(day, "day", 0) or 0,
             )
@@ -21488,6 +21758,12 @@ class PlanService:
             )
             items = self._enforce_lunch_min_duration(
                 items, user, ctx, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._eat_long_free_time_before_attraction(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._eat_free_time_to_fit_day_end(
+                items, ctx, day_num=getattr(day, "day", 0) or 0,
             )
             items = self._clamp_timeline_to_day_end(
                 items, ctx, day_num=getattr(day, "day", 0) or 0,
@@ -21513,10 +21789,16 @@ class PlanService:
             items = self._family_safe_free_time_copy(
                 items, user, day_num=getattr(day, "day", 0) or 0,
             )
+            items = self._relabel_free_time_by_context(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
             items = self._remove_timeline_overlaps(
                 items, getattr(day, "day", 0) or 0,
             )
             items = self._sync_transit_duration_to_clock(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._strip_transits_to_unscheduled_destinations(
                 items, day_num=getattr(day, "day", 0) or 0,
             )
             items = self._normalize_transit_mode_source(
@@ -22137,7 +22419,7 @@ class PlanService:
                 km_dec = None
             # FIX #283/#288/#292: sub-1.2 km must never ship as a 10–35 min car.
             if km_dec is not None and km_dec < 1.25 and (
-                "car" in mode or dur >= 12
+                "car" in mode or dur >= 8 or km_dec < 0.25
             ):
                 en = getattr(it, "end_time", None)
                 try:
@@ -22145,6 +22427,11 @@ class PlanService:
                 except Exception:
                     en_m = None
                 new_dur = max(2, int(round(km_dec / 4.5 * 60)) + 1)
+                # A 5-min neighbour hop is already honest; shrinking it to 2
+                # on a second finalize pass reopens named holes (13:55 vs 13:58).
+                if "walk" in mode and "car" not in mode and dur - new_dur < 6:
+                    out.append(it)
+                    continue
                 upd_micro = {
                     "mode": TransitMode.WALK,
                     "routing_source": "estimated_walk",
@@ -22186,12 +22473,20 @@ class PlanService:
                 out.append(it)
                 continue
             pair = self._transit_endpoint_coords(ordered, idx, coord_map or {})
+            km_h = None
             if pair is not None:
                 (lat1, lng1), (lat2, lng2) = pair
-                km = haversine_distance(lat1, lng1, lat2, lng2)
+                km_h = haversine_distance(lat1, lng1, lat2, lng2)
+            if km_dec is not None and km_h is not None:
+                # Declared 3.4 km in 5 min must win over a 200 m haversine
+                # from snapped city-centre pins.
+                if km_dec >= 0.4 and (km_h < 0.35 or km_dec > km_h * 1.6):
+                    km = km_dec
+                else:
+                    km = km_h
+            elif km_h is not None:
+                km = km_h
             elif km_dec is not None:
-                # Isolated / unmapped hops still have an honest declared km
-                # (Oliwa i Ogień → Hydropolis 2.224 km in 15 min walk).
                 km = km_dec
             else:
                 out.append(it)
@@ -22592,7 +22887,12 @@ class PlanService:
                     table = self._FT253_EVENING_POST_DINNER
                 elif hs >= 19 * 60:
                     table = self._FT253_EVENING
-                elif hs < 12 * 60:
+                elif hs < 10 * 60 + 30 and not any(
+                    _is_timeline_attraction(x)
+                    and time_to_minutes(getattr(x, "end_time", None) or "00:00")
+                    <= hs
+                    for x in items
+                ):
                     table = self._FT253_MORNING
                 else:
                     table = (
@@ -22657,7 +22957,22 @@ class PlanService:
                 out.append(it)
                 continue
             folded = _fold_place_label(getattr(it, "label", None))
-            if st_m < 12 * 60:
+            prior_attr = False
+            for other in items:
+                if not _is_timeline_attraction(other):
+                    continue
+                try:
+                    if time_to_minutes(
+                        getattr(other, "end_time", None) or ""
+                    ) <= st_m + 2:
+                        prior_attr = True
+                        break
+                except Exception:
+                    continue
+            # Before 10:30, or before noon with no finished attraction yet,
+            # "Popołudniowa przerwa" is the wrong slot. After a finished
+            # attraction, 11:xx is no longer "Kawa na start dnia".
+            if st_m < 10 * 60 + 30 or (st_m < 12 * 60 and not prior_attr):
                 slot = "morning"
                 table = self._FT253_MORNING
                 wrong = mid_markers + evening_markers
@@ -23310,6 +23625,15 @@ class PlanService:
             )
         except Exception:
             pass
+        work = self._sanitize_walk_leg_durations(
+            work, coord_map, day_num=day_num, context=context,
+        )
+        try:
+            work = self._eat_long_free_time_before_attraction(
+                work, day_num=day_num,
+            )
+        except Exception:
+            pass
         try:
             work = self._clamp_timeline_to_day_end(
                 work, context, day_num=day_num,
@@ -23392,6 +23716,7 @@ class PlanService:
             work, day_num=day_num, max_gap=6,
         )
         work = self._relabel_free_time_by_slot(work, context, day_num=day_num)
+        work = self._relabel_free_time_by_context(work, day_num=day_num)
         work = self._normalize_transit_mode_source(work, day_num=day_num)
         work = self._reconcile_day_end_marker(work, context, day_num=day_num)
         try:
@@ -27547,7 +27872,7 @@ class PlanService:
                                 else self._FT253_AFTERNOON
                             )
                         )
-                    elif cursor < 12 * 60 and not any(
+                    elif cursor < 10 * 60 + 30 and not any(
                         _is_timeline_attraction(x) for x in items
                     ):
                         table = self._FT253_MORNING

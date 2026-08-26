@@ -3184,7 +3184,9 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("bazylika", 45),
         # FIX #288: Wawel cathedral for a 5-year-old is 30–40 min, not 90.
         ("katedra wawelska", 40),
-        ("katedra", 90),
+        ("katedra wrocławska", 60),
+        ("katedra wroclawska", 60),
+        ("katedra", 60),
         ("barbakan", 40),
         ("smok wawelski", 15),
         ("smoka wawelsk", 15),
@@ -3279,7 +3281,7 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         # FIX #256 Wrocław: stop stretch-to-day_end on micro / mid stops.
         ("galeria neon", 45),
         ("neon side", 45),
-        ("most tumski", 45),
+        ("most tumski", 20),
         ("aula leopoldina", 60),
         ("aula ", 60),
         ("muzeum powozów", 60),
@@ -3332,7 +3334,7 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         # "Dworzec Świebodzki 81 min wygląda za długo". Both are look-around
         # stops, not visits.
         ("most grunwaldzki", 25),
-        ("most tumski", 45),
+        ("most tumski", 20),
         ("dworzec świebodzki", 60),
         ("dworzec swiebodzki", 60),
         # FIX #260 Warszawa: ZOO must not hit generic "ogród" 90-min park cap;

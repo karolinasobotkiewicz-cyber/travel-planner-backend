@@ -184,11 +184,12 @@ def _explain_profile_match(
             return "Idealne dla par"
 
     if target_group == "friends" and travel_style == "adventure":
-        adventure_indicators = [
-            "adventure", "active", "sport", "group", "escape", "laser", "park",
-        ]
-        if any(ind in poi_tags_str or ind in poi_name for ind in adventure_indicators):
-            return "Świetne na grupowe przygody"
+        if not any(k in poi_name for k in ("muzeum", "katedra", "kościół", "kosciol")):
+            adventure_indicators = [
+                "laser", "escape", "paintball", "gojump", "quad", "park linowy",
+            ]
+            if any(ind in poi_tags_str or ind in poi_name for ind in adventure_indicators):
+                return "Świetne na grupowe przygody"
 
     if "aula leopoldina" in poi_name:
         return "Barokowa aula Uniwersytetu Wrocławskiego — krótki, treściwy przystanek."
