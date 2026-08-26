@@ -141,6 +141,9 @@ def classify_poi_category(poi: Dict[str, Any]) -> str:
         return "park"
     if any(k in name for k in ("sky tower", "punkt widokowy")):
         return "viewpoint"
+    # FIX #295: Most Świętokrzyski is a lookout walk, not a heritage monument.
+    if any(k in name for k in ("most świętokrzyski", "most swietokrzyski")):
+        return "viewpoint"
     if any(k in name for k in ("park linowy", "rope park")) or (
         "linowy" in name and "park" in name
     ):

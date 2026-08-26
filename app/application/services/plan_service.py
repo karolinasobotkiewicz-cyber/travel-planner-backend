@@ -12970,7 +12970,19 @@ class PlanService:
         if _num_days_bf >= 7 and day_num >= 4:
             target = max(target, 2)
 
-        if n_attr >= target and not need_morning and not need_midday:
+        # FIX #295: family + kids_attractions — don't skip a full day just
+        # because it already has 2 nature POIs (WAWA json1 D3).
+        _need_kids_cover = (
+            user.get("target_group") == "family_kids"
+            and "kids_attractions" in (user.get("preferences") or [])
+            and day_num >= 1
+            and not any(
+                is_child_oriented_attraction({"name": getattr(it, "name", ""), "tags": []})
+                for it in items
+                if _is_timeline_attraction(it)
+            )
+        )
+        if n_attr >= target and not need_morning and not need_midday and not _need_kids_cover:
             return items
 
         _req_city = context.get("requested_city", "")
@@ -13266,6 +13278,25 @@ class PlanService:
                     f"[FIX #257] Day {day_num}: midday hole backfill {poi.get('name')}"
                 )
 
+        # FIX #295: family day with zero kids POIs — plant one if a slot exists.
+        if require_kids:
+            gap = _largest_gap(45)
+            if gap:
+                slot_start, slot_end = gap
+                poi = _pick_poi(slot_start, slot_end)
+                if poi:
+                    st = minutes_to_time(slot_start)
+                    inserts.append(
+                        self._generate_attraction_item(
+                            poi, st, user, user.get("target_group", "solo"), context, None
+                        )
+                    )
+                    used_ids.add(poi.get("id"))
+                    print(
+                        f"[FIX #295] Day {day_num}: kids-cover backfill "
+                        f"{poi.get('name')}"
+                    )
+
         if not inserts:
             return items
 
@@ -13500,6 +13531,9 @@ class PlanService:
             "park sensoryczny",
             "bamberki",
             "hydropolis",
+            # FIX #295: Warszawa leftover — X Pawilon D4+D5.
+            "x pawilon",
+            "pawilon x",
         )
         out_days: List[Any] = []
         for day in days:
@@ -18061,6 +18095,18 @@ class PlanService:
                 cap = 120 if cap is None else min(int(cap), 120)
             if "hala koszyki" in nm_l:
                 cap = 75 if cap is None else min(int(cap), 75)
+            # FIX #295: Warszawa leftover visit floors (PKiN 20 / Ogrody 20 /
+            # Wódka 26 / Kopernik 50 were all too short).
+            if any(k in nm_l for k in ("pkin", "pałac kultury", "palac kultury")):
+                floor = max(floor, 60)
+            if "ogrody zamku" in nm_l or "ogrod zamku" in nm_l:
+                floor = max(floor, 45)
+            if "muzeum polskiej wódki" in nm_l or "muzeum polskiej wodki" in nm_l:
+                floor = max(floor, 45)
+            if "centrum nauki kopernik" in nm_l or (
+                "kopernik" in nm_l and "centrum" in nm_l
+            ):
+                floor = max(floor, 90)
             if "sochaczew" in nm_l:
                 cap = 90 if cap is None else min(int(cap), 90)
             _city_cap = (getattr(it, "city", "") or "").lower()
@@ -20943,8 +20989,30 @@ class PlanService:
             if span <= 0 or abs(span - dur) < 2:
                 out.append(it)
                 continue
-            # Long hop: clock is the lie — expand the clock, don't leave a mismatch.
+            mode = str(
+                getattr(
+                    getattr(it, "mode", None), "value", getattr(it, "mode", "")
+                ) or ""
+            ).lower()
+            expected = None
+            if dist >= 0.3:
+                if "walk" in mode or "foot" in mode:
+                    expected = max(3, int(round(dist / 4.5 * 60)) + 2)
+                else:
+                    expected = max(8, int(round(dist / 50.0 * 60)) + 6)
+            # Clock is the lie when duration is the honest km-time (not a stretch).
+            expand = False
             if dist >= 4.0 and span < dur and (dur - span) >= 15:
+                expand = True
+            elif (
+                expected is not None
+                and span < dur
+                and (dur - span) >= 8
+                and dur <= expected + 3
+                and abs(dur - expected) + 2 < abs(span - expected)
+            ):
+                expand = True
+            if expand:
                 try:
                     out.append(it.model_copy(update={
                         "end_time": minutes_to_time(st + dur),
@@ -21177,7 +21245,7 @@ class PlanService:
                 rk = ""
             if any(k in nm for k in (
                 "paniowic", "pomiech", "animalworld", "animal world",
-                "szyb wilson",
+                "szyb wilson", "dolina wkry", "wkry",
             )) and tdur >= 35 and dur <= 50:
                 drop_names.add((getattr(it, "name", "") or "").strip().lower())
                 print(
@@ -21200,15 +21268,25 @@ class PlanService:
                 )
                 prev_transit = None
                 continue
+            try:
+                tkm = float(getattr(prev_transit, "distance_km", 0) or 0) if prev_transit else 0.0
+            except (TypeError, ValueError):
+                tkm = 0.0
             lonely = rk.startswith("region_") and region_counts.get(rk, 0) <= 1
             thin_filler = tdur >= 32 and dur <= 25
             roundtrip_thin = bool(
                 prev_transit and lonely and tdur >= 40 and dur <= tdur
             )
+            # FIX #295: 40+ km / 90+ min drive for a ≤45 min stop (Dolina Wkry
+            # after Kampinos, city filler after a 50 km return).
+            long_thin = bool(
+                prev_transit and (tdur >= 90 or tkm >= 40) and dur <= 45
+            )
             if prev_transit and (
                 (tdur >= 40 and dur <= 35 and lonely)
                 or thin_filler
                 or roundtrip_thin
+                or long_thin
             ):
                 drop_names.add((getattr(it, "name", "") or "").strip().lower())
                 print(
@@ -21224,6 +21302,66 @@ class PlanService:
                 if (getattr(it, "name", "") or "").strip().lower() in drop_names:
                     continue
             out.append(it)
+        return self._strip_transits_to_unscheduled_destinations(out, day_num=day_num)
+
+    def _drop_post_far_excursion_lonely_city_stop(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #295: after Kampinos, don't drive 50+ km back for a single city POI."""
+        if not items:
+            return items
+        try:
+            ordered = self._sort_items_by_time(list(items))
+        except Exception:
+            ordered = list(items)
+        far_idx = None
+        for i, it in enumerate(ordered):
+            if not _is_timeline_attraction(it):
+                continue
+            nm = getattr(it, "name", "") or ""
+            if _is_kampinos_stop_name(nm) or _timeline_satellite_kind(nm) == "kampinos":
+                far_idx = i
+        if far_idx is None:
+            return ordered
+        later = [
+            (i, it) for i, it in enumerate(ordered)
+            if i > far_idx and _is_timeline_attraction(it)
+        ]
+        if len(later) != 1:
+            return ordered
+        idx, dest = later[0]
+        dest_nm = (getattr(dest, "name", "") or "").strip()
+        if _is_kampinos_stop_name(dest_nm):
+            return ordered
+        prev_tr = None
+        for j in range(idx - 1, far_idx, -1):
+            if _item_type_value(ordered[j]) == ItemType.TRANSIT.value:
+                prev_tr = ordered[j]
+                break
+        tdur = 0
+        tkm = 0.0
+        if prev_tr is not None:
+            try:
+                tdur = int(getattr(prev_tr, "duration_min", 0) or 0)
+            except (TypeError, ValueError):
+                tdur = 0
+            try:
+                tkm = float(getattr(prev_tr, "distance_km", 0) or 0)
+            except (TypeError, ValueError):
+                tkm = 0.0
+        if tkm < 35 and tdur < 80:
+            return ordered
+        print(
+            f"[FIX #295] Day {day_num}: dropped lonely city stop "
+            f"{dest_nm} after far excursion ({tkm:.0f} km / {tdur} min)"
+        )
+        out = [
+            it for i, it in enumerate(ordered)
+            if not (i == idx and _is_timeline_attraction(it))
+        ]
         return self._strip_transits_to_unscheduled_destinations(out, day_num=day_num)
 
     def _trim_excess_free_time(
@@ -21829,6 +21967,9 @@ class PlanService:
             items = self._drop_thin_lonely_far_stops(
                 items, day_num=getattr(day, "day", 0) or 0,
             )
+            items = self._drop_post_far_excursion_lonely_city_stop(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
             items = self._strip_transits_to_unscheduled_destinations(
                 items, day_num=getattr(day, "day", 0) or 0,
             )
@@ -21890,6 +22031,9 @@ class PlanService:
             )
             items = self._sanitize_walk_leg_durations(
                 items, cm, day_num=getattr(day, "day", 0) or 0, context=ctx,
+            )
+            items = self._strip_free_time_before_long_far_hop(
+                items, ctx, day_num=getattr(day, "day", 0) or 0,
             )
             items = self._sync_transit_duration_to_clock(
                 items, day_num=getattr(day, "day", 0) or 0,
@@ -22522,6 +22666,16 @@ class PlanService:
                     ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
                 ):
                     break
+            # FIX #295: 69 min FT after a 132 min Kampinos return looks fake.
+            for j in range(i + 1, len(ordered)):
+                nxt = ordered[j]
+                if _item_type_value(nxt) == ItemType.FREE_TIME.value:
+                    drop_ft.add(id(nxt))
+                    break
+                if _is_timeline_attraction(nxt) or _item_type_value(nxt) in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                ):
+                    break
         if not drop_ft:
             return items
         print(
@@ -22601,6 +22755,9 @@ class PlanService:
                 new_dur = None
                 if km_dec >= 8.0 and dur < expected_car * 0.45:
                     new_dur = expected_car
+                elif km_dec >= 8.0 and dur > expected_car * 1.75:
+                    # FIX #295: 53 km in 132 min is a stretched clock, not traffic.
+                    new_dur = expected_car
                 elif 0.4 <= km_dec < 8.0 and dur > expected_car + 20:
                     new_dur = expected_car
                 if new_dur is not None and abs(new_dur - dur) >= 5:
@@ -22627,7 +22784,11 @@ class PlanService:
             if km_dec is not None and km_h is not None:
                 # Declared 3.4 km in 5 min must win over a 200 m haversine
                 # from snapped city-centre pins.
-                if km_dec >= 0.4 and (km_h < 0.35 or km_dec > km_h * 1.6):
+                if km_dec >= 0.4 and (
+                    km_h < 0.35
+                    or km_dec > km_h * 1.6
+                    or km_dec >= 8.0
+                ):
                     km = km_dec
                 else:
                     km = km_h

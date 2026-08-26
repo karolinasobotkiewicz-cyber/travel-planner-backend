@@ -598,6 +598,8 @@ _COVERAGE_NAME_DENY: Dict[str, tuple] = {
         "jeziorko czerniakowskie", "jeziorko", "kopiec powstania",
         # FIX #225: renaissance palace-park stroll ≠ active sport.
         "park decjusza",
+        # FIX #295: food hall is not active_sport (Hala Koszyki).
+        "koszyki", "hala koszyki",
     ),
     "water_attractions": (
         "browar", "wedel", "czekolad", "pijalnia", "muzeum", "lotnictwa",

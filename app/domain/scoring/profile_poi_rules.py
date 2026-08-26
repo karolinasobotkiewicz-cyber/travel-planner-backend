@@ -203,6 +203,9 @@ def poi_trip_repeat_key(name: str) -> str | None:
         # FIX #292: leftover trip icons WRO/KRK/WAWA/KAT/POZ.
         ("park decjusza", "krk_park_decjusza"),
         ("cytadela", "waw_cytadela"),
+        # FIX #295: X Pawilon on D4+D5.
+        ("x pawilon", "waw_x_pawilon"),
+        ("pawilon x", "waw_x_pawilon"),
         ("park sensoryczny", "kat_sensoryczny"),
         ("animalworld", "kat_animalworld"),
         ("animal world", "kat_animalworld"),

@@ -313,6 +313,9 @@ def _explain_category_highlight(
         "brama floriańska", "brama florian", "barbakan",
     )):
         return "Zabytek przy historycznym ciągu Starego Miasta"
+    # FIX #295: a modern river bridge is not "Zabytek z bogatą historią".
+    if any(k in poi_name for k in ("most świętokrzyski", "most swietokrzyski")):
+        return "Panorama miasta z góry"
     # FIX #268: Pixel XL is adult entertainment, not a kids playground reason.
     if "pixel" in poi_name and cat in ("playground", "amusement", "entertainment"):
         return "Interaktywna rozrywka w dużym formacie"
