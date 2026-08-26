@@ -2004,6 +2004,19 @@ def _meal_restaurant_geo_ok(restaurant: dict, last_poi: dict | None, context: di
     if poi_reg == "region_bochnia" and not any(k in blob for k in _bochnia_rest):
         if any(k in blob for k in ("kraków", "krakow", "krak", "wieliczka")):
             return False
+    # FIX #294: a restaurant 16–25 km away is a day-trip, not lunch after Błonia.
+    try:
+        plat = float(last_poi.get("lat"))
+        plng = float(last_poi.get("lng"))
+        rlat = float(restaurant.get("lat"))
+        rlng = float(restaurant.get("lng"))
+        km = haversine_distance(plat, plng, rlat, rlng)
+        if km >= 10.0:
+            r_reg = poi_geo_region_key(restaurant)
+            if not (poi_reg and r_reg and poi_reg == r_reg):
+                return False
+    except (TypeError, ValueError):
+        pass
     # FIX #254: Czersk day-trip must not pull Śródmieście Warsaw restaurants.
     if poi_reg != "region_czersk" and any(k in blob for k in ("czersk", "zamek w czersku")):
         return False
@@ -3386,10 +3399,12 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
         ("dolina trzech stawów", 90),
         ("dolina trzech stawow", 90),
         ("spodek", 60),
-        ("tężnia solankowa", 60),
-        ("teznia solankowa", 60),
-        ("tężnia", 60),
-        ("teznia", 60),
+        ("tężnia solankowa", 30),
+        ("teznia solankowa", 30),
+        ("tężnia", 30),
+        ("teznia", 30),
+        ("błonia", 45),
+        ("blonia", 45),
         ("kościół św. michała", 45),
         ("kosciol sw. michala", 45),
         ("kosciol sw michala", 45),
@@ -3529,8 +3544,12 @@ def choose_duration(p, now, end, lunch_done, user=None):
         ("park chrobrego", 40),
         ("muzeum historii katowic", 45),
         ("zamek piastowski", 45),
-        ("tężnia", 40),
-        ("teznia", 40),
+        ("tężnia", 20),
+        ("teznia", 20),
+        ("wioski świata", 60),
+        ("wioski swiata", 60),
+        ("błonia", 40),
+        ("blonia", 40),
         ("carboneum", 40),
         ("wieża ciśnień", 40),
         ("wieza cisnien", 40),

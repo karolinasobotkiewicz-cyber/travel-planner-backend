@@ -977,6 +977,23 @@ def _is_winter_plan_context(context: Optional[Dict[str, Any]]) -> bool:
         return False
 
 
+def _ft_evening_starts_at(context: Optional[Dict[str, Any]]) -> int:
+    """FIX #294: 'po zmroku' at 17:26 in July is still daylight."""
+    ctx = context or {}
+    season = str(ctx.get("season") or "").strip().lower()
+    month = None
+    raw = ctx.get("date") or ctx.get("start_date") or ctx.get("trip_date")
+    try:
+        month = raw.month if hasattr(raw, "month") else int(str(raw)[5:7])
+    except Exception:
+        month = None
+    if season == "summer" or month in (6, 7, 8):
+        return 20 * 60
+    if season == "winter" or month in (12, 1, 2):
+        return 16 * 60 + 30
+    return 18 * 60
+
+
 _WINTER_PICNIC_MARKERS = (
     "koc", "food truck", "foodtruck", "cień pod", "cien pod",
     "w ciepłe dni", "w cieple dni", "piknik", "kocem",
@@ -12977,7 +12994,7 @@ class PlanService:
         require_kids = (
             user.get("target_group") == "family_kids"
             and "kids_attractions" in prefs
-            and day_num >= 2
+            and day_num >= 1
             and not any(
                 is_child_oriented_attraction({"name": getattr(it, "name", ""), "tags": []})
                 for it in items
@@ -16881,7 +16898,7 @@ class PlanService:
             if _short_buf:
                 label, suggestions = ("Krótka przerwa / bufor", [])
                 is_tech = True
-            elif hole_start >= 17 * 60:
+            elif hole_start >= _ft_evening_starts_at(context):
                 table = self._FT253_EVENING
                 label, suggestions = table[(day_num + idx) % len(table)]
                 is_tech = False
@@ -18008,6 +18025,20 @@ class PlanService:
                 cap = 15 if cap is None else min(int(cap), 15)
             if "katedra wawelska" in nm_l:
                 cap = 40 if cap is None else min(int(cap), 40)
+            if "błonia" in nm_l or "blonia" in nm_l:
+                cap = 45 if cap is None else min(int(cap), 45)
+            if "tężnia" in nm_l or "teznia" in nm_l:
+                cap = 30 if cap is None else min(int(cap), 30)
+            if "wioski świata" in nm_l or "wioski swiata" in nm_l:
+                floor = max(floor, 60)
+            if "kazimierz" in nm_l:
+                kid_age = None
+                try:
+                    kid_age = int((user or {}).get("children_age"))
+                except (TypeError, ValueError):
+                    kid_age = None
+                if group == "family_kids" and kid_age is not None and kid_age <= 6:
+                    cap = 50 if cap is None else min(int(cap), 50)
             if "zakrzówek" in nm_l or "zakrzowek" in nm_l:
                 floor = max(floor, 45)
                 if dur < 30:
@@ -20059,6 +20090,21 @@ class PlanService:
             while j < len(ordered):
                 nxt = ordered[j]
                 if _item_type_value(nxt) != ItemType.FREE_TIME.value:
+                    # FIX #294: 25 min free → transit → 66 min free is one pause.
+                    if (
+                        _item_type_value(nxt) == ItemType.TRANSIT.value
+                        and j + 1 < len(ordered)
+                        and _item_type_value(ordered[j + 1]) == ItemType.FREE_TIME.value
+                    ):
+                        try:
+                            tdur = int(getattr(nxt, "duration_min", 0) or 0)
+                            tkm = float(getattr(nxt, "distance_km", 0) or 0)
+                        except (TypeError, ValueError):
+                            tdur, tkm = 99, 99.0
+                        if tdur <= 25 and tkm < 3.5:
+                            group.append(ordered[j + 1])
+                            j += 2
+                            continue
                     break
                 try:
                     gap = (
@@ -20975,6 +21021,101 @@ class PlanService:
             out.append(it)
         return out
 
+    def _strip_far_meal_only_hops(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+        min_km: float = 12.0,
+    ) -> List[Any]:
+        """FIX #294: Las Wolski → Wieliczka 25 km cannot be a lunch run."""
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        visited_names = {
+            (getattr(it, "name", "") or "").strip().lower()
+            for it in ordered if _is_timeline_attraction(it)
+        }
+        visited_sats = {
+            _timeline_satellite_kind(n) for n in visited_names
+            if _timeline_satellite_kind(n)
+        }
+        meal_types = {ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value}
+        last_pt = None
+        cleaned: List[Any] = []
+        for it in ordered:
+            if _is_timeline_attraction(it):
+                try:
+                    if getattr(it, "lat", None) is not None:
+                        last_pt = (float(it.lat), float(it.lng))
+                except (TypeError, ValueError):
+                    pass
+                cleaned.append(it)
+                continue
+            if _item_type_value(it) not in meal_types:
+                cleaned.append(it)
+                continue
+            sugs = list(getattr(it, "suggestions", None) or [])
+            primary = sugs[0] if sugs else None
+            far = False
+            if primary is not None and last_pt is not None:
+                try:
+                    if isinstance(primary, dict):
+                        rlat, rlng = primary.get("lat"), primary.get("lng")
+                        rnm = str(primary.get("name") or "")
+                        rcity = str(primary.get("city") or "")
+                    else:
+                        rlat = getattr(primary, "lat", None)
+                        rlng = getattr(primary, "lng", None)
+                        rnm = str(getattr(primary, "name", "") or "")
+                        rcity = str(getattr(primary, "city", "") or "")
+                    blob = f"{rnm} {rcity}".lower()
+                    sat = _timeline_satellite_kind(blob)
+                    if sat and sat not in visited_sats:
+                        far = True
+                    elif rlat is not None and rlng is not None:
+                        km = haversine_distance(
+                            last_pt[0], last_pt[1], float(rlat), float(rlng),
+                        )
+                        if km >= min_km and (not sat or sat not in visited_sats):
+                            far = True
+                except (TypeError, ValueError):
+                    far = False
+            if far:
+                try:
+                    cleaned.append(it.model_copy(update={"suggestions": []}))
+                    print(
+                        f"[FIX #294] Day {day_num}: cleared lunch-only "
+                        f"satellite restaurant"
+                    )
+                except Exception:
+                    cleaned.append(it)
+            else:
+                cleaned.append(it)
+        out: List[Any] = []
+        for it in cleaned:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            dest = (getattr(it, "to_location", "") or "").strip().lower()
+            try:
+                km = float(getattr(it, "distance_km", None) or 0)
+            except (TypeError, ValueError):
+                km = 0.0
+            dest_sat = _timeline_satellite_kind(dest)
+            dest_is_attr = dest in visited_names
+            if dest_is_attr:
+                out.append(it)
+                continue
+            if km >= min_km or (dest_sat and dest_sat not in visited_sats):
+                print(
+                    f"[FIX #294] Day {day_num}: dropped lunch-only hop "
+                    f"→ {dest or '?'} ({km:.1f}km)"
+                )
+                continue
+            out.append(it)
+        return out
+
     def _drop_thin_lonely_far_stops(
         self,
         items: List[Any],
@@ -21710,6 +21851,9 @@ class PlanService:
             items = self._rotate_repeated_default_meals(
                 items, ctx, user, day_num=getattr(day, "day", 0) or 0,
             )
+            items = self._strip_far_meal_only_hops(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
             items = self._snap_meals_to_nearby_restaurants(
                 items, ctx, user, day_num=getattr(day, "day", 0) or 0,
                 max_km=4.0,
@@ -21728,6 +21872,9 @@ class PlanService:
             )
             items = self._ensure_stop_to_stop_legs(
                 items, cm, ctx, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._strip_far_meal_only_hops(
+                items, day_num=getattr(day, "day", 0) or 0,
             )
             items = self._strip_self_transits(
                 items, day_num=getattr(day, "day", 0) or 0,
@@ -22976,7 +23123,7 @@ class PlanService:
                 slot = "morning"
                 table = self._FT253_MORNING
                 wrong = mid_markers + evening_markers
-            elif st_m >= 17 * 60:
+            elif st_m >= _ft_evening_starts_at(context):
                 slot = "evening"
                 post_dinner = (
                     dinner_done_at is not None
@@ -23623,6 +23770,10 @@ class PlanService:
             work = self._ensure_stop_to_stop_legs(
                 work, coord_map or {}, context, day_num=day_num, min_km=0.08,
             )
+        except Exception:
+            pass
+        try:
+            work = self._strip_far_meal_only_hops(work, day_num=day_num)
         except Exception:
             pass
         work = self._sanitize_walk_leg_durations(
@@ -24544,6 +24695,13 @@ class PlanService:
         for poi in pool:
             pname = (poi.get("name") or "").strip().lower()
             if not pname or pname in taken:
+                continue
+            if _is_winter_plan_context(context) and any(k in pname for k in (
+                "ogród doświadczeń", "ogrod doswiadczen",
+                "wioski świata", "wioski swiata",
+                "jaskinia łokietka", "jaskinia lokietka",
+                "fontanna multimedial", "strefa wakacji",
+            )):
                 continue
             _rk_inj = poi_trip_repeat_key(poi.get("name") or "")
             _taken_keys = {
@@ -26079,10 +26237,20 @@ class PlanService:
             except Exception:
                 dur = 5 if micro else max(5, int(km * 15) if km else 10)
                 mode_str = "walking" if micro or km < 1.2 else "car"
+            # FIX #294: 817 m must not ship as a car; 25 km must not be lunch.
+            if km < 1.3:
+                mode_str = "walking"
+                dur = max(3, int(round(km / 4.5 * 60)) + 2) if km > 0 else 5
+            if _item_type_value(b) in meal_types and km >= 12:
+                continue
             gap = b_start - a_end
             if gap < dur:
                 need = dur - max(gap, 0)
-                can_borrow = max(0, (a_end - a_st) - 20)
+                # FIX #294: never shorten a visit so lunch transit can start
+                # during Katedra (13:47–14:22 vs hop 14:09).
+                can_borrow = 0
+                if not _is_timeline_attraction(a):
+                    can_borrow = max(0, (a_end - a_st) - 20)
                 borrow = min(need, can_borrow, 15)
                 if borrow:
                     a_end -= borrow
@@ -26875,11 +27043,7 @@ class PlanService:
         style = str(user.get("travel_style") or "").lower()
         prefs = {str(p).lower() for p in (user.get("preferences") or [])}
         has_car = bool((context or {}).get("has_car", True))
-        family_car = has_car and (
-            tg in ("family_kids", "seniors")
-            or style == "relax"
-            or "relaxation" in prefs
-        )
+        family_car = has_car and tg in ("family_kids", "seniors")
         walk_to_car_km = 1.5 if family_car else 2.2
         out: List[Any] = []
         for it in items:
@@ -27529,6 +27693,10 @@ class PlanService:
                     pass
                 continue
             ranked = []
+            from app.domain.planner.engine import _meal_restaurant_geo_ok as _geo_ok_snap
+            last_poi_snap = {
+                "lat": last_pt[0], "lng": last_pt[1], "name": "", "city": "",
+            }
             for r in pool:
                 try:
                     plat, plng = float(r.get("lat")), float(r.get("lng"))
@@ -27536,6 +27704,8 @@ class PlanService:
                     continue
                 rn = str(r.get("name") or "").strip().lower()
                 if rn and rn in used_meals:
+                    continue
+                if not _geo_ok_snap(r, last_poi_snap, context or {}):
                     continue
                 km = haversine_distance(last_pt[0], last_pt[1], plat, plng)
                 ranked.append((km, r))
