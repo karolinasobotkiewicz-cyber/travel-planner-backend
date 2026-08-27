@@ -1005,6 +1005,14 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
                     return True
                 if "pomnik ofiar czerwca" in name:
                     return True
+            # FIX #297: Muzeum Instrumentów is a weak kids match (36 min filler).
+            if int(_child_age249) <= 6 and any(
+                k in name for k in (
+                    "muzeum instrument", "instrumentów muzycz",
+                    "instrumentow muzycz",
+                )
+            ):
+                return True
         except (TypeError, ValueError):
             pass
 

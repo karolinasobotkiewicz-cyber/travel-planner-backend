@@ -1938,12 +1938,17 @@ def poi_geo_region_key(p: dict) -> str | None:
     # FIX #255: Poznań — Kórnik castle day-trip (avoid Gniezno+Kórnik same day).
     if any(k in blob for k in ("kórnik", "kornik", "zamek w kórniku", "zamek w korniku")):
         return "region_kornik"
-    # FIX #277: Poznań — Ostrów Lednicki / Dziekanowice.
+    # FIX #277/#297: Poznań — Ostrów Lednicki / Dziekanowice / Pobiedziska.
     if any(k in blob for k in (
         "lednick", "lednogór", "lednogor", "dziekanowic",
-        "owińsk", "owinsk", "park orientacji",
+        "owińsk", "owinsk", "park orientacji", "pobiedzisk",
     )):
         return "region_lednica"
+    # FIX #297: Jezioro Strzeszyńskie is NW of the hub (~8 km), not centrum.
+    if any(k in blob for k in (
+        "strzeszyn", "jezioro strzeszyń", "jezioro strzeszyn", "wodziczk",
+    )):
+        return "region_strzeszyn"
     # FIX #277: Warszawa — Sochaczew / Żelazowa Wola.
     if any(k in blob for k in (
         "sochaczew", "żelazowa", "zelazowa", "chopina",

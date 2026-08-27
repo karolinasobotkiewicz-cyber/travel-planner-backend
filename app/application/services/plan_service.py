@@ -401,6 +401,16 @@ def _timeline_satellite_kind(name: str) -> Optional[str]:
         return "rogalin"
     if _is_puszczykowo_stop_name(nm):
         return "puszczykowo"
+    if any(k in nm for k in (
+        "dziekanowic", "lednick", "ostrów lednick", "ostrow lednick",
+    )):
+        return "lednica"
+    if "pobiedzisk" in nm:
+        return "pobiedziska"
+    if any(k in nm for k in (
+        "strzeszyn", "jezioro strzeszyń", "jezioro strzeszyn", "wodziczk",
+    )):
+        return "strzeszyn"
     if _is_kampinos_stop_name(nm):
         return "kampinos"
     if _is_czersk_stop_name(nm):
@@ -8456,7 +8466,17 @@ class PlanService:
         if ticket_normal_value is None:
             ticket_normal_value = 0
         ticket_normal_value = float(ticket_normal_value) if ticket_normal_value else 0.0
-        
+        # FIX #297: Poznań Zamek Królewski is 20 zł, not the Warsaw 60 zł row.
+        _nm_ticket = str(poi_dict.get("name") or "").lower()
+        _city_ticket = str(poi_dict.get("city") or "").lower()
+        if (
+            any(k in _nm_ticket for k in ("zamek królewski", "zamek krolewski"))
+            and "wawel" not in _nm_ticket
+            and any(k in _city_ticket for k in ("poznań", "poznan"))
+            and ticket_normal_value >= 40
+        ):
+            ticket_normal_value = 20.0
+
         ticket_reduced_value = poi_dict.get("ticket_reduced")
         if ticket_reduced_value is None or ticket_reduced_value == 0:
             ticket_reduced_value = poi_dict.get("Ticket_reduced", 0)
@@ -11700,7 +11720,7 @@ class PlanService:
                     "skansen",
                 )
             )
-            if is_closed_night and st >= 18 * 60 + 30:
+            if is_closed_night and st >= 18 * 60:
                 print(
                     f"[FIX #272] Day {day_num}: stripped after-hours "
                     f"{getattr(it, 'name', '?')} at {getattr(it, 'start_time', '')}"
@@ -11716,6 +11736,9 @@ class PlanService:
             closes = None
             last_entry = None
             if any(k in nm for k in ("świat iluzji", "swiat iluzji", "muzeum iluzji")):
+                opens = 10 * 60
+            # FIX #297: Poznań/Warsaw Zamek Królewski opens 10:00 (not Wawel).
+            if any(k in nm for k in ("zamek królewski", "zamek krolewski")) and "wawel" not in nm:
                 opens = 10 * 60
             if "pana tadeusza" in nm:
                 closes = 17 * 60
@@ -17934,6 +17957,8 @@ class PlanService:
             if "termy malta" in nm_l or "maltańskie" in nm_l or "maltanskie" in nm_l:
                 if "jezioro" not in nm_l:
                     floor = max(floor, 120)
+            if "muzeum instrument" in nm_l or "instrumentów" in nm_l or "instrumentow" in nm_l:
+                floor = max(floor, 45)
             if "rusałka" in nm_l or "rusalka" in nm_l:
                 cap = 90 if cap is None else min(int(cap), 90)
             if "park sołacki" in nm_l or "park solacki" in nm_l:
@@ -20898,6 +20923,8 @@ class PlanService:
             if wd == 0 and any(k in nm for k in (
                 "sukiennice", "mnk sukiennice", "brama poznania",
                 "muzeum lotnictwa",
+                # FIX #297: Palmiarnia Poznańska (and Gliwice Palmiarnia) closed Mondays.
+                "palmiarnia",
             )):
                 print(
                     f"[FIX #290] Day {day_num}: stripped Monday-closed {getattr(it, 'name', '?')}"
@@ -21240,6 +21267,10 @@ class PlanService:
                 continue
             dur = int(getattr(it, "duration_min", 0) or 0)
             tdur = int(getattr(prev_transit, "duration_min", 0) or 0) if prev_transit else 0
+            try:
+                tkm = float(getattr(prev_transit, "distance_km", 0) or 0) if prev_transit else 0.0
+            except (TypeError, ValueError):
+                tkm = 0.0
             poi = {
                 "name": getattr(it, "name", "") or "",
                 "city": getattr(it, "city", "") or "",
@@ -21263,6 +21294,23 @@ class PlanService:
                 )
                 prev_transit = None
                 continue
+            # FIX #297: Strzeszyn / Pobiedziska / Dziekanowice — 30–50 km
+            # (or a 38 min drive) for one short visit is not a cluster.
+            if any(k in nm for k in (
+                "strzeszyn", "wodziczk", "pobiedzisk",
+                "dziekanowic", "lednick", "ostrów lednick", "ostrow lednick",
+            )) and prev_transit and (
+                (tdur >= 30 and dur <= 50)
+                or (tkm >= 32 and dur <= 90)
+                or (tdur >= 32 and dur <= tdur + 8)
+            ):
+                drop_names.add((getattr(it, "name", "") or "").strip().lower())
+                print(
+                    f"[FIX #297] Day {day_num}: dropped thin far stop "
+                    f"{getattr(it, 'name', '?')} ({tdur}m drive / {dur}m visit)"
+                )
+                prev_transit = None
+                continue
             if (
                 "kopalnia" in nm
                 and "wieliczka" not in nm
@@ -21277,10 +21325,6 @@ class PlanService:
                 )
                 prev_transit = None
                 continue
-            try:
-                tkm = float(getattr(prev_transit, "distance_km", 0) or 0) if prev_transit else 0.0
-            except (TypeError, ValueError):
-                tkm = 0.0
             lonely = rk.startswith("region_") and region_counts.get(rk, 0) <= 1
             thin_filler = tdur >= 32 and dur <= 25
             roundtrip_thin = bool(
@@ -21434,6 +21478,80 @@ class PlanService:
             ):
                 continue
             out.append(it)
+        return self._strip_transits_to_unscheduled_destinations(out, day_num=day_num)
+
+    def _drop_satellite_revisit_after_hub_return(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #297: Gniezno → Poznań 47 km, then another Gniezno POI is ping-pong."""
+        if not items:
+            return items
+        try:
+            ordered = self._sort_items_by_time(list(items))
+        except Exception:
+            ordered = list(items)
+        _HUB = (
+            "poznań", "poznan", "warszawa", "warsaw", "kraków", "krakow",
+            "wrocław", "wroclaw", "katowice",
+        )
+        left: set = set()
+        drop_idx: set = set()
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) == ItemType.TRANSIT.value:
+                try:
+                    tkm = float(getattr(it, "distance_km", 0) or 0)
+                except (TypeError, ValueError):
+                    tkm = 0.0
+                try:
+                    tdur = int(getattr(it, "duration_min", 0) or 0)
+                except (TypeError, ValueError):
+                    tdur = 0
+                frm = (getattr(it, "from_location", "") or "").lower()
+                to = (getattr(it, "to_location", "") or "").lower()
+                fk = _timeline_satellite_kind(frm)
+                tk = _timeline_satellite_kind(to)
+                hub_to = (not tk) and any(h in to for h in _HUB)
+                if fk and hub_to and (tkm >= 20 or tdur >= 25):
+                    left.add(fk)
+                continue
+            if not _is_timeline_attraction(it):
+                continue
+            k = _timeline_satellite_kind(getattr(it, "name", "") or "")
+            if k and k in left:
+                drop_idx.add(i)
+        if not drop_idx:
+            return ordered
+        print(
+            f"[FIX #297] Day {day_num}: dropped satellite revisit after hub return"
+        )
+        out = [it for i, it in enumerate(ordered) if i not in drop_idx]
+        return self._strip_transits_to_unscheduled_destinations(out, day_num=day_num)
+
+    def _cap_packed_city_day(
+        self,
+        items: List[Any],
+        user: Optional[Dict[str, Any]],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #297: 7 attractions + 2 meals is too dense even for adventure."""
+        style = str((user or {}).get("travel_style") or "").lower()
+        max_attr = 5 if style == "adventure" else 7
+        slots = [
+            i for i, it in enumerate(items)
+            if _is_timeline_attraction(it)
+        ]
+        if len(slots) <= max_attr:
+            return items
+        drop = set(slots[max_attr:])
+        print(
+            f"[FIX #297] Day {day_num}: capped packed day "
+            f"{len(slots)} → {max_attr} attractions"
+        )
+        out = [it for i, it in enumerate(items) if i not in drop]
         return self._strip_transits_to_unscheduled_destinations(out, day_num=day_num)
 
     def _drop_park_only_far_satellite(
@@ -21828,7 +21946,7 @@ class PlanService:
             _it, _s, e = timed[i]
             nxt, ns, _ne = timed[i + 1]
             gap = ns - e
-            if gap < 12 or gap > 90:
+            if gap < 8 or gap > 90:
                 continue
             if _item_type_value(_it) == ItemType.FREE_TIME.value:
                 continue
@@ -22126,6 +22244,9 @@ class PlanService:
             items = self._cap_same_day_satellite_kinds(
                 items, day_num=getattr(day, "day", 0) or 0,
             )
+            items = self._drop_satellite_revisit_after_hub_return(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
             items = self._drop_park_only_far_satellite(
                 items, day_num=getattr(day, "day", 0) or 0,
             )
@@ -22143,6 +22264,9 @@ class PlanService:
                 items, day_num=getattr(day, "day", 0) or 0,
             )
             items = self._cap_same_day_green_stops(
+                items, user, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._cap_packed_city_day(
                 items, user, day_num=getattr(day, "day", 0) or 0,
             )
             items = self._diversify_meal_suggestions(
@@ -22914,6 +23038,9 @@ class PlanService:
                 new_dur = None
                 if km_dec >= 8.0 and dur < expected_car * 0.45:
                     new_dur = expected_car
+                elif km_dec >= 4.0 and dur < expected_car * 0.45:
+                    # FIX #297: 5 km in 5 min is as fake as 8 km in 5 min.
+                    new_dur = expected_car
                 elif km_dec >= 8.0 and dur > expected_car * 1.75:
                     # FIX #295: 53 km in 132 min is a stretched clock, not traffic.
                     new_dur = expected_car
@@ -22990,7 +23117,7 @@ class PlanService:
                         continue
                     except Exception:
                         pass
-            if dur <= 12 and km >= 0.15 and dur >= expected_walk * 0.45:
+            if dur <= 12 and 0.15 <= km < 1.0 and dur >= expected_walk * 0.45:
                 out.append(it)
                 continue
             if km > 2.0 and bool((context or {}).get("has_car", True)):
@@ -23703,7 +23830,8 @@ class PlanService:
         adv = str((user or {}).get("travel_style") or "").lower() == "adventure"
         min_hole = 50 if adv else (55 if (poz or war) else 75)
         max_rounds = 5 if (poz or war or adv) else 3
-        max_attr = 7 if (poz or war) else 6
+        # FIX #297: 7 attractions + 2 meals is too dense even for adventure.
+        max_attr = 5 if adv else 6
         for _ in range(max_rounds):
             if _n_attr(working) >= max_attr:
                 break
@@ -24572,6 +24700,8 @@ class PlanService:
                     "bochnia": "Bochnia",
                     "ojców": "Ojców",
                     "ojcow": "Ojców",
+                    "poznań": "Poznań",
+                    "poznan": "Poznań",
                 }
                 addr_l2 = (fixed[2] or "").lower()
                 for stem, city_name in _city_from_addr.items():
@@ -24579,6 +24709,7 @@ class PlanService:
                         upd["city"] = city_name
                         break
                 if "góra przemysła" in fixed[2].lower() or "gora przemysla" in fixed[2].lower():
+                    upd["city"] = "Poznań"
                     desc = (getattr(it, "description_short", None) or "").lower()
                     if (
                         "warszaw" in desc
@@ -24589,6 +24720,31 @@ class PlanService:
                             "Odbudowany zamek na Górze Przemysła z ekspozycją "
                             "o średniowiecznym Poznaniu."
                         )
+                    # FIX #297: Warsaw castle ticket (60 zł) must not stick on
+                    # the Poznań Góra Przemysła row (Excel 20 zł).
+                    ti = getattr(it, "ticket_info", None)
+                    old_tn = 0
+                    if ti is not None:
+                        try:
+                            old_tn = int(getattr(ti, "ticket_normal", 0) or 0)
+                        except (TypeError, ValueError):
+                            old_tn = 0
+                        if old_tn != 20:
+                            try:
+                                upd["ticket_info"] = ti.model_copy(
+                                    update={"ticket_normal": 20}
+                                )
+                            except Exception:
+                                pass
+                    old_cost = getattr(it, "cost_estimate", None)
+                    try:
+                        old_cost_n = float(old_cost) if old_cost is not None else 0.0
+                    except (TypeError, ValueError):
+                        old_cost_n = 0.0
+                    if old_tn > 0 and old_cost_n > 0:
+                        upd["cost_estimate"] = int(round(old_cost_n / old_tn * 20))
+                    elif old_cost_n >= 50:
+                        upd["cost_estimate"] = 40
             # FIX #283: parking pin must follow the attraction (Iluzja used
             # Hala Stulecia 17.0773 while the item sat on Świdnicka 17.0325).
             park = getattr(it, "parking", None)
@@ -26494,6 +26650,16 @@ class PlanService:
                             pass
                     if nm:
                         return nm, self._lookup_coords(poi_coords, nm)
+            loc_ctx = str(getattr(it, "location_context", "") or "").lower()
+            city = str((context or {}).get("requested_city") or "")
+            if "centrum" in loc_ctx:
+                cc = _city_center_coords(city)
+                if cc:
+                    return ("centrum", cc)
+            if loc_ctx and "centrum" not in loc_ctx:
+                pt = self._lookup_coords(poi_coords, loc_ctx)
+                if pt:
+                    return (loc_ctx, pt)
             return None
 
         stops = [
@@ -27266,6 +27432,15 @@ class PlanService:
                     f"[FIX #273] Day {day_num}: dropped crushed Palmiarnia ({dur}m)"
                 )
                 continue
+            if (
+                ("termy malta" in nm or "maltańskie" in nm or "maltanskie" in nm)
+                and "jezioro" not in nm
+                and dur < 90
+            ):
+                print(
+                    f"[FIX #297] Day {day_num}: dropped crushed Termy ({dur}m)"
+                )
+                continue
             if ("tężnia" in nm or "teznia" in nm) and dur < 25:
                 print(
                     f"[FIX #273] Day {day_num}: dropped crushed Tężnia ({dur}m)"
@@ -27889,11 +28064,13 @@ class PlanService:
         pool = list((context or {}).get("restaurants_available") or [])
         ordered = self._sort_items_by_time(list(items))
         last_pt: Optional[tuple] = None
+        last_nm = ""
         out: List[Any] = []
         meal_types = {ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value}
         for it in ordered:
             if _is_timeline_attraction(it):
                 nm = getattr(it, "name", "") or ""
+                last_nm = nm
                 try:
                     if getattr(it, "lat", None) is not None:
                         last_pt = (float(it.lat), float(it.lng))
@@ -28016,7 +28193,7 @@ class PlanService:
             ranked = []
             from app.domain.planner.engine import _meal_restaurant_geo_ok as _geo_ok_snap
             last_poi_snap = {
-                "lat": last_pt[0], "lng": last_pt[1], "name": "", "city": "",
+                "lat": last_pt[0], "lng": last_pt[1], "name": last_nm, "city": "",
             }
             for r in pool:
                 try:
@@ -28050,8 +28227,23 @@ class PlanService:
                 picked = _restaurant_dict_to_suggestion(ranked[0][1], meal)
             if picked is None:
                 # FIX #269: empty beats "lunch in Wrocław while the user is in Oława".
+                # FIX #297: don't keep location_context=centrum after a lake/satellite.
+                upd_empty: Dict[str, Any] = {"suggestions": []}
+                far = bool(_timeline_satellite_kind(last_nm))
+                center = _city_center_coords(
+                    str((context or {}).get("requested_city") or "")
+                )
+                if last_pt and center and not far:
+                    try:
+                        far = haversine_distance(
+                            last_pt[0], last_pt[1], center[0], center[1],
+                        ) >= 5.0
+                    except Exception:
+                        far = False
+                if far and last_nm:
+                    upd_empty["location_context"] = last_nm
                 try:
-                    out.append(it.model_copy(update={"suggestions": []}))
+                    out.append(it.model_copy(update=upd_empty))
                 except Exception:
                     out.append(it)
                 continue
