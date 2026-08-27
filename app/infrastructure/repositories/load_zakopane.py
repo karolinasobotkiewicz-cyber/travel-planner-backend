@@ -108,6 +108,23 @@ def _parse_seasonal_list(seasonal_str: str) -> Optional[List[Dict[str, str]]]:
         return None
     
     seasonal_str = seasonal_str.strip()
+    # FIX #298: Excel sometimes stores the object as a quoted string, or as
+    # a bare `"date_from": ...` block without wrapping braces.
+    if (
+        (seasonal_str.startswith('"') and seasonal_str.endswith('"'))
+        or (seasonal_str.startswith("'") and seasonal_str.endswith("'"))
+    ):
+        seasonal_str = (
+            seasonal_str[1:-1]
+            .replace("\\n", "\n")
+            .replace('\\"', '"')
+            .strip()
+        )
+    if seasonal_str.startswith('"date_from"') or seasonal_str.startswith("date_from"):
+        if not seasonal_str.startswith("{"):
+            seasonal_str = "{" + seasonal_str
+        if not seasonal_str.rstrip().endswith("}"):
+            seasonal_str = seasonal_str.rstrip() + "}"
     
     # FIX #165 (06.06.2026 - CLIENT DATA): accept BOTH the list format ('[ {..} ]')
     # AND a single-object format ('{ .. }'). Several new Zone-C POIs (Jaskinia Bielańska,
