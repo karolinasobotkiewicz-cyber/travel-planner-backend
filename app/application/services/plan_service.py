@@ -17557,6 +17557,34 @@ class PlanService:
         car_parked_at: str | None = None
         walked_away = False
         out: List[Any] = []
+        has_car = bool((context or {}).get("has_car", True))
+        later_car = any(
+            _item_type_value(x) == ItemType.TRANSIT.value and _is_car(x)
+            for x in ordered
+        )
+        # FIX #299: a walking prefix does not mean "car is at the next drive
+        # origin". If they walked Cytadela→Iluzja then drove to Termy, the car
+        # is still at Cytadela (or at the walk's from_location). Seed only when
+        # a later car hop exists so walking-only days keep FIX #260 quiet.
+        if has_car and later_car:
+            for seed_it in ordered:
+                tv = _item_type_value(seed_it)
+                if tv == ItemType.TRANSIT.value:
+                    if _is_car(seed_it):
+                        break
+                    if _is_walk(seed_it):
+                        frm0 = (
+                            getattr(seed_it, "from_location", None) or ""
+                        ).strip()
+                        if frm0:
+                            car_parked_at = frm0
+                        break
+                    continue
+                if _is_timeline_attraction(seed_it):
+                    nm0 = (getattr(seed_it, "name", None) or "").strip()
+                    if nm0:
+                        car_parked_at = nm0
+                    break
 
         for it in ordered:
             if _item_type_value(it) != ItemType.TRANSIT.value:
@@ -20974,8 +21002,14 @@ class PlanService:
                 if tv in meal_types:
                     nm = None
                     for s in (getattr(later, "suggestions", None) or [])[:1]:
-                        nm = (getattr(s, "name", "") or "").strip() or None
-                    nxt = nm or (getattr(later, "name", "") or "").strip() or None
+                        if isinstance(s, dict):
+                            nm = (s.get("name") or "").strip() or None
+                        else:
+                            nm = (getattr(s, "name", "") or "").strip() or None
+                    if not nm:
+                        # FIX #299: empty lunch is not a destination (ghost Antrejka).
+                        continue
+                    nxt = nm
                     break
                 if tv in (
                     ItemType.DAY_END.value if hasattr(ItemType, "DAY_END") else "day_end",
@@ -21946,7 +21980,7 @@ class PlanService:
             _it, _s, e = timed[i]
             nxt, ns, _ne = timed[i + 1]
             gap = ns - e
-            if gap < 8 or gap > 90:
+            if gap < 8 or gap > 180:
                 continue
             if _item_type_value(_it) == ItemType.FREE_TIME.value:
                 continue
@@ -22309,6 +22343,12 @@ class PlanService:
             items = self._retarget_all_legs_to_next_stop(
                 items, day_num=getattr(day, "day", 0) or 0,
             )
+            # FIX #299: after retarget, car.from is the last person-stop.
+            # Re-run parking so a walk-then-drive cannot teleport the car,
+            # and so retarget.next cannot rewrite a return-to-car walk.
+            items = self._enforce_car_parking_logistics(
+                items, cm, ctx, day_num=getattr(day, "day", 0) or 0,
+            )
             items = self._drop_dangling_meal_transits(
                 items, day_num=getattr(day, "day", 0) or 0,
             )
@@ -22356,6 +22396,9 @@ class PlanService:
             )
             items = self._name_remaining_holes(
                 items, ctx, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._merge_abutting_free_time_hard(
+                items, day_num=getattr(day, "day", 0) or 0, max_gap=8,
             )
             items = self._trim_excess_free_time(
                 items, user, ctx, day_num=getattr(day, "day", 0) or 0,
@@ -25502,13 +25545,8 @@ class PlanService:
             ):
                 continue
             try:
-                if (
-                    context.get("date")
-                    and not context.get("complete_daytrip")
-                    and not context.get("hole_fill")
-                    and not _is_open_inj(
-                        poi, ft_st, span, context.get("season") or "winter", context,
-                    )
+                if context.get("date") and not _is_open_inj(
+                    poi, ft_st, span, context.get("season") or "winter", context,
                 ):
                     continue
             except Exception:
@@ -26650,6 +26688,8 @@ class PlanService:
                             pass
                     if nm:
                         return nm, self._lookup_coords(poi_coords, nm)
+                # FIX #299: empty lunch is not a place (ghost "centrum"/Antrejka).
+                return None
             loc_ctx = str(getattr(it, "location_context", "") or "").lower()
             city = str((context or {}).get("requested_city") or "")
             if "centrum" in loc_ctx:
@@ -26664,7 +26704,9 @@ class PlanService:
 
         stops = [
             (i, it) for i, it in enumerate(ordered)
-            if _is_timeline_attraction(it) or _item_type_value(it) in meal_types
+            if _is_timeline_attraction(it) or (
+                _item_type_value(it) in meal_types and _stop_point(it)
+            )
         ]
         inserts: List[tuple] = []
         for (ia, _a0), (ib, _b0) in zip(stops, stops[1:]):
@@ -27182,9 +27224,10 @@ class PlanService:
             if tv in meal_types:
                 nm = None
                 for s in (getattr(it, "suggestions", None) or [])[:1]:
-                    nm = (getattr(s, "name", "") or "").strip() or None
-                if not nm:
-                    nm = (getattr(it, "name", "") or "").strip() or None
+                    if isinstance(s, dict):
+                        nm = (s.get("name") or "").strip() or None
+                    else:
+                        nm = (getattr(s, "name", "") or "").strip() or None
                 if nm:
                     last_stop = nm
                 out.append(it)
