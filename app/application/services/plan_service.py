@@ -274,6 +274,7 @@ _GNIEZNO_DEFAULT_COORDS = (52.5347, 17.5826)
 _KORNIK_DEFAULT_COORDS = (52.2442, 17.0903)
 _ZABRZE_NAME_MARKERS = (
     "zabrze", "zabrzu", "guido", "królowa luiza", "krolowa luiza", "sztolnia",
+    "animalworld", "animal world",
 )
 _GLIWICE_NAME_MARKERS = ("gliwice", "gliwic")
 _ZABRZE_DEFAULT_COORDS = (50.3249, 18.7857)
@@ -346,6 +347,38 @@ def _is_zabkowice_stop_name(name: str) -> bool:
 def _is_brzeg_stop_name(name: str) -> bool:
     nm = (name or "").lower()
     return any(k in nm for k in _BRZEG_NAME_MARKERS)
+
+
+def _place_names_match(a: str, b: str) -> bool:
+    """FIX #301: GAMARDŻOBA vs GAMARDŻOBY is the same restaurant."""
+    aa = " ".join((a or "").lower().split())
+    bb = " ".join((b or "").lower().split())
+    if not aa or not bb:
+        return False
+    if aa == bb:
+        return True
+    shorter, longer = (aa, bb) if len(aa) <= len(bb) else (bb, aa)
+    if len(shorter) >= 8 and shorter in longer:
+        return True
+
+    def _stem(s: str) -> str:
+        for src, dst in (
+            ("ż", "z"), ("ź", "z"), ("ó", "o"), ("ł", "l"),
+            ("ą", "a"), ("ę", "e"), ("ć", "c"), ("ń", "n"), ("ś", "s"),
+        ):
+            s = s.replace(src, dst)
+        s = s.replace(" ", "")
+        for suf in ("ego", "owi", "ami", "ach", "em", "om", "ie", "y", "i", "a", "e"):
+            if len(s) > 7 and s.endswith(suf):
+                return s[:-len(suf)]
+        return s
+
+    sa, sb = _stem(aa), _stem(bb)
+    if sa == sb:
+        return True
+    if len(sa) >= 7 and len(sb) >= 7 and (sa.startswith(sb) or sb.startswith(sa)):
+        return True
+    return False
 
 
 def _timeline_satellite_kind(name: str) -> Optional[str]:
@@ -13572,6 +13605,12 @@ class PlanService:
             "park bednarskiego",
             "hala stulecia",
             "bazylika archikatedral",
+            # FIX #301 Poznań / Katowice leftover icons
+            "stary rynek",
+            "park wilsona",
+            "etnograficzn",
+            "giszowiec",
+            "paprocan",
         )
         out_days: List[Any] = []
         for day in days:
@@ -17937,11 +17976,15 @@ class PlanService:
             if (
                 ("ogród zoologiczny" in nm_l or "ogrod zoologiczny" in nm_l
                  or ("zoo" in nm_l and "mini" not in nm_l
+                     and "stare zoo" not in nm_l
                      and "zoo team" not in nm_l and "zooteam" not in nm_l))
                 and (style == "relax" or group in ("family_kids", "seniors"))
             ):
                 # FIX #267: family kids need ≥150; seniors/relax keep 120.
                 floor = max(floor, 150 if group == "family_kids" else 120)
+            if "stare zoo" in nm_l:
+                floor = max(floor, 45)
+                cap = 60 if cap is None else min(int(cap), 60)
             if "kampinos" in nm_l:
                 floor = max(floor, 60)
             if any(k in nm_l for k in ("wilanów", "wilanow")):
@@ -21127,7 +21170,7 @@ class PlanService:
                     continue
                 to = (getattr(tr, "to_location", "") or "").strip()
                 to_l = to.lower()
-                if nxt and to_l == nxt.lower():
+                if nxt and _place_names_match(to, nxt):
                     real = tr
                     break
                 if to_l in _HUB and (not nxt or to_l != nxt.lower()):
@@ -21201,7 +21244,7 @@ class PlanService:
             if (
                 last_name
                 and last_end is not None
-                and frm.lower() == last_name.lower()
+                and _place_names_match(frm, last_name)
                 and st < last_end - 1
             ):
                 dur = int(getattr(it, "duration_min", 0) or 0)
@@ -21222,6 +21265,113 @@ class PlanService:
                     print(
                         f"[FIX #300] Day {day_num}: snapped transit after "
                         f"{last_name} to {minutes_to_time(last_end)}"
+                    )
+                except Exception:
+                    pass
+            out.append(it)
+        return out
+
+    def _drop_hops_to_already_visited(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #301: Stary Rynek → already-seen Botaniczny while next is Drevny."""
+        if not items:
+            return items
+        try:
+            ordered = self._sort_items_by_time(list(items))
+        except Exception:
+            ordered = list(items)
+        visited: List[str] = []
+        out: List[Any] = []
+        for i, it in enumerate(ordered):
+            occ = self._occupied_stop_name(it)
+            if occ:
+                visited.append(occ)
+                out.append(it)
+                continue
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            to = (getattr(it, "to_location", "") or "").strip()
+            nxt = None
+            for later in ordered[i + 1:]:
+                nm = self._occupied_stop_name(later)
+                if nm:
+                    nxt = nm
+                    break
+            already = bool(
+                to and any(_place_names_match(to, v) for v in visited)
+            )
+            if already and nxt and not _place_names_match(to, nxt):
+                print(
+                    f"[FIX #301] Day {day_num}: dropped hop to already-visited "
+                    f"{to!r} (next {nxt!r})"
+                )
+                continue
+            out.append(it)
+        return out
+
+    def _strip_second_church_same_day(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #301: two churches on one Katowice day is a crawl, not a plan."""
+        if not items:
+            return items
+        seen = False
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            is_church = any(
+                k in nm for k in (
+                    "kościół", "kosciol", "bazylika", "katedra", "parafia",
+                    "archikatedr",
+                )
+            )
+            if is_church:
+                if seen:
+                    print(
+                        f"[FIX #301] Day {day_num}: stripped second church "
+                        f"{getattr(it, 'name', '?')}"
+                    )
+                    continue
+                seen = True
+            out.append(it)
+        return out
+
+    def _reset_stale_meal_location_context(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #301: lunch next to AnimalWorld must not keep Wodny Park Tychy context."""
+        last_nm = ""
+        out: List[Any] = []
+        meal_types = {ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value}
+        for it in items:
+            if _is_timeline_attraction(it):
+                last_nm = (getattr(it, "name", "") or "").strip()
+                out.append(it)
+                continue
+            if _item_type_value(it) not in meal_types:
+                out.append(it)
+                continue
+            ctx = str(getattr(it, "location_context", "") or "").strip()
+            if ctx and last_nm and not _place_names_match(ctx, last_nm):
+                try:
+                    it = it.model_copy(update={"location_context": last_nm})
+                    print(
+                        f"[FIX #301] Day {day_num}: meal context "
+                        f"{ctx!r} → {last_nm!r}"
                     )
                 except Exception:
                     pass
@@ -22537,6 +22687,9 @@ class PlanService:
             items = self._strip_profile_denied_attractions(
                 items, user, all_pois_dict, getattr(day, "day", 0) or 0,
             )
+            items = self._strip_second_church_same_day(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
             items = self._drop_over_budget_paid_attractions(
                 items, user, day_num=getattr(day, "day", 0) or 0,
             )
@@ -22593,6 +22746,9 @@ class PlanService:
                 items, ctx, user, day_num=getattr(day, "day", 0) or 0,
                 max_km=4.0,
             )
+            items = self._reset_stale_meal_location_context(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
             items = self._downgrade_short_urban_cars(
                 items, ctx, day_num=getattr(day, "day", 0) or 0,
             )
@@ -22629,8 +22785,14 @@ class PlanService:
             items = self._collapse_stacked_transits(
                 items, day_num=getattr(day, "day", 0) or 0, context=ctx,
             )
+            items = self._drop_hops_to_already_visited(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
             items = self._strip_self_transits(
                 items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._ensure_stop_to_stop_legs(
+                items, cm, ctx, day_num=getattr(day, "day", 0) or 0,
             )
             items = self._retarget_all_legs_to_prev_stop(
                 items, day_num=getattr(day, "day", 0) or 0, context=ctx,
@@ -22716,8 +22878,14 @@ class PlanService:
             items = self._collapse_stacked_transits(
                 items, day_num=getattr(day, "day", 0) or 0, context=ctx,
             )
+            items = self._drop_hops_to_already_visited(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
             items = self._strip_self_transits(
                 items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._ensure_stop_to_stop_legs(
+                items, cm, ctx, day_num=getattr(day, "day", 0) or 0,
             )
             items = self._snap_transits_to_previous_stop_end(
                 items, day_num=getattr(day, "day", 0) or 0,
@@ -24858,6 +25026,30 @@ class PlanService:
                         52.2495, 21.0119,
                         "Rynek Starego Miasta 21, 00-272 Warszawa",
                     )
+            # FIX #301: Poznań Ostrów Tumski must not inherit the Wrocław address.
+            if "ostrów tumski" in nm or "ostrow tumski" in nm:
+                is_wro = any(
+                    k in nm or k in city_now or k in addr_now
+                    for k in ("wrocław", "wroclaw")
+                )
+                is_poz = any(
+                    k in nm or k in city_now
+                    for k in ("poznań", "poznan")
+                ) or (
+                    not is_wro
+                    and getattr(it, "lat", None) is not None
+                    and 52.3 <= float(it.lat or 0) <= 52.5
+                )
+                if is_poz or (
+                    not is_wro
+                    and ("wrocław" in addr_now or "wroclaw" in addr_now)
+                ):
+                    # City=Poznań with a Wrocław address, or Poznań coords.
+                    if is_poz or "poznań" in city_now or "poznan" in city_now:
+                        fixed = (
+                            52.4116, 16.9478,
+                            "Ostrów Tumski, 61-131 Poznań",
+                        )
             for marker, lat, lng, addr in _FIXES:
                 if marker in nm:
                     # Wedel only — avoid other "pijalnia" rows.

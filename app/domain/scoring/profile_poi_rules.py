@@ -212,6 +212,10 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("pawilon x", "waw_x_pawilon"),
         ("muzeum powstania", "waw_powstanie"),
         ("park bednarskiego", "krk_bednarskiego"),
+        ("stary rynek", "poz_stary_rynek"),
+        ("park wilsona", "poz_park_wilsona"),
+        ("giszowiec", "kat_giszowiec"),
+        ("paprocan", "kat_paprocany"),
         ("hala stulecia", "wro_hala_stulecia"),
         ("park sensoryczny", "kat_sensoryczny"),
         ("animalworld", "kat_animalworld"),
@@ -425,6 +429,12 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
                 or "relaxation" in prefs
                 or "kids_attractions" in prefs
             ):
+                return True
+
+    # FIX #301: AnimalWorld is a petting zoo, not museum/nature/relax coverage.
+    if "animalworld" in name or "animal world" in name:
+        if tg == "seniors" and "kids_attractions" not in prefs:
+            if prefs & {"museum_heritage", "nature_landscape", "relaxation"}:
                 return True
 
     if "papugarn" in name:
@@ -1294,6 +1304,7 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
 
     if "water_attractions" in prefs and any(k in name for k in (
         "jezioro maltańskie", "jezioro maltanskie", "bulwar", "warta",
+        "dolina trzech stawów", "dolina trzech stawow", "park śląski", "park slaski",
     )):
         delta += 80.0
 

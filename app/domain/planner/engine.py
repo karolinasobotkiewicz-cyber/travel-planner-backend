@@ -885,7 +885,10 @@ _WATER_ATTRACTION_TAGS = frozenset({
     "thermal_baths", "termy", "lake", "river_cruise", "beach", "marina",
     "water_wellness", "rafting", "kayak",
 })
-_WATER_NAME_MARKERS = ("wodospad", "aquapark", "term", "jezioro", "kąpiel")
+_WATER_NAME_MARKERS = (
+    "wodospad", "aquapark", "term", "jezioro", "kąpiel",
+    "dolina trzech stawów", "dolina trzech stawow",
+)
 # FIX #213: removed bare "bulwar" — riverside walks are relaxation, not water_attractions.
 
 # FIX #206: always quick-stop — never exempted by high must_see (Pomnik Smoka=10).
@@ -3165,6 +3168,7 @@ def visit_duration_hard_cap(p, *, for_scheduling: bool = True) -> int | None:
     ):
         return 75
     _named_caps = (
+        ("stare zoo", 60),
         ("sky tower", 60),
         ("punkt widokowy", 60),
         ("zatoka gondoli", 60),
