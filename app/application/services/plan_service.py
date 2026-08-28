@@ -450,7 +450,10 @@ def _is_rogalin_stop_name(name: str) -> bool:
 
 def _is_kampinos_stop_name(name: str) -> bool:
     nm = (name or "").lower()
-    return any(k in nm for k in ("kampinos", "łomna", "lomna", "palmiry"))
+    return any(k in nm for k in (
+        "kampinos", "łomna", "lomna", "palmiry", "granica", "ośrodek w granicy",
+        "osrodek w granicy",
+    ))
 
 
 def _is_czersk_stop_name(name: str) -> bool:
@@ -13564,6 +13567,11 @@ class PlanService:
             # FIX #295: Warszawa leftover — X Pawilon D4+D5.
             "x pawilon",
             "pawilon x",
+            # FIX #300: leftover trip icons WAWA/WRO/KRK
+            "muzeum powstania",
+            "park bednarskiego",
+            "hala stulecia",
+            "bazylika archikatedral",
         )
         out_days: List[Any] = []
         for day in days:
@@ -21033,13 +21041,245 @@ class PlanService:
             out.append(it)
         return out
 
+    def _occupied_stop_name(self, it: Any) -> Optional[str]:
+        """FIX #300: attraction or named restaurant — empty lunch is not a stop."""
+        if _is_timeline_attraction(it):
+            nm = (getattr(it, "name", "") or "").strip()
+            return nm or None
+        if _item_type_value(it) in (
+            ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+        ):
+            for s in (getattr(it, "suggestions", None) or [])[:1]:
+                if isinstance(s, dict):
+                    nm = (s.get("name") or "").strip()
+                else:
+                    nm = (getattr(s, "name", "") or "").strip()
+                if nm:
+                    return nm
+        return None
+
+    def _collapse_stacked_transits(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #300: one hop from a stop, to the next occupied stop.
+
+        Client WAWA/WRO/KRK: Słoik → Manufaktura then Słoik → Ogrody;
+        Tutti Santi → Warszawa then Tutti Santi → Muzeum Wojska; 0 km self-legs.
+        Keep a return_to_car walk plus the following car hop.
+        """
+        if not items:
+            return items
+        try:
+            ordered = self._sort_items_by_time(list(items))
+        except Exception:
+            ordered = list(items)
+        _HUB = {
+            "warszawa", "warsaw", "kraków", "krakow", "wrocław", "wroclaw",
+            "poznań", "poznan", "katowice",
+        }
+
+        def _next_occ(idx: int) -> Optional[str]:
+            for later in ordered[idx + 1:]:
+                nm = self._occupied_stop_name(later)
+                if nm:
+                    return nm
+                tv = _item_type_value(later)
+                if tv in (
+                    ItemType.DAY_END.value if hasattr(ItemType, "DAY_END") else "day_end",
+                    "day_end",
+                ):
+                    return None
+            return None
+
+        def _is_return(tr: Any) -> bool:
+            src = str(getattr(tr, "routing_source", "") or "").lower()
+            return src == "return_to_car"
+
+        def _is_tr(it: Any) -> bool:
+            return _item_type_value(it) == ItemType.TRANSIT.value
+
+        out: List[Any] = []
+        i = 0
+        dropped = 0
+        while i < len(ordered):
+            it = ordered[i]
+            if not _is_tr(it):
+                out.append(it)
+                i += 1
+                continue
+            run = []
+            j = i
+            while j < len(ordered) and _is_tr(ordered[j]):
+                run.append(ordered[j])
+                j += 1
+            nxt = _next_occ(j - 1)
+            kept: List[Any] = []
+            for tr in run:
+                if _is_return(tr):
+                    kept.append(tr)
+            real = None
+            for tr in reversed(run):
+                if _is_return(tr):
+                    continue
+                to = (getattr(tr, "to_location", "") or "").strip()
+                to_l = to.lower()
+                if nxt and to_l == nxt.lower():
+                    real = tr
+                    break
+                if to_l in _HUB and (not nxt or to_l != nxt.lower()):
+                    continue
+            if real is None:
+                for tr in reversed(run):
+                    if _is_return(tr):
+                        continue
+                    to_l = (getattr(tr, "to_location", "") or "").strip().lower()
+                    if to_l in _HUB:
+                        continue
+                    real = tr
+                    break
+            if real is not None and nxt:
+                cur = (getattr(real, "to_location", "") or "").strip()
+                if cur.lower() != nxt.lower():
+                    try:
+                        real = real.model_copy(update={
+                            "to_location": nxt,
+                            "geometry": None,
+                            "geometry_latlng": None,
+                        })
+                    except Exception:
+                        pass
+            dropped += max(0, len(run) - len(kept) - (1 if real is not None else 0))
+            out.extend(kept)
+            if real is not None and real not in kept:
+                out.append(real)
+            i = j
+        if dropped:
+            print(
+                f"[FIX #300] Day {day_num}: collapsed {dropped} stacked transit(s)"
+            )
+        return out
+
+    def _snap_transits_to_previous_stop_end(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #300: hop from X cannot start before X ends (Smart Kids 13:51 / 13:41)."""
+        if not items:
+            return items
+        try:
+            ordered = self._sort_items_by_time(list(items))
+        except Exception:
+            ordered = list(items)
+        last_name = None
+        last_end = None
+        out: List[Any] = []
+        for it in ordered:
+            occ = self._occupied_stop_name(it)
+            if occ:
+                last_name = occ
+                try:
+                    last_end = time_to_minutes(getattr(it, "end_time", None) or "")
+                except Exception:
+                    last_end = None
+                out.append(it)
+                continue
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                out.append(it)
+                continue
+            if (
+                last_name
+                and last_end is not None
+                and frm.lower() == last_name.lower()
+                and st < last_end - 1
+            ):
+                dur = int(getattr(it, "duration_min", 0) or 0)
+                if dur <= 0:
+                    try:
+                        dur = max(
+                            2,
+                            time_to_minutes(getattr(it, "end_time", None) or "") - st,
+                        )
+                    except Exception:
+                        dur = 8
+                try:
+                    it = it.model_copy(update={
+                        "start_time": minutes_to_time(last_end),
+                        "end_time": minutes_to_time(last_end + dur),
+                        "duration_min": dur,
+                    })
+                    print(
+                        f"[FIX #300] Day {day_num}: snapped transit after "
+                        f"{last_name} to {minutes_to_time(last_end)}"
+                    )
+                except Exception:
+                    pass
+            out.append(it)
+        return out
+
+    def _drop_post_dinner_return_to_visited(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #300: after dinner, no hop back to Pixel XL / Barbakan already visited."""
+        if not items:
+            return items
+        try:
+            ordered = self._sort_items_by_time(list(items))
+        except Exception:
+            ordered = list(items)
+        dinner_i = None
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) == ItemType.DINNER_BREAK.value:
+                dinner_i = i
+        if dinner_i is None:
+            return ordered
+        visited = {
+            (getattr(it, "name", "") or "").strip().lower()
+            for it in ordered[:dinner_i]
+            if _is_timeline_attraction(it)
+        }
+        if any(
+            _is_timeline_attraction(it)
+            and (getattr(it, "name", "") or "").strip().lower() not in visited
+            for it in ordered[dinner_i + 1:]
+        ):
+            return ordered
+        out: List[Any] = []
+        for i, it in enumerate(ordered):
+            if i <= dinner_i or _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            to = (getattr(it, "to_location", "") or "").strip().lower()
+            if to and to in visited:
+                print(
+                    f"[FIX #300] Day {day_num}: dropped post-dinner return → "
+                    f"{getattr(it, 'to_location', '')}"
+                )
+                continue
+            out.append(it)
+        return out
+
     def _sync_transit_duration_to_clock(
         self,
         items: List[Any],
         *,
         day_num: int = 0,
     ) -> List[Any]:
-        """FIX #290: duration_min must match start/end when km does not contradict."""
+        """FIX #290/#300: duration_min must match start/end when km does not contradict."""
         out: List[Any] = []
         for it in items:
             if _item_type_value(it) != ItemType.TRANSIT.value:
@@ -21054,9 +21294,6 @@ class PlanService:
             except Exception:
                 out.append(it)
                 continue
-            if span <= 0 or abs(span - dur) < 2:
-                out.append(it)
-                continue
             mode = str(
                 getattr(
                     getattr(it, "mode", None), "value", getattr(it, "mode", "")
@@ -21068,6 +21305,25 @@ class PlanService:
                     expected = max(3, int(round(dist / 4.5 * 60)) + 2)
                 else:
                     expected = max(8, int(round(dist / 50.0 * 60)) + 6)
+            floor = 0.70 if (dist < 8 or "walk" in mode) else 0.50
+            # FIX #300: never shrink a 2.6 km hop to 1 min just because the clock is short.
+            if expected is not None and min(span if span > 0 else dur, dur or span) < expected * floor:
+                need = max(expected, dur if dur >= expected * floor else expected)
+                try:
+                    out.append(it.model_copy(update={
+                        "end_time": minutes_to_time(st + need),
+                        "duration_min": need,
+                    }))
+                    print(
+                        f"[FIX #300] Day {day_num}: honest km-time "
+                        f"{span or dur}→{need} min ({dist:.1f} km)"
+                    )
+                    continue
+                except Exception:
+                    pass
+            if span <= 0 or abs(span - dur) < 2:
+                out.append(it)
+                continue
             # Clock is the lie when duration is the honest km-time (not a stretch).
             expand = False
             if dist >= 4.0 and span < dur and (dur - span) >= 15:
@@ -21093,6 +21349,15 @@ class PlanService:
                 except Exception:
                     out.append(it)
                     continue
+            if expected is not None and span < expected * floor:
+                try:
+                    out.append(it.model_copy(update={
+                        "end_time": minutes_to_time(st + expected),
+                        "duration_min": expected,
+                    }))
+                    continue
+                except Exception:
+                    pass
             try:
                 out.append(it.model_copy(update={"duration_min": max(2, span)}))
                 print(
@@ -21162,9 +21427,9 @@ class PlanService:
         items: List[Any],
         *,
         day_num: int = 0,
-        min_km: float = 12.0,
+        min_km: float = 8.0,
     ) -> List[Any]:
-        """FIX #294: Las Wolski → Wieliczka 25 km cannot be a lunch run."""
+        """FIX #294/#300: Las Wolski → Wieliczka 25 km cannot be a lunch run."""
         if not items:
             return items
         ordered = self._sort_items_by_time(list(items))
@@ -21206,7 +21471,7 @@ class PlanService:
                         rnm = str(getattr(primary, "name", "") or "")
                         rcity = str(getattr(primary, "city", "") or "")
                     blob = f"{rnm} {rcity}".lower()
-                    sat = _timeline_satellite_kind(blob)
+                    sat = _timeline_satellite_kind(blob) or _timeline_satellite_kind(rcity)
                     if sat and sat not in visited_sats:
                         far = True
                     elif rlat is not None and rlng is not None:
@@ -21330,6 +21595,16 @@ class PlanService:
                 continue
             # FIX #297: Strzeszyn / Pobiedziska / Dziekanowice — 30–50 km
             # (or a 38 min drive) for one short visit is not a cluster.
+            if any(k in nm for k in (
+                "sochaczew", "żelazowa", "zelazowa",
+            )) and prev_transit and (tkm >= 45 or tdur >= 45):
+                drop_names.add((getattr(it, "name", "") or "").strip().lower())
+                print(
+                    f"[FIX #300] Day {day_num}: dropped thin far stop "
+                    f"{getattr(it, 'name', '?')} ({tdur}m drive / {dur}m visit)"
+                )
+                prev_transit = None
+                continue
             if any(k in nm for k in (
                 "strzeszyn", "wodziczk", "pobiedzisk",
                 "dziekanowic", "lednick", "ostrów lednick", "ostrow lednick",
@@ -21847,6 +22122,8 @@ class PlanService:
             str(p).lower() for p in ((user or {}).get("preferences") or [])
         }
         limit = 3 if "nature_landscape" in prefs else 2
+        if str((user or {}).get("travel_style") or "").lower() == "relax":
+            limit = min(limit, 2)
         _green = (
             "park ", "planty", "ogród", "ogrod", "szachty", "rusałka", "rusalka",
             "jezioro", "las wolski", "błonia", "blonia", "cytadela",
@@ -22338,7 +22615,7 @@ class PlanService:
                 items, day_num=getattr(day, "day", 0) or 0,
             )
             items = self._retarget_all_legs_to_prev_stop(
-                items, day_num=getattr(day, "day", 0) or 0,
+                items, day_num=getattr(day, "day", 0) or 0, context=ctx,
             )
             items = self._retarget_all_legs_to_next_stop(
                 items, day_num=getattr(day, "day", 0) or 0,
@@ -22348,6 +22625,30 @@ class PlanService:
             # and so retarget.next cannot rewrite a return-to-car walk.
             items = self._enforce_car_parking_logistics(
                 items, cm, ctx, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._collapse_stacked_transits(
+                items, day_num=getattr(day, "day", 0) or 0, context=ctx,
+            )
+            items = self._strip_self_transits(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._retarget_all_legs_to_prev_stop(
+                items, day_num=getattr(day, "day", 0) or 0, context=ctx,
+            )
+            items = self._retarget_all_legs_to_next_stop(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._snap_transits_to_previous_stop_end(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._relabel_return_to_car_transits(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._strip_stale_post_meal_returns(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._drop_post_dinner_return_to_visited(
+                items, day_num=getattr(day, "day", 0) or 0,
             )
             items = self._drop_dangling_meal_transits(
                 items, day_num=getattr(day, "day", 0) or 0,
@@ -22412,8 +22713,29 @@ class PlanService:
             items = self._remove_timeline_overlaps(
                 items, getattr(day, "day", 0) or 0,
             )
+            items = self._collapse_stacked_transits(
+                items, day_num=getattr(day, "day", 0) or 0, context=ctx,
+            )
+            items = self._strip_self_transits(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._snap_transits_to_previous_stop_end(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._relabel_return_to_car_transits(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._force_short_city_hops_walk(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._sanitize_walk_leg_durations(
+                items, cm, day_num=getattr(day, "day", 0) or 0, context=ctx,
+            )
             items = self._sync_transit_duration_to_clock(
                 items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._strip_after_hours_museums(
+                items, day_num=getattr(day, "day", 0) or 0, trip_date=trip_date,
             )
             items = self._strip_transits_to_unscheduled_destinations(
                 items, day_num=getattr(day, "day", 0) or 0,
@@ -23081,8 +23403,8 @@ class PlanService:
                 new_dur = None
                 if km_dec >= 8.0 and dur < expected_car * 0.45:
                     new_dur = expected_car
-                elif km_dec >= 4.0 and dur < expected_car * 0.45:
-                    # FIX #297: 5 km in 5 min is as fake as 8 km in 5 min.
+                elif km_dec >= 1.5 and dur < expected_car * 0.50:
+                    # FIX #300: 2.6 km in 1 min / 4.2 km in 2 min.
                     new_dur = expected_car
                 elif km_dec >= 8.0 and dur > expected_car * 1.75:
                     # FIX #295: 53 km in 132 min is a stretched clock, not traffic.
@@ -24907,6 +25229,43 @@ class PlanService:
         ordered = self._sort_items_by_time(list(items))
         visited: List[str] = []
         car_parked_at: Optional[str] = None
+        later_car = any(
+            _item_type_value(x) == ItemType.TRANSIT.value
+            and "car" in str(
+                getattr(getattr(x, "mode", None), "value", getattr(x, "mode", None))
+                or ""
+            ).lower()
+            and "walk" not in str(
+                getattr(getattr(x, "mode", None), "value", getattr(x, "mode", None))
+                or ""
+            ).lower()
+            for x in ordered
+        )
+        # FIX #300: walking prefix — car is already at the first stop.
+        if later_car:
+            for seed_it in ordered:
+                tv0 = _item_type_value(seed_it)
+                if tv0 == ItemType.TRANSIT.value:
+                    mode0 = str(
+                        getattr(
+                            getattr(seed_it, "mode", None),
+                            "value",
+                            getattr(seed_it, "mode", None),
+                        ) or ""
+                    ).lower()
+                    if "car" in mode0 and "walk" not in mode0:
+                        break
+                    if "walk" in mode0:
+                        frm0 = (getattr(seed_it, "from_location", None) or "").strip()
+                        if frm0:
+                            car_parked_at = frm0
+                        break
+                    continue
+                if _is_timeline_attraction(seed_it):
+                    nm0 = (getattr(seed_it, "name", None) or "").strip()
+                    if nm0:
+                        car_parked_at = nm0
+                    break
         out: List[Any] = []
         for it in ordered:
             tv = _item_type_value(it)
@@ -27204,16 +27563,18 @@ class PlanService:
         items: List[Any],
         *,
         day_num: int = 0,
+        context: Optional[Dict[str, Any]] = None,
     ) -> List[Any]:
-        """FIX #269: every transit.from is the last occupied stop, not a ghost."""
+        """FIX #269/#300: every transit.from is the last occupied stop, not a ghost."""
         try:
             ordered = self._sort_items_by_time(list(items))
         except Exception:
             ordered = list(items)
         meal_types = {ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value}
         last_stop: Optional[str] = None
+        city = str((context or {}).get("requested_city") or "").strip()
         out: List[Any] = []
-        for it in ordered:
+        for i, it in enumerate(ordered):
             tv = _item_type_value(it)
             if _is_timeline_attraction(it):
                 nm = (getattr(it, "name", "") or "").strip()
@@ -27248,6 +27609,25 @@ class PlanService:
                     )
                 except Exception:
                     pass
+            elif not last_stop:
+                later = {
+                    (getattr(x, "name", "") or "").strip().lower()
+                    for x in ordered[i + 1:]
+                    if _is_timeline_attraction(x)
+                }
+                if frm.lower() in later and city:
+                    try:
+                        it = it.model_copy(update={
+                            "from_location": city,
+                            "geometry": None,
+                            "geometry_latlng": None,
+                        })
+                        print(
+                            f"[FIX #300] Day {day_num}: opening hop from future "
+                            f"{frm!r} → {city!r}"
+                        )
+                    except Exception:
+                        pass
             # FIX #269: last_stop is the last occupied attraction/meal, never a
             # transit destination the traveller has not reached yet.
             out.append(it)

@@ -210,6 +210,9 @@ def poi_trip_repeat_key(name: str) -> str | None:
         # FIX #295: X Pawilon on D4+D5.
         ("x pawilon", "waw_x_pawilon"),
         ("pawilon x", "waw_x_pawilon"),
+        ("muzeum powstania", "waw_powstanie"),
+        ("park bednarskiego", "krk_bednarskiego"),
+        ("hala stulecia", "wro_hala_stulecia"),
         ("park sensoryczny", "kat_sensoryczny"),
         ("animalworld", "kat_animalworld"),
         ("animal world", "kat_animalworld"),
@@ -373,6 +376,7 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
         "citypaintball", "city paintball", "flyspot", "fly spot",
         "gokart", "go-kart", "go kart", "karting",
         "let me out", "escape room", "escape-room",
+        "tepfactor", "tep factor",
         "spływ", "splyw", "ponton",
     ))
     if _active_play:
