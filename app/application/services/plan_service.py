@@ -358,7 +358,9 @@ def _place_names_match(a: str, b: str) -> bool:
     if aa == bb:
         return True
     shorter, longer = (aa, bb) if len(aa) <= len(bb) else (bb, aa)
-    if len(shorter) >= 8 and shorter in longer:
+    # FIX #302: "pergola" is 7 chars — still the same stop as
+    # "Pergola przy Hali Stulecia". Keep ≥7 so "wyspa"/"park" do not collide.
+    if len(shorter) >= 7 and shorter in longer:
         return True
 
     def _stem(s: str) -> str:
@@ -14458,10 +14460,12 @@ class PlanService:
             pid = getattr(it, "poi_id", None) or ""
             nm = (getattr(it, "name", "") or "").strip().lower()
             rk = poi_trip_repeat_key(getattr(it, "name", "") or "")
+            fuzzy = bool(nm) and any(_place_names_match(nm, s) for s in seen_names)
             if (
                 (pid and pid in seen_ids)
                 or (nm and nm in seen_names)
                 or (rk and rk in seen_keys)
+                or fuzzy
             ):
                 print(
                     f"[FIX #251] Day {day_num}: stripped duplicate "
@@ -17613,6 +17617,8 @@ class PlanService:
         # origin". If they walked Cytadela→Iluzja then drove to Termy, the car
         # is still at Cytadela (or at the walk's from_location). Seed only when
         # a later car hop exists so walking-only days keep FIX #260 quiet.
+        # FIX #302: do not seed from a ghost opening hop (Aula, not on the day).
+        attr_names = self._day_attraction_names(ordered)
         if has_car and later_car:
             for seed_it in ordered:
                 tv = _item_type_value(seed_it)
@@ -17623,15 +17629,20 @@ class PlanService:
                         frm0 = (
                             getattr(seed_it, "from_location", None) or ""
                         ).strip()
-                        if frm0:
+                        if frm0 and self._name_is_scheduled_attraction(
+                            frm0, attr_names,
+                        ):
                             car_parked_at = frm0
-                        break
+                            break
+                        continue
                     continue
                 if _is_timeline_attraction(seed_it):
                     nm0 = (getattr(seed_it, "name", None) or "").strip()
                     if nm0:
                         car_parked_at = nm0
                     break
+            if not car_parked_at and attr_names:
+                car_parked_at = attr_names[0]
 
         for it in ordered:
             if _item_type_value(it) != ItemType.TRANSIT.value:
@@ -18138,6 +18149,9 @@ class PlanService:
             if "palmiarnia" in nm_l:
                 floor = max(floor, 60)
             if "cytadel" in nm_l:
+                floor = max(floor, 45)
+            # FIX #302: densify stuffed Mamuta into a 20 min hole.
+            if "mamuta" in nm_l:
                 floor = max(floor, 45)
             if "szachty" in nm_l:
                 floor = max(floor, 45)
@@ -18685,7 +18699,7 @@ class PlanService:
             if not fr or not to:
                 out.append(it)
                 continue
-            same = fr == to
+            same = fr == to or _place_names_match(fr, to)
             try:
                 dist = float(getattr(it, "distance_km", 0) or 0)
             except (TypeError, ValueError):
@@ -21044,6 +21058,11 @@ class PlanService:
             if _item_type_value(it) != ItemType.TRANSIT.value:
                 out.append(it)
                 continue
+            src = str(getattr(it, "routing_source", "") or "").lower()
+            # FIX #302: return-to-car dest is the park, not the next POI.
+            if src == "return_to_car":
+                out.append(it)
+                continue
             nxt = None
             for later in ordered[i + 1:]:
                 tv = _item_type_value(later)
@@ -21069,7 +21088,7 @@ class PlanService:
                     break
             if nxt:
                 cur = (getattr(it, "to_location", "") or "").strip()
-                if cur.lower() != nxt.lower():
+                if cur and not _place_names_match(cur, nxt):
                     try:
                         it = it.model_copy(update={
                             "to_location": nxt,
@@ -21100,6 +21119,21 @@ class PlanService:
                 if nm:
                     return nm
         return None
+
+    def _day_attraction_names(self, items: List[Any]) -> List[str]:
+        names: List[str] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                continue
+            nm = (getattr(it, "name", "") or "").strip()
+            if nm:
+                names.append(nm)
+        return names
+
+    def _name_is_scheduled_attraction(self, nm: str, names: List[str]) -> bool:
+        if not (nm or "").strip() or not names:
+            return False
+        return any(_place_names_match(nm, s) for s in names)
 
     def _collapse_stacked_transits(
         self,
@@ -21340,6 +21374,39 @@ class PlanService:
                 if seen:
                     print(
                         f"[FIX #301] Day {day_num}: stripped second church "
+                        f"{getattr(it, 'name', '?')}"
+                    )
+                    continue
+                seen = True
+            out.append(it)
+        return out
+
+    def _strip_second_combat_same_day(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #302: CityPaintball + Laser Tag is one combat session, not two."""
+        if not items:
+            return items
+        seen = False
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            is_combat = any(
+                k in nm for k in (
+                    "paintball", "laser tag", "lasertag", "laser arena",
+                    "citypaintball", "city paintball",
+                )
+            )
+            if is_combat:
+                if seen:
+                    print(
+                        f"[FIX #302] Day {day_num}: stripped second combat "
                         f"{getattr(it, 'name', '?')}"
                     )
                     continue
@@ -22690,6 +22757,12 @@ class PlanService:
             items = self._strip_second_church_same_day(
                 items, day_num=getattr(day, "day", 0) or 0,
             )
+            items = self._strip_second_combat_same_day(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._strip_same_day_duplicate_attractions(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
             items = self._drop_over_budget_paid_attractions(
                 items, user, day_num=getattr(day, "day", 0) or 0,
             )
@@ -22857,6 +22930,9 @@ class PlanService:
             items = self._fill_anonymous_midday_gaps(
                 items, ctx, day_num=getattr(day, "day", 0) or 0,
             )
+            items = self._strip_same_day_duplicate_attractions(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
             items = self._name_remaining_holes(
                 items, ctx, day_num=getattr(day, "day", 0) or 0,
             )
@@ -22908,6 +22984,15 @@ class PlanService:
             items = self._strip_transits_to_unscheduled_destinations(
                 items, day_num=getattr(day, "day", 0) or 0,
             )
+            items = self._strip_self_transits(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._ensure_stop_to_stop_legs(
+                items, cm, ctx, day_num=getattr(day, "day", 0) or 0,
+            )
+            items = self._snap_transits_to_previous_stop_end(
+                items, day_num=getattr(day, "day", 0) or 0,
+            )
             items = self._normalize_transit_mode_source(
                 items, day_num=getattr(day, "day", 0) or 0,
             )
@@ -22944,7 +23029,60 @@ class PlanService:
                     date=getattr(day, "date", None),
                     weekday=getattr(day, "weekday", None),
                 ))
-        return self._strip_cross_day_trip_repeats(out_days)
+        out_days = self._strip_cross_day_trip_repeats(out_days)
+        # FIX #302: uniqueness drops POIs — rebuild hops and name leftover holes.
+        repaired: List[Any] = []
+        for day in out_days:
+            items = list(day.items or [])
+            day_num = getattr(day, "day", 0) or 0
+            ctx = {
+                **(context or {}),
+                "date": getattr(day, "date", None) or (context or {}).get("date"),
+                "trip_date": getattr(day, "date", None) or (context or {}).get("trip_date"),
+                "user": user or (context or {}).get("user") or {},
+            }
+            cm = self._merge_coord_map(coord_map or {}, items)
+            items = self._strip_same_day_duplicate_attractions(
+                items, day_num=day_num,
+            )
+            items = self._strip_transits_to_unscheduled_destinations(
+                items, day_num=day_num,
+            )
+            items = self._strip_self_transits(items, day_num=day_num)
+            items = self._ensure_stop_to_stop_legs(
+                items, cm, ctx, day_num=day_num,
+            )
+            items = self._snap_transits_to_previous_stop_end(
+                items, day_num=day_num,
+            )
+            items = self._sanitize_walk_leg_durations(
+                items, cm, day_num=day_num, context=ctx,
+            )
+            items = self._normalize_transit_mode_source(
+                items, day_num=day_num,
+            )
+            items = self._name_remaining_holes(
+                items, ctx, day_num=day_num,
+            )
+            try:
+                repaired.append(DayPlan(
+                    day=day.day,
+                    title=_generate_day_title(items, day.day),
+                    items=items,
+                    quality_badges=getattr(day, "quality_badges", None),
+                    date=getattr(day, "date", None),
+                    weekday=getattr(day, "weekday", None),
+                ))
+            except Exception:
+                from types import SimpleNamespace as _SNS
+                repaired.append(_SNS(
+                    day=day.day,
+                    items=items,
+                    quality_badges=getattr(day, "quality_badges", None),
+                    date=getattr(day, "date", None),
+                    weekday=getattr(day, "weekday", None),
+                ))
+        return repaired
 
     def _drop_over_budget_paid_attractions(
         self,
@@ -23352,6 +23490,22 @@ class PlanService:
                 ) or ""
             ).lower()
             src = str(getattr(it, "routing_source", "") or "").lower()
+            try:
+                km = float(getattr(it, "distance_km", None) or 0)
+            except (TypeError, ValueError):
+                km = 0.0
+            # FIX #302: 4.9 km "walk" is a drive. Do not touch honest ~1.9 km walks.
+            if ("walk" in mode or "foot" in mode) and km >= 2.2:
+                try:
+                    it = it.model_copy(update={
+                        "mode": TransitMode.CAR,
+                        "routing_source": "estimated_road",
+                    })
+                    fixed += 1
+                except Exception:
+                    pass
+                out.append(it)
+                continue
             want = None
             if "walk" in mode or "foot" in mode:
                 if src in ("estimated_road", "estimated", "haversine"):
@@ -25434,6 +25588,8 @@ class PlanService:
             for x in ordered
         )
         # FIX #300: walking prefix — car is already at the first stop.
+        # FIX #302: ignore ghost walk-from that is not on the day.
+        attr_names = self._day_attraction_names(ordered)
         if later_car:
             for seed_it in ordered:
                 tv0 = _item_type_value(seed_it)
@@ -25449,15 +25605,20 @@ class PlanService:
                         break
                     if "walk" in mode0:
                         frm0 = (getattr(seed_it, "from_location", None) or "").strip()
-                        if frm0:
+                        if frm0 and self._name_is_scheduled_attraction(
+                            frm0, attr_names,
+                        ):
                             car_parked_at = frm0
-                        break
+                            break
+                        continue
                     continue
                 if _is_timeline_attraction(seed_it):
                     nm0 = (getattr(seed_it, "name", None) or "").strip()
                     if nm0:
                         car_parked_at = nm0
                     break
+            if not car_parked_at and attr_names:
+                car_parked_at = attr_names[0]
         out: List[Any] = []
         for it in ordered:
             tv = _item_type_value(it)
@@ -27263,10 +27424,25 @@ class PlanService:
         for (ia, _a0), (ib, _b0) in zip(stops, stops[1:]):
             a = ordered[ia]
             b = ordered[ib]
-            if any(
-                _item_type_value(x) == ItemType.TRANSIT.value
-                for x in ordered[ia + 1:ib]
-            ):
+            name_b_preview = (
+                (getattr(b, "name", "") or "").strip()
+                if _is_timeline_attraction(b)
+                else (self._occupied_stop_name(b) or "")
+            )
+            between = ordered[ia + 1:ib]
+            hop_hits_b = False
+            last_to = None
+            for x in between:
+                if _item_type_value(x) != ItemType.TRANSIT.value:
+                    continue
+                to = (getattr(x, "to_location", "") or "").strip()
+                if to:
+                    last_to = to
+                if name_b_preview and to and _place_names_match(to, name_b_preview):
+                    hop_hits_b = True
+                    break
+            # FIX #302: return_to_car to Aula is not a hop to Pergola.
+            if hop_hits_b:
                 continue
             pa, pb = _stop_point(a), _stop_point(b)
             if not pa or not pb:
@@ -27275,8 +27451,18 @@ class PlanService:
             name_b, pt_b = pb
             if not name_a or not name_b:
                 continue
-            if name_a.strip().lower() == name_b.strip().lower():
+            if _place_names_match(name_a, name_b):
                 continue
+            attr_names = self._day_attraction_names(ordered)
+            if (
+                last_to
+                and self._name_is_scheduled_attraction(last_to, attr_names)
+                and not _place_names_match(last_to, name_b)
+            ):
+                pt_last = self._lookup_coords(poi_coords, last_to)
+                name_a = last_to
+                if pt_last:
+                    pt_a = pt_last
             km = 0.5
             micro = False
             if pt_a and pt_b:
