@@ -2007,6 +2007,9 @@ class PlanService:
             "jaskinia łokietka", "jaskinia lokietka",
             "fontanna multimedial",
             "strefa wakacji",
+            # FIX #303: Arboretum Wojsławice is closed in February.
+            "arboretum wojsławice", "arboretum wojslawice",
+            "arboretum wojsław", "arboretum wojslaw",
         )
         _is_winter = False
         try:
@@ -19696,12 +19699,26 @@ class PlanService:
                     f"{getattr(it, 'name', None) or _item_type_value(it)} @{st}"
                 )
                 continue
+            # FIX #303: dinner/transit that starts after the window is not a 40-min grace.
+            if st_m >= end_limit and tv in (
+                ItemType.DINNER_BREAK.value, ItemType.LUNCH_BREAK.value,
+                ItemType.TRANSIT.value, ItemType.FREE_TIME.value,
+            ):
+                print(
+                    f"[FIX #303] Day {day_num}: dropped after day_end "
+                    f"{getattr(it, 'name', None) or tv} @{st}"
+                )
+                continue
             if en_m <= end_limit:
                 out.append(it)
                 continue
             tv = _item_type_value(it)
-            # FIX #288/#290: dinner may overrun by ≤40 min; attractions are clipped.
-            if tv == ItemType.DINNER_BREAK.value and (en_m - end_limit) <= 40:
+            # FIX #288/#290: dinner may overrun by ≤40 min if it started on time.
+            if (
+                tv == ItemType.DINNER_BREAK.value
+                and st_m < end_limit
+                and (en_m - end_limit) <= 40
+            ):
                 out.append(it)
                 continue
             if tv == ItemType.TRANSIT.value and (en_m - end_limit) <= 20:
@@ -23048,6 +23065,15 @@ class PlanService:
             items = self._strip_transits_to_unscheduled_destinations(
                 items, day_num=day_num,
             )
+            items = self._collapse_stacked_transits(
+                items, day_num=day_num, context=ctx,
+            )
+            items = self._retarget_all_legs_to_prev_stop(
+                items, day_num=day_num, context=ctx,
+            )
+            items = self._retarget_all_legs_to_next_stop(
+                items, day_num=day_num,
+            )
             items = self._strip_self_transits(items, day_num=day_num)
             items = self._ensure_stop_to_stop_legs(
                 items, cm, ctx, day_num=day_num,
@@ -23055,11 +23081,26 @@ class PlanService:
             items = self._snap_transits_to_previous_stop_end(
                 items, day_num=day_num,
             )
+            items = self._force_short_city_hops_walk(
+                items, day_num=day_num,
+            )
             items = self._sanitize_walk_leg_durations(
                 items, cm, day_num=day_num, context=ctx,
             )
+            items = self._sync_transit_duration_to_clock(
+                items, day_num=day_num,
+            )
             items = self._normalize_transit_mode_source(
                 items, day_num=day_num,
+            )
+            items = self._snap_meals_to_nearby_restaurants(
+                items, ctx, user, day_num=day_num,
+            )
+            items = self._eat_free_time_to_fit_day_end(
+                items, ctx, day_num=day_num,
+            )
+            items = self._clamp_timeline_to_day_end(
+                items, ctx, day_num=day_num,
             )
             items = self._name_remaining_holes(
                 items, ctx, day_num=day_num,
@@ -26676,6 +26717,8 @@ class PlanService:
                     "duration_min": start - st,
                 }))
             # else drop overlapping free_time
+        if start >= end_limit or dur < 40:
+            return items
         trimmed.append(DinnerBreakItem(
             type=ItemType.DINNER_BREAK,
             start_time=minutes_to_time(start),

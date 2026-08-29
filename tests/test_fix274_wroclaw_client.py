@@ -45,7 +45,7 @@ def test_fix274_winter_wojslawice_and_labirynt_denied():
         "travel_style": "balanced",
         "start_date": "2026-02-20",
     }
-    # FIX #283: Arboretum is wanted on the Niemcza nature day even in February.
+    # Profile deny stays off — seasonality is what closes the garden.
     assert not should_deny_poi_for_profile({"name": "Arboretum Wojsławice"}, user)
     assert should_deny_poi_for_profile({"name": "Grabowy Labirynt"}, user)
     kept = filter_by_season(
@@ -53,8 +53,10 @@ def test_fix274_winter_wojslawice_and_labirynt_denied():
         "2026-02-20",
     )
     names = " ".join(p["name"].lower() for p in kept)
-    assert "wojsławice" in names or "wojslawice" in names or "arboretum" in names
+    # FIX #303: Arboretum is closed in February (client leftover).
+    assert "arboretum" not in names
     assert "grabowy" not in names
+    assert "rynek" in names
 
 
 def test_fix274_kids_only_and_seniors():

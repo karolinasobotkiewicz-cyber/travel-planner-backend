@@ -74,8 +74,10 @@ def filter_by_season(pois, current_date):
                 "tramwaj wodny", "statek wycieczk",
                 # FIX #240 Wrocław: fontanna multimedialna + arboretum sezonowe
                 "fontanna multimedialna", "fontanna multimedial",
-                # FIX #283: Arboretum Wojsławice stays available in February
-                # for the Niemcza nature day-trip (client json4 D5).
+                # FIX #303: Arboretum Wojsławice is closed in February
+                # (client leftover). Niemcza / Dolina Tatarska stay.
+                "arboretum wojsławice", "arboretum wojslawice",
+                "arboretum wojsław", "arboretum wojslaw",
                 "grabowy labirynt",
                 # FIX #253: client — Ogród Botaniczny / Japoński closed in February.
                 "ogród botaniczny", "ogrod botaniczny",
