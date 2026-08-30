@@ -1653,6 +1653,30 @@ class PlanService:
                 extras = dict(extras)
                 extras["routing_source"] = "estimated_road"
             updated = transit_item.model_copy(update=extras)
+            # FIX #304: ORS/estimate must not relabel a 5 km hop as a 10-min walk.
+            try:
+                _km = float(
+                    extras.get("distance_km")
+                    or getattr(updated, "distance_km", None)
+                    or 0
+                )
+            except (TypeError, ValueError):
+                _km = 0.0
+            _mode = str(
+                getattr(
+                    getattr(updated, "mode", None), "value",
+                    getattr(updated, "mode", ""),
+                ) or ""
+            ).lower()
+            if (
+                _km >= 2.2
+                and ("walk" in _mode or "foot" in _mode)
+                and bool(context.get("has_car", True))
+            ):
+                updated = updated.model_copy(update={
+                    "mode": TransitMode.CAR,
+                    "routing_source": "estimated_road",
+                })
             if extras.get("duration_min"):
                 dm = int(extras["duration_min"])
                 if dm > (getattr(transit_item, "duration_min", 0) or 0):
@@ -21296,7 +21320,7 @@ class PlanService:
                 last_name
                 and last_end is not None
                 and _place_names_match(frm, last_name)
-                and st < last_end - 1
+                and (st < last_end - 1 or st > last_end + 4)
             ):
                 dur = int(getattr(it, "duration_min", 0) or 0)
                 if dur <= 0:
@@ -21314,7 +21338,7 @@ class PlanService:
                         "duration_min": dur,
                     })
                     print(
-                        f"[FIX #300] Day {day_num}: snapped transit after "
+                        f"[FIX #300/#304] Day {day_num}: snapped transit after "
                         f"{last_name} to {minutes_to_time(last_end)}"
                     )
                 except Exception:
@@ -23093,8 +23117,32 @@ class PlanService:
             items = self._normalize_transit_mode_source(
                 items, day_num=day_num,
             )
+            items = self._honest_transit_physics(
+                items, day_num=day_num, context=ctx,
+            )
             items = self._snap_meals_to_nearby_restaurants(
                 items, ctx, user, day_num=day_num,
+            )
+            items = self._retarget_all_legs_to_prev_stop(
+                items, day_num=day_num, context=ctx,
+            )
+            items = self._retarget_all_legs_to_next_stop(
+                items, day_num=day_num,
+            )
+            items = self._ensure_stop_to_stop_legs(
+                items, cm, ctx, day_num=day_num,
+            )
+            items = self._honest_transit_physics(
+                items, day_num=day_num, context=ctx,
+            )
+            items = self._sync_transit_duration_to_clock(
+                items, day_num=day_num,
+            )
+            items = self._snap_transits_to_previous_stop_end(
+                items, day_num=day_num,
+            )
+            items = self._eat_long_free_time_before_attraction(
+                items, day_num=day_num,
             )
             items = self._eat_free_time_to_fit_day_end(
                 items, ctx, day_num=day_num,
@@ -23123,7 +23171,60 @@ class PlanService:
                     date=getattr(day, "date", None),
                     weekday=getattr(day, "weekday", None),
                 ))
-        return repaired
+        # FIX #304: fill can re-plant icons during the first polish loop;
+        # uniqueness after hop rebuild is the last word on 5-day Wrocław dupes.
+        repaired = self._strip_cross_day_trip_repeats(repaired)
+        final: List[Any] = []
+        for day in repaired:
+            items = list(day.items or [])
+            day_num = getattr(day, "day", 0) or 0
+            ctx = {
+                **(context or {}),
+                "date": getattr(day, "date", None) or (context or {}).get("date"),
+                "trip_date": getattr(day, "date", None) or (context or {}).get("trip_date"),
+                "user": user or (context or {}).get("user") or {},
+            }
+            cm = self._merge_coord_map(coord_map or {}, items)
+            items = self._strip_transits_to_unscheduled_destinations(
+                items, day_num=day_num,
+            )
+            items = self._retarget_all_legs_to_prev_stop(
+                items, day_num=day_num, context=ctx,
+            )
+            items = self._retarget_all_legs_to_next_stop(
+                items, day_num=day_num,
+            )
+            items = self._ensure_stop_to_stop_legs(
+                items, cm, ctx, day_num=day_num,
+            )
+            items = self._honest_transit_physics(
+                items, day_num=day_num, context=ctx,
+            )
+            items = self._snap_transits_to_previous_stop_end(
+                items, day_num=day_num,
+            )
+            items = self._name_remaining_holes(
+                items, ctx, day_num=day_num,
+            )
+            try:
+                final.append(DayPlan(
+                    day=day.day,
+                    title=_generate_day_title(items, day.day),
+                    items=items,
+                    quality_badges=getattr(day, "quality_badges", None),
+                    date=getattr(day, "date", None),
+                    weekday=getattr(day, "weekday", None),
+                ))
+            except Exception:
+                from types import SimpleNamespace as _SNS
+                final.append(_SNS(
+                    day=day.day,
+                    items=items,
+                    quality_badges=getattr(day, "quality_badges", None),
+                    date=getattr(day, "date", None),
+                    weekday=getattr(day, "weekday", None),
+                ))
+        return final
 
     def _drop_over_budget_paid_attractions(
         self,
@@ -23568,6 +23669,108 @@ class PlanService:
             )
         return out
 
+    def _honest_transit_physics(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #304: walk/car and duration must be physically possible.
+
+        Client leftover: 0.73 km / 2 min walk, 5.5 km / 10 min walk,
+        4.8 km / 3 min walk, walk+estimated_road on 2.8–4.8 km hops.
+        Honest ~1.9 km city walks stay walks.
+        """
+        if not items:
+            return items
+        has_car = bool((context or {}).get("has_car", True))
+        out: List[Any] = []
+        fixed = 0
+        for it in items:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            mode = str(
+                getattr(
+                    getattr(it, "mode", None), "value", getattr(it, "mode", "")
+                ) or ""
+            ).lower()
+            src = str(getattr(it, "routing_source", "") or "").lower()
+            try:
+                km = float(getattr(it, "distance_km", None) or 0)
+            except (TypeError, ValueError):
+                km = 0.0
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+                span = en - st
+                dur = int(getattr(it, "duration_min", 0) or 0)
+            except Exception:
+                out.append(it)
+                continue
+            is_walk = "walk" in mode or "foot" in mode
+            upd: Dict[str, Any] = {}
+            if is_walk and km >= 2.2 and has_car:
+                need = max(8, int(round(km / 45.0 * 60)) + 5)
+                upd = {
+                    "mode": TransitMode.CAR,
+                    "routing_source": "estimated_road",
+                    "duration_min": max(need, dur if dur >= need else need),
+                }
+                if dur >= need and span >= need - 1:
+                    upd["duration_min"] = span if span > 0 else dur
+                else:
+                    upd["end_time"] = minutes_to_time(st + need)
+                    upd["duration_min"] = need
+            elif is_walk and km >= 0.25:
+                expected = max(3, int(round(km / 4.5 * 60)) + 2)
+                clock = span if span > 0 else dur
+                if clock < expected * 0.55 or dur < expected * 0.55:
+                    upd = {
+                        "mode": TransitMode.WALK,
+                        "routing_source": "estimated_walk",
+                        "duration_min": expected,
+                        "end_time": minutes_to_time(st + expected),
+                    }
+                elif "road" in src or src in ("estimated", "haversine"):
+                    upd = {"routing_source": "estimated_walk"}
+            elif (not is_walk) and km >= 0.8:
+                expected_car = max(8, int(round(km / 50.0 * 60)) + 6)
+                clock = span if span > 0 else dur
+                if clock < expected_car * 0.50 or dur < expected_car * 0.50:
+                    upd = {
+                        "duration_min": expected_car,
+                        "end_time": minutes_to_time(st + expected_car),
+                        "routing_source": "estimated_road",
+                    }
+            if is_walk and km < 2.2 and (
+                "road" in src or src in ("estimated", "haversine")
+            ) and "routing_source" not in upd:
+                upd["routing_source"] = "estimated_walk"
+            if not upd:
+                if span > 0 and abs(span - dur) >= 2:
+                    upd["duration_min"] = span
+                if upd:
+                    try:
+                        out.append(it.model_copy(update=upd))
+                        fixed += 1
+                    except Exception:
+                        out.append(it)
+                else:
+                    out.append(it)
+                continue
+            try:
+                out.append(it.model_copy(update=upd))
+                fixed += 1
+            except Exception:
+                out.append(it)
+        if fixed:
+            print(
+                f"[FIX #304] Day {day_num}: honest physics on {fixed} transit(s)"
+            )
+        return out
+
     def _force_short_city_hops_walk(
         self,
         items: List[Any],
@@ -23741,7 +23944,11 @@ class PlanService:
                 new_dur = max(2, int(round(km_dec / 4.5 * 60)) + 1)
                 # A 5-min neighbour hop is already honest; shrinking it to 2
                 # on a second finalize pass reopens named holes (13:55 vs 13:58).
-                if "walk" in mode and "car" not in mode and dur - new_dur < 6:
+                # FIX #304: do not skip when duration is *too short* (0.73 km / 2 min).
+                if (
+                    "walk" in mode and "car" not in mode
+                    and dur >= new_dur and dur - new_dur < 6
+                ):
                     out.append(it)
                     continue
                 upd_micro = {
@@ -27583,7 +27790,40 @@ class PlanService:
                     except Exception:
                         b_start = a_end + dur
                     gap = b_start - a_end
-            dur = min(dur, max(5, gap)) if gap >= 5 else 5
+            walk_min = km / 4.5 * 60
+            if km >= 2.2 and ctx.get("has_car", True):
+                mode_str = "car"
+            elif "walk" in mode_str and dur < walk_min - 2 and ctx["has_car"]:
+                mode_str = "car"
+            honest = (
+                max(3, int(round(km / 4.5 * 60)) + 2)
+                if "walk" in mode_str
+                else max(8, int(round(km / 45.0 * 60)) + 5)
+            )
+            if km >= 0.25 and dur < honest:
+                dur = honest
+            if gap < dur:
+                self._shift_later_timeline_items(ordered, ib, dur - max(gap, 0))
+                b = ordered[ib]
+                try:
+                    b_start = time_to_minutes(
+                        getattr(b, "start_time", None) or ""
+                    )
+                except Exception:
+                    b_start = a_end + dur
+                gap = b_start - a_end
+            elif gap >= 5:
+                dur = min(dur, gap)
+                if km >= 0.25 and dur < honest * 0.55:
+                    dur = honest
+                    self._shift_later_timeline_items(ordered, ib, dur - gap)
+                    b = ordered[ib]
+                    try:
+                        b_start = time_to_minutes(
+                            getattr(b, "start_time", None) or ""
+                        )
+                    except Exception:
+                        b_start = a_end + dur
             if gap < 5:
                 self._shift_later_timeline_items(ordered, ib, 5 - gap)
                 b = ordered[ib]
@@ -27593,9 +27833,6 @@ class PlanService:
                     )
                 except Exception:
                     b_start = a_end + 5
-            walk_min = km / 4.5 * 60
-            if "walk" in mode_str and dur < walk_min - 2 and ctx["has_car"]:
-                mode_str = "car"
             mode = TransitMode.WALK if "walk" in mode_str else TransitMode.CAR
             t_en = b_start
             t_st = max(a_end, t_en - dur)
@@ -29351,10 +29588,10 @@ class PlanService:
         if not items:
             return items
         try:
-            end_limit = time_to_minutes(context.get("day_end") or "")
-            start_limit = time_to_minutes(context.get("day_start") or "")
+            end_limit = time_to_minutes(context.get("day_end") or "20:00")
+            start_limit = time_to_minutes(context.get("day_start") or "09:00")
         except Exception:
-            return items
+            end_limit, start_limit = 20 * 60, 9 * 60
         # Include tails that end exactly at day_end (client idle-tail defects).
         # FIX #263: name 10–14 min holes too (Wrocław client gap audits).
         holes = [
