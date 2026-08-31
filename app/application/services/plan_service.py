@@ -11811,8 +11811,12 @@ class PlanService:
                 closes = 18 * 60
             if "zajezdnia" in nm:
                 closes = 18 * 60
-            if any(k in nm for k in ("wilanów", "wilanow")):
+            if any(k in nm for k in ("wilanów", "wilanow", "wilanowi")):
                 last_entry = (15 * 60) if wd == 0 else (16 * 60)
+            if "muzeum powstania" in nm:
+                opens = 10 * 60 if opens is None else opens
+            if "stacja muzeum" in nm:
+                opens = 10 * 60 if opens is None else opens
             if "etnograficzn" in nm:
                 closes = 18 * 60
             if "ewolucji" in nm:
@@ -13635,6 +13639,10 @@ class PlanService:
             "park bednarskiego",
             "hala stulecia",
             "bazylika archikatedral",
+            # FIX #306 Warszawa leftover icons
+            "ogród na dachu", "ogrod na dachu",
+            "dachu biblioteki",
+            "stacja muzeum",
             # FIX #301 Poznań / Katowice leftover icons
             "stary rynek",
             "park wilsona",
@@ -21466,9 +21474,32 @@ class PlanService:
         last_nm = ""
         out: List[Any] = []
         meal_types = {ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value}
+        _HUB = {
+            "warszawa", "warsaw", "warszawa centrum", "centrum",
+            "kraków", "krakow", "wrocław", "wroclaw",
+            "poznań", "poznan", "katowice",
+            "bulwary", "bulwary wiślane", "bulwary wislane",
+        }
         for it in items:
             if _is_timeline_attraction(it):
                 last_nm = (getattr(it, "name", "") or "").strip()
+                out.append(it)
+                continue
+            if _item_type_value(it) == ItemType.TRANSIT.value:
+                to = (getattr(it, "to_location", "") or "").strip()
+                to_l = to.lower()
+                arrived_elsewhere = bool(to) and (
+                    to_l in _HUB
+                    or to_l.endswith(" centrum")
+                    or to_l.startswith("warszawa")
+                    or (
+                        last_nm
+                        and not _place_names_match(to, last_nm)
+                        and not _timeline_satellite_kind(to)
+                    )
+                )
+                if arrived_elsewhere:
+                    last_nm = to
                 out.append(it)
                 continue
             if _item_type_value(it) not in meal_types:
@@ -23435,6 +23466,19 @@ class PlanService:
             items = self._retarget_all_legs_to_next_stop(
                 items, day_num=day_num,
             )
+            items = self._reset_stale_meal_location_context(
+                items, day_num=day_num,
+            )
+            items = self._snap_meals_to_nearby_restaurants(
+                items, ctx, user, day_num=day_num,
+            )
+            items = self._ensure_leading_transit(
+                items, cm, ctx, day_num=day_num,
+            )
+            items = self._strip_after_hours_museums(
+                items, day_num=day_num,
+                trip_date=ctx.get("date") or ctx.get("trip_date"),
+            )
             items = self._repair_transit_endpoints_late(
                 items, cm, ctx, day_num=day_num,
             )
@@ -24000,7 +24044,12 @@ class PlanService:
             elif (not is_walk) and km >= 0.8:
                 expected_car = max(8, int(round(km / 50.0 * 60)) + 6)
                 clock = span if span > 0 else dur
-                if clock < expected_car * 0.50 or dur < expected_car * 0.50:
+                # FIX #306: 38–54 km in 12 min timestamps (Kampinos / Granica).
+                if km >= 8:
+                    expected_car = max(expected_car, max(dur, int(round(km / 50.0 * 60)) + 8))
+                if clock < expected_car * 0.50 or dur < expected_car * 0.50 or (
+                    km >= 8 and clock <= 15
+                ):
                     upd = {
                         "duration_min": expected_car,
                         "end_time": minutes_to_time(st + expected_car),
