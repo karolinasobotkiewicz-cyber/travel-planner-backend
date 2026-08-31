@@ -79,6 +79,9 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("ogrod krasinskich", "waw_ogrod_krasinskich"),
         ("ogród saski", "waw_ogrod_saski"),
         ("ogrod saski", "waw_ogrod_saski"),
+        # FIX #309: Kraków UJ garden before generic (Warsaw) botaniczny.
+        ("ogród botaniczny uj", "krk_botaniczny"),
+        ("ogrod botaniczny uj", "krk_botaniczny"),
         ("ogród botaniczny", "waw_ogrod_botaniczny"),
         ("ogrod botaniczny", "waw_ogrod_botaniczny"),
         ("łazienki królewskie", "waw_lazienki"),
@@ -425,6 +428,14 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     if any(k in name for k in ("bajkowy labirynt", "guliwer", "holiday park")):
         if tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
             return True
+
+    # FIX #309: butterfly museum is filler on underground/history adventure days.
+    if any(k in name for k in ("żywego motyla", "zywego motyla", "muzeum motyla")):
+        if tg == "friends" and adv and (
+            "underground" in prefs or "history_mystery" in prefs
+        ):
+            if "kids_attractions" not in prefs:
+                return True
 
     if "cybermagia" in name:
         # FIX #308: VR is a weak cultural match (Katowice json 2).

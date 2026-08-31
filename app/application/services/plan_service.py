@@ -287,6 +287,10 @@ _KATOWICE_GISZOWIEC_COORDS = (50.2300, 19.0680)
 _KATOWICE_PAPROCANY_COORDS = (50.0960, 19.0200)
 _KATOWICE_MHK_COORDS = (50.2586, 19.0215)
 _TYCHY_WODNY_COORDS = (50.1230, 19.0070)
+_KRAKOW_LOTNICTWA_COORDS = (50.0778, 19.9917)
+_KRAKOW_GOJUMP_COORDS = (50.0385, 19.9380)
+_KRAKOW_BULWARY_COORDS = (50.0520, 19.9566)
+_KRAKOW_SCHINDLER_COORDS = (50.0474, 19.9617)
 _ZABRZE_NAME_MARKERS = (
     "zabrze", "zabrzu", "guido", "królowa luiza", "krolowa luiza", "sztolnia",
     "animalworld", "animal world",
@@ -422,6 +426,8 @@ def _timeline_satellite_kind(name: str) -> Optional[str]:
         return "bochnia"
     if _is_wieliczka_stop_name(nm):
         return "wieliczka"
+    if "muzeum lotnictwa" in nm or "gojump" in nm or "mateczn" in nm:
+        return "czyzyny"
     if _is_tenczyn_stop_name(nm):
         return "tenczyn"
     if _is_wisnicz_stop_name(nm):
@@ -548,8 +554,26 @@ def _katowice_seed_coords(name: str) -> Optional[tuple]:
     return None
 
 
+def _krakow_seed_coords(name: str) -> Optional[tuple]:
+    """FIX #309: Lotnictwo / GOjump / Bulwary seeds for first hops."""
+    nm = (name or "").lower()
+    if "muzeum lotnictwa" in nm:
+        return _KRAKOW_LOTNICTWA_COORDS
+    if "gojump" in nm or "mateczn" in nm:
+        return _KRAKOW_GOJUMP_COORDS
+    if "bulwary" in nm:
+        return _KRAKOW_BULWARY_COORDS
+    if "schindler" in nm:
+        return _KRAKOW_SCHINDLER_COORDS
+    return None
+
+
 def _seed_first_stop_coords(name: str) -> Optional[tuple]:
-    return _poznan_seed_coords(name) or _katowice_seed_coords(name)
+    return (
+        _poznan_seed_coords(name)
+        or _katowice_seed_coords(name)
+        or _krakow_seed_coords(name)
+    )
 
 
 def _is_kampinos_stop_name(name: str) -> bool:
@@ -11881,6 +11905,11 @@ class PlanService:
                 closes = 17 * 60
             if "muzeum lotnictwa" in nm:
                 closes = 18 * 60
+            if "muzeum narodowe" in nm:
+                closes = 18 * 60
+                last_entry = 16 * 60 + 30 if last_entry is None else min(last_entry, 16 * 60 + 30)
+            if "archeologiczn" in nm:
+                opens = 10 * 60 if opens is None else opens
             if "zajezdnia" in nm:
                 closes = 18 * 60
             if any(k in nm for k in ("wilanów", "wilanow", "wilanowi")):
@@ -18313,6 +18342,11 @@ class PlanService:
                 cap = 40 if cap is None else min(int(cap), 40)
             if "błonia" in nm_l or "blonia" in nm_l:
                 cap = 45 if cap is None else min(int(cap), 45)
+            if any(k in nm_l for k in ("skałki twardow", "skalki twardow", "twardowskiego")):
+                cap = 90 if cap is None else min(int(cap), 90)
+            if "kopiec krakusa" in nm_l:
+                cap = 60 if cap is None else min(int(cap), 60)
+                floor = max(floor, 40)
             if "tężnia" in nm_l or "teznia" in nm_l:
                 cap = 30 if cap is None else min(int(cap), 30)
             if "wioski świata" in nm_l or "wioski swiata" in nm_l:
@@ -21295,6 +21329,16 @@ class PlanService:
                         nxt = nm
                         break
             to = (getattr(it, "to_location", "") or "").strip()
+            frm = (getattr(it, "from_location", "") or "").strip()
+            try:
+                km = float(getattr(it, "distance_km", None) or 0)
+            except (TypeError, ValueError):
+                km = 0.0
+            if frm and to and _place_names_match(frm, to) and km < 0.15:
+                print(
+                    f"[FIX #309] Day {day_num}: dropped 0 km self-hop {frm!r}"
+                )
+                continue
             if nxt and to and not _place_names_match(to, nxt):
                 print(
                     f"[FIX #308] Day {day_num}: dropped hop → {to!r} "
@@ -23135,6 +23179,7 @@ class PlanService:
                     "szyb wilson", "nikiszowiec", "paprocan",
                     "chrobrego", "chopina", "willa caro", "sensorycz",
                     "wodny park", "tych", "szyb maciej",
+                    "muzeum lotnictwa", "gojump", "mateczn",
                 )
             )
             if not far_name and km < 8:
@@ -24258,7 +24303,7 @@ class PlanService:
                 else:
                     upd["end_time"] = minutes_to_time(st + need)
                     upd["duration_min"] = need
-            elif is_walk and km >= 0.25:
+            elif is_walk and km >= 0.12:
                 expected = max(3, int(round(km / 4.5 * 60)) + 2)
                 clock = span if span > 0 else dur
                 # FIX #305: 1.83 km in 6 min is a sprint, not a city walk.
@@ -24266,13 +24311,23 @@ class PlanService:
                     clock < expected * 0.55
                     or dur < expected * 0.55
                     or (km >= 1.5 and min(clock, dur or clock) <= 8)
+                    or (km >= 0.7 and min(clock, dur or clock) <= 8)
                 )
+                too_slow_micro = km < 0.35 and max(clock, dur) >= 12
                 if too_fast:
                     upd = {
                         "mode": TransitMode.WALK,
                         "routing_source": "estimated_walk",
                         "duration_min": expected,
                         "end_time": minutes_to_time(st + expected),
+                    }
+                elif too_slow_micro:
+                    need = max(3, int(round(km / 4.5 * 60)) + 2)
+                    upd = {
+                        "mode": TransitMode.WALK,
+                        "routing_source": "estimated_walk",
+                        "duration_min": need,
+                        "end_time": minutes_to_time(st + need),
                     }
                 elif "road" in src or src in ("estimated", "haversine"):
                     upd = {"routing_source": "estimated_walk"}
@@ -24295,7 +24350,11 @@ class PlanService:
             ) and "routing_source" not in upd:
                 upd["routing_source"] = "estimated_walk"
             if not upd:
-                if span > 0 and abs(span - dur) >= 2:
+                # FIX #309: duration_min 30 vs clock 5 min — expand the clock, do not shrink.
+                if span > 0 and dur > span + 2:
+                    upd["end_time"] = minutes_to_time(st + dur)
+                    upd["duration_min"] = dur
+                elif span > 0 and abs(span - dur) >= 2:
                     upd["duration_min"] = span
                 if upd:
                     try:
