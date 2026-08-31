@@ -272,6 +272,14 @@ _PUSZCZYKOWO_NAME_MARKERS = (
 )
 _GNIEZNO_DEFAULT_COORDS = (52.5347, 17.5826)
 _KORNIK_DEFAULT_COORDS = (52.2442, 17.0903)
+# FIX #307: Poznań first-stop / satellite seeds when Excel coords are missing.
+_POZNAN_STARE_ZOO_COORDS = (52.4175, 16.9070)
+_POZNAN_NOWE_ZOO_COORDS = (52.4015, 16.9948)
+_POZNAN_RUSALKA_COORDS = (52.4263, 16.8784)
+_POZNAN_BRAMA_COORDS = (52.4116, 16.9514)
+_POZNAN_OSTROW_TUMSKI_COORDS = (52.4118, 16.9478)
+_ROGALIN_DEFAULT_COORDS = (52.2444, 16.9000)
+_LEDNICA_DEFAULT_COORDS = (52.5269, 17.3756)
 _ZABRZE_NAME_MARKERS = (
     "zabrze", "zabrzu", "guido", "królowa luiza", "krolowa luiza", "sztolnia",
     "animalworld", "animal world",
@@ -481,6 +489,26 @@ def _is_kornik_stop_name(name: str) -> bool:
 def _is_rogalin_stop_name(name: str) -> bool:
     nm = (name or "").lower()
     return any(k in nm for k in _ROGALIN_NAME_MARKERS)
+
+
+def _poznan_seed_coords(name: str) -> Optional[tuple]:
+    """FIX #307: default lat/lng so first hops / satellite drives can be built."""
+    nm = (name or "").lower()
+    if "stare zoo" in nm:
+        return _POZNAN_STARE_ZOO_COORDS
+    if "nowe zoo" in nm:
+        return _POZNAN_NOWE_ZOO_COORDS
+    if "rusałk" in nm or "rusalk" in nm:
+        return _POZNAN_RUSALKA_COORDS
+    if "brama poznania" in nm:
+        return _POZNAN_BRAMA_COORDS
+    if "ostrów tumski" in nm or "ostrow tumski" in nm:
+        return _POZNAN_OSTROW_TUMSKI_COORDS
+    if _is_rogalin_stop_name(nm):
+        return _ROGALIN_DEFAULT_COORDS
+    if any(k in nm for k in ("lednick", "dziekanowic")):
+        return _LEDNICA_DEFAULT_COORDS
+    return None
 
 
 def _is_kampinos_stop_name(name: str) -> bool:
@@ -8548,6 +8576,9 @@ class PlanService:
         if ticket_reduced_value is None:
             ticket_reduced_value = 0
         ticket_reduced_value = float(ticket_reduced_value) if ticket_reduced_value else 0.0
+        # FIX #307: ulgowy cannot exceed normal (Poznań Zamek 20 / 45).
+        if ticket_normal_value > 0 and ticket_reduced_value > ticket_normal_value:
+            ticket_reduced_value = ticket_normal_value
         
         # ETAP 2 Day 5: Generate explainability and quality badges
         if context is None:
@@ -11817,6 +11848,9 @@ class PlanService:
                 opens = 10 * 60 if opens is None else opens
             if "stacja muzeum" in nm:
                 opens = 10 * 60 if opens is None else opens
+            if "wielkopolsk" in nm and "powstania" in nm:
+                opens = 10 * 60
+                closes = 16 * 60
             if "etnograficzn" in nm:
                 closes = 18 * 60
             if "ewolucji" in nm:
@@ -13643,6 +13677,7 @@ class PlanService:
             "ogród na dachu", "ogrod na dachu",
             "dachu biblioteki",
             "stacja muzeum",
+            "park cytadela",
             # FIX #301 Poznań / Katowice leftover icons
             "stary rynek",
             "park wilsona",
@@ -18996,6 +19031,16 @@ class PlanService:
                 ordered[first_idx] = first_stop
             except Exception:
                 pass
+        seed = _poznan_seed_coords(name)
+        if seed and (not poi.get("lat") or not poi.get("lng")):
+            poi["lat"], poi["lng"] = seed
+            try:
+                first_stop = first_stop.model_copy(update={
+                    "lat": seed[0], "lng": seed[1],
+                })
+                ordered[first_idx] = first_stop
+            except Exception:
+                pass
         try:
             to_lat = float(poi.get("lat") or 0)
             to_lng = float(poi.get("lng") or 0)
@@ -19055,7 +19100,9 @@ class PlanService:
         if _is_wojslawice_stop_name(name):
             dur = min(60, max(50, dur))
             dist_km = max(dist_km, 50.0)
-        if gap < 8 and dur < 15:
+        # FIX #307: Stare/Nowe Zoo, Rusałka, Brama Poznania start at day_start
+        # with gap=0 — still need the approach hop (was skipped when dur<15).
+        if dist_km < 0.8 and gap < 8 and dur < 10:
             return items
 
         # A 66 km excursion cannot start 10 minutes after day_start: buy the
@@ -21471,6 +21518,10 @@ class PlanService:
         day_num: int = 0,
     ) -> List[Any]:
         """FIX #301: lunch next to AnimalWorld must not keep Wodny Park Tychy context."""
+        try:
+            items = self._sort_items_by_time(list(items))
+        except Exception:
+            items = list(items)
         last_nm = ""
         out: List[Any] = []
         meal_types = {ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value}
@@ -22893,7 +22944,9 @@ class PlanService:
         centre = _city_center_coords(city)
         inserts: List[tuple] = []
         for i, it in enumerate(ordered):
-            if _item_type_value(it) not in meal_types:
+            is_meal = _item_type_value(it) in meal_types
+            is_attr = _is_timeline_attraction(it)
+            if not is_meal and not is_attr:
                 continue
             nxt = None
             for later in ordered[i + 1:]:
@@ -22919,7 +22972,19 @@ class PlanService:
             if already:
                 continue
             from_nm = self._occupied_stop_name(it) or city or "centrum"
+            if is_attr:
+                from_nm = (getattr(it, "name", "") or "").strip() or from_nm
             frm = self._lookup_coords(coord_map or {}, from_nm)
+            if frm is None and is_attr:
+                try:
+                    if getattr(it, "lat", None) is not None:
+                        frm = (float(it.lat), float(it.lng))
+                except (TypeError, ValueError):
+                    frm = None
+            if frm is None:
+                seed = _poznan_seed_coords(from_nm)
+                if seed:
+                    frm = seed
             if frm is None:
                 for s in (getattr(it, "suggestions", None) or [])[:1]:
                     if isinstance(s, dict):
@@ -22944,6 +23009,10 @@ class PlanService:
                 to_pt = None
             if to_pt is None:
                 to_pt = self._lookup_coords(coord_map or {}, dest)
+            if to_pt is None:
+                to_pt = _poznan_seed_coords(dest)
+            if from_nm and dest and _place_names_match(from_nm, dest):
+                continue
             km = 0.0
             if frm and to_pt:
                 km = haversine_distance(frm[0], frm[1], to_pt[0], to_pt[1])
@@ -22952,6 +23021,10 @@ class PlanService:
                 for k in (
                     "topacz", "ślęż", "slez", "galowice", "wojsław", "wojslaw",
                     "oław", "olaw",
+                    "rogalin", "lednick", "nowe zoo", "stare zoo",
+                    "rusałk", "rusalk", "brama poznania", "ostrów tumski",
+                    "ostrow tumski", "maltańsk", "maltansk", "termy malta",
+                    "wake park", "ostrów lednick", "ostrow lednick",
                 )
             )
             if not far_name and km < 8:
@@ -23503,6 +23576,15 @@ class PlanService:
             items = self._trim_excess_free_time(
                 items, user, ctx, day_num=day_num,
             )
+            items = self._sanitize_attraction_ticket_prices(
+                items, day_num=day_num,
+            )
+            items = self._eat_free_time_to_fit_day_end(
+                items, ctx, day_num=day_num,
+            )
+            items = self._clamp_timeline_to_day_end(
+                items, ctx, day_num=day_num,
+            )
             items = self._name_remaining_holes(
                 items, ctx, day_num=day_num,
             )
@@ -23525,6 +23607,46 @@ class PlanService:
                     weekday=getattr(day, "weekday", None),
                 ))
         return final
+
+    def _sanitize_attraction_ticket_prices(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #307: ulgowy cannot exceed normal (Poznań Zamek 20 / 45)."""
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            info = getattr(it, "ticket_info", None)
+            if info is None:
+                out.append(it)
+                continue
+            try:
+                normal = int(getattr(info, "ticket_normal", 0) or 0)
+                reduced = int(getattr(info, "ticket_reduced", 0) or 0)
+            except (TypeError, ValueError):
+                out.append(it)
+                continue
+            if normal <= 0 or reduced <= normal:
+                out.append(it)
+                continue
+            try:
+                info = info.model_copy(update={"ticket_reduced": normal})
+                it = it.model_copy(update={"ticket_info": info})
+                print(
+                    f"[FIX #307] Day {day_num}: ticket_reduced "
+                    f"{reduced}→{normal} on {getattr(it, 'name', '?')}"
+                )
+            except Exception:
+                try:
+                    info.ticket_reduced = normal
+                except Exception:
+                    pass
+            out.append(it)
+        return out
 
     def _drop_over_budget_paid_attractions(
         self,

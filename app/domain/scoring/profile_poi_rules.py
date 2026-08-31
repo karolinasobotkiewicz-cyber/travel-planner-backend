@@ -207,6 +207,8 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("muzeum motyla", "krk_motyl"),
         # FIX #292: leftover trip icons WRO/KRK/WAWA/KAT/POZ.
         ("park decjusza", "krk_park_decjusza"),
+        # FIX #307: Poznań Park Cytadela before generic "cytadela" (Warsaw).
+        ("park cytadela", "poz_park_cytadela"),
         ("cytadela", "waw_cytadela"),
         # FIX #295: X Pawilon on D4+D5.
         ("x pawilon", "waw_x_pawilon"),
@@ -1015,6 +1017,10 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
     if tg == "friends" and adv and {"underground", "history_mystery", "museum_heritage"} <= prefs:
         if "pixel xl" in name or "pixel" in name:
             return True
+
+    # FIX #307: Okrąglak is a weak pick for a family with an 8-year-old.
+    if tg == "family_kids" and any(k in name for k in ("okrąglak", "okraglak")):
+        return True
 
     # FIX #249 Poznań — Pixel XL / Pomnik Ofiar off family 5 lat (json5)
     _child_age249 = user.get("children_age")
