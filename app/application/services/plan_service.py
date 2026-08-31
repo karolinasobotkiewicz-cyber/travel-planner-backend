@@ -13585,6 +13585,7 @@ class PlanService:
             "katedra",
             "panorama racławicka", "panorama raclawicka",
             "pana tadeusza",
+            "pan tadeusz",
             # FIX #273 Katowice
             "nemo",
             # FIX #274 Wrocław
@@ -22716,7 +22717,13 @@ class PlanService:
                 ItemType.TRANSIT.value, ItemType.DAY_END.value,
             ):
                 j += 1
-            if j >= len(ordered) or not _is_timeline_attraction(ordered[j]):
+            if j >= len(ordered):
+                continue
+            nxt_ok = (
+                _is_timeline_attraction(ordered[j])
+                or _item_type_value(ordered[j]) == ItemType.DINNER_BREAK.value
+            )
+            if not nxt_ok:
                 continue
             cut = dur - keep
             if cut < 20:
@@ -22743,11 +22750,230 @@ class PlanService:
                 except Exception:
                     continue
             print(
-                f"[FIX #293] Day {day_num}: pulled attraction over "
+                f"[FIX #293/#305] Day {day_num}: pulled stop over "
                 f"{cut} min free_time"
             )
-            break
         return ordered
+
+    def _pull_next_stop_over_large_gaps(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        keep: int = 20,
+        min_gap: int = 50,
+    ) -> List[Any]:
+        """FIX #305: unnamed 72–182 min holes — pull the next stop earlier."""
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        try:
+            day_start = time_to_minutes((context or {}).get("day_start") or "09:00")
+        except Exception:
+            day_start = 9 * 60
+
+        def _occ_idx():
+            out = []
+            for i, it in enumerate(ordered):
+                if _is_timeline_attraction(it) or self._occupied_stop_name(it):
+                    out.append(i)
+            return out
+
+        def _shift_from(idx: int, cut: int) -> None:
+            for k in range(idx, len(ordered)):
+                it = ordered[k]
+                if _item_type_value(it) in (
+                    ItemType.DAY_START.value, ItemType.DAY_END.value,
+                ):
+                    continue
+                st = getattr(it, "start_time", None)
+                en = getattr(it, "end_time", None)
+                if not st:
+                    continue
+                try:
+                    upd = {"start_time": minutes_to_time(time_to_minutes(st) - cut)}
+                    if en:
+                        upd["end_time"] = minutes_to_time(time_to_minutes(en) - cut)
+                    if _item_type_value(it) == ItemType.FREE_TIME.value:
+                        nd = int(getattr(it, "duration_min", 0) or 0) - cut
+                        if nd < 10:
+                            ordered[k] = None
+                            continue
+                        upd["duration_min"] = nd
+                    ordered[k] = it.model_copy(update=upd)
+                except Exception:
+                    continue
+
+        occ = _occ_idx()
+        if occ:
+            try:
+                first_st = time_to_minutes(
+                    getattr(ordered[occ[0]], "start_time", None) or ""
+                )
+            except Exception:
+                first_st = day_start
+            gap = first_st - day_start
+            if gap >= min_gap:
+                cut = gap - keep
+                for k in range(occ[0]):
+                    if _item_type_value(ordered[k]) == ItemType.FREE_TIME.value:
+                        ordered[k] = None
+                _shift_from(occ[0], cut)
+                print(
+                    f"[FIX #305] Day {day_num}: pulled first stop over "
+                    f"{cut} min morning gap"
+                )
+                ordered = [it for it in ordered if it is not None]
+                occ = _occ_idx()
+        for a, b in zip(occ, occ[1:]):
+            try:
+                a_en = time_to_minutes(getattr(ordered[a], "end_time", None) or "")
+                b_st = time_to_minutes(getattr(ordered[b], "start_time", None) or "")
+            except Exception:
+                continue
+            gap = b_st - a_en
+            if gap < min_gap:
+                continue
+            cut = gap - keep
+            _shift_from(b, cut)
+            print(
+                f"[FIX #305] Day {day_num}: pulled next stop over "
+                f"{cut} min gap"
+            )
+            ordered = [it for it in ordered if it is not None]
+            occ = _occ_idx()
+        return [it for it in ordered if it is not None]
+
+    def _ensure_city_to_far_after_meal(
+        self,
+        items: List[Any],
+        coord_map: Optional[Dict[str, Any]],
+        context: Optional[Dict[str, Any]],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #305: lunch in the centre then Topacz needs a drive to Ślęza."""
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        meal_types = {ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value}
+        city = str((context or {}).get("requested_city") or "Wrocław").strip()
+        centre = _city_center_coords(city)
+        inserts: List[tuple] = []
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) not in meal_types:
+                continue
+            nxt = None
+            for later in ordered[i + 1:]:
+                if _is_timeline_attraction(later):
+                    nxt = later
+                    break
+                if _item_type_value(later) in meal_types:
+                    break
+            if nxt is None:
+                continue
+            already = False
+            dest = (getattr(nxt, "name", "") or "").strip()
+            for x in ordered[i + 1:]:
+                if x is nxt:
+                    break
+                if _item_type_value(x) != ItemType.TRANSIT.value:
+                    continue
+                if dest and _place_names_match(
+                    getattr(x, "to_location", "") or "", dest,
+                ):
+                    already = True
+                    break
+            if already:
+                continue
+            from_nm = self._occupied_stop_name(it) or city or "centrum"
+            frm = self._lookup_coords(coord_map or {}, from_nm)
+            if frm is None:
+                for s in (getattr(it, "suggestions", None) or [])[:1]:
+                    if isinstance(s, dict):
+                        try:
+                            frm = (float(s.get("lat")), float(s.get("lng")))
+                        except (TypeError, ValueError):
+                            frm = None
+                    else:
+                        try:
+                            frm = (float(s.lat), float(s.lng))
+                        except (TypeError, ValueError, AttributeError):
+                            frm = None
+                    if frm:
+                        break
+            if frm is None:
+                frm = centre
+            to_pt = None
+            try:
+                if getattr(nxt, "lat", None) is not None:
+                    to_pt = (float(nxt.lat), float(nxt.lng))
+            except (TypeError, ValueError):
+                to_pt = None
+            if to_pt is None:
+                to_pt = self._lookup_coords(coord_map or {}, dest)
+            km = 0.0
+            if frm and to_pt:
+                km = haversine_distance(frm[0], frm[1], to_pt[0], to_pt[1])
+            far_name = any(
+                k in dest.lower()
+                for k in (
+                    "topacz", "ślęż", "slez", "galowice", "wojsław", "wojslaw",
+                    "oław", "olaw",
+                )
+            )
+            if not far_name and km < 8:
+                continue
+            try:
+                a_end = time_to_minutes(getattr(it, "end_time", None) or "")
+                b_st = time_to_minutes(getattr(nxt, "start_time", None) or "")
+            except Exception:
+                continue
+            from_d = {
+                "name": from_nm,
+                "lat": frm[0] if frm else None,
+                "lng": frm[1] if frm else None,
+            }
+            to_d = {
+                "name": dest,
+                "lat": to_pt[0] if to_pt else None,
+                "lng": to_pt[1] if to_pt else None,
+            }
+            ctx = {**(context or {}), "has_car": (context or {}).get("has_car", True)}
+            try:
+                dur = max(15, int(travel_time_minutes(from_d, to_d, ctx))) if frm and to_pt else 25
+            except Exception:
+                dur = max(15, int(km * 1.4) + 10) if km else 25
+            nxt_idx = next(
+                (j for j, x in enumerate(ordered) if x is nxt),
+                None,
+            )
+            if nxt_idx is None:
+                continue
+            gap = b_st - a_end
+            if gap < dur:
+                self._shift_later_timeline_items(ordered, nxt_idx, dur - max(gap, 0))
+                nxt = ordered[nxt_idx]
+            leg = TransitItem(
+                type=ItemType.TRANSIT,
+                start_time=minutes_to_time(a_end),
+                end_time=minutes_to_time(a_end + dur),
+                duration_min=dur,
+                mode=TransitMode.CAR,
+                from_location=from_nm,
+                to_location=dest,
+                routing_source="estimated_road",
+                distance_km=round(km, 3) if km else None,
+            )
+            inserts.append((nxt_idx, leg))
+            print(
+                f"[FIX #305] Day {day_num}: added city→far hop after meal "
+                f"{from_nm} → {dest} ({dur}min)"
+            )
+        for offset, (idx, leg) in enumerate(inserts):
+            ordered.insert(idx + offset, leg)
+        return self._sort_items_by_time(ordered)
 
     def _polish_final_trip_hygiene(
         self,
@@ -23144,6 +23370,18 @@ class PlanService:
             items = self._eat_long_free_time_before_attraction(
                 items, day_num=day_num,
             )
+            items = self._pull_next_stop_over_large_gaps(
+                items, ctx, day_num=day_num,
+            )
+            items = self._trim_excess_free_time(
+                items, user, ctx, day_num=day_num,
+            )
+            items = self._ensure_city_to_far_after_meal(
+                items, cm, ctx, day_num=day_num,
+            )
+            items = self._repair_transit_endpoints_late(
+                items, cm, ctx, day_num=day_num,
+            )
             items = self._eat_free_time_to_fit_day_end(
                 items, ctx, day_num=day_num,
             )
@@ -23185,6 +23423,9 @@ class PlanService:
                 "user": user or (context or {}).get("user") or {},
             }
             cm = self._merge_coord_map(coord_map or {}, items)
+            items = self._strip_same_day_duplicate_attractions(
+                items, day_num=day_num,
+            )
             items = self._strip_transits_to_unscheduled_destinations(
                 items, day_num=day_num,
             )
@@ -23194,7 +23435,13 @@ class PlanService:
             items = self._retarget_all_legs_to_next_stop(
                 items, day_num=day_num,
             )
+            items = self._repair_transit_endpoints_late(
+                items, cm, ctx, day_num=day_num,
+            )
             items = self._ensure_stop_to_stop_legs(
+                items, cm, ctx, day_num=day_num,
+            )
+            items = self._ensure_city_to_far_after_meal(
                 items, cm, ctx, day_num=day_num,
             )
             items = self._honest_transit_physics(
@@ -23202,6 +23449,15 @@ class PlanService:
             )
             items = self._snap_transits_to_previous_stop_end(
                 items, day_num=day_num,
+            )
+            items = self._eat_long_free_time_before_attraction(
+                items, day_num=day_num,
+            )
+            items = self._pull_next_stop_over_large_gaps(
+                items, ctx, day_num=day_num,
+            )
+            items = self._trim_excess_free_time(
+                items, user, ctx, day_num=day_num,
             )
             items = self._name_remaining_holes(
                 items, ctx, day_num=day_num,
@@ -23726,7 +23982,13 @@ class PlanService:
             elif is_walk and km >= 0.25:
                 expected = max(3, int(round(km / 4.5 * 60)) + 2)
                 clock = span if span > 0 else dur
-                if clock < expected * 0.55 or dur < expected * 0.55:
+                # FIX #305: 1.83 km in 6 min is a sprint, not a city walk.
+                too_fast = (
+                    clock < expected * 0.55
+                    or dur < expected * 0.55
+                    or (km >= 1.5 and min(clock, dur or clock) <= 8)
+                )
+                if too_fast:
                     upd = {
                         "mode": TransitMode.WALK,
                         "routing_source": "estimated_walk",
@@ -27498,7 +27760,10 @@ class PlanService:
                 return (getattr(it, "name", "") or "").strip() or None
             if _item_type_value(it) in meal_types:
                 for s in (getattr(it, "suggestions", None) or [])[:1]:
-                    nm = (getattr(s, "name", "") or "").strip()
+                    if isinstance(s, dict):
+                        nm = (s.get("name") or "").strip()
+                    else:
+                        nm = (getattr(s, "name", "") or "").strip()
                     if nm:
                         return nm
             return None
@@ -29596,7 +29861,7 @@ class PlanService:
         # FIX #263: name 10–14 min holes too (Wrocław client gap audits).
         holes = [
             h for h in self._find_day_holes(items, end_limit, start_limit, min_span=10)
-            if h[1] - h[0] >= 10 and h[1] <= end_limit
+            if 10 <= h[1] - h[0] <= 45 and h[1] <= end_limit
         ]
         # FIX #278: do not invent multi-hour free_time after the last real stop.
         if _quality_first_trip(context):

@@ -139,6 +139,7 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("katedra wrocławska", "wro_katedra"),
         ("katedra wroclawska", "wro_katedra"),
         ("pana tadeusza", "wro_pana_tadeusza"),
+        ("pan tadeusz", "wro_pana_tadeusza"),
         # FIX #249 Poznań — powtarzalne fillery centrum
         # (Zamek Królewski trip key is shared via waw_zamek_krolewski above —
         # FIX #267 — same POI name in WAWA/POZ; one key per trip is enough.)
