@@ -280,6 +280,13 @@ _POZNAN_BRAMA_COORDS = (52.4116, 16.9514)
 _POZNAN_OSTROW_TUMSKI_COORDS = (52.4118, 16.9478)
 _ROGALIN_DEFAULT_COORDS = (52.2444, 16.9000)
 _LEDNICA_DEFAULT_COORDS = (52.5269, 17.3756)
+_KATOWICE_PARK_SLASKI_COORDS = (50.2878, 18.9745)
+_KATOWICE_ETNO_COORDS = (50.2975, 18.9750)
+_KATOWICE_WILSON_COORDS = (50.2470, 19.0580)
+_KATOWICE_GISZOWIEC_COORDS = (50.2300, 19.0680)
+_KATOWICE_PAPROCANY_COORDS = (50.0960, 19.0200)
+_KATOWICE_MHK_COORDS = (50.2586, 19.0215)
+_TYCHY_WODNY_COORDS = (50.1230, 19.0070)
 _ZABRZE_NAME_MARKERS = (
     "zabrze", "zabrzu", "guido", "królowa luiza", "krolowa luiza", "sztolnia",
     "animalworld", "animal world",
@@ -434,6 +441,11 @@ def _timeline_satellite_kind(name: str) -> Optional[str]:
         return "gliwice"
     if "wodny park tychy" in nm or ("tychy" in nm and "wodny" in nm):
         return "tychy"
+    if any(k in nm for k in (
+        "park śląski", "park slaski", "chorzów", "chorzow", "etnograficzn",
+        "giszowiec", "szyb wilson", "nikiszowiec",
+    )):
+        return "chorzow"
     if "nemo" in nm:
         return "dabrowa"
     if _is_gniezno_stop_name(nm):
@@ -509,6 +521,35 @@ def _poznan_seed_coords(name: str) -> Optional[tuple]:
     if any(k in nm for k in ("lednick", "dziekanowic")):
         return _LEDNICA_DEFAULT_COORDS
     return None
+
+
+def _katowice_seed_coords(name: str) -> Optional[tuple]:
+    """FIX #308: Chorzów / Giszowiec / Tychy / Gliwice seeds for first hops."""
+    nm = (name or "").lower()
+    if "park śląski" in nm or "park slaski" in nm:
+        return _KATOWICE_PARK_SLASKI_COORDS
+    if "etnograficzn" in nm:
+        return _KATOWICE_ETNO_COORDS
+    if "szyb wilson" in nm:
+        return _KATOWICE_WILSON_COORDS
+    if "giszowiec" in nm:
+        return _KATOWICE_GISZOWIEC_COORDS
+    if "paprocan" in nm:
+        return _KATOWICE_PAPROCANY_COORDS
+    if "muzeum historii katowic" in nm:
+        return _KATOWICE_MHK_COORDS
+    if "wodny park" in nm and "tych" in nm:
+        return _TYCHY_WODNY_COORDS
+    if any(k in nm for k in (
+        "park chopina", "park chrobrego", "willa caro", "sensorycz",
+        "palmiarnia",
+    )):
+        return _GLIWICE_DEFAULT_COORDS
+    return None
+
+
+def _seed_first_stop_coords(name: str) -> Optional[tuple]:
+    return _poznan_seed_coords(name) or _katowice_seed_coords(name)
 
 
 def _is_kampinos_stop_name(name: str) -> bool:
@@ -11852,7 +11893,12 @@ class PlanService:
                 opens = 10 * 60
                 closes = 16 * 60
             if "etnograficzn" in nm:
-                closes = 18 * 60
+                # FIX #308: Górnośląski Park Etnograficzny open to 19:00; last entry 17:30.
+                opens = 10 * 60 if opens is None else opens
+                closes = 19 * 60
+                last_entry = 17 * 60 + 30 if last_entry is None else min(last_entry, 17 * 60 + 30)
+            if any(k in nm for k in ("muzeum śląskie", "muzeum slaskie")):
+                opens = 10 * 60 if opens is None else opens
             if "ewolucji" in nm:
                 closes = 16 * 60
             if "muzeum powstania" in nm:
@@ -13648,6 +13694,7 @@ class PlanService:
             "zamek królewski na wawelu",
             "funzeum",
             "park chopina",
+            "fryderyka chopina",
             "park śląski", "park slaski",
             "park chrobrego",
             "park pileckiego", "park pilecki", "pileckiego",
@@ -18245,6 +18292,15 @@ class PlanService:
                 floor = max(floor, 45)
             if "cybermagia" in nm_l:
                 floor = max(floor, 45)
+            if any(k in nm_l for k in ("funhouse", "fun house", "fun-house")):
+                floor = max(floor, 45)
+                if dur < 30:
+                    print(
+                        f"[FIX #308] Day {day_num}: dropped crushed FunHouse "
+                        f"({dur}min)"
+                    )
+                    i += 1
+                    continue
             if "barbakan" in nm_l:
                 cap = 40 if cap is None else min(int(cap), 40)
             if "smok" in nm_l and "wawel" in nm_l:
@@ -19031,7 +19087,7 @@ class PlanService:
                 ordered[first_idx] = first_stop
             except Exception:
                 pass
-        seed = _poznan_seed_coords(name)
+        seed = _seed_first_stop_coords(name)
         if seed and (not poi.get("lat") or not poi.get("lng")):
             poi["lat"], poi["lng"] = seed
             try:
@@ -19065,12 +19121,13 @@ class PlanService:
 
         dist_km = haversine_distance(float(h_lat), float(h_lng), to_lat, to_lng)
         gap = attr_st - day_start_min
-        if gap < 8 and dist_km < 0.6:
+        # FIX #308: 0.4–0.6 km first hops (Muzeum Historii Katowic) must stay visible.
+        if gap < 8 and dist_km < 0.35:
             return items
         # A first stop that is already in the centre needs no invented leg —
         # the visit simply starts when the day starts (client: "10-15 min od
         # day_start do pierwszego POI bez transitu").
-        if dist_km < 0.6:
+        if dist_km < 0.35:
             if gap > 35:
                 return items
             try:
@@ -19124,9 +19181,13 @@ class PlanService:
             except Exception:
                 slack = 0
             shift = min(dur - gap, slack)
-            if _timeline_satellite_kind(name) or dist_km >= 20:
-                # FIX #281: always make room for the hub → satellite drive,
-                # even when the evening is already full (clamp/early-close later).
+            if (
+                _timeline_satellite_kind(name)
+                or dist_km >= 0.8
+                or _katowice_seed_coords(name)
+            ):
+                # FIX #281/#308: always make room for hub → Chorzów / first hop
+                # even when the evening is already full (clamp later).
                 shift = dur - gap
             if shift > 0:
                 ordered = self._shift_items_from(ordered, first_idx, shift)
@@ -21200,6 +21261,49 @@ class PlanService:
             out.append(it)
         return out
 
+    def _drop_hops_not_to_next_stop(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #308: drop leftover restaurant/Szyb Maciej hops when next is a park."""
+        if not items:
+            return items
+        try:
+            ordered = self._sort_items_by_time(list(items))
+        except Exception:
+            ordered = list(items)
+        meal_types = {ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value}
+        out: List[Any] = []
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            src = str(getattr(it, "routing_source", "") or "").lower()
+            if src == "return_to_car":
+                out.append(it)
+                continue
+            nxt = None
+            for later in ordered[i + 1:]:
+                if _is_timeline_attraction(later):
+                    nxt = (getattr(later, "name", "") or "").strip()
+                    break
+                if _item_type_value(later) in meal_types:
+                    nm = self._occupied_stop_name(later)
+                    if nm:
+                        nxt = nm
+                        break
+            to = (getattr(it, "to_location", "") or "").strip()
+            if nxt and to and not _place_names_match(to, nxt):
+                print(
+                    f"[FIX #308] Day {day_num}: dropped hop → {to!r} "
+                    f"(next is {nxt!r})"
+                )
+                continue
+            out.append(it)
+        return out
+
     def _occupied_stop_name(self, it: Any) -> Optional[str]:
         """FIX #300: attraction or named restaurant — empty lunch is not a stop."""
         if _is_timeline_attraction(it):
@@ -21372,12 +21476,14 @@ class PlanService:
             except Exception:
                 out.append(it)
                 continue
-            if (
-                last_name
-                and last_end is not None
-                and _place_names_match(frm, last_name)
-                and (st < last_end - 1 or st > last_end + 4)
-            ):
+            from_ok = (
+                not last_name
+                or not frm
+                or _place_names_match(frm, last_name)
+            )
+            overlap = last_end is not None and st < last_end - 1
+            far_gap = last_end is not None and from_ok and st > last_end + 4
+            if overlap or far_gap:
                 dur = int(getattr(it, "duration_min", 0) or 0)
                 if dur <= 0:
                     try:
@@ -22982,7 +23088,7 @@ class PlanService:
                 except (TypeError, ValueError):
                     frm = None
             if frm is None:
-                seed = _poznan_seed_coords(from_nm)
+                seed = _seed_first_stop_coords(from_nm)
                 if seed:
                     frm = seed
             if frm is None:
@@ -23010,7 +23116,7 @@ class PlanService:
             if to_pt is None:
                 to_pt = self._lookup_coords(coord_map or {}, dest)
             if to_pt is None:
-                to_pt = _poznan_seed_coords(dest)
+                to_pt = _seed_first_stop_coords(dest)
             if from_nm and dest and _place_names_match(from_nm, dest):
                 continue
             km = 0.0
@@ -23025,6 +23131,10 @@ class PlanService:
                     "rusałk", "rusalk", "brama poznania", "ostrów tumski",
                     "ostrow tumski", "maltańsk", "maltansk", "termy malta",
                     "wake park", "ostrów lednick", "ostrow lednick",
+                    "park śląski", "park slaski", "etnograficzn", "giszowiec",
+                    "szyb wilson", "nikiszowiec", "paprocan",
+                    "chrobrego", "chopina", "willa caro", "sensorycz",
+                    "wodny park", "tych", "szyb maciej",
                 )
             )
             if not far_name and km < 8:
@@ -23537,6 +23647,9 @@ class PlanService:
                 items, day_num=day_num, context=ctx,
             )
             items = self._retarget_all_legs_to_next_stop(
+                items, day_num=day_num,
+            )
+            items = self._drop_hops_not_to_next_stop(
                 items, day_num=day_num,
             )
             items = self._reset_stale_meal_location_context(
@@ -30032,7 +30145,9 @@ class PlanService:
         # FIX #263: name 10–14 min holes too (Wrocław client gap audits).
         holes = [
             h for h in self._find_day_holes(items, end_limit, start_limit, min_span=10)
-            if 10 <= h[1] - h[0] <= 45 and h[1] <= end_limit
+            if 10 <= h[1] - h[0] <= (
+                75 if h[0] <= start_limit + 5 else 55
+            ) and h[1] <= end_limit
         ]
         # FIX #278: do not invent multi-hour free_time after the last real stop.
         if _quality_first_trip(context):

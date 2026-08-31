@@ -192,6 +192,8 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("wioski swiata", "krk_wioski"),
         ("funzeum", "kat_funzeum"),
         ("park chopina", "kat_park_chopina"),
+        ("fryderyka chopina", "kat_park_chopina"),
+        ("chopina", "kat_park_chopina"),
         ("park śląski", "kat_park_slaski"),
         ("park slaski", "kat_park_slaski"),
         ("park chrobrego", "kat_park_chrobrego"),
@@ -425,6 +427,9 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
             return True
 
     if "cybermagia" in name:
+        # FIX #308: VR is a weak cultural match (Katowice json 2).
+        if style == "cultural":
+            return True
         if style == "relax" or nat_relax:
             if "active_sport" not in prefs:
                 return True
@@ -480,6 +485,24 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
                 "górnośląski park etnograficzny", "gornoslaski park etnograficzny",
             )):
                 return True
+
+    # FIX #308: Szyb Wilson is a weak family_kids match.
+    if tg == "family_kids" and any(
+        k in name for k in ("galeria szyb wilson", "szyb wilson")
+    ):
+        return True
+
+    # FIX #308: friends+adventure must not burn a Gliwice hop on Chopina lawn.
+    if "chopina" in name and tg == "friends" and adv:
+        return True
+    if any(k in name for k in ("park śląski", "park slaski")):
+        if (
+            tg == "friends"
+            and adv
+            and "active_sport" in prefs
+            and "nature_landscape" not in prefs
+        ):
+            return True
 
     if any(k in name for k in (
         "park chopina", "park chrobrego", "park sensoryczny",
@@ -1652,6 +1675,14 @@ def profile_poi_score_delta(poi: dict, user: dict, *, context: dict | None = Non
             delta -= 95.0
     if tg == "friends" and adv and "park decjusza" in name:
         delta -= 100.0
+
+    # FIX #308: active_sport days must actually pick sport POIs.
+    if "active_sport" in prefs:
+        if any(k in name for k in (
+            "jumpcity", "jump city", "gojump", "park linowy", "legendia",
+            "funhouse", "fun house", "pitlane", "gokart", "paintball",
+        )):
+            delta += 120.0
 
     # Katowice FIX #235
     if any(k in name for k in (
