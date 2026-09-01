@@ -82,6 +82,9 @@ def poi_trip_repeat_key(name: str) -> str | None:
         # FIX #309: Kraków UJ garden before generic (Warsaw) botaniczny.
         ("ogród botaniczny uj", "krk_botaniczny"),
         ("ogrod botaniczny uj", "krk_botaniczny"),
+        # FIX #310: Wrocław garden before the Warsaw generic marker.
+        ("ogród botaniczny uniwersytetu wrocław", "wro_ogrod_botaniczny"),
+        ("ogrod botaniczny uniwersytetu wroclaw", "wro_ogrod_botaniczny"),
         ("ogród botaniczny", "waw_ogrod_botaniczny"),
         ("ogrod botaniczny", "waw_ogrod_botaniczny"),
         ("łazienki królewskie", "waw_lazienki"),

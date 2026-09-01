@@ -291,6 +291,8 @@ _KRAKOW_LOTNICTWA_COORDS = (50.0778, 19.9917)
 _KRAKOW_GOJUMP_COORDS = (50.0385, 19.9380)
 _KRAKOW_BULWARY_COORDS = (50.0520, 19.9566)
 _KRAKOW_SCHINDLER_COORDS = (50.0474, 19.9617)
+# FIX #310: real Wrocław Botaniczny (Sienkiewicza 23), not the Pergola cluster.
+_WROCLAW_BOTANICZNY_COORDS = (51.1163, 17.0478)
 _ZABRZE_NAME_MARKERS = (
     "zabrze", "zabrzu", "guido", "królowa luiza", "krolowa luiza", "sztolnia",
     "animalworld", "animal world",
@@ -11898,6 +11900,10 @@ class PlanService:
             last_entry = None
             if any(k in nm for k in ("świat iluzji", "swiat iluzji", "muzeum iluzji")):
                 opens = 10 * 60
+            if "zoo team" in nm or "zooteam" in nm:
+                opens = 10 * 60
+            if "panorama racław" in nm or "panorama raclaw" in nm:
+                opens = 9 * 60 + 30 if opens is None else opens
             # FIX #297: Poznań/Warsaw Zamek Królewski opens 10:00 (not Wawel).
             if any(k in nm for k in ("zamek królewski", "zamek krolewski")) and "wawel" not in nm:
                 opens = 10 * 60
@@ -23703,6 +23709,21 @@ class PlanService:
             items = self._snap_meals_to_nearby_restaurants(
                 items, ctx, user, day_num=day_num,
             )
+            items = self._correct_wroclaw_botaniczny_coords(
+                items, ctx, day_num=day_num,
+            )
+            items = self._strip_satellite_meals_on_city_days(
+                items, day_num=day_num,
+            )
+            items = self._push_lunch_not_before_noon(
+                items, day_num=day_num,
+            )
+            items = self._push_dinner_not_before(
+                items, earliest=17 * 60 + 30, day_num=day_num,
+            )
+            items = self._fix_inverted_item_clocks(
+                items, day_num=day_num,
+            )
             items = self._ensure_leading_transit(
                 items, cm, ctx, day_num=day_num,
             )
@@ -23721,6 +23742,9 @@ class PlanService:
             )
             items = self._honest_transit_physics(
                 items, day_num=day_num, context=ctx,
+            )
+            items = self._downgrade_short_urban_cars(
+                items, ctx, day_num=day_num,
             )
             items = self._snap_transits_to_previous_stop_end(
                 items, day_num=day_num,
@@ -29738,6 +29762,122 @@ class PlanService:
                     tgt.items = new_items
                 except Exception:
                     pass
+        return out
+
+    def _correct_wroclaw_botaniczny_coords(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #310: Wrocław Botaniczny is Sienkiewicza 23, not the Pergola pin."""
+        city = str((context or {}).get("requested_city") or "").lower()
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            if "botanicz" not in nm or "uj" in nm:
+                out.append(it)
+                continue
+            it_city = (getattr(it, "city", "") or "").lower()
+            try:
+                lat = float(getattr(it, "lat", None) or 0)
+                lng = float(getattr(it, "lng", None) or 0)
+            except (TypeError, ValueError):
+                lat, lng = 0.0, 0.0
+            in_wro = any(k in f"{city} {it_city}" for k in ("wrocław", "wroclaw"))
+            near_wro = 51.05 < lat < 51.20 and 16.95 < lng < 17.20
+            if not (in_wro or near_wro):
+                out.append(it)
+                continue
+            want = _WROCLAW_BOTANICZNY_COORDS
+            if abs(lat - want[0]) < 0.0008 and abs(lng - want[1]) < 0.0008:
+                out.append(it)
+                continue
+            try:
+                it = it.model_copy(update={"lat": want[0], "lng": want[1]})
+                print(
+                    f"[FIX #310] Day {day_num}: Botaniczny coords "
+                    f"{lat:.5f},{lng:.5f} → {want[0]},{want[1]}"
+                )
+            except Exception:
+                pass
+            out.append(it)
+        return out
+
+    def _strip_satellite_meals_on_city_days(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #310: no Brzeg / Ząbkowice lunch on a Wrocław-only day."""
+        if not items:
+            return items
+        sat_kinds = {"zabkowice", "brzeg", "olawa", "wojslawice"}
+        day_has_sat_attr = False
+        for it in items:
+            if not _is_timeline_attraction(it):
+                continue
+            kind = _timeline_satellite_kind(getattr(it, "name", "") or "")
+            if kind in sat_kinds:
+                day_has_sat_attr = True
+                break
+        if day_has_sat_attr:
+            return items
+
+        def _blob_is_sat(text: str) -> bool:
+            b = (text or "").lower()
+            if any(m in b for m in (
+                "ząbkowic", "zabkowic", "frankenstein",
+                "oław", "olaw", "wojsław", "wojslaw",
+            )):
+                return True
+            if "brzegu" in b or "w brzeg" in b or ", brzeg" in b:
+                return True
+            if "brzeg" in b and "odr" not in b:
+                return True
+            return False
+
+        def _sug_is_sat(s) -> bool:
+            if isinstance(s, dict):
+                blob = " ".join(str(s.get(k) or "") for k in ("name", "address", "city"))
+            else:
+                blob = " ".join(
+                    str(getattr(s, k, "") or "")
+                    for k in ("name", "address", "city")
+                )
+            return _blob_is_sat(blob)
+
+        meal_types = {ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value}
+        out: List[Any] = []
+        for it in items:
+            if _item_type_value(it) not in meal_types:
+                out.append(it)
+                continue
+            sugs = list(getattr(it, "suggestions", None) or [])
+            kept = [s for s in sugs if not _sug_is_sat(s)]
+            meal_blob = " ".join(
+                str(getattr(it, k, "") or "")
+                for k in ("location_context", "label", "name")
+            )
+            meal_itself_sat = _blob_is_sat(meal_blob)
+            all_sugs_sat = bool(sugs) and not kept
+            if all_sugs_sat or (meal_itself_sat and not kept):
+                print(
+                    f"[FIX #310] Day {day_num}: dropped satellite "
+                    f"{_item_type_value(it)}"
+                )
+                continue
+            if kept != sugs:
+                try:
+                    it = it.model_copy(update={"suggestions": kept})
+                except Exception:
+                    pass
+            out.append(it)
         return out
 
     def _snap_meals_to_nearby_restaurants(
