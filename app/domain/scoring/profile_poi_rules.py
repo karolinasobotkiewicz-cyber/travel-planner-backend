@@ -175,7 +175,12 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("legoland", "krk_lego_cluster"),
         ("wielka wystawa klock", "krk_lego_cluster"),
         # FIX #288: trip-level icons the client saw twice in a row.
+        # "Loopy's World" does not contain "loopys" (apostrophe).
+        ("loopy", "wro_loopys"),
         ("loopys", "wro_loopys"),
+        ("kwatera", "wro_kwatera"),
+        ("laser tag", "wro_kwatera"),
+        ("lasertag", "wro_kwatera"),
         # FIX #289: Wrocław icons that densify re-planted after the trip strip.
         ("ogród japoński", "wro_ogrod_japonski"),
         ("ogrod japonski", "wro_ogrod_japonski"),

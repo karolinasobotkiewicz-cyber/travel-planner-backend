@@ -104,7 +104,8 @@ def test_182min_morning_ft_is_pulled():
     fts = [it for it in out if it.type == ItemType.FREE_TIME]
     assert not fts or int(fts[0].duration_min) <= 25
     first = next(it for it in out if it.type == ItemType.ATTRACTION)
-    assert first.start_time <= "09:30"
+    # FIX #311: sights stay at opening-hour floor 10:00 (not 09:30).
+    assert first.start_time == "10:00"
 
 
 def test_name_holes_does_not_invent_72min_block():
