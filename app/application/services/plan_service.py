@@ -594,6 +594,55 @@ def _wroclaw_seed_coords(name: str) -> Optional[tuple]:
     return None
 
 
+def _meal_place_labels(item: Any) -> set:
+    """FIX #313: how a meal names its restaurant — suggestion first, then label."""
+    out = set()
+    for sug in list(getattr(item, "suggestions", None) or [])[:1]:
+        nm = sug.get("name") if isinstance(sug, dict) else getattr(sug, "name", None)
+        if nm:
+            out.add(_fold_place_label(nm))
+    label = _fold_place_label(getattr(item, "label", ""))
+    if label and not any(
+        k in label for k in ("przerw", "lunch", "kolacj", "posil", "obiad")
+    ):
+        out.add(label)
+    return {x for x in out if x}
+
+
+def _hop_leads_to_meal(dest_folded: str, meal: Any) -> bool:
+    """FIX #313: whether this hop's destination is where the meal happens."""
+    if not dest_folded:
+        return False
+    for place in _meal_place_labels(meal):
+        if dest_folded == place or dest_folded in place or place in dest_folded:
+            return True
+    return False
+
+
+def _generic_meal_label(item: Any) -> str:
+    """FIX #313: label for a meal that no longer names a restaurant."""
+    if _item_type_value(item) == ItemType.DINNER_BREAK.value:
+        return "Kolacja"
+    return "Lunch / przerwa regeneracyjna"
+
+
+_WINTER_CLOSED_MARKERS = (
+    "ogród botaniczny", "ogrod botaniczny",
+    "ogród japoński", "ogrod japonski",
+    "rejs", "ponton", "spływ", "splyw", "statkiem",
+    "tramwaj wodny", "zatoka gondoli",
+    "grabowy labirynt",
+    "ogród doświadczeń", "ogrod doswiadczen",
+    "wioski świata", "wioski swiata",
+    "jaskinia łokietka", "jaskinia lokietka",
+    "fontanna multimedial",
+    "strefa wakacji",
+    # FIX #303: Arboretum Wojsławice is closed in February.
+    "arboretum wojsławice", "arboretum wojslawice",
+    "arboretum wojsław", "arboretum wojslaw",
+)
+
+
 def _seed_first_stop_coords(name: str) -> Optional[tuple]:
     return (
         _poznan_seed_coords(name)
@@ -2122,6 +2171,42 @@ class PlanService:
         except Exception:
             return False
 
+    def _strip_winter_closed_attractions(
+        self, items: List[Any], trip_date: Any, *, day_num: int = 0
+    ) -> List[Any]:
+        """FIX #312: name-based winter strip without a POI pool.
+
+        The pool-driven `_strip_out_of_season_attractions` treats an empty
+        pool as "nothing is in season" and deletes the whole day, so the
+        final passes must use this narrower check.
+        """
+        if not items or not trip_date:
+            return items
+        try:
+            from datetime import datetime as _dt
+            _d = (
+                trip_date if hasattr(trip_date, "month")
+                else _dt.fromisoformat(str(trip_date)[:10])
+            )
+            if int(getattr(_d, "month", 0) or 0) not in (12, 1, 2):
+                return items
+        except Exception:
+            return items
+        out: List[Any] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = (getattr(it, "name", "") or "").lower()
+            if any(k in nm for k in _WINTER_CLOSED_MARKERS):
+                print(
+                    f"[FIX #312] Day {day_num}: stripped winter-closed "
+                    f"{getattr(it, 'name', '?')}"
+                )
+                continue
+            out.append(it)
+        return out
+
     def _strip_out_of_season_attractions(
         self,
         items: List[Any],
@@ -2138,21 +2223,7 @@ class PlanService:
             if p.get("id")
         }
         out: List[Any] = []
-        _winter_closed = (
-            "ogród botaniczny", "ogrod botaniczny",
-            "ogród japoński", "ogrod japonski",
-            "rejs", "ponton", "spływ", "splyw", "statkiem",
-            "tramwaj wodny", "zatoka gondoli",
-            "grabowy labirynt",
-            "ogród doświadczeń", "ogrod doswiadczen",
-            "wioski świata", "wioski swiata",
-            "jaskinia łokietka", "jaskinia lokietka",
-            "fontanna multimedial",
-            "strefa wakacji",
-            # FIX #303: Arboretum Wojsławice is closed in February.
-            "arboretum wojsławice", "arboretum wojslawice",
-            "arboretum wojsław", "arboretum wojslaw",
-        )
+        _winter_closed = _WINTER_CLOSED_MARKERS
         _is_winter = False
         try:
             from datetime import datetime as _dt
@@ -2201,6 +2272,21 @@ class PlanService:
                 if _item_type_value(it) == ItemType.FREE_TIME.value
             )
             ft_ratio = ft_min / window_min
+            if not attrs:
+                # FIX #313: the client's headline defect — a day whose title
+                # promises POIs while the timeline shows none — must never
+                # come back with an empty warnings array.
+                warnings.append({
+                    "type": "day_without_attractions",
+                    "day": day_plan.day,
+                    "attractions": 0,
+                    "free_time_min": ft_min,
+                    "message": (
+                        f"Dzień {day_plan.day}: brak atrakcji w planie dnia — "
+                        f"baza POI nie pokryła tego dnia."
+                    ),
+                    "severity": "warning",
+                })
             if attrs >= 2 and ft_ratio <= 0.5:
                 continue
             warnings.append({
@@ -7842,16 +7928,47 @@ class PlanService:
                     ),
                     day_num=_dg279.day,
                 )
+                # FIX #313: the title must describe what the day now shows.
+                _title312 = _dg279.title
+                try:
+                    _title312 = _generate_day_title(_itg279, _dg279.day) or _title312
+                except Exception:
+                    pass
+                _note312 = getattr(_dg279, "note", None)
+                try:
+                    _note312 = _day_note_matches_timeline(_note312, _itg279)
+                except Exception:
+                    pass
                 _days_geom279.append(DayPlan(
                     day=_dg279.day,
-                    title=_dg279.title,
-                    note=getattr(_dg279, "note", None),
+                    title=_title312,
+                    note=_note312,
                     items=_itg279,
                     quality_badges=_dg279.quality_badges,
                     date=getattr(_dg279, "date", None),
                     weekday=getattr(_dg279, "weekday", None),
                 ))
             days = _days_geom279
+            # FIX #313: coverage and density must describe the final timeline,
+            # not the pre-polish one (client: "warnings zwraca pustą tablicę").
+            try:
+                preference_coverage = self._compute_preference_coverage(
+                    days,
+                    list((user or {}).get("preferences") or []),
+                    all_pois_dict,
+                )
+            except Exception:
+                pass
+            try:
+                _seen_dw312 = {
+                    (w.get("type"), w.get("day")) for w in plan_warnings
+                }
+                for _dw312 in self._day_density_warnings(days, day_start, day_end):
+                    if (_dw312.get("type"), _dw312.get("day")) in _seen_dw312:
+                        continue
+                    plan_warnings.append(_dw312)
+            except Exception:
+                pass
         except Exception as _exc279:
             print(
                 f"[FIX #279] transit geometry finalize failed "
@@ -20645,6 +20762,16 @@ class PlanService:
                     break
                 if gap > max_gap:
                     break
+                # FIX #313: merging must not build the 2–3 hour block the
+                # client reads as a lost half-day; split labels are better.
+                try:
+                    if (
+                        time_to_minutes(getattr(nxt, "end_time", None) or "")
+                        - time_to_minutes(getattr(group[0], "start_time", None) or "")
+                    ) > 90:
+                        break
+                except Exception:
+                    pass
                 group.append(nxt)
                 j += 1
             if len(group) == 1:
@@ -22142,7 +22269,12 @@ class PlanService:
                     far = False
             if far:
                 try:
-                    cleaned.append(it.model_copy(update={"suggestions": []}))
+                    # FIX #313: the label named that restaurant, so leaving it
+                    # in place keeps a phantom stop the hops then route to.
+                    cleaned.append(it.model_copy(update={
+                        "suggestions": [],
+                        "label": _generic_meal_label(it),
+                    }))
                     print(
                         f"[FIX #294] Day {day_num}: cleared lunch-only "
                         f"satellite restaurant"
@@ -23031,6 +23163,10 @@ class PlanService:
                     break
                 if ns > en + 3:
                     break
+                # FIX #313: merging tidies stacked waits, it must not build a
+                # 3-hour block — past 90 min the client reads it as a hole.
+                if max(en, ne) - st > 90:
+                    break
                 en = max(en, ne)
                 j += 1
             if j > i + 1:
@@ -23046,6 +23182,121 @@ class PlanService:
             i = j
         if merged:
             print(f"[FIX #312] Day {day_num}: collapsed {merged} stacked free_time")
+        return out
+
+    def _scrub_phantom_meal_stops(
+        self, items: List[Any], *, day_num: int = 0
+    ) -> List[Any]:
+        """FIX #313: a meal with no restaurant must not still name one.
+
+        Passes that reject a restaurant (too far, wrong city, already used)
+        clear `suggestions` but the label kept the old name, so the timeline
+        showed lunch at a place in another town and the hops routed to it.
+        """
+        if not items:
+            return items
+        _generic = ("przerw", "lunch", "kolacj", "posił", "posil", "obiad")
+        out: List[Any] = []
+        fixed = 0
+        for it in items:
+            if _item_type_value(it) not in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            ):
+                out.append(it)
+                continue
+            if list(getattr(it, "suggestions", None) or []):
+                out.append(it)
+                continue
+            label = str(getattr(it, "label", "") or "")
+            if not label or any(k in label.lower() for k in _generic):
+                out.append(it)
+                continue
+            try:
+                out.append(it.model_copy(
+                    update={"label": _generic_meal_label(it)}
+                ))
+                fixed += 1
+            except Exception:
+                out.append(it)
+        if fixed:
+            print(
+                f"[FIX #313] Day {day_num}: de-identified {fixed} meal(s) "
+                f"with no restaurant left"
+            )
+        return out
+
+    def _delay_meal_approach_hop(
+        self, items: List[Any], *, day_num: int = 0
+    ) -> List[Any]:
+        """FIX #313: don't walk to lunch 90 min early and wait at the door.
+
+        The meal floor can push lunch to 12:00 while the approach hop still
+        leaves right after the previous stop, so the plan parks the traveller
+        outside the restaurant for an hour. The wait belongs at the attraction
+        they just left, so the hop moves to just before the meal.
+        """
+        ordered = self._sort_items_by_time(list(items))
+        out = list(ordered)
+        moved = 0
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) not in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            ):
+                continue
+            try:
+                meal_st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                continue
+            hop_i = None
+            for j in range(i - 1, -1, -1):
+                if _item_type_value(ordered[j]) == ItemType.TRANSIT.value:
+                    hop_i = j
+                    break
+                if _item_type_value(ordered[j]) == ItemType.FREE_TIME.value:
+                    continue
+                break
+            if hop_i is None:
+                continue
+            hop = ordered[hop_i]
+            dest = _fold_place_label(getattr(hop, "to_location", ""))
+            if not dest or not _hop_leads_to_meal(dest, it):
+                continue
+            try:
+                hs = time_to_minutes(getattr(hop, "start_time", None) or "")
+                he = time_to_minutes(getattr(hop, "end_time", None) or "")
+            except Exception:
+                continue
+            if meal_st - he < 25:
+                continue
+            floor = 0
+            for k in range(hop_i - 1, -1, -1):
+                prev = ordered[k]
+                if _item_type_value(prev) in (
+                    ItemType.FREE_TIME.value, ItemType.DAY_START.value,
+                ):
+                    continue
+                try:
+                    floor = time_to_minutes(getattr(prev, "end_time", None) or "")
+                except Exception:
+                    floor = 0
+                break
+            dur = max(1, he - hs)
+            new_st = max(floor, meal_st - dur)
+            if new_st <= hs:
+                continue
+            try:
+                out[hop_i] = hop.model_copy(update={
+                    "start_time": minutes_to_time(new_st),
+                    "end_time": minutes_to_time(new_st + dur),
+                    "duration_min": dur,
+                })
+                moved += 1
+            except Exception:
+                continue
+        if moved:
+            print(
+                f"[FIX #313] Day {day_num}: delayed {moved} meal approach hop(s)"
+            )
         return out
 
     def _clip_timeline_to_declared_window(
@@ -23098,16 +23349,20 @@ class PlanService:
                 )
                 continue
             if st_m < start_limit:
-                if tv == ItemType.FREE_TIME.value:
-                    try:
-                        it = it.model_copy(update={
-                            "start_time": minutes_to_time(start_limit),
-                            "duration_min": max(1, en_m - start_limit),
-                        })
-                        st_m = start_limit
-                    except Exception:
-                        continue
-                else:
+                # FIX #313: an early stop is late, not fictional — push it
+                # into the window instead of deleting the visit.
+                try:
+                    if tv == ItemType.FREE_TIME.value:
+                        _new_en = en_m
+                    else:
+                        _new_en = min(end_limit, start_limit + (en_m - st_m))
+                    it = it.model_copy(update={
+                        "start_time": minutes_to_time(start_limit),
+                        "end_time": minutes_to_time(_new_en),
+                        "duration_min": max(1, _new_en - start_limit),
+                    })
+                    st_m, en_m = start_limit, _new_en
+                except Exception:
                     print(
                         f"[FIX #312] Day {day_num}: dropped pre-start "
                         f"{getattr(it, 'name', None) or tv} @{st}"
@@ -23247,10 +23502,10 @@ class PlanService:
         except Exception:
             pass
         try:
-            work = self._strip_out_of_season_attractions(
+            work = self._strip_winter_closed_attractions(
                 work,
                 ctx.get("date") or ctx.get("trip_date") or ctx.get("start_date"),
-                {},
+                day_num=day_num,
             )
         except Exception:
             pass
@@ -23259,11 +23514,20 @@ class PlanService:
             work, day_num=day_num,
             trip_date=ctx.get("date") or ctx.get("trip_date"),
         )
+        # Everything above may legitimately remove a stop (winter, hours,
+        # outside the declared window). Nothing below is allowed to.
+        _pre_polish = list(work)
+        _kept = {
+            _fold_place_label(getattr(x, "name", ""))
+            for x in work if _is_timeline_attraction(x)
+        }
         work = self._collapse_adjacent_free_time(work, day_num=day_num)
         work = self._pull_day_forward_to_start(work, ctx, day_num=day_num)
         work = self._ensure_leading_transit(work, cm, ctx, day_num=day_num)
         work = self._remove_timeline_overlaps(work, day_num)
+        work = self._scrub_phantom_meal_stops(work, day_num=day_num)
         work = self._snap_meals_after_approach_hop(work, day_num=day_num)
+        work = self._delay_meal_approach_hop(work, day_num=day_num)
         work = self._eat_long_free_time_before_attraction(work, day_num=day_num)
         work = self._drop_trailing_orphan_transits(work, day_num=day_num)
         work = self._drop_hops_not_to_next_stop(work, day_num=day_num)
@@ -23273,9 +23537,25 @@ class PlanService:
         work = self._collapse_adjacent_free_time(work, day_num=day_num)
         work = self._remove_timeline_overlaps(work, day_num)
         work = self._clip_timeline_to_declared_window(work, ctx, day_num=day_num)
+        work = self._retarget_all_legs_to_prev_stop(
+            work, day_num=day_num, context=ctx,
+        )
         work = self._reconcile_day_end_marker(
             work, ctx, day_num=day_num, include_named_tail=True,
         )
+        _lost = _kept - {
+            _fold_place_label(getattr(x, "name", ""))
+            for x in work if _is_timeline_attraction(x)
+        }
+        if _lost:
+            # A polish pass must never eat a visit the client already sees in
+            # the day title (client: "generator gubi atrakcje w finalnym
+            # planie", teleporty "z Aquaparku"). Keep the pre-seal day.
+            print(
+                f"[FIX #313] Day {day_num}: seal dropped {sorted(_lost)} — "
+                f"reverting to the pre-polish timeline"
+            )
+            return _pre_polish
         return work
 
     def _seal_day_hops_and_meals(
@@ -29550,6 +29830,15 @@ class PlanService:
                     for x in ordered[i + 1:]
                     if _is_timeline_attraction(x)
                 }
+                # FIX #313: the opening hop may also start from a stop that
+                # was stripped (winter Arboretum), so it appears nowhere in
+                # the day at all — the traveller starts from the city.
+                anywhere = {
+                    (getattr(x, "name", "") or "").strip().lower()
+                    for x in ordered if _is_timeline_attraction(x)
+                }
+                if frm.lower() and frm.lower() not in anywhere and city:
+                    later = later | {frm.lower()}
                 if frm.lower() in later and city:
                     try:
                         it = it.model_copy(update={
@@ -30990,12 +31279,19 @@ class PlanService:
             end_limit, start_limit = 20 * 60, 9 * 60
         # Include tails that end exactly at day_end (client idle-tail defects).
         # FIX #263: name 10–14 min holes too (Wrocław client gap audits).
-        holes = [
-            h for h in self._find_day_holes(items, end_limit, start_limit, min_span=10)
-            if 10 <= h[1] - h[0] <= (
-                100 if h[0] <= start_limit + 5 else 90
-            ) and h[1] <= end_limit
-        ]
+        # FIX #313: a hole between two real stops is always named, however
+        # long — an unlabelled interior gap is the defect the client counts
+        # ("brakuje ponad 4,5 godziny osi czasu"). Only the tail after the
+        # last stop keeps the cap, because there day_end moves back instead.
+        _content_end313 = _timeline_content_end_minutes(items)
+        holes = []
+        for h in self._find_day_holes(items, end_limit, start_limit, min_span=10):
+            span_h = h[1] - h[0]
+            if span_h < 10 or h[1] > end_limit:
+                continue
+            interior = _content_end313 is not None and h[1] <= _content_end313 + 2
+            if interior or span_h <= (100 if h[0] <= start_limit + 5 else 90):
+                holes.append(h)
         # FIX #278: do not invent multi-hour free_time after the last real stop.
         if _quality_first_trip(context):
             content_end = _timeline_content_end_minutes(items)
@@ -31010,8 +31306,12 @@ class PlanService:
         for idx, (hs, he) in enumerate(holes):
             cursor = hs
             block = 0
-            while he - cursor >= 10 and block < 3:
+            # FIX #313: no cap on the block count — a 160 min interior gap
+            # becomes four labelled blocks, never 160 anonymous minutes.
+            while he - cursor >= 10 and block < 12:
                 span = min(45, he - cursor)
+                if 0 < he - cursor - span < 10:
+                    span = he - cursor
                 if span < 20:
                     label, suggestions, tech = "Krótka przerwa / bufor", [], True
                 else:
