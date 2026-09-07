@@ -651,9 +651,11 @@ _WINTER_CLOSED_MARKERS = (
     "jaskinia łokietka", "jaskinia lokietka",
     "fontanna multimedial",
     "strefa wakacji",
-    # FIX #303: Arboretum Wojsławice is closed in February.
+    # FIX #303/#316: Arboretum Wojsławice is closed in February.
+    # Stem only — titles come back as "Wojsławice" without "Arboretum".
     "arboretum wojsławice", "arboretum wojslawice",
     "arboretum wojsław", "arboretum wojslaw",
+    "wojsławic", "wojslawic",
 )
 
 
@@ -23245,9 +23247,12 @@ class PlanService:
                     break
                 if ns > en + 3:
                     break
-                # FIX #313: merging tidies stacked waits, it must not build a
-                # 3-hour block — past 90 min the client reads it as a hole.
-                if max(en, ne) - st > 90:
+                # FIX #313: do not glue four 45-min waits into a 3h block.
+                # FIX #316: a short buffer (≤40) glued to a real FT *is*
+                # one hole (35 min + 90 min before lunch).
+                combined = max(en, ne) - st
+                short = min(en - st, ne - ns) <= 40
+                if combined > 90 and not short:
                     break
                 en = max(en, ne)
                 j += 1
@@ -23781,6 +23786,70 @@ class PlanService:
             return _pre_polish
         return work
 
+    def _drop_items_after_day_end(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #316: nothing the client can tap may start after day_end.
+
+        P0: day_end 14:43 with free_time 14:55–15:14. Early-close sets the
+        marker, then a later name-holes pass invents activity past it.
+        """
+        if not items:
+            return items
+        marker = None
+        for it in items:
+            if _item_type_value(it) != ItemType.DAY_END.value:
+                continue
+            t = getattr(it, "time", None) or getattr(it, "end_time", None)
+            if not t:
+                continue
+            try:
+                marker = time_to_minutes(t)
+            except Exception:
+                continue
+        if marker is None:
+            return items
+        out: List[Any] = []
+        dropped = 0
+        for it in items:
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                out.append(it)
+                continue
+            raw = getattr(it, "start_time", None) or getattr(it, "time", None)
+            if not raw:
+                out.append(it)
+                continue
+            try:
+                st = time_to_minutes(raw)
+            except Exception:
+                out.append(it)
+                continue
+            if st >= marker:
+                dropped += 1
+                continue
+            en_raw = getattr(it, "end_time", None)
+            if en_raw:
+                try:
+                    en = time_to_minutes(en_raw)
+                    if en > marker:
+                        it = it.model_copy(update={
+                            "end_time": minutes_to_time(marker),
+                            "duration_min": max(1, marker - st),
+                        })
+                except Exception:
+                    pass
+            out.append(it)
+        if dropped:
+            print(
+                f"[FIX #316] Day {day_num}: dropped {dropped} item(s) "
+                f"after day_end {minutes_to_time(marker)}"
+            )
+        return out
+
     def _guard_trip_invariants(
         self,
         days: List[Any],
@@ -23789,11 +23858,10 @@ class PlanService:
         coord_map: Optional[Dict[str, Any]] = None,
         user: Optional[Dict[str, Any]] = None,
     ) -> List[Any]:
-        """FIX #315: trip-level last word after the per-day seal.
+        """FIX #315/#316: trip-level last word after the per-day seal.
 
-        Reuses existing helpers only. Client Wrocław: first attraction glued
-        to day_start with no city hop; Pergola replanted by inject after the
-        uniqueness strip; 88 min named free_time before dinner.
+        Reuses existing helpers only. Client Wrocław: first hop, Pergola
+        uniqueness, idle before meals, winter Wojsławice, day_end chronology.
         """
         if not days:
             return days
@@ -23842,12 +23910,29 @@ class PlanService:
                 "trip_attraction_names": set(used_names),
             }
             try:
+                items = self._strip_winter_closed_attractions(
+                    items,
+                    ctx.get("date") or ctx.get("trip_date") or ctx.get("start_date"),
+                    day_num=day_num,
+                )
+                items = self._strip_transits_to_unscheduled_destinations(
+                    items, day_num=day_num,
+                )
+                items = self._drop_hops_not_to_next_stop(items, day_num=day_num)
+                items = self._remove_timeline_overlaps(items, day_num)
+            except Exception:
+                pass
+            try:
                 items = self._ensure_leading_transit(
                     items,
                     self._merge_coord_map(cm, items),
                     ctx,
                     day_num=day_num,
                 )
+            except Exception:
+                pass
+            try:
+                items = self._collapse_adjacent_free_time(items, day_num=day_num)
             except Exception:
                 pass
             try:
@@ -23860,6 +23945,7 @@ class PlanService:
             try:
                 items = self._eat_long_free_time_before_attraction(
                     items, day_num=day_num, min_ft=45, keep=20,
+                    pull_lunch=True,
                 )
             except Exception:
                 pass
@@ -23871,8 +23957,16 @@ class PlanService:
                 items = self._name_remaining_holes(items, ctx, day_num=day_num)
                 items = self._eat_long_free_time_before_attraction(
                     items, day_num=day_num, min_ft=45, keep=20,
+                    pull_lunch=True,
                 )
                 items = self._collapse_adjacent_free_time(items, day_num=day_num)
+            except Exception:
+                pass
+            try:
+                items = self._drop_items_after_day_end(items, day_num=day_num)
+                items = self._reconcile_day_end_marker(
+                    items, ctx, day_num=day_num,
+                )
             except Exception:
                 pass
             for it in items:
@@ -24130,6 +24224,7 @@ class PlanService:
         day_num: int = 0,
         keep: int = 20,
         min_ft: int = 40,
+        pull_lunch: bool = False,
     ) -> List[Any]:
         """FIX #293: 79 min break then 86 min Zajezdnia is padding, not a plan."""
         if not items:
@@ -24152,6 +24247,10 @@ class PlanService:
             nxt_ok = (
                 _is_timeline_attraction(ordered[j])
                 or _item_type_value(ordered[j]) == ItemType.DINNER_BREAK.value
+                or (
+                    pull_lunch
+                    and _item_type_value(ordered[j]) == ItemType.LUNCH_BREAK.value
+                )
             )
             if not nxt_ok:
                 continue
@@ -28089,6 +28188,7 @@ class PlanService:
                 "wioski świata", "wioski swiata",
                 "jaskinia łokietka", "jaskinia lokietka",
                 "fontanna multimedial", "strefa wakacji",
+                "wojsławic", "wojslawic", "arboretum",
             )):
                 continue
             _rk_inj = poi_trip_repeat_key(poi.get("name") or "")
@@ -31662,6 +31762,22 @@ class PlanService:
             start_limit = time_to_minutes(context.get("day_start") or "09:00")
         except Exception:
             end_limit, start_limit = 20 * 60, 9 * 60
+        # FIX #316: the day_end *marker* is the clock the client reads.
+        # Naming against the declared 19:00 window left 15:30–16:20 blank
+        # when the marker already sat at 16:20.
+        for _it_de316 in items:
+            if _item_type_value(_it_de316) != ItemType.DAY_END.value:
+                continue
+            _t_de316 = (
+                getattr(_it_de316, "time", None)
+                or getattr(_it_de316, "end_time", None)
+            )
+            if not _t_de316:
+                continue
+            try:
+                end_limit = min(end_limit, time_to_minutes(_t_de316))
+            except Exception:
+                pass
         # Include tails that end exactly at day_end (client idle-tail defects).
         # FIX #263: name 10–14 min holes too (Wrocław client gap audits).
         # FIX #313: a hole between two real stops is always named, however
