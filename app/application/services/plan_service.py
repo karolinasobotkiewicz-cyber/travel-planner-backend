@@ -2316,6 +2316,39 @@ class PlanService:
                 ),
                 "severity": "info" if attrs >= 2 else "warning",
             })
+            # FIX #315: leftover idle before a meal is not a "≤90 min" win.
+            try:
+                _ord315 = self._sort_items_by_time(list(day_plan.items or []))
+            except Exception:
+                _ord315 = list(day_plan.items or [])
+            for _i315, _it315w in enumerate(_ord315):
+                if _item_type_value(_it315w) != ItemType.FREE_TIME.value:
+                    continue
+                _fd315 = int(getattr(_it315w, "duration_min", 0) or 0)
+                if _fd315 <= 45:
+                    continue
+                _nxt315 = None
+                for _cand315 in _ord315[_i315 + 1:]:
+                    _ct315 = _item_type_value(_cand315)
+                    if _ct315 == ItemType.TRANSIT.value:
+                        continue
+                    _nxt315 = _cand315
+                    break
+                if _item_type_value(_nxt315) not in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                ):
+                    continue
+                warnings.append({
+                    "type": "sparse_afternoon",
+                    "day": day_plan.day,
+                    "free_time_min": _fd315,
+                    "message": (
+                        f"Dzień {day_plan.day}: {_fd315} min przerwy przed "
+                        f"posiłkiem — brak wolnego POI do wsadzenia."
+                    ),
+                    "severity": "info",
+                })
+                break
         return warnings
 
     def _ensure_preference_coverage(
@@ -7911,7 +7944,12 @@ class PlanService:
                 ),
                 "poi_pool": list(all_pois_dict or []),
                 "user": user or {},
+                "allow_pre_meal_inject": True,
             }
+            from app.domain.scoring.profile_poi_rules import (
+                poi_trip_repeat_key as _rk315,
+            )
+            _used_keys315: set = set()
             _days_geom279: List[DayPlan] = []
             for _dg279 in days:
                 _day_ctx312 = {
@@ -7919,6 +7957,8 @@ class PlanService:
                     "date": getattr(_dg279, "date", None) or _ctx_geom279.get("date"),
                     "trip_date": getattr(_dg279, "date", None)
                     or _ctx_geom279.get("trip_date"),
+                    "trip_repeat_keys": set(_used_keys315),
+                    "allow_pre_meal_inject": True,
                 }
                 _itg279 = self._finalize_transit_geometry(
                     list(_dg279.items or []),
@@ -7964,7 +8004,17 @@ class PlanService:
                     date=getattr(_dg279, "date", None),
                     weekday=getattr(_dg279, "weekday", None),
                 ))
-            days = _days_geom279
+                for _it315 in _itg279:
+                    if _is_timeline_attraction(_it315):
+                        _rk_it315 = _rk315(getattr(_it315, "name", None) or "")
+                        if _rk_it315:
+                            _used_keys315.add(_rk_it315)
+            days = self._guard_trip_invariants(
+                _days_geom279,
+                _ctx_geom279,
+                coord_map=_final_coord_map,
+                user=user,
+            )
             # FIX #313: coverage and density must describe the final timeline,
             # not the pre-polish one (client: "warnings zwraca pustą tablicę").
             try:
@@ -19460,29 +19510,11 @@ class PlanService:
 
         dist_km = haversine_distance(float(h_lat), float(h_lng), to_lat, to_lng)
         gap = attr_st - day_start_min
-        # FIX #308: 0.4–0.6 km first hops (Muzeum Historii Katowic) must stay visible.
-        if gap < 8 and dist_km < 0.35:
+        # FIX #315: only skip the hop when the first stop is the start
+        # courtyard. Snapping the visit onto day_start (old 0.35 km rule)
+        # produced "09:00 we Wrocławiu, 09:00 Pergola, zero dojazdu".
+        if dist_km < 0.20:
             return items
-        # A first stop that is already in the centre needs no invented leg —
-        # the visit simply starts when the day starts (client: "10-15 min od
-        # day_start do pierwszego POI bez transitu").
-        if dist_km < 0.35:
-            if gap > 35:
-                return items
-            try:
-                ordered[first_idx] = first_stop.model_copy(update={
-                    "start_time": minutes_to_time(day_start_min),
-                    "duration_min": time_to_minutes(
-                        getattr(first_stop, "end_time", None) or ""
-                    ) - day_start_min,
-                })
-                print(
-                    f"[FIX #261] Day {day_num}: {name} now starts at day_start "
-                    f"(closed {gap}min morning hole)"
-                )
-            except Exception:
-                return items
-            return ordered
 
         has_car = bool(context.get("has_car", True))
         from_poi = {"name": origin_label, "lat": float(h_lat), "lng": float(h_lng)}
@@ -19496,10 +19528,6 @@ class PlanService:
         if _is_wojslawice_stop_name(name):
             dur = min(60, max(50, dur))
             dist_km = max(dist_km, 50.0)
-        # FIX #307: Stare/Nowe Zoo, Rusałka, Brama Poznania start at day_start
-        # with gap=0 — still need the approach hop (was skipped when dur<15).
-        if dist_km < 0.8 and gap < 8 and dur < 10:
-            return items
 
         # A 66 km excursion cannot start 10 minutes after day_start: buy the
         # missing minutes from the idle end of the day before giving up.
@@ -19522,12 +19550,45 @@ class PlanService:
             shift = min(dur - gap, slack)
             if (
                 _timeline_satellite_kind(name)
-                or dist_km >= 0.8
+                or dist_km >= 15
                 or _katowice_seed_coords(name)
             ):
-                # FIX #281/#308: always make room for hub → Chorzów / first hop
-                # even when the evening is already full (clamp later).
+                # FIX #281/#308: far / satellite first hops buy the missing
+                # minutes even when the evening is already full.
                 shift = dur - gap
+            elif gap < 8 and dist_km >= 0.20:
+                # FIX #315: urban first hop at day_start — delay only the
+                # first stop so a full day does not slide past day_end.
+                need = dur - gap
+                try:
+                    aen = time_to_minutes(
+                        getattr(first_stop, "end_time", None) or ""
+                    )
+                    nst = attr_st + need
+                    upd = {
+                        "start_time": minutes_to_time(nst),
+                        "duration_min": (
+                            max(20, aen - nst) if aen > nst
+                            else int(getattr(first_stop, "duration_min", 0) or 40)
+                        ),
+                    }
+                    if aen > nst:
+                        upd["end_time"] = minutes_to_time(aen)
+                    else:
+                        upd["end_time"] = minutes_to_time(
+                            nst + int(upd["duration_min"])
+                        )
+                    ordered[first_idx] = first_stop.model_copy(update=upd)
+                    first_stop = ordered[first_idx]
+                    attr_st = nst
+                    gap += need
+                    shift = 0
+                    print(
+                        f"[FIX #315] Day {day_num}: first stop {name} "
+                        f"starts {minutes_to_time(nst)} after city hop"
+                    )
+                except Exception:
+                    shift = need
             if shift > 0:
                 ordered = self._shift_items_from(ordered, first_idx, shift)
                 attr_st += shift
@@ -23720,6 +23781,124 @@ class PlanService:
             return _pre_polish
         return work
 
+    def _guard_trip_invariants(
+        self,
+        days: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        coord_map: Optional[Dict[str, Any]] = None,
+        user: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #315: trip-level last word after the per-day seal.
+
+        Reuses existing helpers only. Client Wrocław: first attraction glued
+        to day_start with no city hop; Pergola replanted by inject after the
+        uniqueness strip; 88 min named free_time before dinner.
+        """
+        if not days:
+            return days
+        from app.domain.scoring.profile_poi_rules import poi_trip_repeat_key
+
+        try:
+            days = self._strip_cross_day_trip_repeats(days)
+        except Exception:
+            pass
+
+        used: set = set()
+        used_names: set = set()
+        for day in days:
+            for it in getattr(day, "items", None) or []:
+                if not _is_timeline_attraction(it):
+                    continue
+                nm = getattr(it, "name", None) or ""
+                rk = poi_trip_repeat_key(nm)
+                if rk:
+                    used.add(rk)
+                folded = _fold_place_label(nm)
+                if folded:
+                    used_names.add(folded)
+
+        ctx_base = dict(context or {})
+        if user is not None:
+            ctx_base.setdefault("user", user)
+        ctx_base["allow_pre_meal_inject"] = True
+        pool = ctx_base.get("poi_pool") or []
+        if isinstance(pool, dict):
+            pool = list(pool.values())
+        usr = ctx_base.get("user") or user or {}
+        cm = coord_map or {}
+        out: List[Any] = []
+        for day in days:
+            items = list(getattr(day, "items", None) or [])
+            if not items:
+                out.append(day)
+                continue
+            day_num = int(getattr(day, "day", 0) or 0)
+            ctx = {
+                **ctx_base,
+                "date": getattr(day, "date", None) or ctx_base.get("date"),
+                "trip_date": getattr(day, "date", None) or ctx_base.get("trip_date"),
+                "trip_repeat_keys": set(used),
+                "trip_attraction_names": set(used_names),
+            }
+            try:
+                items = self._ensure_leading_transit(
+                    items,
+                    self._merge_coord_map(cm, items),
+                    ctx,
+                    day_num=day_num,
+                )
+            except Exception:
+                pass
+            try:
+                if pool:
+                    items = self._inject_attraction_into_free_time(
+                        items, list(pool), ctx, usr, day_num=day_num,
+                    )
+            except Exception:
+                pass
+            try:
+                items = self._eat_long_free_time_before_attraction(
+                    items, day_num=day_num, min_ft=45, keep=20,
+                )
+            except Exception:
+                pass
+            try:
+                items = self._sync_timeline_clocks(items)
+            except Exception:
+                pass
+            try:
+                items = self._name_remaining_holes(items, ctx, day_num=day_num)
+                items = self._eat_long_free_time_before_attraction(
+                    items, day_num=day_num, min_ft=45, keep=20,
+                )
+                items = self._collapse_adjacent_free_time(items, day_num=day_num)
+            except Exception:
+                pass
+            for it in items:
+                if not _is_timeline_attraction(it):
+                    continue
+                nm = getattr(it, "name", None) or ""
+                rk = poi_trip_repeat_key(nm)
+                if rk:
+                    used.add(rk)
+                folded = _fold_place_label(nm)
+                if folded:
+                    used_names.add(folded)
+            try:
+                day = day.model_copy(update={"items": items})
+            except Exception:
+                try:
+                    day.items = items
+                except Exception:
+                    pass
+            out.append(day)
+        try:
+            out = self._strip_cross_day_trip_repeats(out)
+        except Exception:
+            pass
+        return out
+
     def _seal_day_hops_and_meals(
         self,
         items: List[Any],
@@ -23994,6 +24173,13 @@ class PlanService:
                 except Exception:
                     continue
                 fl = _item_clock_floor_min(nxt)
+                # FIX #315: an 45–120 min hole glued to 17:30 dinner is
+                # leftover idle. A whole afternoon (3h+) stays at 17:30.
+                if (
+                    _item_type_value(nxt) == ItemType.DINNER_BREAK.value
+                    and 45 <= dur <= 120
+                ):
+                    fl = min(fl, 17 * 60)
                 cut = min(cut, max(0, st_m - fl))
             if cut < 20:
                 continue
@@ -27744,10 +27930,12 @@ class PlanService:
             ntv = _item_type_value(nxt) if nxt is not None else ""
             allow_pre_meal = bool(context.get("allow_pre_meal_inject"))
             ft_dur = int(getattr(it, "duration_min", 0) or 0)
-            # FIX #282: a 3.5h hole before dinner is a real slot, not a buffer.
+            # FIX #282/#315: a hole before dinner is a real slot once it
+            # exceeds a short meal buffer. 88 min used to hide under the 90
+            # floor and come back as named free_time.
             if (
                 not allow_pre_meal
-                and ft_dur < 90
+                and ft_dur < 50
                 and ntv in (
                     ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
                 )
@@ -27907,6 +28095,7 @@ class PlanService:
             _taken_keys = {
                 poi_trip_repeat_key(n) for n in taken if poi_trip_repeat_key(n)
             }
+            _taken_keys.update(context.get("trip_repeat_keys") or set())
             if _rk_inj and _rk_inj in _taken_keys:
                 continue
             if req_city and not poi_matches_city_filter(poi, req_city):
