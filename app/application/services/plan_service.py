@@ -153,6 +153,20 @@ def _poi_lat_lng(poi_dict: Dict[str, Any]):
     return lat, lng
 
 
+_INDOOR_OPENING_MARKERS = (
+    "muzeum", "panorama", "hydropolis", "movie gate", "iluzj",
+    "zoo team", "zooteam", "aquapark", "park wodny", "botanicz",
+)
+
+
+def _attraction_day_start_floor(it: Any, day_start: int = 9 * 60) -> int:
+    """Outdoor stops may open with the day; indoor ones wait for 10:00."""
+    nm = (getattr(it, "name", "") or "").lower()
+    if any(k in nm for k in _INDOOR_OPENING_MARKERS):
+        return 10 * 60
+    return day_start
+
+
 def _item_clock_floor_min(it: Any, day_start: int = 9 * 60) -> int:
     """FIX #311: pull/eat passes must not drag lunch/dinner/sights earlier."""
     tv = _item_type_value(it)
@@ -7895,6 +7909,8 @@ class PlanService:
                     or getattr(getattr(trip_input, "trip_length", None), "days", 1)
                     or 1
                 ),
+                "poi_pool": list(all_pois_dict or []),
+                "user": user or {},
             }
             _days_geom279: List[DayPlan] = []
             for _dg279 in days:
@@ -10295,15 +10311,16 @@ class PlanService:
                             ):
                                 continue
                             if _os >= ei and _os < new_en:
-                                new_en = _os
-                                if new_en - new_st < 5:
-                                    new_st = max(0, new_en - max(5, min(dur, 20)))
+                                new_en = max(_os, ei + 1)
                                 break
+                        new_st = ei
+                        if new_en <= new_st:
+                            new_en = new_st + max(5, min(dur, 10))
                         try:
                             working[working.index(item_j)] = item_j.model_copy(update={
                                 "start_time": minutes_to_time(new_st),
                                 "end_time": minutes_to_time(new_en),
-                                "duration_min": dur,
+                                "duration_min": max(1, new_en - new_st),
                             })
                         except Exception:
                             try:
@@ -12190,6 +12207,8 @@ class PlanService:
                 opens = 10 * 60 if opens is None else opens
                 closes = 18 * 60
                 last_entry = 16 * 60 + 30 if last_entry is None else min(last_entry, 16 * 60 + 30)
+            if "przyrodnicz" in nm:
+                opens = 10 * 60 if opens is None else opens
             if "archeologiczn" in nm:
                 opens = 10 * 60 if opens is None else opens
             if "zajezdnia" in nm:
@@ -18499,6 +18518,8 @@ class PlanService:
                 cap = 60 if cap is None else min(int(cap), 60)
             if "most tumski" in nm_l:
                 cap = 20 if cap is None else min(int(cap), 20)
+            if "świebodzki" in nm_l or "swiebodzki" in nm_l:
+                cap = 25 if cap is None else min(int(cap), 25)
             if "neon side" in nm_l or "galeria neon" in nm_l:
                 try:
                     st_m = time_to_minutes(st)
@@ -23480,6 +23501,111 @@ class PlanService:
             return ordered
         return [it for it in ordered if id(it) not in drop]
 
+    def _sync_timeline_clocks(self, items: List[Any]) -> List[Any]:
+        """FIX #314: duration_min must equal end-start. Clocks win."""
+        out: List[Any] = []
+        for it in items:
+            st = getattr(it, "start_time", None)
+            en = getattr(it, "end_time", None)
+            if not st or not en:
+                out.append(it)
+                continue
+            try:
+                span = max(1, time_to_minutes(en) - time_to_minutes(st))
+            except Exception:
+                out.append(it)
+                continue
+            if int(getattr(it, "duration_min", 0) or 0) == span:
+                out.append(it)
+                continue
+            try:
+                out.append(it.model_copy(update={"duration_min": span}))
+            except Exception:
+                out.append(it)
+        return out
+
+    def _extend_crushed_attraction_into_gap(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #314: Neon Side 18:00–18:01 with duration 45 is a truncated visit.
+
+        Grow the visit into the following unnamed hole / free_time instead of
+        leaving a 1-minute stub and a later hop that still pretends it lasted.
+        """
+        if not items:
+            return items
+        try:
+            end_limit = time_to_minutes((context or {}).get("day_end") or "20:00")
+        except Exception:
+            end_limit = 20 * 60
+        ordered = self._sort_items_by_time(list(items))
+        for i, it in enumerate(ordered):
+            if not _is_timeline_attraction(it):
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
+            span = max(0, en - st)
+            declared = int(getattr(it, "duration_min", 0) or 0)
+            if declared - span < 15 or span >= 25:
+                continue
+            nxt_st = end_limit
+            nxt_en = end_limit
+            nxt_i = None
+            nxt_is_ft = False
+            for j in range(i + 1, len(ordered)):
+                nxt = ordered[j]
+                ns = getattr(nxt, "start_time", None)
+                if not ns:
+                    continue
+                try:
+                    nxt_st = time_to_minutes(ns)
+                    nxt_en = time_to_minutes(getattr(nxt, "end_time", None) or ns)
+                except Exception:
+                    continue
+                nxt_i = j
+                nxt_is_ft = _item_type_value(nxt) == ItemType.FREE_TIME.value
+                break
+            room = max(0, min(end_limit, (nxt_en if nxt_is_ft else nxt_st)) - en)
+            if room < 10:
+                continue
+            grow = min(declared - span, room)
+            if grow < 10:
+                continue
+            new_en = en + grow
+            try:
+                ordered[i] = it.model_copy(update={
+                    "end_time": minutes_to_time(new_en),
+                    "duration_min": new_en - st,
+                })
+            except Exception:
+                continue
+            if nxt_i is not None:
+                nxt = ordered[nxt_i]
+                if _item_type_value(nxt) == ItemType.FREE_TIME.value:
+                    try:
+                        ne = time_to_minutes(getattr(nxt, "end_time", None) or "")
+                        if ne > new_en:
+                            ordered[nxt_i] = nxt.model_copy(update={
+                                "start_time": minutes_to_time(new_en),
+                                "duration_min": max(1, ne - new_en),
+                            })
+                        else:
+                            ordered[nxt_i] = None
+                    except Exception:
+                        pass
+            print(
+                f"[FIX #314] Day {day_num}: restored crushed "
+                f"{getattr(it, 'name', '?')} {span}→{new_en - st} min"
+            )
+        return [x for x in ordered if x is not None]
+
     def _seal_client_day_window(
         self,
         items: List[Any],
@@ -23534,6 +23660,42 @@ class PlanService:
         work = self._honest_transit_physics(work, day_num=day_num, context=ctx)
         work = self._clamp_timeline_to_day_end(work, ctx, day_num=day_num)
         work = self._name_remaining_holes(work, ctx, day_num=day_num)
+        work = self._collapse_adjacent_free_time(work, day_num=day_num)
+        work = self._extend_crushed_attraction_into_gap(work, ctx, day_num=day_num)
+        work = self._sync_timeline_clocks(work)
+        work = self._eat_long_free_time_before_attraction(
+            work, day_num=day_num, min_ft=40,
+        )
+        try:
+            work = self._snap_meals_to_nearby_restaurants(
+                work, ctx, ctx.get("user") or user, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._route_meals_into_timeline(
+                work, cm, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._relabel_dinner_items(work)
+        except Exception:
+            pass
+        try:
+            _pool314 = ctx.get("poi_pool") or []
+            if isinstance(_pool314, dict):
+                _pool314 = list(_pool314.values())
+            if _pool314:
+                work = self._inject_attraction_into_free_time(
+                    work, list(_pool314), ctx, ctx.get("user") or user or {},
+                    day_num=day_num,
+                )
+        except Exception:
+            pass
+        work = self._eat_long_free_time_before_attraction(
+            work, day_num=day_num, min_ft=40,
+        )
         work = self._collapse_adjacent_free_time(work, day_num=day_num)
         work = self._remove_timeline_overlaps(work, day_num)
         work = self._clip_timeline_to_declared_window(work, ctx, day_num=day_num)
@@ -23788,7 +23950,7 @@ class PlanService:
         *,
         day_num: int = 0,
         keep: int = 20,
-        min_ft: int = 55,
+        min_ft: int = 40,
     ) -> List[Any]:
         """FIX #293: 79 min break then 86 min Zajezdnia is padding, not a plan."""
         if not items:
@@ -23803,6 +23965,7 @@ class PlanService:
             j = i + 1
             while j < len(ordered) and _item_type_value(ordered[j]) in (
                 ItemType.TRANSIT.value, ItemType.DAY_END.value,
+                ItemType.FREE_TIME.value,
             ):
                 j += 1
             if j >= len(ordered):
@@ -25830,7 +25993,10 @@ class PlanService:
                 return items
             if tv == ItemType.FREE_TIME.value and st_m < first_real:
                 continue
-            limit = max(floors.get(tv, day_start), day_start)
+            if tv == ItemType.ATTRACTION.value:
+                limit = max(_attraction_day_start_floor(it, day_start), day_start)
+            else:
+                limit = max(floors.get(tv, day_start), day_start)
             shift = min(shift, max(0, st_m - limit))
             if shift < 20:
                 return items
@@ -30915,6 +31081,9 @@ class PlanService:
             if not last_pt:
                 out.append(it)
                 continue
+            if not pool:
+                out.append(it)
+                continue
             sugs = list(getattr(it, "suggestions", None) or [])
             primary = sugs[0] if sugs else None
             rlat = getattr(primary, "lat", None) if primary else None
@@ -30974,6 +31143,18 @@ class PlanService:
                 km = haversine_distance(last_pt[0], last_pt[1], plat, plng)
                 ranked.append((km, r))
             ranked.sort(key=lambda x: x[0])
+            if not ranked:
+                # FIX #314: empty dinner with a city-centre last stop still
+                # needs a restaurant — geo_ok can be stricter than 6 km walk.
+                for r in pool:
+                    try:
+                        plat, plng = float(r.get("lat")), float(r.get("lng"))
+                    except Exception:
+                        continue
+                    km = haversine_distance(last_pt[0], last_pt[1], plat, plng)
+                    if km <= 6.0:
+                        ranked.append((km, r))
+                ranked.sort(key=lambda x: x[0])
             meal = (
                 "lunch"
                 if _item_type_value(it) == ItemType.LUNCH_BREAK.value
@@ -30991,6 +31172,21 @@ class PlanService:
                     break
             if picked is None and ranked and ranked[0][0] <= hop_cap:
                 picked = _restaurant_dict_to_suggestion(ranked[0][1], meal)
+            if picked is None and not sugs:
+                near = []
+                for r in pool:
+                    try:
+                        km = haversine_distance(
+                            last_pt[0], last_pt[1],
+                            float(r.get("lat")), float(r.get("lng")),
+                        )
+                    except Exception:
+                        continue
+                    if km <= 12.0:
+                        near.append((km, r))
+                near.sort(key=lambda x: x[0])
+                if near:
+                    picked = _restaurant_dict_to_suggestion(near[0][1], meal)
             if picked is None:
                 # FIX #269: empty beats "lunch in Wrocław while the user is in Oława".
                 # FIX #297: don't keep location_context=centrum after a lake/satellite.
