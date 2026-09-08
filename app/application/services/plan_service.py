@@ -10310,8 +10310,9 @@ class PlanService:
                         ItemType.LUNCH_BREAK.value,
                         ItemType.DINNER_BREAK.value,
                     }
-                    # FIX #285: lunch/dinner must not share a slot with a transit
-                    # (Katowice json 3/4/9/10).
+                    # FIX #285/#317: meal vs hop — keep the hop duration and
+                    # shift the meal (or the hop after the meal). Gluing the
+                    # hop to end at meal_s produced 2 km / 1 min walks.
                     if (
                         (ti_s in _meals and tj_s == ItemType.TRANSIT.value)
                         or (tj_s in _meals and ti_s == ItemType.TRANSIT.value)
@@ -10324,24 +10325,59 @@ class PlanService:
                             (item_j, dj, sj, ej) if tj_s == ItemType.TRANSIT.value
                             else (item_i, di, si, ei)
                         )
-                        dur = max(1, int(tr_d.get("duration_min") or (tr_e - tr_s) or 10))
-                        new_en = meal_s
-                        new_st = max(0, new_en - dur)
-                        if new_en <= new_st:
-                            new_st, new_en = max(0, meal_s - 10), meal_s
+                        intended = max(
+                            5,
+                            int(tr_d.get("duration_min") or 0),
+                            max(1, tr_e - tr_s),
+                        )
                         try:
-                            working[working.index(tr_it)] = tr_it.model_copy(update={
-                                "start_time": minutes_to_time(new_st),
-                                "end_time": minutes_to_time(new_en),
-                                "duration_min": new_en - new_st,
-                            })
+                            hop_idx = working.index(tr_it)
+                            meal_idx = working.index(meal_it)
+                            if meal_s <= tr_s:
+                                hop_st = meal_e
+                                hop_en = hop_st + intended
+                                working[hop_idx] = tr_it.model_copy(update={
+                                    "start_time": minutes_to_time(hop_st),
+                                    "end_time": minutes_to_time(hop_en),
+                                    "duration_min": intended,
+                                })
+                                nxt_i = hop_idx + 1
+                                if nxt_i < len(working):
+                                    nxt_raw = (
+                                        getattr(working[nxt_i], "start_time", None)
+                                        or getattr(working[nxt_i], "time", None)
+                                    )
+                                    if nxt_raw:
+                                        ns = time_to_minutes(nxt_raw)
+                                        if hop_en > ns:
+                                            working = self._shift_items_from(
+                                                working, nxt_i, hop_en - ns,
+                                            )
+                            else:
+                                hop_st = tr_s
+                                hop_en = hop_st + intended
+                                working[hop_idx] = tr_it.model_copy(update={
+                                    "start_time": minutes_to_time(hop_st),
+                                    "end_time": minutes_to_time(hop_en),
+                                    "duration_min": intended,
+                                })
+                                if hop_en > meal_s:
+                                    working = self._shift_items_from(
+                                        working, meal_idx, hop_en - meal_s,
+                                    )
                             overlaps_shifted += 1
                             shifted = True
+                            print(
+                                f"[FIX #317] Day {day_num}: meal/hop overlap "
+                                f"shifted, hop stays {intended} min"
+                            )
+                            break
                         except Exception:
                             pass
                         continue
-                    # FIX #259: shift transit off the previous attraction/meal
-                    # instead of dropping the logistics leg (Movie Gate vs walk).
+                    # FIX #259/#317: shift the hop after the visit and push
+                    # everything after it. Never shrink a 2 km hop to 1 min
+                    # to protect the next meal clock.
                     if (
                         ti_s in (
                             ItemType.ATTRACTION.value,
@@ -10351,42 +10387,50 @@ class PlanService:
                         and tj_s == ItemType.TRANSIT.value
                         and ei > sj
                     ):
-                        dur = max(1, ej - sj)
+                        dur = max(
+                            5,
+                            int(getattr(item_j, "duration_min", 0) or 0),
+                            ej - sj,
+                        )
                         new_st = ei
                         new_en = new_st + dur
-                        # FIX #286: don't slide the hop back onto the next meal.
-                        for _ok, _od, _os, _oe in timed:
-                            _ots = _type_str(_od.get("type"))
-                            if _ots not in (
-                                ItemType.LUNCH_BREAK.value,
-                                ItemType.DINNER_BREAK.value,
-                            ):
-                                continue
-                            if _os >= ei and _os < new_en:
-                                new_en = max(_os, ei + 1)
-                                break
-                        new_st = ei
-                        if new_en <= new_st:
-                            new_en = new_st + max(5, min(dur, 10))
                         try:
-                            working[working.index(item_j)] = item_j.model_copy(update={
+                            hop_idx = working.index(item_j)
+                            working[hop_idx] = item_j.model_copy(update={
                                 "start_time": minutes_to_time(new_st),
                                 "end_time": minutes_to_time(new_en),
-                                "duration_min": max(1, new_en - new_st),
+                                "duration_min": dur,
                             })
+                            nxt_i = hop_idx + 1
+                            if nxt_i < len(working):
+                                nxt_raw = (
+                                    getattr(working[nxt_i], "start_time", None)
+                                    or getattr(working[nxt_i], "time", None)
+                                )
+                                if nxt_raw:
+                                    ns = time_to_minutes(nxt_raw)
+                                    if new_en > ns:
+                                        working = self._shift_items_from(
+                                            working, nxt_i, new_en - ns,
+                                        )
+                            overlaps_shifted += 1
+                            shifted = True
+                            print(
+                                f"[FIX #317] Day {day_num}: hop after "
+                                f"{di.get('name') or ti_s} stays {dur} min, "
+                                f"later stops shifted"
+                            )
+                            break
                         except Exception:
                             try:
                                 item_j.start_time = minutes_to_time(new_st)
                                 item_j.end_time = minutes_to_time(new_en)
                                 item_j.duration_min = dur
+                                overlaps_shifted += 1
+                                shifted = True
+                                break
                             except Exception:
-                                remove_ids.add(id(item_j))
-                        overlaps_shifted += 1
-                        shifted = True
-                        print(
-                            f"[OVERLAP HEAL] Day {day_num}: shifted transit to "
-                            f"{minutes_to_time(new_st)} after {di.get('name') or ti_s}"
-                        )
+                                pass
                         break
                     # FIX #259: two attractions overlapping — trim the earlier end
                     # (Hydropolis vs Ostrów) when enough visit remains.
@@ -10414,8 +10458,9 @@ class PlanService:
                             f"{di.get('name') or ti_s} end to {minutes_to_time(sj)}"
                         )
                         break
-                    # FIX #261: a leg overlapping the stop it leads to just
-                    # departs earlier — dropping either side loses real content.
+                    # FIX #261/#317: hop overlapping its destination keeps
+                    # honest duration; the destination (and later items)
+                    # move. Squeezing into sj - prev_end is the 1-min bug.
                     if (
                         ti_s == ItemType.TRANSIT.value
                         and tj_s in (
@@ -10430,27 +10475,39 @@ class PlanService:
                             if other is item_i or _eo > si:
                                 continue
                             prev_end = max(prev_end, _eo)
-                        dur = max(5, min(ei - si, sj - prev_end))
-                        new_st = max(prev_end, sj - dur)
-                        if new_st < sj:
-                            try:
-                                working[working.index(item_i)] = item_i.model_copy(
-                                    update={
-                                        "start_time": minutes_to_time(new_st),
-                                        "end_time": minutes_to_time(sj),
-                                        "duration_min": sj - new_st,
-                                    }
+                        intended = max(
+                            5,
+                            int(getattr(item_i, "duration_min", 0) or 0),
+                            ei - si,
+                        )
+                        new_st = prev_end if prev_end else si
+                        new_en = new_st + intended
+                        try:
+                            hop_idx = working.index(item_i)
+                            dest_idx = working.index(item_j)
+                            working[hop_idx] = item_i.model_copy(
+                                update={
+                                    "start_time": minutes_to_time(new_st),
+                                    "end_time": minutes_to_time(new_en),
+                                    "duration_min": intended,
+                                }
+                            )
+                            if new_en > sj:
+                                working = self._shift_items_from(
+                                    working, dest_idx, new_en - sj,
                                 )
-                                overlaps_shifted += 1
-                                shifted = True
-                                print(
-                                    f"[FIX #261] Day {day_num}: leg re-timed to "
-                                    f"{minutes_to_time(new_st)}-{minutes_to_time(sj)} "
-                                    f"instead of dropping {dj.get('name') or tj_s}"
-                                )
-                                break
-                            except Exception:
-                                pass
+                            overlaps_shifted += 1
+                            shifted = True
+                            print(
+                                f"[FIX #317] Day {day_num}: hop stays "
+                                f"{intended} min, shifted "
+                                f"{dj.get('name') or tj_s} to "
+                                f"{minutes_to_time(new_en)}"
+                            )
+                            break
+                        except Exception:
+                            pass
+                        break
                     # FIX #261: a 30-min meal must not delete a 3-hour visit.
                     # Client WRO json 1 D3 lost Bobolandia (15:25-18:25) to a
                     # dinner overlapping it by 30 min, leaving a 4-hour blank.
@@ -23858,10 +23915,12 @@ class PlanService:
         coord_map: Optional[Dict[str, Any]] = None,
         user: Optional[Dict[str, Any]] = None,
     ) -> List[Any]:
-        """FIX #315/#316: trip-level last word after the per-day seal.
+        """FIX #315/#316/#317: trip-level last word after the per-day seal.
 
         Reuses existing helpers only. Client Wrocław: first hop, Pergola
         uniqueness, idle before meals, winter Wojsławice, day_end chronology.
+        FIX #317: after FT / day_end, hops + physics + overlap-shift + named
+        holes. No full-day #313 revert here.
         """
         if not days:
             return days
@@ -23915,6 +23974,9 @@ class PlanService:
                     ctx.get("date") or ctx.get("trip_date") or ctx.get("start_date"),
                     day_num=day_num,
                 )
+                items = self._keep_one_satellite_region(
+                    items, day_num=day_num,
+                )
                 items = self._strip_transits_to_unscheduled_destinations(
                     items, day_num=day_num,
                 )
@@ -23940,6 +24002,12 @@ class PlanService:
                     items = self._inject_attraction_into_free_time(
                         items, list(pool), ctx, usr, day_num=day_num,
                     )
+            except Exception:
+                pass
+            try:
+                items = self._close_empty_day_if_needed(
+                    items, ctx, day_num=day_num,
+                )
             except Exception:
                 pass
             try:
@@ -23969,6 +24037,12 @@ class PlanService:
                 )
             except Exception:
                 pass
+            try:
+                items = self._seal_client_hops_and_physics(
+                    items, ctx, coord_map=cm, day_num=day_num,
+                )
+            except Exception:
+                pass
             for it in items:
                 if not _is_timeline_attraction(it):
                     continue
@@ -23991,6 +24065,248 @@ class PlanService:
             out = self._strip_cross_day_trip_repeats(out)
         except Exception:
             pass
+        return out
+
+    def _seal_client_hops_and_physics(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        coord_map: Optional[Dict[str, Any]] = None,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #317: last word on hops after FT / day_end.
+
+        Chain: stop-to-stop → leading hop → physics → urban-car downgrade →
+        overlap shifts (never squeezes) → named holes. Does not revert the
+        day. Does not snap hops to a 1-min clock after physics.
+        """
+        if not items:
+            return items
+        ctx = dict(context or {})
+        cm = self._merge_coord_map(coord_map or {}, items)
+        work = list(items)
+        try:
+            work = self._ensure_stop_to_stop_legs(
+                work, cm, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._ensure_leading_transit(
+                work, cm, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._honest_transit_physics(
+                work, day_num=day_num, context=ctx,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._downgrade_short_urban_cars(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._force_short_city_hops_walk(work, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            work = self._remove_timeline_overlaps(work, day_num)
+        except Exception:
+            pass
+        try:
+            work = self._reconcile_day_end_marker(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._name_remaining_holes(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            work = self._drop_items_after_day_end(work, day_num=day_num)
+            work = self._reconcile_day_end_marker(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        # Marker may have moved (shifted meal / named tail). Name leftover
+        # interior gaps against the clock the client now reads.
+        try:
+            work = self._name_remaining_holes(work, ctx, day_num=day_num)
+            work = self._collapse_adjacent_free_time(work, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            work = self._align_meal_identity(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        return work
+
+    def _align_meal_identity(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #317: meal label = suggestion; hop from/to that name.
+
+        Client JSON1: Bernard vs Loopy location_context vs
+        ``Restauracja (obiad)`` on the outgoing hop. #301 copies the previous
+        park into location_context — overwrite that with the restaurant.
+        """
+        if not items:
+            return items
+        meal_types = {ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value}
+        out: List[Any] = []
+        for it in items:
+            if _item_type_value(it) not in meal_types:
+                out.append(it)
+                continue
+            rest = None
+            for s in (getattr(it, "suggestions", None) or [])[:1]:
+                if isinstance(s, dict):
+                    rest = (s.get("name") or "").strip() or None
+                else:
+                    rest = (getattr(s, "name", "") or "").strip() or None
+            if not rest:
+                out.append(it)
+                continue
+            tv = _item_type_value(it)
+            label = (
+                f"Kolacja — {rest}"
+                if tv == ItemType.DINNER_BREAK.value
+                else rest
+            )
+            loc = (getattr(it, "location_context", None) or "").strip()
+            upd: Dict[str, Any] = {"label": label}
+            if loc and not _place_names_match(loc, rest):
+                upd["location_context"] = rest
+            elif not loc:
+                upd["location_context"] = rest
+            try:
+                it = it.model_copy(update=upd)
+            except Exception:
+                pass
+            out.append(it)
+        work = out
+        try:
+            work = self._relabel_dinner_items(work)
+        except Exception:
+            pass
+        try:
+            work = self._retarget_all_legs_to_next_stop(work, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            work = self._retarget_all_legs_to_prev_stop(
+                work, day_num=day_num, context=context,
+            )
+        except Exception:
+            pass
+        return work
+
+    def _keep_one_satellite_region(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #317 P1: one day-trip region per day (engine last word).
+
+        Ząbkowice vs Brzeg vs Oława vs city. The first satellite kind in
+        the timeline wins; later attractions from a different satellite
+        are dropped. City stops (no kind) stay.
+        """
+        if not items:
+            return items
+        order: List[str] = []
+        for it in items:
+            if not _is_timeline_attraction(it):
+                continue
+            k = _timeline_satellite_kind(getattr(it, "name", "") or "")
+            if k and k not in order:
+                order.append(k)
+        if len(order) < 2:
+            return items
+        keep = order[0]
+        out: List[Any] = []
+        dropped: List[str] = []
+        for it in items:
+            if _is_timeline_attraction(it):
+                nm = getattr(it, "name", "") or ""
+                k = _timeline_satellite_kind(nm)
+                if k and k != keep:
+                    dropped.append(nm)
+                    continue
+            out.append(it)
+        if dropped:
+            print(
+                f"[FIX #317] Day {day_num}: kept region {keep}, "
+                f"dropped {dropped}"
+            )
+        return out
+
+    def _close_empty_day_if_needed(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #317 P1: 0 attractions is a shortened day, not 213 min FT."""
+        if not items:
+            return items
+        if any(_is_timeline_attraction(it) for it in items):
+            return items
+        last_real = None
+        for it in items:
+            tv = _item_type_value(it)
+            if tv in (
+                ItemType.DAY_START.value, ItemType.DAY_END.value,
+                ItemType.FREE_TIME.value,
+            ):
+                continue
+            en = getattr(it, "end_time", None)
+            if not en:
+                continue
+            try:
+                last_real = max(last_real or 0, time_to_minutes(en))
+            except Exception:
+                continue
+        if last_real is None:
+            try:
+                last_real = time_to_minutes(
+                    (context or {}).get("day_start") or "09:00"
+                ) + 30
+            except Exception:
+                last_real = 9 * 60 + 30
+        out: List[Any] = []
+        for it in items:
+            tv = _item_type_value(it)
+            if tv == ItemType.DAY_END.value:
+                continue
+            if tv == ItemType.FREE_TIME.value:
+                dur = int(getattr(it, "duration_min", 0) or 0)
+                if dur >= 60:
+                    continue
+            out.append(it)
+        try:
+            out.append(DayEndItem(time=minutes_to_time(last_real)))
+        except Exception:
+            out.append(DayEndItem(time="12:00"))
+        print(
+            f"[FIX #317] Day {day_num}: empty day closed at "
+            f"{minutes_to_time(last_real)} (no attractions left)"
+        )
         return out
 
     def _seal_day_hops_and_meals(
