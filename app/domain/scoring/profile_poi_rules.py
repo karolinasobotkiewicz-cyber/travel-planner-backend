@@ -345,6 +345,22 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
         if tg not in ("family_kids", "family") and "kids_attractions" not in prefs:
             return True
 
+    # FIX #318: Wystawa Pająków / Dom Krasnali are kids fillers.
+    if any(k in name for k in (
+        "wystawa pają", "wystawa paja", "pająków", "pajakow",
+    )):
+        if tg in ("couples", "seniors") or (
+            tg not in ("family_kids", "family")
+            and "kids_attractions" not in prefs
+        ):
+            return True
+    if any(k in name for k in ("dom krasnali", "krasnali", "krasnale")):
+        if tg in ("seniors", "couples") or (
+            tg not in ("family_kids", "family")
+            and "kids_attractions" not in prefs
+        ):
+            return True
+
     if any(k in name for k in ("wioski świata", "wioski swiata", "ogród doświadczeń", "ogrod doswiadczen")):
         if tg == "couples" and style == "cultural":
             return True

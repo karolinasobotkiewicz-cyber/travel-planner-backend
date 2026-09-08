@@ -18728,6 +18728,8 @@ class PlanService:
             if "legendia" in nm_l:
                 floor = max(floor, 120)
             if "zajezdnia" in nm_l:
+                floor = max(floor, 90)
+            if "movie gate" in nm_l or "moviegate" in nm_l:
                 floor = max(floor, 60)
             if "stacja muzeum" in nm_l:
                 floor = max(floor, 60)
@@ -23977,6 +23979,17 @@ class PlanService:
                 items = self._keep_one_satellite_region(
                     items, day_num=day_num,
                 )
+                items = self._strip_far_meal_only_hops(
+                    items, day_num=day_num,
+                )
+                _geo318 = _day_items_satellite_kind(items)
+                if _geo318:
+                    ctx["locked_satellite_kind"] = _geo318
+                    ctx["complete_daytrip"] = True
+                    ctx.pop("city_holes_only", None)
+                else:
+                    ctx["city_holes_only"] = True
+                    ctx.pop("locked_satellite_kind", None)
                 items = self._strip_transits_to_unscheduled_destinations(
                     items, day_num=day_num,
                 )
@@ -24005,6 +24018,14 @@ class PlanService:
             except Exception:
                 pass
             try:
+                if usr:
+                    items = self._strip_profile_denied_attractions(
+                        items, usr, list(pool) if pool else None,
+                        day_num=day_num,
+                    )
+            except Exception:
+                pass
+            try:
                 items = self._close_empty_day_if_needed(
                     items, ctx, day_num=day_num,
                 )
@@ -24012,8 +24033,8 @@ class PlanService:
                 pass
             try:
                 items = self._eat_long_free_time_before_attraction(
-                    items, day_num=day_num, min_ft=45, keep=20,
-                    pull_lunch=True,
+                    items, day_num=day_num, min_ft=35, keep=15,
+                    pull_lunch=True, skip_first_attraction=True,
                 )
             except Exception:
                 pass
@@ -24024,8 +24045,8 @@ class PlanService:
             try:
                 items = self._name_remaining_holes(items, ctx, day_num=day_num)
                 items = self._eat_long_free_time_before_attraction(
-                    items, day_num=day_num, min_ft=45, keep=20,
-                    pull_lunch=True,
+                    items, day_num=day_num, min_ft=35, keep=15,
+                    pull_lunch=True, skip_first_attraction=True,
                 )
                 items = self._collapse_adjacent_free_time(items, day_num=day_num)
             except Exception:
@@ -24065,7 +24086,31 @@ class PlanService:
             out = self._strip_cross_day_trip_repeats(out)
         except Exception:
             pass
-        return out
+        titled: List[Any] = []
+        for day in out:
+            items = list(getattr(day, "items", None) or [])
+            try:
+                title = _generate_day_title(
+                    items, int(getattr(day, "day", 0) or 0),
+                )
+            except Exception:
+                title = getattr(day, "title", None)
+            try:
+                note = _day_note_matches_timeline(
+                    getattr(day, "note", None), items,
+                )
+            except Exception:
+                note = getattr(day, "note", None)
+            try:
+                day = day.model_copy(update={
+                    "items": items,
+                    "title": title,
+                    "note": note,
+                })
+            except Exception:
+                pass
+            titled.append(day)
+        return titled
 
     def _seal_client_hops_and_physics(
         self,
@@ -24119,6 +24164,14 @@ class PlanService:
         except Exception:
             pass
         try:
+            usr = ctx.get("user") or {}
+            for _ in range(3):
+                work = self._cap_stretched_attraction_durations(
+                    work, day_num=day_num, user=usr,
+                )
+        except Exception:
+            pass
+        try:
             work = self._reconcile_day_end_marker(
                 work, ctx, day_num=day_num,
             )
@@ -24140,10 +24193,31 @@ class PlanService:
         try:
             work = self._name_remaining_holes(work, ctx, day_num=day_num)
             work = self._collapse_adjacent_free_time(work, day_num=day_num)
+            work = self._eat_long_free_time_before_attraction(
+                work, day_num=day_num, min_ft=35, keep=15,
+                pull_lunch=True, skip_first_attraction=True,
+            )
+            work = self._collapse_adjacent_free_time(work, day_num=day_num)
+            work = self._name_remaining_holes(work, ctx, day_num=day_num)
+            work = self._collapse_adjacent_free_time(work, day_num=day_num)
+            # Eat / floors can leave day_end stuck past the named tail
+            # (Aquapark 120 min → 19:13, then pulled to 18:09).
+            work = self._reconcile_day_end_marker(
+                work, ctx, day_num=day_num,
+            )
+            work = self._name_remaining_holes(work, ctx, day_num=day_num)
+            work = self._collapse_adjacent_free_time(work, day_num=day_num)
+            work = self._strip_far_meal_only_hops(work, day_num=day_num)
         except Exception:
             pass
         try:
             work = self._align_meal_identity(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._relabel_free_time_by_slot(
                 work, ctx, day_num=day_num,
             )
         except Exception:
@@ -24220,38 +24294,50 @@ class PlanService:
         *,
         day_num: int = 0,
     ) -> List[Any]:
-        """FIX #317 P1: one day-trip region per day (engine last word).
+        """FIX #317/#318: one geography per day — city XOR one satellite.
 
-        Ząbkowice vs Brzeg vs Oława vs city. The first satellite kind in
-        the timeline wins; later attractions from a different satellite
-        are dropped. City stops (no kind) stay.
+        First attraction wins. Excursion day (Ząbkowice first): drop city
+        stops and every other satellite (Topacz, Brzeg). City morning:
+        drop a later glued castle. Title must be rebuilt after this.
         """
         if not items:
             return items
-        order: List[str] = []
-        for it in items:
+        try:
+            ordered = self._sort_items_by_time(list(items))
+        except Exception:
+            ordered = list(items)
+        first_kind: Optional[str] = None
+        saw_attr = False
+        for it in ordered:
             if not _is_timeline_attraction(it):
                 continue
-            k = _timeline_satellite_kind(getattr(it, "name", "") or "")
-            if k and k not in order:
-                order.append(k)
-        if len(order) < 2:
+            saw_attr = True
+            first_kind = _timeline_satellite_kind(
+                getattr(it, "name", "") or ""
+            )
+            break
+        if not saw_attr:
             return items
-        keep = order[0]
         out: List[Any] = []
         dropped: List[str] = []
         for it in items:
-            if _is_timeline_attraction(it):
-                nm = getattr(it, "name", "") or ""
-                k = _timeline_satellite_kind(nm)
-                if k and k != keep:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = getattr(it, "name", "") or ""
+            k = _timeline_satellite_kind(nm)
+            if first_kind is None:
+                if k:
                     dropped.append(nm)
                     continue
+            elif k != first_kind:
+                dropped.append(nm)
+                continue
             out.append(it)
         if dropped:
             print(
-                f"[FIX #317] Day {day_num}: kept region {keep}, "
-                f"dropped {dropped}"
+                f"[FIX #318] Day {day_num}: geography "
+                f"{first_kind or 'city'}, dropped {dropped}"
             )
         return out
 
@@ -24541,11 +24627,16 @@ class PlanService:
         keep: int = 20,
         min_ft: int = 40,
         pull_lunch: bool = False,
+        skip_first_attraction: bool = False,
     ) -> List[Any]:
         """FIX #293: 79 min break then 86 min Zajezdnia is padding, not a plan."""
         if not items:
             return items
         ordered = self._sort_items_by_time(list(items))
+        first_attr_idx = next(
+            (k for k, x in enumerate(ordered) if _is_timeline_attraction(x)),
+            None,
+        )
         for i, it in enumerate(ordered):
             if _item_type_value(it) != ItemType.FREE_TIME.value:
                 continue
@@ -24569,6 +24660,12 @@ class PlanService:
                 )
             )
             if not nxt_ok:
+                continue
+            if (
+                skip_first_attraction
+                and first_attr_idx is not None
+                and j == first_attr_idx
+            ):
                 continue
             cut = dur - keep
             if cut < 20:
@@ -28525,6 +28622,10 @@ class PlanService:
                 ):
                     continue
             cand_kind = _timeline_satellite_kind(poi.get("name") or pname)
+            locked_kind = context.get("locked_satellite_kind")
+            if locked_kind:
+                if cand_kind != locked_kind:
+                    continue
             if cand_kind and cand_kind in blocked_kinds:
                 continue
             # FIX #283: city hole-fill must not steal the day-trip quota
@@ -28580,6 +28681,7 @@ class PlanService:
                     "ogród doświadczeń", "ogrod doswiadczen",
                     "wioski świata", "wioski swiata",
                     "guliwer", "holiday park",
+                    "pająk", "pajak", "krasnal",
                 )):
                     continue
             # FIX #266: never soft-inject rope parks / pool filler — client bans.
@@ -32091,7 +32193,7 @@ class PlanService:
             if not _t_de316:
                 continue
             try:
-                end_limit = min(end_limit, time_to_minutes(_t_de316))
+                end_limit = time_to_minutes(_t_de316)
             except Exception:
                 pass
         # Include tails that end exactly at day_end (client idle-tail defects).
@@ -32101,21 +32203,51 @@ class PlanService:
         # ("brakuje ponad 4,5 godziny osi czasu"). Only the tail after the
         # last stop keeps the cap, because there day_end moves back instead.
         _content_end313 = _timeline_content_end_minutes(items)
+
+        def _has_later_block318(hole_end: int) -> bool:
+            for _it318 in items:
+                if _item_type_value(_it318) in (
+                    ItemType.DAY_START.value, ItemType.DAY_END.value,
+                ):
+                    continue
+                _st318 = (
+                    getattr(_it318, "start_time", None)
+                    or getattr(_it318, "time", None)
+                )
+                if not _st318:
+                    continue
+                try:
+                    if time_to_minutes(_st318) >= hole_end - 2:
+                        return True
+                except Exception:
+                    continue
+            return False
+
         holes = []
         for h in self._find_day_holes(items, end_limit, start_limit, min_span=10):
             span_h = h[1] - h[0]
             if span_h < 10 or h[1] > end_limit:
                 continue
-            interior = _content_end313 is not None and h[1] <= _content_end313 + 2
+            interior = (
+                (_content_end313 is not None and h[1] <= _content_end313 + 2)
+                or _has_later_block318(h[1])
+            )
             if interior or span_h <= (100 if h[0] <= start_limit + 5 else 90):
                 holes.append(h)
         # FIX #278: do not invent multi-hour free_time after the last real stop.
+        # FIX #318: a hole sitting in front of an already-named block (evening
+        # FT at 16:00 after a 14:46 castle) is interior — name it. Only a true
+        # tail with nothing after it stays anonymous so day_end can snap back.
         if _quality_first_trip(context):
             content_end = _timeline_content_end_minutes(items)
             if content_end is not None:
                 holes = [
                     h for h in holes
-                    if not (h[0] >= content_end - 2 and h[1] - h[0] >= 60)
+                    if not (
+                        h[0] >= content_end - 2
+                        and h[1] - h[0] >= 60
+                        and not _has_later_block318(h[1])
+                    )
                 ]
         if not holes:
             return items
@@ -32152,7 +32284,11 @@ class PlanService:
                             )
                         )
                     elif cursor < 10 * 60 + 30 and not any(
-                        _is_timeline_attraction(x) for x in items
+                        _is_timeline_attraction(x)
+                        and time_to_minutes(
+                            getattr(x, "end_time", None) or "00:00"
+                        ) <= cursor + 2
+                        for x in items
                     ):
                         table = self._FT253_MORNING
                     else:
