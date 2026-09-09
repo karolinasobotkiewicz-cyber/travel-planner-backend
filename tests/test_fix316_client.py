@@ -127,11 +127,15 @@ def test_d7_wojslawice_does_not_overlap_zabkowice_drive():
         if getattr(it, "type", None) == ItemType.ATTRACTION
     ]
     assert not any("wojsław" in n or "wojslaw" in n for n in names)
+    castle_kept = any("ząbkow" in n or "zabkow" in n for n in names)
     hops = [
         it for it in (d7.items or [])
         if getattr(it, "type", None) == ItemType.TRANSIT
     ]
-    assert hops
+    # FIX #322: lonely castle after ≥35 km / ≥35 min is thin — hops only
+    # if the excursion itself survived cluster-or-drop.
+    if castle_kept:
+        assert hops
     timed = []
     for it in d7.items:
         st = getattr(it, "start_time", None) or getattr(it, "time", None)

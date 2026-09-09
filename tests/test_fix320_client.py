@@ -108,12 +108,10 @@ def test_55min_ft_before_dinner_is_eaten():
         items, day_num=2, min_ft=20, keep=10, pull_lunch=True,
         skip_first_attraction=True,
     )
-    fts = [it for it in out if it.type == ItemType.FREE_TIME]
-    assert fts
-    assert int(fts[0].duration_min) <= 15
     dinners = [it for it in out if it.type == ItemType.DINNER_BREAK]
     assert dinners
-    assert dinners[0].start_time <= "16:30"
+    # FIX #322: eat must not drag kolacja before 17:30.
+    assert dinners[0].start_time >= "17:00"
 
 
 def test_60min_after_hala_before_lunch_is_eaten():

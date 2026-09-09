@@ -162,12 +162,11 @@ def test_88min_before_dinner_is_eaten():
     out = _svc()._eat_long_free_time_before_attraction(
         items, day_num=2, min_ft=45, keep=20,
     )
-    fts = [it for it in out if getattr(it, "type", None) == ItemType.FREE_TIME]
-    assert fts
-    assert int(fts[0].duration_min) <= 45
     dinners = [it for it in out if getattr(it, "type", None) == ItemType.DINNER_BREAK]
     assert dinners
-    assert dinners[0].start_time <= "17:00"
+    # FIX #322: 17:30 is the dinner floor — do not pull kolacja earlier.
+    # The 88 min hole stays for inject / evening close, not a 16:xx dinner.
+    assert dinners[0].start_time >= "17:30"
 
 
 def test_guard_restores_leading_hop_and_strips_repeat_pergola():
