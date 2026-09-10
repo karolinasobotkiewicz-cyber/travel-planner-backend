@@ -49,16 +49,20 @@ def _generate(num: str):
     payload = json.loads(path.read_text(encoding="utf-8"))
     trip = TripInput(**payload)
     svc = PlanService(POIRepository(str(_EXCEL)))
-    return svc.generate_plan(trip)
+    return svc.generate_plan(trip), payload
 
 
 @pytest.mark.parametrize("num", _JSON_IDS)
 def test_wroclaw_json_client_invariants(num):
-    plan = _generate(num)
+    plan, payload = _generate(num)
+    # FIX #324: window and profile decide short_day and profile_conflict.
     ctx = {
         "day_start": "09:00",
+        "day_end": (payload.get("daily_time_window") or {}).get("end"),
         "requested_city": "Wrocław",
         "has_car": True,
+        "travel_style": payload.get("travel_style"),
+        "group_type": (payload.get("group") or {}).get("type"),
     }
     try:
         win = getattr(plan, "daily_time_window", None)

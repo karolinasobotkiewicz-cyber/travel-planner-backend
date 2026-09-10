@@ -20,6 +20,25 @@ GENERIC_MEAL = (
     "przerwa regeneracyjna", "lunch / przerwa regeneracyjna",
 )
 
+# FIX #324: the client reads a day, not a defect list. Every marker below
+# comes from one of her Wrocław remarks.
+SLIVER_MAX_MIN = 12
+SLIVER_RUN = 3
+LONG_FREE_TIME_MIN = 100
+SHORT_DAY_END_MIN = 15 * 60
+SHORT_DAY_WINDOW_MIN = 18 * 60
+CAR_MAX_KMH = 60.0
+CAR_HIGHWAY_KM = 15.0
+CAR_HIGHWAY_MAX_KMH = 95.0
+
+_ADRENALINE_MARKERS = (
+    "bungee", "skok na", "paintball", "quad", "gokart", "go-kart", "kart",
+    "adrenalin", "tyrolka", "zipline", "via ferrata", "wspinacz",
+    "park linowy", "strzelnic", "motocross", "wakepark", "surf",
+)
+_CALM_STYLES = frozenset({"relax", "relaks", "slow", "wypoczynkowy"})
+_CALM_GROUPS = frozenset({"seniors", "seniorzy", "senior"})
+
 
 @dataclass(frozen=True)
 class Defect:
@@ -299,13 +318,21 @@ def audit_day(
             continue
         if hop_hits:
             continue
-        if km is None and not clock_teleport:
-            # No coords and a real gap — the gap pass owns it.
+        # FIX #324: a restaurant without coords is still a place the guest
+        # has to reach. Client D3: free_time 11:00–11:30 then lunch in
+        # Żórawina, and only *after* lunch a 25 min hop back to Wrocław.
+        gap_ab = (bs - ae) if (ae is not None and bs is not None) else None
+        if km is None and not clock_teleport and hops:
+            # A hop exists but points elsewhere — the retarget pass owns it.
             continue
         defects.append(Defect(
             "missing_hop", day,
             f"Dzień {day}: brak dojazdu {na} → {nb}"
-            + (f" ({km:.2f} km)" if km is not None else ""),
+            + (
+                f" ({km:.2f} km)" if km is not None
+                else f" (brak współrzędnych, przerwa {gap_ab} min)"
+                if gap_ab is not None else " (brak współrzędnych)"
+            ),
             {"from": na, "to": nb, "km": km},
         ))
 
@@ -323,23 +350,24 @@ def audit_day(
             if not to or _names_match(to, n0):
                 has_lead = True
                 break
-        if (
-            fs is not None
-            and abs(fs - marker_start) <= 2
-            and not has_lead
-        ):
-            km0 = None
-            # Unknown start coords: still require a hop unless the name is
-            # the market square itself.
-            folded = _fold(n0)
-            if "rynek" in folded and "olaw" not in folded and "zabkow" not in folded:
-                pass
-            else:
-                defects.append(Defect(
-                    "missing_hop", day,
-                    f"Dzień {day}: {n0} startuje o {_fmt(fs)} bez dojazdu z punktu startu",
-                    {"to": n0, "km": km0},
-                ))
+        # FIX #324: a technical buffer is not a transit. The client saw
+        # 10 min (ZOO 09:10), 15 min (Ogród Botaniczny 09:45) and 60 min
+        # (Muzeum Przyrodnicze 10:00) of padding instead of "Wrocław → X".
+        folded = _fold(n0)
+        rynek_hub = (
+            "rynek" in folded
+            and "olaw" not in folded
+            and "zabkow" not in folded
+        )
+        gap0 = (fs - marker_start) if fs is not None else None
+        glued_rynek = rynek_hub and gap0 is not None and gap0 <= 5
+        if fs is not None and not has_lead and not glued_rynek:
+            defects.append(Defect(
+                "missing_hop", day,
+                f"Dzień {day}: {n0} startuje o {_fmt(fs)} bez dojazdu "
+                f"z punktu startu (bufor {gap0} min nie zastępuje przejazdu)",
+                {"to": n0, "km": None, "buffer_min": gap0},
+            ))
 
     # --- honest_leg / urban_car / from_mismatch ---
     prev_stop: Optional[str] = None
@@ -401,6 +429,20 @@ def audit_day(
                 f"Dzień {day}: samochód na {km:.2f} km ({frm} → {to})",
                 {"km": km},
             ))
+        # FIX #324: 5.95 km by car in 4 min is 89 km/h through Wrocław.
+        # A 65 km run to Niemcza at 65 km/h is just a road.
+        if is_car and km >= 1.0 and pace and pace > 0:
+            kmh = km / (pace / 60.0)
+            ceiling = (
+                CAR_HIGHWAY_MAX_KMH if km >= CAR_HIGHWAY_KM else CAR_MAX_KMH
+            )
+            if kmh > ceiling:
+                defects.append(Defect(
+                    "dishonest_leg", day,
+                    f"Dzień {day}: {km:.2f} km autem w {pace} min "
+                    f"({kmh:.0f} km/h, {frm} → {to})",
+                    {"km": km, "min": pace, "kmh": kmh},
+                ))
         if to:
             prev_stop = to
 
@@ -441,6 +483,146 @@ def audit_day(
             f"Dzień {day}: dwa regiony satelitarne w jednym dniu ({sorted(kinds)})",
             {"regions": sorted(kinds)},
         ))
+
+    # --- dangling_hop: a ride that arrives nowhere ---
+    # Client J1 D2: 18:50 Ogród Botaniczny → Pierogarnia Ze Smakiem, arrives
+    # 19:00 and the day just ends. The kolacja itself is missing.
+    for idx, it in enumerate(ordered):
+        if not _is_transit(it):
+            continue
+        if any(_stop_name(x) for x in ordered[idx + 1:]):
+            continue
+        to = (getattr(it, "to_location", "") or "").strip()
+        _, em = _clock(it)
+        defects.append(Defect(
+            "dangling_hop", day,
+            f"Dzień {day}: przejazd do {to or '?'} kończy się o "
+            f"{_fmt(em) if em is not None else '?'} i nic po nim nie ma",
+            {"to": to},
+        ))
+        break
+
+    # --- fragmented: a wall of 2–10 min technical slivers ---
+    # Client J1 D2: 2 min walk, 10 min free time, 4 min of nothing, lunch,
+    # 10 min, hop, 10 min. On the front end it reads as noise.
+    segments: List[Tuple[int, int, str]] = []
+    prev_end: Optional[int] = None
+    for it in ordered:
+        if _tv(it) in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+            continue
+        sm, em = _clock(it)
+        if sm is None or em is None:
+            continue
+        if prev_end is not None and 0 < sm - prev_end:
+            segments.append((prev_end, sm, "gap"))
+        segments.append((sm, em, _tv(it)))
+        prev_end = max(prev_end or em, em)
+    run = 0
+    run_start: Optional[int] = None
+    for s, e, kind in segments:
+        span = e - s
+        if 0 < span <= SLIVER_MAX_MIN:
+            run += 1
+            if run_start is None:
+                run_start = s
+            if run >= SLIVER_RUN:
+                defects.append(Defect(
+                    "fragmented", day,
+                    f"Dzień {day}: {run} drobnych bloków pod rząd od "
+                    f"{_fmt(run_start)} do {_fmt(e)} (techniczne mini-przerwy)",
+                    {"start": run_start, "end": e, "count": run},
+                ))
+                run = 0
+                run_start = None
+        else:
+            run = 0
+            run_start = None
+
+    # --- long_free_time: 155 min of "Popołudniowa przerwa" is a hole ---
+    for it in ordered:
+        if not _is_ft(it):
+            continue
+        dur = int(getattr(it, "duration_min", 0) or 0)
+        if dur < LONG_FREE_TIME_MIN:
+            continue
+        sm, em = _clock(it)
+        defects.append(Defect(
+            "long_free_time", day,
+            f"Dzień {day}: free_time {dur} min "
+            f"({_fmt(sm) if sm is not None else '?'}–"
+            f"{_fmt(em) if em is not None else '?'})",
+            {"minutes": dur},
+        ))
+
+    # --- short_day: 12:20 close on a window that runs to 20:00 ---
+    content_end: Optional[int] = None
+    for it in ordered:
+        if not (_is_attr(it) or _is_meal(it)):
+            continue
+        _, em = _clock(it)
+        if em is not None:
+            content_end = max(content_end or em, em)
+    raw_window = (context or {}).get("day_end")
+    try:
+        window_end = time_to_minutes(raw_window) if raw_window else None
+    except Exception:
+        window_end = None
+    if (
+        content_end is not None
+        and window_end is not None
+        and window_end >= SHORT_DAY_WINDOW_MIN
+        and content_end < SHORT_DAY_END_MIN
+    ):
+        defects.append(Defect(
+            "short_day", day,
+            f"Dzień {day}: ostatni punkt kończy się o {_fmt(content_end)} "
+            f"przy oknie do {_fmt(window_end)}",
+            {"content_end": content_end, "window_end": window_end},
+        ))
+
+    # --- no_return: satellite day that never drives back ---
+    city = str((context or {}).get("requested_city") or "").strip()
+    last_sat = None
+    for idx, it in enumerate(ordered):
+        if _is_attr(it) and _region(getattr(it, "name", "") or ""):
+            last_sat = (idx, (getattr(it, "name", "") or "").strip())
+    if last_sat and city:
+        idx, sat_name = last_sat
+        returned = False
+        for x in ordered[idx + 1:]:
+            if _is_transit(x):
+                to = (getattr(x, "to_location", "") or "").strip()
+                if to and (
+                    _names_match(to, city) or "centrum" in _fold(to)
+                ):
+                    returned = True
+                    break
+            elif _stop_name(x) and not _region(_stop_name(x) or ""):
+                returned = True
+                break
+        if not returned:
+            defects.append(Defect(
+                "no_return", day,
+                f"Dzień {day}: brak powrotu do {city} po {sat_name}",
+                {"satellite": sat_name, "city": city},
+            ))
+
+    # --- profile_conflict: Bungee for a solo relax / nature quiz ---
+    style = _fold((context or {}).get("travel_style") or "")
+    group = _fold((context or {}).get("group_type") or "")
+    if style in _CALM_STYLES or group in _CALM_GROUPS:
+        for it in ordered:
+            if not _is_attr(it):
+                continue
+            nm = (getattr(it, "name", "") or "").strip()
+            folded_nm = _fold(nm)
+            if any(m in folded_nm for m in _ADRENALINE_MARKERS):
+                defects.append(Defect(
+                    "profile_conflict", day,
+                    f"Dzień {day}: {nm} przy profilu "
+                    f"{style or group!r} (adrenalina wbrew quizowi)",
+                    {"name": nm, "style": style, "group": group},
+                ))
 
     # --- empty_day ---
     n_attr = sum(1 for it in ordered if _is_attr(it))
