@@ -24422,6 +24422,9 @@ class PlanService:
                 )
                 items = self._name_remaining_holes(items, ctx, day_num=day_num)
                 items = self._clip_free_time_overlapping_hops(items)
+                items = self._defragment_micro_blocks(
+                    items, ctx, day_num=day_num,
+                )
             except Exception:
                 pass
             try:
@@ -30171,6 +30174,122 @@ class PlanService:
         except Exception:
             return items
         return self._sort_items_by_time(ordered)
+
+    def _defragment_micro_blocks(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        min_break: int = 13,
+    ) -> List[Any]:
+        """FIX #326: between two stops the client sees one break and one ride.
+
+        Client J1 D2: "dojście 2 min, potem 10 min free time, potem jeszcze
+        4 min niewyjaśnionej różnicy przed lunchem". The 10 min blocks are
+        what `_eat_long_free_time_before_attraction(keep=10)` leaves behind;
+        stacked with a short hop they read as noise on the front end. No stop
+        moves here — only the space between them is rewritten.
+        """
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        meal_types = {ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value}
+
+        def _edge(it: Any, *, start: bool) -> Optional[int]:
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                raw = getattr(it, "time", None) or getattr(it, "start_time", None)
+            else:
+                raw = (
+                    getattr(it, "start_time", None) if start
+                    else getattr(it, "end_time", None)
+                )
+            try:
+                return time_to_minutes(raw) if raw else None
+            except Exception:
+                return None
+
+        anchors = [
+            i for i, it in enumerate(ordered)
+            if _item_type_value(it) in (
+                ItemType.DAY_START.value, ItemType.DAY_END.value,
+            )
+            or _is_timeline_attraction(it)
+            or _item_type_value(it) in meal_types
+        ]
+        drop: set = set()
+        tidied = 0
+        for ia, ib in zip(anchors, anchors[1:]):
+            between = ordered[ia + 1:ib]
+            if not between:
+                continue
+            fts = [x for x in between if _item_type_value(x) == ItemType.FREE_TIME.value]
+            trs = [x for x in between if _item_type_value(x) == ItemType.TRANSIT.value]
+            if not fts or len(trs) > 1 or len(fts) + len(trs) != len(between):
+                continue
+            pe = _edge(ordered[ia], start=False)
+            ss = _edge(ordered[ib], start=True)
+            if pe is None or ss is None or ss <= pe:
+                continue
+            span = ss - pe
+            for x in fts:
+                drop.add(id(x))
+            if not trs:
+                if span < 10:
+                    tidied += 1
+                    continue
+                keep = fts[0]
+                drop.discard(id(keep))
+                try:
+                    idx = ordered.index(keep)
+                    ordered[idx] = keep.model_copy(update={
+                        "start_time": minutes_to_time(pe),
+                        "end_time": minutes_to_time(ss),
+                        "duration_min": span,
+                    })
+                except Exception:
+                    drop.discard(id(keep))
+                tidied += 1
+                continue
+            hop = trs[0]
+            h_st = _edge(hop, start=True)
+            h_en = _edge(hop, start=False)
+            td = int(getattr(hop, "duration_min", 0) or 0)
+            if h_st is not None and h_en is not None and h_en > h_st:
+                td = max(td, h_en - h_st)
+            td = max(1, min(td, span))
+            lead = span - td
+            hop_start = pe if lead < min_break else ss - td
+            try:
+                idx = ordered.index(hop)
+                ordered[idx] = hop.model_copy(update={
+                    "start_time": minutes_to_time(hop_start),
+                    "end_time": minutes_to_time(ss),
+                    "duration_min": ss - hop_start,
+                })
+            except Exception:
+                continue
+            if lead >= min_break:
+                keep = fts[0]
+                drop.discard(id(keep))
+                try:
+                    k_idx = ordered.index(keep)
+                    ordered[k_idx] = keep.model_copy(update={
+                        "start_time": minutes_to_time(pe),
+                        "end_time": minutes_to_time(hop_start),
+                        "duration_min": hop_start - pe,
+                    })
+                except Exception:
+                    drop.discard(id(keep))
+            tidied += 1
+        if not tidied:
+            return items
+        out = [x for x in ordered if id(x) not in drop]
+        print(
+            f"[FIX #326] Day {day_num}: tidied {tidied} micro-block run(s)"
+        )
+        return self._sort_items_by_time(out)
 
     def _pull_lunch_hop_before_latest(
         self,

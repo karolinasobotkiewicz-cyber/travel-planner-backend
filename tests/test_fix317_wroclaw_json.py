@@ -21,6 +21,8 @@ _ALL = (
     "missing_hop",
     # FIX #325: a ride whose stop was stripped is a ride to nowhere.
     "dangling_hop",
+    # FIX #326: one break and one ride between stops, never a sliver wall.
+    "fragmented",
     "dishonest_leg",
     "urban_car",
     "overlap",
