@@ -19,6 +19,8 @@ from app.infrastructure.repositories.poi_repository import POIRepository
 _ALL = (
     "anonymous_gap",
     "missing_hop",
+    # FIX #325: a ride whose stop was stripped is a ride to nowhere.
+    "dangling_hop",
     "dishonest_leg",
     "urban_car",
     "overlap",

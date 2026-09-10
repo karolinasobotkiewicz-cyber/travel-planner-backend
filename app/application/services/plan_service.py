@@ -191,6 +191,32 @@ def _fold_place_label(name: Any) -> str:
     return s
 
 
+# FIX #325: the trip hub is a label, not a stop. "Wrocław" reads as a
+# substring of "ZOO Wrocław", so the leading hop was dropped as a 0 km
+# self-hop and the hole came back as "Krótka przerwa / bufor".
+_HUB_CITY_LABELS = frozenset({
+    "wroclaw", "warszawa", "warsaw", "krakow", "poznan", "katowice",
+    "gdansk", "gdynia", "sopot", "zakopane", "karpacz", "klodzko",
+    "szklarska poreba", "jelenia gora", "kudowa-zdroj", "polanica-zdroj",
+    "centrum",
+})
+_HUB_GENERIC_TAILS = (
+    "centrum", "srodmiescie", "stare miasto", "city center", "centre",
+)
+
+
+def _is_hub_place_label(name: Any) -> bool:
+    """FIX #325: "Wrocław" / "Wrocław centrum" is the start point, not a POI."""
+    s = " ".join(_fold_place_label(name).split())
+    if not s:
+        return False
+    for tail in _HUB_GENERIC_TAILS:
+        if s.endswith(" " + tail):
+            s = s[: -len(tail) - 1].strip()
+            break
+    return s in _HUB_CITY_LABELS
+
+
 _BIG_CITY_RYNEK_MARKERS = (
     "rynek we wroclawiu", "rynek glowny", "stary rynek",
     "rynek w katowicach", "rynek katowic",
@@ -404,6 +430,13 @@ def _place_names_match(a: str, b: str) -> bool:
     if not aa or not bb:
         return False
     if aa == bb:
+        return True
+    # FIX #325: the hub label never collapses into a POI that happens to
+    # carry the city name (Wrocław → ZOO Wrocław is a real drive).
+    a_hub, b_hub = _is_hub_place_label(aa), _is_hub_place_label(bb)
+    if a_hub != b_hub:
+        return False
+    if a_hub and b_hub:
         return True
     shorter, longer = (aa, bb) if len(aa) <= len(bb) else (bb, aa)
     # FIX #302: "pergola" is 7 chars — still the same stop as
@@ -21807,6 +21840,14 @@ class PlanService:
                     f"(next is {nxt!r})"
                 )
                 continue
+            if nxt is None and to and not _is_hub_place_label(to):
+                # FIX #325: the stop was stripped, the ride to it was not.
+                # Client J1 D2: 18:50 → Pierogarnia, arrive 19:00, day ends.
+                # A return leg to the city hub still closes the day (#322).
+                print(
+                    f"[FIX #325] Day {day_num}: dropped dangling hop → {to!r}"
+                )
+                continue
             out.append(it)
         return out
 
@@ -30188,7 +30229,11 @@ class PlanService:
             target_lunch = need_a_end + hop_dur
         hop_en = need_a_end + (hop_dur if hop_i is not None else 0)
         lunch_at = hop_en if hop_i is not None else need_a_end
-        dur = max(30, lunch_en - lunch_st)
+        if lunch_at >= lunch_st:
+            # FIX #325: the morning visit cannot be cut any further. Leave
+            # the meal alone — stretching it only overlapped the next hop.
+            return items
+        dur = lunch_en - lunch_st
         try:
             if need_a_end < a_en:
                 ordered[prev_i] = a.model_copy(update={
