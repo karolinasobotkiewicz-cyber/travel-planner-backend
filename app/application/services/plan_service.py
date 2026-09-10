@@ -155,7 +155,7 @@ def _poi_lat_lng(poi_dict: Dict[str, Any]):
 
 _INDOOR_OPENING_MARKERS = (
     "muzeum", "panorama", "hydropolis", "movie gate", "iluzj",
-    "zoo team", "zooteam", "aquapark", "park wodny", "botanicz",
+    "zoo team", "zooteam", "aquapark", "park wodny",
     "hala stulecia", "zajezdnia",
 )
 
@@ -176,7 +176,7 @@ def _item_clock_floor_min(it: Any, day_start: int = 9 * 60) -> int:
     if tv == ItemType.DINNER_BREAK.value:
         return 17 * 60 + 30
     if _is_timeline_attraction(it):
-        return 10 * 60
+        return _attraction_day_start_floor(it, day_start)
     return day_start
 
 
@@ -19589,7 +19589,17 @@ class PlanService:
         # FIX #315: only skip the hop when the first stop is the start
         # courtyard. Snapping the visit onto day_start (old 0.35 km rule)
         # produced "09:00 we Wrocławiu, 09:00 Pergola, zero dojazdu".
-        if dist_km < 0.20:
+        # FIX #323: morning buffer is the first hop. Auditor allows a glued
+        # hub Rynek with no approach; every other first stop needs a leg.
+        folded = _fold_place_label(name)
+        is_hub_rynek = (
+            "rynek" in folded
+            and "olaw" not in folded
+            and "zabkow" not in folded
+        )
+        if is_hub_rynek and gap < 5 and dist_km < 0.80:
+            return items
+        if dist_km < 0.15 and gap < 5:
             return items
 
         has_car = bool(context.get("has_car", True))
@@ -21801,7 +21811,13 @@ class PlanService:
         return out
 
     def _occupied_stop_name(self, it: Any) -> Optional[str]:
-        """FIX #300: attraction or named restaurant — empty lunch is not a stop."""
+        """FIX #300/#323: attraction or named restaurant — empty lunch is not a stop.
+
+        Auditor `_meal_name` also treats a non-generic label/name as a stop.
+        Lunch that only has `label="Le Barometre…"` (no suggestions) still
+        needs a hop; otherwise Muzeum → Most Tumski survives and the client
+        sees a teleport to the restaurant.
+        """
         if _is_timeline_attraction(it):
             nm = (getattr(it, "name", "") or "").strip()
             return nm or None
@@ -21815,6 +21831,12 @@ class PlanService:
                     nm = (getattr(s, "name", "") or "").strip()
                 if nm:
                     return nm
+            from app.domain.validators.client_invariants import GENERIC_MEAL
+            label = (
+                getattr(it, "label", None) or getattr(it, "name", None) or ""
+            ).strip()
+            if label and _fold_place_label(label) not in GENERIC_MEAL:
+                return label
         return None
 
     def _day_attraction_names(self, items: List[Any]) -> List[str]:
@@ -23286,7 +23308,7 @@ class PlanService:
         return out
 
     def _collapse_adjacent_free_time(
-        self, items: List[Any], *, day_num: int = 0
+        self, items: List[Any], *, day_num: int = 0, force: bool = False
     ) -> List[Any]:
         """FIX #312: 32+45+12 min stacked waits are one hole."""
         if not items:
@@ -23328,7 +23350,8 @@ class PlanService:
                 # one hole (35 min + 90 min before lunch).
                 combined = max(en, ne) - st
                 short = min(en - st, ne - ns) <= 40
-                if combined > 90 and not short:
+                # FIX #323: hole-fill must see 53+90+95 as one afternoon.
+                if combined > 90 and not short and not force:
                     break
                 en = max(en, ne)
                 j += 1
@@ -23926,6 +23949,50 @@ class PlanService:
             )
         return out
 
+    def _cap_timeline_to_window(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #323: evening fill must not start past the asked window.
+
+        JSON2 D1: overlap-shift left Most Tumski 20:48 and dinner 21:28 with
+        day_end dragged to 20:50 (window 20:00). Snap the marker to the
+        window, then drop anything that starts on or after it.
+        """
+        if not items:
+            return items
+        raw = (context or {}).get("day_end")
+        if raw:
+            try:
+                limit = time_to_minutes(raw)
+            except Exception:
+                limit = None
+            if limit is not None:
+                snapped: List[Any] = []
+                for it in items:
+                    if _item_type_value(it) != ItemType.DAY_END.value:
+                        snapped.append(it)
+                        continue
+                    t = getattr(it, "time", None) or getattr(it, "end_time", None)
+                    try:
+                        cur = time_to_minutes(t) if t else limit
+                    except Exception:
+                        cur = limit
+                    if cur > limit:
+                        try:
+                            it = it.model_copy(update={
+                                "time": minutes_to_time(limit),
+                            })
+                        except Exception:
+                            it = DayEndItem(time=minutes_to_time(limit))
+                    snapped.append(it)
+                items = snapped
+        items = self._drop_items_after_day_end(items, day_num=day_num)
+        return self._drop_hops_not_to_next_stop(items, day_num=day_num)
+
     def _guard_trip_invariants(
         self,
         days: List[Any],
@@ -24258,6 +24325,25 @@ class PlanService:
             except Exception:
                 pass
             try:
+                items = self._fill_long_free_time_holes(
+                    items, list(pool) if pool else [], ctx, usr or {},
+                    day_num=day_num,
+                )
+            except Exception:
+                pass
+            try:
+                if (
+                    day_num <= 1
+                    and not _day_items_satellite_kind(items)
+                    and any(_is_timeline_attraction(it) for it in items)
+                ):
+                    items = self._close_city_day_toward_evening(
+                        items, list(pool) if pool else [], ctx, usr or {},
+                        day_num=day_num,
+                    )
+            except Exception:
+                pass
+            try:
                 items = self._close_empty_day_if_needed(
                     items, ctx, day_num=day_num,
                 )
@@ -24265,9 +24351,19 @@ class PlanService:
                 pass
             try:
                 items = self._align_meal_identity(items, ctx, day_num=day_num)
+                items = self._resit_late_lunch_after_morning_stop(
+                    items, usr, day_num=day_num,
+                )
+                items = _fix_late_lunch(
+                    items, latest_min=_lunch_latest_min(usr),
+                )
             except Exception:
                 pass
             try:
+                items = self._seal_first_approach(
+                    items, ctx, coord_map=cm, day_num=day_num,
+                )
+                items = self._drop_hops_not_to_next_stop(items, day_num=day_num)
                 items = self._ensure_stop_to_stop_legs(
                     items, self._merge_coord_map(cm, items), ctx,
                     day_num=day_num,
@@ -24275,6 +24371,15 @@ class PlanService:
                 items = self._honest_transit_physics(
                     items, day_num=day_num, context=ctx,
                 )
+                items = self._remove_timeline_overlaps(items, day_num)
+                items = self._clip_free_time_overlapping_hops(items)
+                items = self._pull_lunch_hop_before_latest(
+                    items, usr, day_num=day_num,
+                )
+                items = self._cap_timeline_to_window(
+                    items, ctx, day_num=day_num,
+                )
+                items = self._name_remaining_holes(items, ctx, day_num=day_num)
                 items = self._clip_free_time_overlapping_hops(items)
             except Exception:
                 pass
@@ -24768,10 +24873,19 @@ class PlanService:
                 last = time_to_minutes(context.get("day_start") or "09:00")
             except Exception:
                 last = 9 * 60
-        if last >= 16 * 60:
-            return self._drop_trailing_free_time(items, after_min=last)
         n_now = sum(1 for x in items if _is_timeline_attraction(x))
-        if n_now >= 3:
+        # FIX #323: first day with a 19:00+ window must not die at 16:18.
+        first_day_short = (
+            day_num <= 1
+            and window_end >= 19 * 60
+            and last < 17 * 60
+            and n_now < 4
+        )
+        if last >= 17 * 60 + 15:
+            return self._drop_trailing_free_time(items, after_min=last)
+        if last >= 16 * 60 and not first_day_short:
+            return self._drop_trailing_free_time(items, after_min=last)
+        if n_now >= 3 and not first_day_short:
             return self._drop_trailing_free_time(items, after_min=last)
         target = 16 * 60 + 30
         if window_end >= 20 * 60:
@@ -25329,6 +25443,70 @@ class PlanService:
             except Exception:
                 out.append(it)
         return out
+
+    def _seal_first_approach(
+        self,
+        items: List[Any],
+        context: Dict[str, Any],
+        coord_map: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #323: morning buffer is the first hop, not a teleport."""
+        if not items:
+            return items
+        work = self._ensure_leading_transit(
+            items, self._merge_coord_map(coord_map or {}, items),
+            context, day_num=day_num,
+        )
+        work = self._clip_free_time_overlapping_hops(work)
+        return work
+
+    def _fill_long_free_time_holes(
+        self,
+        items: List[Any],
+        pool: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        user: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #323: 70–240 min FT is a missing stop, not three named breaks."""
+        if not items:
+            return items
+        work = self._collapse_adjacent_free_time(
+            list(items), day_num=day_num, force=True,
+        )
+        if not pool:
+            return work
+        inj_ctx = {
+            **context,
+            "allow_pre_meal_inject": True,
+            "allow_soft_profile": True,
+            "hole_fill": True,
+        }
+        if _day_items_satellite_kind(work):
+            inj_ctx["complete_daytrip"] = True
+            inj_ctx.pop("city_holes_only", None)
+        else:
+            inj_ctx["city_holes_only"] = True
+        for _ in range(2):
+            long_ft = any(
+                _item_type_value(it) == ItemType.FREE_TIME.value
+                and int(getattr(it, "duration_min", 0) or 0) >= 40
+                for it in work
+            )
+            if not long_ft:
+                break
+            nxt = self._inject_attraction_into_free_time(
+                work, list(pool), inj_ctx, user or {}, day_num=day_num,
+            )
+            if nxt is work:
+                break
+            work = nxt
+        return self._collapse_adjacent_free_time(
+            work, day_num=day_num, force=True,
+        )
 
     def _pull_next_stop_over_large_gaps(
         self,
@@ -26428,11 +26606,15 @@ class PlanService:
                         )
                 except Exception:
                     pass
-            # FIX #322: one POI after ≥35 km / ≥35 min is never a day
-            # when the visit is under 2 h (Wena 90, Topacz 60). A 3 h+
-            # castle can stand alone with a return hop.
+            # FIX #322/#323: one POI after ≥35 km / ≥35 min is never a day
+            # when the visit is under 2 h (Wena 90). Near satellites
+            # (Topacz 60) are thin even on a 20 min drive.
             thin = (
-                (inbound_min >= 35 or inbound_km >= 35)
+                (
+                    inbound_min >= 35
+                    or inbound_km >= 35
+                    or kind == "near"
+                )
                 and visit < 120
             )
             if thin:
@@ -29949,6 +30131,90 @@ class PlanService:
             return items
         return self._sort_items_by_time(ordered)
 
+    def _pull_lunch_hop_before_latest(
+        self,
+        items: List[Any],
+        user: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #323: hop physics must not leave seniors lunch at 14:47."""
+        latest = _lunch_latest_min(user)
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        lunch = None
+        lunch_i = None
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) == ItemType.LUNCH_BREAK.value:
+                lunch, lunch_i = it, i
+                break
+        if lunch is None:
+            return items
+        try:
+            lunch_st = time_to_minutes(getattr(lunch, "start_time", None) or "")
+            lunch_en = time_to_minutes(getattr(lunch, "end_time", None) or "")
+        except Exception:
+            return items
+        if lunch_st <= latest:
+            return items
+        prev_i = None
+        for i in range(lunch_i - 1, -1, -1):
+            if _is_timeline_attraction(ordered[i]):
+                prev_i = i
+                break
+        if prev_i is None:
+            return items
+        a = ordered[prev_i]
+        try:
+            a_st = time_to_minutes(getattr(a, "start_time", None) or "")
+            a_en = time_to_minutes(getattr(a, "end_time", None) or "")
+        except Exception:
+            return items
+        hop_i = None
+        hop_dur = 8
+        for i in range(prev_i + 1, lunch_i):
+            if _item_type_value(ordered[i]) != ItemType.TRANSIT.value:
+                continue
+            hop_i = i
+            hop_dur = max(
+                3, int(getattr(ordered[i], "duration_min", 0) or 8),
+            )
+        min_visit = 40
+        target_lunch = latest
+        need_a_end = target_lunch - hop_dur
+        if need_a_end < a_st + min_visit:
+            need_a_end = a_st + min_visit
+            target_lunch = need_a_end + hop_dur
+        hop_en = need_a_end + (hop_dur if hop_i is not None else 0)
+        lunch_at = hop_en if hop_i is not None else need_a_end
+        dur = max(30, lunch_en - lunch_st)
+        try:
+            if need_a_end < a_en:
+                ordered[prev_i] = a.model_copy(update={
+                    "end_time": minutes_to_time(need_a_end),
+                    "duration_min": max(min_visit, need_a_end - a_st),
+                })
+            if hop_i is not None:
+                h = ordered[hop_i]
+                ordered[hop_i] = h.model_copy(update={
+                    "start_time": minutes_to_time(need_a_end),
+                    "end_time": minutes_to_time(hop_en),
+                    "duration_min": hop_dur,
+                })
+            ordered[lunch_i] = lunch.model_copy(update={
+                "start_time": minutes_to_time(lunch_at),
+                "end_time": minutes_to_time(lunch_at + dur),
+                "duration_min": dur,
+            })
+        except Exception:
+            return items
+        print(
+            f"[FIX #323] Day {day_num}: pulled lunch "
+            f"{minutes_to_time(lunch_st)} → {minutes_to_time(lunch_at)}"
+        )
+        return self._sort_items_by_time(ordered)
+
     def _guarantee_dinner_before_day_end(
         self,
         items: List[Any],
@@ -30813,22 +31079,22 @@ class PlanService:
                         pt = None
                 return (name, pt) if name else None
             if tv in meal_types:
+                nm = self._occupied_stop_name(it)
+                if not nm:
+                    # FIX #299: empty lunch is not a place (ghost "centrum"/Antrejka).
+                    return None
                 for s in (getattr(it, "suggestions", None) or [])[:1]:
                     if isinstance(s, dict):
-                        nm = (s.get("name") or "").strip()
                         lat, lng = s.get("lat"), s.get("lng")
                     else:
-                        nm = (getattr(s, "name", "") or "").strip()
-                        lat, lng = getattr(s, "lat", None), getattr(s, "lng", None)
-                    if nm and lat not in (None, 0, 0.0) and lng not in (None, 0, 0.0):
+                        lat = getattr(s, "lat", None)
+                        lng = getattr(s, "lng", None)
+                    if lat not in (None, 0, 0.0) and lng not in (None, 0, 0.0):
                         try:
                             return nm, (float(lat), float(lng))
                         except (TypeError, ValueError):
                             pass
-                    if nm:
-                        return nm, self._lookup_coords(poi_coords, nm)
-                # FIX #299: empty lunch is not a place (ghost "centrum"/Antrejka).
-                return None
+                return nm, self._lookup_coords(poi_coords, nm)
             loc_ctx = str(getattr(it, "location_context", "") or "").lower()
             city = str((context or {}).get("requested_city") or "")
             if "centrum" in loc_ctx:
@@ -30942,9 +31208,16 @@ class PlanService:
                 # FIX #294: never shorten a visit so lunch transit can start
                 # during Katedra (13:47–14:22 vs hop 14:09).
                 can_borrow = 0
+                borrow_cap = 15
                 if not _is_timeline_attraction(a):
                     can_borrow = max(0, (a_end - a_st) - 20)
-                borrow = min(need, can_borrow, 15)
+                elif _item_type_value(b) in meal_types:
+                    # FIX #323: hop to lunch must not push seniors past 14:30.
+                    # Shorten the visit from the end; hop still starts after it
+                    # (unlike FIX #294, which forbade overlapping hop×visit).
+                    can_borrow = max(0, (a_end - a_st) - 40)
+                    borrow_cap = 25
+                borrow = min(need, can_borrow, borrow_cap)
                 if borrow:
                     a_end -= borrow
                     try:
