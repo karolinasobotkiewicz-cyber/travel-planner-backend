@@ -39,6 +39,22 @@ _ADRENALINE_MARKERS = (
 _CALM_STYLES = frozenset({"relax", "relaks", "slow", "wypoczynkowy"})
 _CALM_GROUPS = frozenset({"seniors", "seniorzy", "senior"})
 
+# FIX #327: second client mail — meals, hours, repeats, look-around caps.
+LUNCH_MIN_MIN = 40
+DINNER_MIN_MIN = 45
+LOOK_AROUND_CAP_MIN = 60
+LOOK_AROUND_CAP_KIDS_MIN = 40
+HOP_KM_TOLERANCE = 1.0
+HOP_KM_RATIO = 3.0
+
+# A square, a bridge or a viewpoint is a stop on the way, not half a day.
+_LOOK_AROUND_TOKENS = frozenset({
+    "rynek", "plac", "most", "bulwar", "bulwary", "deptak", "promenada",
+    "skwer", "fontanna",
+})
+_LOOK_AROUND_PHRASES = ("punkt widokowy", "wieza widokowa", "taras widokowy")
+_FAMILY_GROUPS = frozenset({"family_kids", "family", "rodzina", "z dziecmi"})
+
 
 @dataclass(frozen=True)
 class Defect:
@@ -200,6 +216,86 @@ def _region(name: str) -> Optional[str]:
         return _timeline_satellite_kind(name)
     except Exception:
         return None
+
+
+def _audit_opening_hours(
+    ordered: Sequence[Any],
+    *,
+    day: int,
+    context: Optional[Dict[str, Any]],
+) -> List[Defect]:
+    """FIX #327: a visit must fit the POI's real hours from the Excel.
+
+    Client J1 D1: "Kolejkowo jest zaplanowane przed otwarciem. Plan daje
+    wizytę o 09:10 a otwarcie o 10:00." The engine owns `is_poi_open_at_time`;
+    the auditor calls the same source of truth instead of guessing from the
+    name. Needs `context["poi_hours"]` (folded name → hours) and the day date.
+    """
+    hours_map = (context or {}).get("poi_meta") or {}
+    raw_date = (context or {}).get("date")
+    if not hours_map or not raw_date:
+        return []
+    try:
+        from datetime import date as _date
+
+        parts = str(raw_date)[:10].split("-")
+        d_obj = _date(int(parts[0]), int(parts[1]), int(parts[2]))
+    except Exception:
+        return []
+    try:
+        from app.domain.planner.opening_hours_parser import is_poi_open_at_time
+    except Exception:
+        return []
+    out: List[Defect] = []
+    for it in ordered:
+        if not _is_attr(it):
+            continue
+        nm = (getattr(it, "name", "") or "").strip()
+        entry = hours_map.get(_fold(nm))
+        if not entry:
+            continue
+        oh = entry.get("opening_hours")
+        ohs = entry.get("opening_hours_seasonal")
+        if not oh and not ohs:
+            continue
+        if not ohs:
+            # The parser reads hours out of a season, so a POI with only the
+            # legacy weekday dict would look closed all year round.
+            if isinstance(oh, str):
+                import json
+
+                try:
+                    oh = json.loads(oh)
+                except ValueError:
+                    continue
+            if not isinstance(oh, dict):
+                continue
+            ohs = [{"date_from": "01-01", "date_to": "12-31", **oh}]
+        sm, em = _clock(it)
+        if sm is None:
+            continue
+        dur = int(getattr(it, "duration_min", 0) or 0)
+        if em is not None and em > sm:
+            dur = em - sm
+        try:
+            ok = is_poi_open_at_time(
+                opening_hours=oh,
+                opening_hours_seasonal=ohs,
+                current_date=(d_obj.year, d_obj.month, d_obj.day),
+                weekday=d_obj.weekday(),
+                start_time_minutes=sm,
+                duration_minutes=max(1, dur),
+            )
+        except Exception:
+            continue
+        if not ok:
+            out.append(Defect(
+                "closed_stop", day,
+                f"Dzień {day}: {nm} o {_fmt(sm)}–"
+                f"{_fmt(em) if em is not None else '?'} poza godzinami otwarcia",
+                {"name": nm, "start": sm},
+            ))
+    return out
 
 
 def audit_day(
@@ -624,6 +720,121 @@ def audit_day(
                     {"name": nm, "style": style, "group": group},
                 ))
 
+    # --- short_meal / placeholder_meal ---
+    # Client J2 D3: 15 min na kolację. J7 D2: 21 min. J8 D7: lunch jest
+    # placeholderem, a nie realnym miejscem.
+    for it in ordered:
+        if not _is_meal(it):
+            continue
+        is_dinner = _tv(it) == ItemType.DINNER_BREAK.value
+        floor = DINNER_MIN_MIN if is_dinner else LUNCH_MIN_MIN
+        label_pl = "kolacja" if is_dinner else "lunch"
+        sm, em = _clock(it)
+        span = int(getattr(it, "duration_min", 0) or 0)
+        if sm is not None and em is not None and em > sm:
+            span = em - sm
+        if span and span < floor:
+            defects.append(Defect(
+                "short_meal", day,
+                f"Dzień {day}: {label_pl} tylko {span} min (min. {floor})",
+                {"minutes": span, "floor": floor},
+            ))
+        if not _meal_name(it):
+            defects.append(Defect(
+                "placeholder_meal", day,
+                f"Dzień {day}: {label_pl} bez realnego lokalu "
+                f"({_fmt(sm) if sm is not None else '?'})",
+                {"start": sm},
+            ))
+
+    # --- overlong_stop: Rynek for 115 min with an 8-year-old ---
+    group_now = _fold((context or {}).get("group_type") or "")
+    kids = group_now in _FAMILY_GROUPS or (
+        (context or {}).get("children_age") is not None
+    )
+    cap = LOOK_AROUND_CAP_KIDS_MIN if kids else LOOK_AROUND_CAP_MIN
+    for it in ordered:
+        if not _is_attr(it):
+            continue
+        nm = (getattr(it, "name", "") or "").strip()
+        folded_nm = _fold(nm)
+        tokens = set(folded_nm.split())
+        if not (
+            tokens & _LOOK_AROUND_TOKENS
+            or any(p in folded_nm for p in _LOOK_AROUND_PHRASES)
+        ):
+            continue
+        sm, em = _clock(it)
+        span = int(getattr(it, "duration_min", 0) or 0)
+        if sm is not None and em is not None and em > sm:
+            span = em - sm
+        if span > cap:
+            defects.append(Defect(
+                "overlong_stop", day,
+                f"Dzień {day}: {nm} przez {span} min (limit {cap})",
+                {"name": nm, "minutes": span, "cap": cap},
+            ))
+
+    # --- over_time_max: Most Grunwaldzki has time_max=40, plan gives it 90 ---
+    meta_map = (context or {}).get("poi_meta") or {}
+    for it in ordered:
+        if not _is_attr(it):
+            continue
+        nm = (getattr(it, "name", "") or "").strip()
+        entry = meta_map.get(_fold(nm)) or {}
+        try:
+            t_max = int(entry.get("time_max") or 0)
+        except (TypeError, ValueError):
+            continue
+        if t_max <= 0:
+            continue
+        sm, em = _clock(it)
+        span = int(getattr(it, "duration_min", 0) or 0)
+        if sm is not None and em is not None and em > sm:
+            span = em - sm
+        if span > t_max:
+            defects.append(Defect(
+                "over_time_max", day,
+                f"Dzień {day}: {nm} przez {span} min, a Excel daje "
+                f"maks. {t_max} min",
+                {"name": nm, "minutes": span, "time_max": t_max},
+            ))
+
+    # --- hop_vs_coords: 0.084 km between two stops 6 km apart ---
+    # Client J3 D1: CityPaintball → The Cork "0,084 km i 2 min pieszo",
+    # while the coordinates inside the very same plan say otherwise.
+    for (ia, a, _na), (ib, b, nb) in zip(stops, stops[1:]):
+        pt_a, pt_b = _coords(a), _coords(b)
+        if not pt_a or not pt_b:
+            continue
+        real_km = haversine_km(pt_a[0], pt_a[1], pt_b[0], pt_b[1])
+        for x in ordered[ia + 1:ib]:
+            if not _is_transit(x):
+                continue
+            to = (getattr(x, "to_location", "") or "").strip()
+            if to and not _names_match(to, nb):
+                continue
+            try:
+                declared = float(getattr(x, "distance_km", None) or 0)
+            except (TypeError, ValueError):
+                continue
+            # Haversine is a lower bound on the road, so a slightly shorter
+            # declared leg is just imprecise coords. Flag the gross lies.
+            if (
+                real_km - declared > HOP_KM_TOLERANCE
+                and real_km > max(declared * HOP_KM_RATIO, 0.5)
+            ):
+                defects.append(Defect(
+                    "hop_vs_coords", day,
+                    f"Dzień {day}: odcinek podaje {declared:.3f} km, "
+                    f"a współrzędne dają {real_km:.2f} km "
+                    f"({getattr(x, 'from_location', '') or '?'} → {to or '?'})",
+                    {"declared_km": declared, "real_km": real_km},
+                ))
+
+    # --- closed_stop: Kolejkowo at 09:10, opens at 10:00 ---
+    defects.extend(_audit_opening_hours(ordered, day=day, context=context))
+
     # --- empty_day ---
     n_attr = sum(1 for it in ordered if _is_attr(it))
     ft_min = sum(
@@ -649,14 +860,37 @@ def audit_plan(
     days_l = list(days or [])
     n = len(days_l)
     out: List[Defect] = []
+    # FIX #327: one place, one day. Client J8: "Muzeum Uniwersytetu
+    # Wrocławskiego pojawia się aż 3 razy, dzień po dniu."
+    seen_on: Dict[str, int] = {}
     for i, day in enumerate(days_l, start=1):
         items = getattr(day, "items", None) or []
+        day_no = _day_num(day, i)
+        ctx_day = dict(context or {})
+        if getattr(day, "date", None):
+            ctx_day["date"] = getattr(day, "date")
         out.extend(audit_day(
             items,
-            day=_day_num(day, i),
-            context=context,
+            day=day_no,
+            context=ctx_day,
             trip_days=n,
         ))
+        for nm in {
+            (getattr(it, "name", "") or "").strip()
+            for it in items if _is_attr(it)
+        }:
+            key = _fold(nm)
+            if not key:
+                continue
+            first = seen_on.get(key)
+            if first is None:
+                seen_on[key] = day_no
+                continue
+            out.append(Defect(
+                "trip_repeat", day_no,
+                f"Dzień {day_no}: {nm} był już w dniu {first}",
+                {"name": nm, "first_day": first},
+            ))
     return out
 
 
