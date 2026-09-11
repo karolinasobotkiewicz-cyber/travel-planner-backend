@@ -24433,6 +24433,19 @@ class PlanService:
                 )
             except Exception:
                 pass
+            # FIX #328: this loop plants attractions too, so day N+1 has to
+            # learn what day N just gained. Without it the healing pass put
+            # Most Grunwaldzki on two days in a row (client J9 D2/D3).
+            for it in items:
+                if not _is_timeline_attraction(it):
+                    continue
+                nm = getattr(it, "name", None) or ""
+                rk = poi_trip_repeat_key(nm)
+                if rk:
+                    used.add(rk)
+                folded = _fold_place_label(nm)
+                if folded:
+                    used_names.add(folded)
             try:
                 day = day.model_copy(update={"items": items})
             except Exception:
@@ -29614,11 +29627,15 @@ class PlanService:
             _prior_keys = context.get("trip_repeat_keys") or set()
             if _rk_inj and _rk_inj in _prior_keys:
                 continue
+            # FIX #328: the guard fills this set with diacritic-folded names
+            # while `pname` keeps its ł/ó/ą, so "Muzeum Uniwesytetu
+            # Wrocławskiego" never matched "…wroclawskiego" and landed on
+            # three days in a row (client J8 D2/D3/D4). Fold both sides.
             _prior_names = {
-                str(x).strip().lower()
+                _fold_place_label(x)
                 for x in (context.get("trip_attraction_names") or set())
             }
-            if pname in _prior_names:
+            if _fold_place_label(poi.get("name") or "") in _prior_names:
                 continue
             _td_inj = context.get("date") or context.get("trip_date")
             try:

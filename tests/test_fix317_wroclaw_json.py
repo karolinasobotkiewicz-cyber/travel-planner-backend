@@ -23,6 +23,8 @@ _ALL = (
     "dangling_hop",
     # FIX #326: one break and one ride between stops, never a sliver wall.
     "fragmented",
+    # FIX #328: one place, one day — no POI twice in the same trip.
+    "trip_repeat",
     "dishonest_leg",
     "urban_car",
     "overlap",
