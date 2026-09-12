@@ -24439,6 +24439,12 @@ class PlanService:
                 items = self._defragment_micro_blocks(
                     items, ctx, day_num=day_num,
                 )
+                # FIX #331: last word after hop surgery — a return to the
+                # hub must survive `_drop_hops_not_to_next_stop`, and a
+                # morning of padding must not outlive the day_start marker.
+                items = self._heal_client_day_shape(
+                    items, ctx, day_num=day_num, coord_map=cm,
+                )
             except Exception:
                 pass
             try:
@@ -26730,7 +26736,7 @@ class PlanService:
             return ordered
         last = attrs[-1]
         nm = (getattr(last, "name", "") or "").lower()
-        is_far = any(fn(nm) for fn in (
+        is_far = bool(_timeline_satellite_kind(nm)) or any(fn(nm) for fn in (
             _is_olawa_stop_name, _is_wojslawice_stop_name,
             _is_zabkowice_stop_name, _is_brzeg_stop_name,
             _is_near_satellite_stop_name,
@@ -30293,6 +30299,220 @@ class PlanService:
             )
             out.append(self._retimed(it, st, new_en))
         return self._sort_items_by_time(out)
+
+    def _heal_client_day_shape(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        coord_map: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #331: the day starts with a place, comes home, and eats somewhere.
+
+        Client leftovers after #330: "21 minut free time od razu po day_start",
+        "brak powrotu z Oławy / Niemczy", "lunch jest placeholderem",
+        "transit from=Katedra ale ostatni postój to Muzeum Uniwersytetu",
+        "221 minut pustego czasu".
+        """
+        if not items:
+            return items
+        ctx = context or {}
+        work = self._sort_items_by_time(list(items))
+        work = self._drop_idle_morning_padding(work, ctx, day_num=day_num)
+        work = self._rewrite_hop_origins(work, day_num=day_num)
+        work = self._trim_tail_long_free_time(work, ctx, day_num=day_num)
+        try:
+            work = self._ensure_far_excursion_return(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        work = self._clip_free_time_overlapping_hops(work)
+        try:
+            work = self._snap_meals_to_nearby_restaurants(
+                work, ctx, ctx.get("user") or {}, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._ensure_stop_to_stop_legs(
+                work, self._merge_coord_map(coord_map or {}, work), ctx,
+                day_num=day_num,
+            )
+            work = self._reconcile_leg_distances(
+                work, day_num=day_num, context=ctx,
+            )
+        except Exception:
+            pass
+        work = self._remove_timeline_overlaps(work, day_num)
+        work = self._rewrite_hop_origins(work, day_num=day_num)
+        try:
+            work = self._name_remaining_holes(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        work = self._trim_tail_long_free_time(work, ctx, day_num=day_num)
+        work = self._drop_idle_morning_padding(work, ctx, day_num=day_num)
+        return self._sort_items_by_time(work)
+
+    def _drop_idle_morning_padding(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #331: a day that cannot start at 09:00 starts later, not idle."""
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        start_i = None
+        start_min = None
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) != ItemType.DAY_START.value:
+                continue
+            start_i = i
+            raw = getattr(it, "time", None) or getattr(it, "start_time", None)
+            try:
+                start_min = time_to_minutes(raw) if raw else None
+            except Exception:
+                start_min = None
+            break
+        first_i = None
+        for i, it in enumerate(ordered):
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                continue
+            first_i = i
+            break
+        if first_i is None:
+            return ordered
+        first = ordered[first_i]
+        if _item_type_value(first) != ItemType.FREE_TIME.value:
+            return ordered
+        try:
+            sm = time_to_minutes(getattr(first, "start_time", None) or "")
+            em = time_to_minutes(getattr(first, "end_time", None) or "")
+        except Exception:
+            return ordered
+        span = int(getattr(first, "duration_min", 0) or 0)
+        if em > sm:
+            span = em - sm
+        if start_min is not None and sm - start_min > 3:
+            return ordered
+        if span < 15:
+            return ordered
+        drop = {first_i}
+        j = first_i + 1
+        while j < len(ordered) and _item_type_value(ordered[j]) == ItemType.FREE_TIME.value:
+            drop.add(j)
+            j += 1
+        nxt_start = None
+        for k in range(j, len(ordered)):
+            tv = _item_type_value(ordered[k])
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                continue
+            raw = (
+                getattr(ordered[k], "start_time", None)
+                or getattr(ordered[k], "time", None)
+            )
+            if raw:
+                nxt_start = raw
+                break
+        out = [it for i, it in enumerate(ordered) if i not in drop]
+        if nxt_start is not None:
+            for i, it in enumerate(out):
+                if _item_type_value(it) != ItemType.DAY_START.value:
+                    continue
+                try:
+                    out[i] = it.model_copy(update={"time": nxt_start})
+                except Exception:
+                    pass
+                break
+        print(
+            f"[FIX #331] Day {day_num}: dropped {span} min idle start, "
+            f"day begins {nxt_start}"
+        )
+        return out
+
+    def _rewrite_hop_origins(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #331: a hop starts from the stop the guest is actually at."""
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        last = None
+        out: List[Any] = []
+        for it in ordered:
+            if _item_type_value(it) == ItemType.TRANSIT.value:
+                frm = (getattr(it, "from_location", "") or "").strip()
+                if last and frm and not _place_names_match(frm, last):
+                    try:
+                        it = it.model_copy(update={"from_location": last})
+                        print(
+                            f"[FIX #331] Day {day_num}: hop from {frm!r} → {last!r}"
+                        )
+                    except Exception:
+                        pass
+                dest = (getattr(it, "to_location", "") or "").strip()
+                if dest and not _is_hub_place_label(dest):
+                    last = dest
+                out.append(it)
+                continue
+            nm = self._occupied_stop_name(it)
+            if nm:
+                last = nm
+            out.append(it)
+        return out
+
+    def _trim_tail_long_free_time(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #331: 155–221 min of named 'free time' is a hole, not a plan."""
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        last_real = None
+        last_sat = None
+        for i, it in enumerate(ordered):
+            if _is_timeline_attraction(it) or self._occupied_stop_name(it):
+                last_real = i
+            if (
+                _is_timeline_attraction(it)
+                and _timeline_satellite_kind(getattr(it, "name", "") or "")
+            ):
+                last_sat = i
+        cut = last_sat if last_sat is not None else last_real
+        if cut is None:
+            return ordered
+        drop: set = set()
+        for i, it in enumerate(ordered):
+            if i <= cut:
+                continue
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                continue
+            try:
+                sm = time_to_minutes(getattr(it, "start_time", None) or "")
+                em = time_to_minutes(getattr(it, "end_time", None) or "")
+                span = em - sm if em > sm else int(getattr(it, "duration_min", 0) or 0)
+            except Exception:
+                continue
+            if span >= 100:
+                drop.add(i)
+                print(
+                    f"[FIX #331] Day {day_num}: dropped {span} min tail free_time"
+                )
+        if not drop:
+            return ordered
+        return [it for i, it in enumerate(ordered) if i not in drop]
 
     # FIX #330: a road is never shorter than the straight line and, inside a
     # city, never much longer either.

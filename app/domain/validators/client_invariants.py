@@ -595,6 +595,14 @@ def audit_day(
         if any(_stop_name(x) for x in ordered[idx + 1:]):
             continue
         to = (getattr(it, "to_location", "") or "").strip()
+        # FIX #331: a drive back to the hub is the day closing, not a
+        # ride to a missing restaurant (client J8 D6/D7: Oława / Niemcza).
+        city = str((context or {}).get("requested_city") or "").strip()
+        if to and (
+            "centrum" in _fold(to)
+            or (city and _names_match(to, city))
+        ):
+            continue
         _, em = _clock(it)
         defects.append(Defect(
             "dangling_hop", day,

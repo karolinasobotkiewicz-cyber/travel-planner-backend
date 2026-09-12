@@ -32,6 +32,11 @@ _ALL = (
     "hop_vs_coords",
     "overlong_stop",
     "over_time_max",
+    # FIX #331: the day starts with a place, comes home, and eats somewhere.
+    "idle_start",
+    "no_return",
+    "from_mismatch",
+    "placeholder_meal",
     "dishonest_leg",
     "urban_car",
     "overlap",
