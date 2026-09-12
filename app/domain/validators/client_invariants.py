@@ -40,6 +40,7 @@ _CALM_STYLES = frozenset({"relax", "relaks", "slow", "wypoczynkowy"})
 _CALM_GROUPS = frozenset({"seniors", "seniorzy", "senior"})
 
 # FIX #327: second client mail — meals, hours, repeats, look-around caps.
+IDLE_START_MIN = 15
 LUNCH_MIN_MIN = 40
 DINNER_MIN_MIN = 45
 LOOK_AROUND_CAP_MIN = 60
@@ -676,6 +677,34 @@ def audit_day(
             {"content_end": content_end, "window_end": window_end},
         ))
 
+    # --- idle_start: the day opens with padding instead of the trip ---
+    # Client J7 D1: "21 minut free time od razu po day_start jest trochę
+    # sztuczne". If the first stop cannot open earlier, the day should start
+    # later, not stand still.
+    for it in ordered:
+        tv = _tv(it)
+        if tv == ItemType.DAY_START.value:
+            continue
+        if tv != ItemType.FREE_TIME.value:
+            break
+        sm, em = _clock(it)
+        span = int(getattr(it, "duration_min", 0) or 0)
+        if sm is not None and em is not None and em > sm:
+            span = em - sm
+        if (
+            sm is not None
+            and marker_start is not None
+            and sm - marker_start <= 3
+            and span >= IDLE_START_MIN
+        ):
+            defects.append(Defect(
+                "idle_start", day,
+                f"Dzień {day}: dzień zaczyna się {span} min czasu wolnego "
+                f"o {_fmt(sm)}, zamiast ruszyć w miasto",
+                {"minutes": span, "start": sm},
+            ))
+        break
+
     # --- no_return: satellite day that never drives back ---
     city = str((context or {}).get("requested_city") or "").strip()
     last_sat = None
@@ -684,16 +713,31 @@ def audit_day(
             last_sat = (idx, (getattr(it, "name", "") or "").strip())
     if last_sat and city:
         idx, sat_name = last_sat
+        # FIX #329: only a ride of comparable length brings the guest home.
+        # Client J8 D6 drives 37 km to Oława, then a 1 km walk to a local
+        # restaurant closes the day — the name looks like town, the map does
+        # not. Measure the way back instead of reading labels.
+        out_km = 0.0
+        for x in ordered[:idx]:
+            if not _is_transit(x):
+                continue
+            try:
+                out_km = max(out_km, float(getattr(x, "distance_km", None) or 0))
+            except (TypeError, ValueError):
+                continue
         returned = False
         for x in ordered[idx + 1:]:
-            if _is_transit(x):
-                to = (getattr(x, "to_location", "") or "").strip()
-                if to and (
-                    _names_match(to, city) or "centrum" in _fold(to)
-                ):
-                    returned = True
-                    break
-            elif _stop_name(x) and not _region(_stop_name(x) or ""):
+            if not _is_transit(x):
+                continue
+            to = (getattr(x, "to_location", "") or "").strip()
+            if not to or _names_match(to, city) or "centrum" in _fold(to):
+                returned = True
+                break
+            try:
+                back_km = float(getattr(x, "distance_km", None) or 0)
+            except (TypeError, ValueError):
+                back_km = 0.0
+            if out_km > 0 and back_km >= out_km * 0.5:
                 returned = True
                 break
         if not returned:

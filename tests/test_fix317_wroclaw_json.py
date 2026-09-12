@@ -25,6 +25,9 @@ _ALL = (
     "fragmented",
     # FIX #328: one place, one day — no POI twice in the same trip.
     "trip_repeat",
+    # FIX #329: Excel hours are law, and nobody eats dinner in 15 minutes.
+    "closed_stop",
+    "short_meal",
     "dishonest_leg",
     "urban_car",
     "overlap",
@@ -39,6 +42,31 @@ _JSON_DIR = _HERE.parents[2] / "json_miasta" / "Wrocław"
 _EXCEL = _HERE.parents[1] / "data" / "zakopane.xlsx"
 
 _JSON_IDS = [f"{i:02d}" for i in range(1, 11)]
+
+
+@pytest.fixture(scope="module")
+def poi_meta():
+    """FIX #329: real Excel hours, so `closed_stop` audits actual data."""
+    from app.domain.planner.city_copy import hub_poi_load_cities
+    from app.domain.validators.client_invariants import _fold
+    from app.infrastructure.repositories.load_multi_city import (
+        load_multi_city_poi,
+    )
+
+    path = _HERE.parents[1] / "data" / "multi_city_attractions.xlsx"
+    if not path.exists():
+        return {}
+    cities = hub_poi_load_cities("Wrocław") or ["Wrocław"]
+    out = {}
+    for p in load_multi_city_poi(str(path), cities):
+        nm = p.get("name") or p.get("Name") or ""
+        if nm:
+            out.setdefault(_fold(nm), {
+                "opening_hours": p.get("opening_hours"),
+                "opening_hours_seasonal": p.get("opening_hours_seasonal"),
+                "time_max": p.get("time_max"),
+            })
+    return out
 
 
 def _json_path(num: str) -> Path:
@@ -59,7 +87,7 @@ def _generate(num: str):
 
 
 @pytest.mark.parametrize("num", _JSON_IDS)
-def test_wroclaw_json_client_invariants(num):
+def test_wroclaw_json_client_invariants(num, poi_meta):
     plan, payload = _generate(num)
     # FIX #324: window and profile decide short_day and profile_conflict.
     ctx = {
@@ -69,6 +97,8 @@ def test_wroclaw_json_client_invariants(num):
         "has_car": True,
         "travel_style": payload.get("travel_style"),
         "group_type": (payload.get("group") or {}).get("type"),
+        "children_age": (payload.get("group") or {}).get("children_age"),
+        "poi_meta": poi_meta,
     }
     try:
         win = getattr(plan, "daily_time_window", None)

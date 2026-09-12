@@ -1,10 +1,10 @@
-"""
+﻿"""
 Plan Service - generowanie planów podróży.
 Łączy: TripInput → engine → PlanResponse
 """
 import uuid
 import math
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 
 # ============================================================================
@@ -24401,6 +24401,11 @@ class PlanService:
             except Exception:
                 pass
             try:
+                # FIX #329: hours first — later passes only move blocks that
+                # are already inside the POI's opening window.
+                items = self._respect_opening_hours(
+                    items, ctx, day_num=day_num,
+                )
                 items = self._seal_first_approach(
                     items, ctx, coord_map=cm, day_num=day_num,
                 )
@@ -24420,6 +24425,11 @@ class PlanService:
                 items = self._cap_timeline_to_window(
                     items, ctx, day_num=day_num,
                 )
+                items = self._enforce_meal_minimum(items, ctx, day_num=day_num)
+                items = self._respect_opening_hours(
+                    items, ctx, day_num=day_num,
+                )
+                items = self._clip_free_time_overlapping_hops(items)
                 items = self._name_remaining_holes(items, ctx, day_num=day_num)
                 items = self._clip_free_time_overlapping_hops(items)
                 items = self._defragment_micro_blocks(
@@ -30192,6 +30202,434 @@ class PlanService:
             return items
         return self._sort_items_by_time(ordered)
 
+    _MEAL_MIN_MINUTES = {
+        ItemType.LUNCH_BREAK.value: 40,
+        ItemType.DINNER_BREAK.value: 45,
+    }
+
+    def _enforce_meal_minimum(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #329: nobody eats dinner in 15 minutes.
+
+        Client J2 D3 (15 min) and J7 D2 (21 min). The meal grows into the
+        space around it — free time first, then the tail of the previous
+        visit. The next stop is never touched, and lunch keeps its 12:00 /
+        dinner its 17:30 floor, so no other invariant moves.
+        """
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        for i, it in enumerate(ordered):
+            mt = _item_type_value(it)
+            floor_min = self._MEAL_MIN_MINUTES.get(mt)
+            if floor_min is None:
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
+            if en - st >= floor_min:
+                continue
+            # How late may it end? Up to the next stop or its approach leg.
+            limit_en = None
+            for nxt in ordered[i + 1:]:
+                tv = _item_type_value(nxt)
+                if tv == ItemType.FREE_TIME.value:
+                    continue
+                if tv == ItemType.TRANSIT.value or _is_timeline_attraction(nxt) \
+                        or tv in self._MEAL_MIN_MINUTES:
+                    try:
+                        limit_en = time_to_minutes(
+                            getattr(nxt, "start_time", None)
+                            or getattr(nxt, "time", None) or ""
+                        )
+                    except Exception:
+                        limit_en = None
+                    break
+                if tv == ItemType.DAY_END.value:
+                    try:
+                        limit_en = time_to_minutes(
+                            getattr(nxt, "time", None)
+                            or getattr(nxt, "start_time", None) or ""
+                        )
+                    except Exception:
+                        limit_en = None
+                    break
+            new_en = min(st + floor_min, limit_en) if limit_en else st + floor_min
+            if new_en > en:
+                ordered[i] = it = self._retimed(it, st, new_en)
+            need = floor_min - (new_en - st)
+            if need <= 0:
+                continue
+            # The meal is boxed between two legs, so three sources of minutes,
+            # cheapest first: the visit before it (the client's rule is
+            # "shorten the visit, never the meal"), then the evening sliding
+            # inside the asked window, then the visit after it.
+            for grant in (
+                self._steal_from_previous_visit,
+                self._push_tail_for_meal,
+                self._borrow_from_next_visit,
+            ):
+                need -= grant(
+                    ordered, i, need, mt, context, day_num=day_num,
+                )
+                if need <= 0:
+                    break
+        return self._sort_items_by_time(ordered)
+
+    @staticmethod
+    def _retimed(it: Any, st: int, en: int) -> Any:
+        try:
+            return it.model_copy(update={
+                "start_time": minutes_to_time(st),
+                "end_time": minutes_to_time(en),
+                "duration_min": max(0, en - st),
+            })
+        except Exception:
+            return it
+
+    def _steal_from_previous_visit(
+        self,
+        ordered: List[Any],
+        meal_idx: int,
+        need: int,
+        meal_type: str,
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        keep_visit_min: int = 30,
+    ) -> int:
+        """FIX #329: give the meal minutes by trimming the visit before it."""
+        prev_idx = None
+        for j in range(meal_idx - 1, -1, -1):
+            if _is_timeline_attraction(ordered[j]):
+                prev_idx = j
+                break
+            if _item_type_value(ordered[j]) in self._MEAL_MIN_MINUTES:
+                return 0
+        if prev_idx is None:
+            return 0
+        prev = ordered[prev_idx]
+        meal = ordered[meal_idx]
+        try:
+            p_st = time_to_minutes(getattr(prev, "start_time", None) or "")
+            p_en = time_to_minutes(getattr(prev, "end_time", None) or "")
+            m_st = time_to_minutes(getattr(meal, "start_time", None) or "")
+            m_en = time_to_minutes(getattr(meal, "end_time", None) or "")
+        except Exception:
+            return 0
+        clock_floor = self._MEAL_FLOOR261.get(meal_type, 0)
+        give = min(
+            need,
+            (p_en - p_st) - keep_visit_min,
+            m_st - clock_floor,
+        )
+        if give <= 0:
+            return 0
+        ordered[prev_idx] = self._retimed(prev, p_st, p_en - give)
+        for j in range(prev_idx + 1, meal_idx):
+            mid = ordered[j]
+            try:
+                s = time_to_minutes(getattr(mid, "start_time", None) or "")
+                e = time_to_minutes(getattr(mid, "end_time", None) or "")
+            except Exception:
+                continue
+            ordered[j] = self._retimed(mid, s - give, e - give)
+        ordered[meal_idx] = self._retimed(meal, m_st - give, m_en)
+        print(
+            f"[FIX #329] Day {day_num}: {meal_type} +{give} min — "
+            f"{getattr(prev, 'name', '?')} gave them up"
+        )
+        return give
+
+    def _borrow_from_next_visit(
+        self,
+        ordered: List[Any],
+        meal_idx: int,
+        need: int,
+        meal_type: str,
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        keep_visit_min: int = 30,
+    ) -> int:
+        """FIX #329: the last source — a later visit starts a bit later."""
+        nxt_idx = None
+        for j in range(meal_idx + 1, len(ordered)):
+            if _is_timeline_attraction(ordered[j]):
+                nxt_idx = j
+                break
+            if _item_type_value(ordered[j]) in self._MEAL_MIN_MINUTES:
+                return 0
+        if nxt_idx is None:
+            return 0
+        nxt = ordered[nxt_idx]
+        meal = ordered[meal_idx]
+        try:
+            n_st = time_to_minutes(getattr(nxt, "start_time", None) or "")
+            n_en = time_to_minutes(getattr(nxt, "end_time", None) or "")
+            m_st = time_to_minutes(getattr(meal, "start_time", None) or "")
+            m_en = time_to_minutes(getattr(meal, "end_time", None) or "")
+        except Exception:
+            return 0
+        give = min(need, (n_en - n_st) - keep_visit_min)
+        if give <= 0:
+            return 0
+        ordered[meal_idx] = self._retimed(meal, m_st, m_en + give)
+        for j in range(meal_idx + 1, nxt_idx):
+            mid = ordered[j]
+            try:
+                s = time_to_minutes(getattr(mid, "start_time", None) or "")
+                e = time_to_minutes(getattr(mid, "end_time", None) or "")
+            except Exception:
+                continue
+            ordered[j] = self._retimed(mid, s + give, e + give)
+        ordered[nxt_idx] = self._retimed(nxt, n_st + give, n_en)
+        print(
+            f"[FIX #329] Day {day_num}: {meal_type} +{give} min — "
+            f"{getattr(nxt, 'name', '?')} starts later"
+        )
+        return give
+
+    def _push_tail_for_meal(
+        self,
+        ordered: List[Any],
+        meal_idx: int,
+        need: int,
+        meal_type: str = "",
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> int:
+        """FIX #329: the evening slides, as long as the asked window holds."""
+        try:
+            win_end = time_to_minutes(
+                (context or {}).get("day_end") or "20:00"
+            )
+        except Exception:
+            return 0
+        meal = ordered[meal_idx]
+        try:
+            m_st = time_to_minutes(getattr(meal, "start_time", None) or "")
+            m_en = time_to_minutes(getattr(meal, "end_time", None) or "")
+        except Exception:
+            return 0
+        last_en = m_en
+        for x in ordered[meal_idx + 1:]:
+            if _item_type_value(x) == ItemType.DAY_END.value:
+                continue
+            try:
+                e = time_to_minutes(getattr(x, "end_time", None) or "")
+            except Exception:
+                continue
+            last_en = max(last_en, e)
+        need = min(need, win_end - last_en)
+        if need <= 0:
+            return 0
+        ordered[meal_idx] = self._retimed(meal, m_st, m_en + need)
+        for j in range(meal_idx + 1, len(ordered)):
+            x = ordered[j]
+            tv = _item_type_value(x)
+            if tv == ItemType.DAY_END.value:
+                try:
+                    t = time_to_minutes(
+                        getattr(x, "time", None)
+                        or getattr(x, "start_time", None) or ""
+                    )
+                    ordered[j] = x.model_copy(update={
+                        "time": minutes_to_time(min(t + need, win_end)),
+                    })
+                except Exception:
+                    pass
+                continue
+            try:
+                s = time_to_minutes(getattr(x, "start_time", None) or "")
+                e = time_to_minutes(getattr(x, "end_time", None) or "")
+            except Exception:
+                continue
+            ordered[j] = self._retimed(x, s + need, e + need)
+        print(
+            f"[FIX #329] Day {day_num}: meal +{need} min, evening slid "
+            f"inside the {minutes_to_time(win_end)} window"
+        )
+        return need
+
+    @staticmethod
+    def _poi_open_window(
+        poi: Dict[str, Any], trip_date: Any,
+    ) -> Optional[Tuple[int, int]]:
+        """FIX #329: the day's real open/close window for one POI, or None.
+
+        Reads the Excel hours the engine already loads, so no name markers.
+        Mirrors `is_poi_open_at_time`: a season is picked for the date, then
+        the weekday row, then the 15 min pre-closing margin for long windows.
+        """
+        try:
+            from datetime import datetime as _dt
+
+            d = (
+                trip_date if hasattr(trip_date, "weekday")
+                else _dt.fromisoformat(str(trip_date)[:10])
+            )
+        except Exception:
+            return None
+        oh = poi.get("opening_hours")
+        ohs = poi.get("opening_hours_seasonal")
+        if isinstance(ohs, dict):
+            ohs = [ohs]
+        if not ohs and isinstance(oh, dict):
+            ohs = [{"date_from": "01-01", "date_to": "12-31", **oh}]
+        if not ohs:
+            return None
+        try:
+            from app.domain.planner.opening_hours_parser import (
+                find_current_season,
+                parse_opening_hours_json,
+            )
+
+            season = find_current_season((d.year, d.month, d.day), ohs)
+            if not season:
+                return None
+            rows = (
+                season if any(
+                    k in season for k in
+                    ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+                ) else season.get("opening_hours")
+            )
+            hours = parse_opening_hours_json(rows)
+            if not hours:
+                return None
+            win = hours.get(int(d.weekday()))
+        except Exception:
+            return None
+        if not win:
+            # The POI publishes hours but not for this weekday — "closed",
+            # not "unknown". An empty window tells the caller to drop it.
+            return 0, 0
+        open_min, close_min = int(win[0]), int(win[1])
+        if close_min - open_min > 45:
+            close_min -= 15
+        return open_min, close_min
+
+    def _respect_opening_hours(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        min_visit: int = 20,
+    ) -> List[Any]:
+        """FIX #329: no visit before opening or after closing.
+
+        Client J1 D1: "Kolejkowo jest zaplanowane przed otwarciem. Plan daje
+        wizytę o 09:10 a otwarcie o 10:00." The engine picks a legal slot, but
+        later compaction passes shift the stop earlier and never re-check the
+        hours, so this runs as the trip-level last word instead.
+        """
+        if not items:
+            return items
+        pool = (context or {}).get("poi_pool") or []
+        if isinstance(pool, dict):
+            pool = list(pool.values())
+        if not pool:
+            return items
+        trip_date = (
+            (context or {}).get("date")
+            or (context or {}).get("trip_date")
+            or (context or {}).get("start_date")
+        )
+        if not trip_date:
+            return items
+        by_name: Dict[str, Dict[str, Any]] = {}
+        by_id: Dict[str, Dict[str, Any]] = {}
+        for p in pool:
+            nm = _fold_place_label(p.get("name") or p.get("Name") or "")
+            if nm and nm not in by_name:
+                by_name[nm] = p
+            pid = p.get("id")
+            if pid:
+                by_id[str(pid)] = p
+
+        ordered = self._sort_items_by_time(list(items))
+        out: List[Any] = []
+        for idx, it in enumerate(ordered):
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            poi = by_id.get(str(getattr(it, "poi_id", "") or "")) or by_name.get(
+                _fold_place_label(getattr(it, "name", "") or "")
+            )
+            if not poi:
+                out.append(it)
+                continue
+            win = self._poi_open_window(poi, trip_date)
+            if not win:
+                out.append(it)
+                continue
+            open_min, close_min = win
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                out.append(it)
+                continue
+            if close_min <= open_min:
+                print(
+                    f"[FIX #329] Day {day_num}: dropped "
+                    f"{getattr(it, 'name', '?')} — zamknięte tego dnia"
+                )
+                continue
+            if st >= open_min and en <= close_min:
+                out.append(it)
+                continue
+            new_st, new_en = max(st, open_min), min(en, close_min)
+            # A later stop must not be pushed around by this repair.
+            next_stop = None
+            for nxt in ordered[idx + 1:]:
+                if _is_timeline_attraction(nxt) or _item_type_value(nxt) in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                ):
+                    try:
+                        next_stop = time_to_minutes(
+                            getattr(nxt, "start_time", None) or ""
+                        )
+                    except Exception:
+                        next_stop = None
+                    break
+            if next_stop is not None:
+                new_en = min(new_en, next_stop)
+            if new_en - new_st < min_visit:
+                print(
+                    f"[FIX #329] Day {day_num}: dropped "
+                    f"{getattr(it, 'name', '?')} — closed at "
+                    f"{getattr(it, 'start_time', '')} "
+                    f"(open {minutes_to_time(open_min)}–"
+                    f"{minutes_to_time(close_min)})"
+                )
+                continue
+            print(
+                f"[FIX #329] Day {day_num}: {getattr(it, 'name', '?')} "
+                f"{getattr(it, 'start_time', '')}–{getattr(it, 'end_time', '')} "
+                f"→ {minutes_to_time(new_st)}–{minutes_to_time(new_en)} "
+                f"(open {minutes_to_time(open_min)}–"
+                f"{minutes_to_time(close_min)})"
+            )
+            try:
+                out.append(it.model_copy(update={
+                    "start_time": minutes_to_time(new_st),
+                    "end_time": minutes_to_time(new_en),
+                    "duration_min": new_en - new_st,
+                }))
+            except Exception:
+                out.append(it)
+        return self._sort_items_by_time(out)
+
     def _defragment_micro_blocks(
         self,
         items: List[Any],
@@ -33754,3 +34192,4 @@ class PlanService:
         if not drop_indices:
             return items
         return [it for idx, it in enumerate(items) if idx not in drop_indices]
+
