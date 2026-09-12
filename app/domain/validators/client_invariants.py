@@ -45,8 +45,13 @@ LUNCH_MIN_MIN = 40
 DINNER_MIN_MIN = 45
 LOOK_AROUND_CAP_MIN = 60
 LOOK_AROUND_CAP_KIDS_MIN = 40
-HOP_KM_TOLERANCE = 1.0
-HOP_KM_RATIO = 3.0
+# A straight line is the shortest possible way between two points, so a leg
+# shorter than the haversine is physically impossible; a leg far longer than
+# it is a detour nobody drives in a city centre.
+HOP_KM_UNDER_PAD = 0.3
+HOP_KM_UNDER_RATIO = 1.4
+HOP_KM_OVER_PAD = 0.5
+HOP_KM_OVER_RATIO = 2.5
 
 # A square, a bridge or a viewpoint is a stop on the way, not half a day.
 _LOOK_AROUND_TOKENS = frozenset({
@@ -862,12 +867,12 @@ def audit_day(
                 declared = float(getattr(x, "distance_km", None) or 0)
             except (TypeError, ValueError):
                 continue
-            # Haversine is a lower bound on the road, so a slightly shorter
-            # declared leg is just imprecise coords. Flag the gross lies.
-            if (
-                real_km - declared > HOP_KM_TOLERANCE
-                and real_km > max(declared * HOP_KM_RATIO, 0.5)
-            ):
+            under = (
+                real_km - declared > HOP_KM_UNDER_PAD
+                and real_km > declared * HOP_KM_UNDER_RATIO
+            )
+            over = declared > real_km * HOP_KM_OVER_RATIO + HOP_KM_OVER_PAD
+            if under or over:
                 defects.append(Defect(
                     "hop_vs_coords", day,
                     f"Dzień {day}: odcinek podaje {declared:.3f} km, "

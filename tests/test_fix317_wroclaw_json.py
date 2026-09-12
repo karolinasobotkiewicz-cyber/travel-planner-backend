@@ -28,6 +28,10 @@ _ALL = (
     # FIX #329: Excel hours are law, and nobody eats dinner in 15 minutes.
     "closed_stop",
     "short_meal",
+    # FIX #330: kilometres come from the coordinates, minutes from the Excel.
+    "hop_vs_coords",
+    "overlong_stop",
+    "over_time_max",
     "dishonest_leg",
     "urban_car",
     "overlap",

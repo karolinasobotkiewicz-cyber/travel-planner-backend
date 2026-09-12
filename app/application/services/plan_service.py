@@ -24414,6 +24414,9 @@ class PlanService:
                     items, self._merge_coord_map(cm, items), ctx,
                     day_num=day_num,
                 )
+                items = self._reconcile_leg_distances(
+                    items, day_num=day_num, context=ctx,
+                )
                 items = self._honest_transit_physics(
                     items, day_num=day_num, context=ctx,
                 )
@@ -24426,6 +24429,7 @@ class PlanService:
                     items, ctx, day_num=day_num,
                 )
                 items = self._enforce_meal_minimum(items, ctx, day_num=day_num)
+                items = self._cap_visit_durations(items, ctx, day_num=day_num)
                 items = self._respect_opening_hours(
                     items, ctx, day_num=day_num,
                 )
@@ -30200,6 +30204,188 @@ class PlanService:
             )
         except Exception:
             return items
+        return self._sort_items_by_time(ordered)
+
+    # FIX #330: a square, a bridge or a viewpoint is a stop on the way, not
+    # half a day. Client J1 D2: "Rynek przez 115 minut jest słabym fillerem
+    # dla rodziny z 8-latkiem"; J8 D4: Most Grunwaldzki for 62 min.
+    _LOOK_AROUND_TOKENS = frozenset({
+        "rynek", "plac", "most", "bulwar", "bulwary", "deptak", "promenada",
+        "skwer", "fontanna",
+    })
+    _LOOK_AROUND_PHRASES = ("punkt widokowy", "wieza widokowa", "taras widokowy")
+    _LOOK_AROUND_CAP = 60
+    _LOOK_AROUND_CAP_KIDS = 40
+    _VISIT_CAP_FLOOR = 20
+
+    def _cap_visit_durations(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #330: a visit never outlasts the Excel `time_max` or the profile.
+
+        Most Grunwaldzki carries `time_max=40` and the plan gave it 90 minutes;
+        Rynek we Wrocławiu is formally allowed 180, which is still no way to
+        spend a morning with an eight-year-old.
+        """
+        if not items:
+            return items
+        pool = (context or {}).get("poi_pool") or []
+        if isinstance(pool, dict):
+            pool = list(pool.values())
+        by_name: Dict[str, Any] = {}
+        by_id: Dict[str, Any] = {}
+        for p in pool:
+            nm = _fold_place_label(p.get("name") or p.get("Name") or "")
+            if nm:
+                by_name.setdefault(nm, p)
+            if p.get("id"):
+                by_id.setdefault(str(p["id"]), p)
+        usr = (context or {}).get("user") or {}
+        group = str(
+            (context or {}).get("group_type") or usr.get("group_type") or ""
+        ).strip().lower()
+        kids = "kids" in group or "family" in group or bool(
+            (context or {}).get("children_age") or usr.get("children_age")
+        )
+        look_cap = self._LOOK_AROUND_CAP_KIDS if kids else self._LOOK_AROUND_CAP
+
+        out: List[Any] = []
+        for it in self._sort_items_by_time(list(items)):
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = getattr(it, "name", "") or ""
+            folded = _fold_place_label(nm)
+            cap = None
+            poi = by_id.get(str(getattr(it, "poi_id", "") or "")) or by_name.get(folded)
+            if poi:
+                try:
+                    t_max = int(poi.get("time_max") or 0)
+                except (TypeError, ValueError):
+                    t_max = 0
+                if t_max > 0:
+                    cap = t_max
+            tokens = set(folded.split())
+            if tokens & self._LOOK_AROUND_TOKENS or any(
+                ph in folded for ph in self._LOOK_AROUND_PHRASES
+            ):
+                cap = look_cap if cap is None else min(cap, look_cap)
+            if cap is None:
+                out.append(it)
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                out.append(it)
+                continue
+            if en - st <= cap:
+                out.append(it)
+                continue
+            new_en = st + max(cap, self._VISIT_CAP_FLOOR)
+            print(
+                f"[FIX #330] Day {day_num}: {nm} {en - st} min → "
+                f"{new_en - st} min (limit {cap})"
+            )
+            out.append(self._retimed(it, st, new_en))
+        return self._sort_items_by_time(out)
+
+    # FIX #330: a road is never shorter than the straight line and, inside a
+    # city, never much longer either.
+    _LEG_UNDER_PAD = 0.3
+    _LEG_UNDER_RATIO = 1.4
+    _LEG_OVER_PAD = 0.5
+    _LEG_OVER_RATIO = 2.5
+    _LEG_ROAD_FACTOR = 1.25
+
+    def _reconcile_leg_distances(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #330: the leg must agree with the coordinates in the same plan.
+
+        Client J3 D1 "z Muzeum Świat Iluzji do Hydropolis jest 0,096 km i 2 min
+        pieszo", J7 D2 "5,79 km samochodem, mimo że Rynek i Taste leżą blisko
+        siebie", J9 D3 "48 metrów, a to zupełnie różne części miasta". The
+        distance is taken from whatever pass built the leg; here it is checked
+        against the two stops it actually connects and rewritten if it lies.
+        """
+        if not items:
+            return items
+        from app.domain.validators.client_invariants import _coords as _pt
+        from app.infrastructure.routing.haversine import haversine_km
+
+        ordered = self._sort_items_by_time(list(items))
+        stops: List[tuple] = []
+        for idx, it in enumerate(ordered):
+            nm = self._occupied_stop_name(it)
+            if not nm:
+                continue
+            stops.append((idx, nm, _pt(it)))
+        has_car = bool((context or {}).get("has_car", True))
+        fixed = 0
+        for (ia, _na, pa), (ib, nb, pb) in zip(stops, stops[1:]):
+            if not pa or not pb:
+                continue
+            straight = haversine_km(pa[0], pa[1], pb[0], pb[1])
+            for j in range(ia + 1, ib):
+                leg = ordered[j]
+                if _item_type_value(leg) != ItemType.TRANSIT.value:
+                    continue
+                to = (getattr(leg, "to_location", "") or "").strip()
+                if to and not _place_names_match(to, nb):
+                    continue
+                try:
+                    declared = float(getattr(leg, "distance_km", None) or 0)
+                except (TypeError, ValueError):
+                    continue
+                under = (
+                    straight - declared > self._LEG_UNDER_PAD
+                    and straight > declared * self._LEG_UNDER_RATIO
+                )
+                over = (
+                    declared
+                    > straight * self._LEG_OVER_RATIO + self._LEG_OVER_PAD
+                )
+                if not (under or over):
+                    continue
+                honest = round(straight * self._LEG_ROAD_FACTOR, 3)
+                walk = honest < 2.2 or not has_car
+                if walk:
+                    need = max(3, int(round(honest / 4.5 * 60)) + 2)
+                    mode, src = TransitMode.WALK, "estimated_walk"
+                else:
+                    need = max(8, int(round(honest / 30.0 * 60)) + 5)
+                    mode, src = TransitMode.CAR, "estimated_road"
+                try:
+                    st = time_to_minutes(getattr(leg, "start_time", None) or "")
+                except Exception:
+                    continue
+                print(
+                    f"[FIX #330] Day {day_num}: leg → {nb} {declared} km "
+                    f"→ {honest} km (coords say {straight:.2f} km straight), "
+                    f"{need} min {mode}"
+                )
+                try:
+                    ordered[j] = leg.model_copy(update={
+                        "distance_km": honest,
+                        "duration_min": need,
+                        "end_time": minutes_to_time(st + need),
+                        "mode": mode,
+                        "routing_source": src,
+                    })
+                    fixed += 1
+                except Exception:
+                    continue
+        if fixed:
+            ordered = self._remove_timeline_overlaps(ordered, day_num)
         return self._sort_items_by_time(ordered)
 
     _MEAL_MIN_MINUTES = {

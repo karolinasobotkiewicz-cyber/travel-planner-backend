@@ -91,7 +91,11 @@ def test_auditor_accepts_a_coherent_city_day():
         _tr("Hydropolis", "Most Tumski", "10:45", "11:00", km=1.8, dur=15),
         _attr("Most Tumski", "11:00", "12:00", 60, lat=51.114, lng=17.047),
         _tr("Most Tumski", "Bernard", "12:00", "12:10", km=0.6, dur=10),
-        _lunch("12:10", "12:55", 45, [_sug("Bernard")], label="Bernard"),
+        # FIX #330: the restaurant has to sit where the 0.6 km leg lands it,
+        # otherwise this "coherent" day declares a walk shorter than the
+        # straight line between its own two stops.
+        _lunch("12:10", "12:55", 45,
+               [_sug("Bernard", lat=51.1105, lng=17.0435)], label="Bernard"),
         DayEndItem(time="12:55"),
     ]
     assert audit_day(items, day=1) == []
