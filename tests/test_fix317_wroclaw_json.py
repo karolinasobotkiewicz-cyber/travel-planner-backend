@@ -37,6 +37,9 @@ _ALL = (
     "no_return",
     "from_mismatch",
     "placeholder_meal",
+    # FIX #332: a window to 18:00 does not close at noon.
+    "short_day",
+    "long_free_time",
     "dishonest_leg",
     "urban_car",
     "overlap",

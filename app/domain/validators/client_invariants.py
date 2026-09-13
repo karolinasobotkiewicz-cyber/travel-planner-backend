@@ -498,7 +498,16 @@ def audit_day(
         is_car = "car" in _mode(it)
 
         if prev_stop and frm and not _names_match(frm, prev_stop):
-            if _fold(frm) not in GENERIC_MEAL and _fold(prev_stop) not in GENERIC_MEAL:
+            city = str((context or {}).get("requested_city") or "").strip()
+            hub_from = (
+                "centrum" in _fold(frm)
+                or (city and _names_match(frm, city))
+            )
+            if (
+                not hub_from
+                and _fold(frm) not in GENERIC_MEAL
+                and _fold(prev_stop) not in GENERIC_MEAL
+            ):
                 defects.append(Defect(
                     "from_mismatch", day,
                     f"Dzień {day}: transit from={frm!r} ale ostatni postój to {prev_stop!r}",
@@ -649,20 +658,40 @@ def audit_day(
             run_start = None
 
     # --- long_free_time: 155 min of "Popołudniowa przerwa" is a hole ---
+    # FIX #332: five 45-min labelled blocks in a row is still 221 min of
+    # nothing (client J8 D6). Merge adjacent free_time first.
+    run_span = 0
+    run_sm: Optional[int] = None
+    run_em: Optional[int] = None
+
+    def _flush_ft_run() -> None:
+        if run_span >= LONG_FREE_TIME_MIN:
+            defects.append(Defect(
+                "long_free_time", day,
+                f"Dzień {day}: free_time {run_span} min "
+                f"({_fmt(run_sm) if run_sm is not None else '?'}–"
+                f"{_fmt(run_em) if run_em is not None else '?'})",
+                {"minutes": run_span},
+            ))
+
     for it in ordered:
         if not _is_ft(it):
-            continue
-        dur = int(getattr(it, "duration_min", 0) or 0)
-        if dur < LONG_FREE_TIME_MIN:
+            _flush_ft_run()
+            run_span = 0
+            run_sm = run_em = None
             continue
         sm, em = _clock(it)
-        defects.append(Defect(
-            "long_free_time", day,
-            f"Dzień {day}: free_time {dur} min "
-            f"({_fmt(sm) if sm is not None else '?'}–"
-            f"{_fmt(em) if em is not None else '?'})",
-            {"minutes": dur},
-        ))
+        dur = int(getattr(it, "duration_min", 0) or 0)
+        if sm is not None and em is not None and em > sm:
+            dur = em - sm
+        if run_em is not None and sm is not None and sm - run_em <= 5:
+            run_span += dur
+            run_em = em if em is not None else run_em
+        else:
+            _flush_ft_run()
+            run_span = dur
+            run_sm, run_em = sm, em
+    _flush_ft_run()
 
     # --- short_day: 12:20 close on a window that runs to 20:00 ---
     content_end: Optional[int] = None
