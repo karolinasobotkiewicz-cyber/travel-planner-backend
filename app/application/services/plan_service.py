@@ -217,16 +217,6 @@ def _is_hub_place_label(name: Any) -> bool:
     return s in _HUB_CITY_LABELS
 
 
-# FIX #335: a guest who never asked for a soft-play room does not get planted
-# into one (client J2/J3/J4/J8 D1: Park Mamuta, Pixel XL, Bobolandia).
-_KIDS_PREFERENCES = frozenset({
-    "attractions_for_kids", "kids_attractions", "theme_parks",
-    "water_attractions",
-})
-_KIDS_TYPE_MARKERS = (
-    "kids_attraction", "kids attraction", "theme_park", "theme park",
-    "playground",
-)
 # Client J8 D7: "kolacja" at 11:40. J4 D4: 12:07. That is a lunch with a
 # wrong label, so the planting pass refuses to plant one that early.
 _EARLIEST_DINNER_MIN = 16 * 60 + 30
@@ -29760,6 +29750,13 @@ class PlanService:
             pname = (poi.get("name") or "").strip().lower()
             if not pname or pname in taken:
                 continue
+            # FIX #336: `allow_soft_profile` may relax preference matching to
+            # rescue an empty afternoon. It may never relax who the stop is
+            # for. This loop skipped the audience gate entirely, which is how
+            # Muzeum Świat Iluzji, Pigcasso and Kosmopark reached culture
+            # quizzes for couples, friends and a solo guest (client J2–J8).
+            if self._plant_poi_off_profile(poi, {**context, "user": user}):
+                continue
             if _is_winter_plan_context(context) and any(k in pname for k in (
                 "ogród doświadczeń", "ogrod doswiadczen",
                 "wioski świata", "wioski swiata",
@@ -31037,6 +31034,25 @@ class PlanService:
             except Exception:
                 continue
             blocks.append((sm, en, it))
+        if not any(_is_timeline_attraction(it) for _s, _e, it in blocks):
+            # FIX #337: J4 D3 ends up with a 11:36 lunch that has no restaurant
+            # behind it and no attraction anywhere on the day — its only
+            # candidate was closed. A meal on its own is not a programme, so
+            # the day closes and says so instead of faking one.
+            keep = [
+                it for it in ordered
+                if _item_type_value(it) == ItemType.DAY_START.value
+            ]
+            try:
+                close_at = time_to_minutes(ctx.get("day_start") or "09:00")
+                keep.append(DayEndItem(time=minutes_to_time(close_at)))
+            except Exception:
+                return ordered, True
+            print(
+                f"[FIX #337] Day {day_num}: no attraction survived the pool — "
+                f"closing the day instead of serving a lone meal"
+            )
+            return keep, True
         if len(blocks) < 2:
             return ordered, False
         last_start, _last_end, last_it = blocks[-1]
@@ -31402,6 +31418,42 @@ class PlanService:
             visit = min(visit, t_max)
         return max(20, min(visit, 120))
 
+    def _excel_visit_floor(
+        self,
+        item: Any,
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        default: int = 30,
+    ) -> int:
+        """FIX #337: the shortest this visit is allowed to become.
+
+        A meal short of its floor used to take the minutes from the stop in
+        front of it, down to a flat 30. That is how Hala Stulecia (Excel min.
+        60) ended up at 23 minutes and Ostrów Tumski at 35 (client Wro J6).
+        Excel's time_min is a contract: the meal borrows from the evening or it
+        stays short, but it never eats into a visit the client priced.
+        """
+        name = _fold_place_label(getattr(item, "name", "") or "")
+        if not name:
+            return default
+        for poi in (context or {}).get("poi_pool") or []:
+            if _fold_place_label(poi.get("name") or "") != name:
+                continue
+            try:
+                floor = int(poi.get("time_min") or 0)
+            except (TypeError, ValueError):
+                return default
+            if floor <= 0:
+                return default
+            try:
+                cap = int(poi.get("time_max") or 0)
+            except (TypeError, ValueError):
+                cap = 0
+            if cap > 0:
+                floor = min(floor, cap)
+            return max(default, floor)
+        return default
+
     def _plant_poi_off_profile(
         self, poi: Dict[str, Any], context: Dict[str, Any],
     ) -> bool:
@@ -31418,20 +31470,16 @@ class PlanService:
         usr = dict(context.get("user") or {})
         if not usr.get("target_group"):
             usr["target_group"] = str(context.get("group_type") or "")
+        if not usr.get("preferences"):
+            usr["preferences"] = list(context.get("preferences") or [])
         try:
-            if should_exclude_by_target_group(poi, usr):
-                return True
+            # FIX #336: one gate for the whole engine. Kids-only rows, the
+            # per-group name denylist and kids `type_of_attraction` all live
+            # in `should_exclude_by_target_group` now, so the planting pass
+            # cannot drift away from the selection pass again.
+            return bool(should_exclude_by_target_group(poi, usr))
         except Exception:
-            pass
-        prefs = {
-            str(p).strip().lower()
-            for p in (usr.get("preferences") or context.get("preferences") or [])
-            if p
-        }
-        if prefs & _KIDS_PREFERENCES:
             return False
-        kind = str(poi.get("type_of_attraction") or "").strip().lower()
-        return bool(kind) and any(m in kind for m in _KIDS_TYPE_MARKERS)
 
     def _planted_attraction_item(
         self,
@@ -31738,7 +31786,9 @@ class PlanService:
         clock_floor = self._MEAL_FLOOR261.get(meal_type, 0)
         give = min(
             need,
-            (p_en - p_st) - keep_visit_min,
+            (p_en - p_st) - self._excel_visit_floor(
+                prev, context, default=keep_visit_min,
+            ),
             m_st - clock_floor,
         )
         if give <= 0:
@@ -31789,7 +31839,12 @@ class PlanService:
             m_en = time_to_minutes(getattr(meal, "end_time", None) or "")
         except Exception:
             return 0
-        give = min(need, (n_en - n_st) - keep_visit_min)
+        give = min(
+            need,
+            (n_en - n_st) - self._excel_visit_floor(
+                nxt, context, default=keep_visit_min,
+            ),
+        )
         if give <= 0:
             return 0
         ordered[meal_idx] = self._retimed(meal, m_st, m_en + give)

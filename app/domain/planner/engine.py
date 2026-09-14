@@ -3817,6 +3817,29 @@ def choose_duration(p, now, end, lunch_done, user=None):
     return dur
 
 
+def filler_visit_minutes(p, available):
+    """How long a gap-filler may stay, or None if it must not be inserted.
+
+    The soft/gap fillers used to do `min(time_min, available)`, which is how
+    Loopy's World (Excel min. 90) landed a 42-minute slot and Muzeum
+    Przyrodnicze (min. 60) a 30-minute one. Excel's time_min is a floor, not a
+    target: either the window holds the whole visit or the attraction waits for
+    another day.
+    """
+    floor = safe_int(p.get("time_min"), 0) or safe_int(p.get("duration_min"), 0)
+    if floor <= 0:
+        return None
+    ceiling = safe_int(p.get("time_max"), 0) or floor
+    hard_cap = visit_duration_hard_cap(p)
+    if hard_cap is not None:
+        floor = min(floor, hard_cap)
+        ceiling = min(ceiling, hard_cap)
+    ceiling = max(ceiling, floor)
+    if available < floor:
+        return None
+    return min(ceiling, int(available))
+
+
 # =========================
 # Scoring
 # =========================
@@ -8604,8 +8627,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if start_time >= end:
                         continue
                     
-                    duration = min(time_min, remaining_time - soft_travel)
-                    if duration < 10:  # Too short
+                    duration = filler_visit_minutes(p, remaining_time - soft_travel)
+                    if duration is None:
                         continue
                     
                     if not is_open(p, start_time, duration, ctx["season"], ctx):
@@ -9424,8 +9447,10 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                     if soft_start >= next_poi_time or soft_start >= end:
                         continue
                     
-                    soft_duration = min(time_min, gap_duration - soft_travel, next_poi_time - soft_start)
-                    if soft_duration < 10:
+                    soft_duration = filler_visit_minutes(
+                        p, min(gap_duration - soft_travel, next_poi_time - soft_start)
+                    )
+                    if soft_duration is None:
                         continue
                     
                     if not is_open(p, soft_start, soft_duration, ctx["season"], ctx):
@@ -9922,8 +9947,8 @@ def build_day(pois, user, context, day_start=None, day_end=None, global_used=Non
                 if start_time >= end:
                     continue
                 
-                duration = min(time_min, remaining_to_end - travel)
-                if duration < 10:
+                duration = filler_visit_minutes(p, remaining_to_end - travel)
+                if duration is None:
                     continue
                 
                 if not is_open(p, start_time, duration, ctx["season"], ctx):

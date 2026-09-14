@@ -23,6 +23,16 @@ _CHILD_POI_NAME_MARKERS = (
     # FIX #265: Park Mamuta is kids outdoor dinosaurs — not adult filler.
     "park mamuta", "mamuta",
 )
+# FIX #336: a soft-play room is not a museum. The client got Muzeum Świat
+# Iluzji, Pigcasso and Kosmopark on culture quizzes (J2, J3, J4, J8) because
+# `type_of_attraction` never took part in the hard filter — only the name
+# denylist above did, and it cannot list every kids venue in every city.
+_KIDS_ATTRACTION_TYPES = ("kids_attraction", "theme_park", "playground")
+_KIDS_PREFERENCE_KEYS = (
+    "attractions_for_kids", "kids_attractions", "theme_parks",
+    "water_attractions",
+)
+
 # FIX #197: recurring client mismatches (name heuristics when Excel target_group is loose)
 _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
     "friends": (
@@ -288,6 +298,20 @@ def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
     if is_kids_only and user_group not in ["family_kids", "family"]:
         print(f"[DEBUG TARGET #{check_id}] -> EXCLUDE (kids_only={kids_only_val} parsed as {is_kids_only} and user_group={user_group})")
         return True
+
+    # FIX #336: kids entertainment needs a quiz that asked for it.
+    poi_type = _safe_str(poi.get("type_of_attraction"))
+    if poi_type and any(m in poi_type for m in _KIDS_ATTRACTION_TYPES):
+        prefs = {_safe_str(p) for p in (user.get("preferences") or [])}
+        if user_group not in ("family_kids", "family") and not (
+            prefs & set(_KIDS_PREFERENCE_KEYS)
+        ):
+            print(
+                f"[DEBUG TARGET #{check_id}] -> EXCLUDE (FIX#336 type"
+                f"={poi_type!r} but quiz asked for {sorted(prefs)})"
+            )
+            return True
+
     
     # Sprawdź target_groups POI
     target_groups = poi.get("target_groups")

@@ -1209,7 +1209,9 @@ def audit_day(
         int(getattr(it, "duration_min", 0) or 0)
         for it in ordered if _is_ft(it)
     )
-    if n_attr == 0:
+    # A day the engine closed for lack of matching POIs already carries the
+    # badge and a note; reporting it again only hides real empty days.
+    if n_attr == 0 and not exhausted:
         defects.append(Defect(
             "empty_day", day,
             f"Dzień {day}: 0 atrakcji, {ft_min} min free_time"
