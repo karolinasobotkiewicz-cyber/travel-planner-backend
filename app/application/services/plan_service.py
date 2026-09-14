@@ -242,6 +242,46 @@ def _straight_route_geometry(
     return geom, gll
 
 
+def _geometry_endpoints(it: Any) -> Optional[tuple]:
+    """FIX #334: ((lat, lng) start, (lat, lng) end) of a drawn transit leg.
+
+    `geometry` is GeoJSON, so it carries [lng, lat]; `geometry_latlng` is the
+    Leaflet twin and carries [lat, lng]. Both ship in the response.
+    """
+    for attr, lat_first in (("geometry_latlng", True), ("geometry", False)):
+        pts = getattr(it, attr, None)
+        if not pts:
+            continue
+        try:
+            a, b = pts[0], pts[-1]
+            if lat_first:
+                return (
+                    (float(a[0]), float(a[1])), (float(b[0]), float(b[1])),
+                )
+            return (
+                (float(a[1]), float(a[0])), (float(b[1]), float(b[0])),
+            )
+        except (TypeError, ValueError, IndexError):
+            continue
+    return None
+
+
+def _meal_suggestion_name(it: Any) -> Optional[str]:
+    """FIX #334: the restaurant a meal block actually points at."""
+    if _item_type_value(it) not in (
+        ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+    ):
+        return None
+    for sug in (getattr(it, "suggestions", None) or [])[:1]:
+        if isinstance(sug, dict):
+            nm = (sug.get("name") or "").strip()
+        else:
+            nm = (getattr(sug, "name", "") or "").strip()
+        if nm:
+            return nm
+    return None
+
+
 def _last_attraction_name(items: list) -> str:
     """FIX #200: real origin label for gap-fill transits."""
     for it in reversed(items):
@@ -11891,6 +11931,95 @@ class PlanService:
                     it, prev_pt[0], prev_pt[1], next_pt[0], next_pt[1],
                 )
             out.append(it)
+        return out
+
+    def _seal_transit_geometry_to_timeline(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #334: the polyline has to start where the label says it starts.
+
+        `_finalize_transit_geometry` runs before `_guard_trip_invariants`, and
+        the healing pass then rewrites `from_location`, moves stops and plants
+        new ones. The old polyline survived every one of those edits, so the
+        client read "transit from: Ogród Botaniczny" while the drawn line came
+        out of the Rynek 2.3 km away (J9 D1, J9 D2, J10 D2, J8 D6, J1 D2).
+
+        Coordinates already sitting on the finished timeline are the only
+        honest source here — a name lookup is what went stale in the first
+        place.
+        """
+        from app.infrastructure.routing.haversine import haversine_km
+
+        if not items:
+            return items
+        ctx = context or {}
+        try:
+            ordered = self._sort_items_by_time(list(items))
+        except Exception:
+            ordered = list(items)
+        pts: Dict[str, Tuple[float, float]] = {}
+        for it in ordered:
+            pt = self._item_stop_latlng(it)
+            if not pt:
+                continue
+            for nm in (
+                getattr(it, "name", None),
+                _meal_suggestion_name(it),
+            ):
+                folded = _fold_place_label(nm or "")
+                if folded:
+                    pts.setdefault(folded, pt)
+        city_pt = _city_center_coords(str(ctx.get("requested_city") or ""))
+
+        def _resolve(label: str) -> Optional[Tuple[float, float]]:
+            folded = _fold_place_label(label)
+            if not folded:
+                return None
+            hit = pts.get(folded)
+            if hit:
+                return hit
+            if _is_hub_place_label(label) and city_pt:
+                return city_pt
+            fuzzy = [
+                pt for nm, pt in pts.items()
+                if min(len(nm), len(folded)) >= 8
+                and (nm in folded or folded in nm)
+            ]
+            if len(fuzzy) == 1:
+                return fuzzy[0]
+            return None
+
+        out: List[Any] = []
+        for it in ordered:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            a = _resolve(getattr(it, "from_location", "") or "")
+            b = _resolve(getattr(it, "to_location", "") or "")
+            if not a or not b:
+                out.append(it)
+                continue
+            drawn = _geometry_endpoints(it)
+            if drawn is not None:
+                start, end = drawn
+                if (
+                    haversine_km(a[0], a[1], start[0], start[1]) <= 0.2
+                    and haversine_km(b[0], b[1], end[0], end[1]) <= 0.2
+                ):
+                    out.append(it)
+                    continue
+            print(
+                f"[FIX #334] D{day_num} restamp geometry "
+                f"{getattr(it, 'from_location', '')!r} → "
+                f"{getattr(it, 'to_location', '')!r}"
+            )
+            out.append(
+                self._stamp_straight_geometry(it, a[0], a[1], b[0], b[1])
+            )
         return out
 
     def _run_transit_routing_pass(
@@ -24456,6 +24585,18 @@ class PlanService:
                 )
             except Exception:
                 pass
+            # FIX #334: nothing may move a stop or rename a leg after this.
+            # The polyline is the last thing the front end draws, so it is the
+            # last thing the guardian rewrites.
+            try:
+                items = self._seal_transit_geometry_to_timeline(
+                    items, ctx, day_num=day_num,
+                )
+            except Exception as _exc334:
+                print(
+                    f"[FIX #334] D{day_num} geometry seal failed "
+                    f"({type(_exc334).__name__}: {_exc334})"
+                )
             # FIX #328: this loop plants attractions too, so day N+1 has to
             # learn what day N just gained. Without it the healing pass put
             # Most Grunwaldzki on two days in a row (client J9 D2/D3).
@@ -30429,6 +30570,14 @@ class PlanService:
         work = self._drop_idle_morning_padding(work, ctx, day_num=day_num)
         try:
             work = self._reconcile_day_end_marker(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        # FIX #334: this pass just moved stops and rewrote hop origins, so no
+        # polyline stamped earlier still describes the day.
+        try:
+            work = self._seal_transit_geometry_to_timeline(
+                work, ctx, day_num=day_num,
+            )
         except Exception:
             pass
         return self._sort_items_by_time(work)

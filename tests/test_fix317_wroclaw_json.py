@@ -40,6 +40,11 @@ _ALL = (
     # FIX #332: a window to 18:00 does not close at noon.
     "short_day",
     "long_free_time",
+    # FIX #334: the polyline starts where the label says it starts.
+    "geom_from_mismatch",
+    "geom_to_mismatch",
+    "hop_to_vs_meal",
+    "meal_too_close",
     "dishonest_leg",
     "urban_car",
     "overlap",
