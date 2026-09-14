@@ -78,6 +78,9 @@ _KIDS_TYPE_MARKERS = (
     "kids_attraction", "kids attraction", "theme_park", "theme park",
     "playground", "atrakcje dla dzieci", "rozrywka dla dzieci",
 )
+# The engine stamps this on a day it closed early for lack of matching POIs.
+POOL_EXHAUSTED_BADGE = "pool_exhausted"
+
 _KIDS_PREFS = frozenset({
     "attractions_for_kids", "kids_attractions", "theme_parks",
     "water_attractions", "atrakcje dla dzieci",
@@ -796,11 +799,18 @@ def audit_day(
         window_end = time_to_minutes(raw_window) if raw_window else None
     except Exception:
         window_end = None
+    # FIX #335: a day the engine closed early because the city ran out of
+    # matching POIs is a data shortage, not a broken plan. It says so on the
+    # day badge, and the guest gets a note instead of five empty hours.
+    exhausted = POOL_EXHAUSTED_BADGE in {
+        _fold(b) for b in ((context or {}).get("day_badges") or [])
+    }
     if (
         content_end is not None
         and window_end is not None
         and window_end >= SHORT_DAY_WINDOW_MIN
         and content_end < SHORT_DAY_END_MIN
+        and not exhausted
     ):
         defects.append(Defect(
             "short_day", day,
@@ -1227,6 +1237,7 @@ def audit_plan(
         ctx_day = dict(context or {})
         if getattr(day, "date", None):
             ctx_day["date"] = getattr(day, "date")
+        ctx_day["day_badges"] = list(getattr(day, "quality_badges", None) or [])
         out.extend(audit_day(
             items,
             day=day_no,

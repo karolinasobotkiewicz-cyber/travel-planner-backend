@@ -217,6 +217,30 @@ def _is_hub_place_label(name: Any) -> bool:
     return s in _HUB_CITY_LABELS
 
 
+# FIX #335: a guest who never asked for a soft-play room does not get planted
+# into one (client J2/J3/J4/J8 D1: Park Mamuta, Pixel XL, Bobolandia).
+_KIDS_PREFERENCES = frozenset({
+    "attractions_for_kids", "kids_attractions", "theme_parks",
+    "water_attractions",
+})
+_KIDS_TYPE_MARKERS = (
+    "kids_attraction", "kids attraction", "theme_park", "theme park",
+    "playground",
+)
+# Client J8 D7: "kolacja" at 11:40. J4 D4: 12:07. That is a lunch with a
+# wrong label, so the planting pass refuses to plant one that early.
+_EARLIEST_DINNER_MIN = 16 * 60 + 30
+# A gap this long between two blocks is an afternoon, not a break.
+_MIDDAY_GAP_MIN = 90
+# Dropping the evening meal is a last resort, so it takes more than a long
+# afternoon: the client's cases were 178, 255 and 318 min of nothing. A dinner
+# two hours after the last museum is a normal day and stays put.
+_STRANDED_MEAL_GAP_MIN = 150
+# Set on a day the engine closed early because the city ran out of POIs that
+# fit the guest's profile. The auditor reads it so `short_day` stops crying
+# wolf about a shortage of data.
+_POOL_EXHAUSTED_BADGE = "pool_exhausted"
+
 _BIG_CITY_RYNEK_MARKERS = (
     "rynek we wroclawiu", "rynek glowny", "stary rynek",
     "rynek w katowicach", "rynek katowic",
@@ -24577,9 +24601,38 @@ class PlanService:
                 items = self._heal_client_day_shape(
                     items, ctx, day_num=day_num, coord_map=cm,
                 )
+            except Exception as _exc_heal:
+                # FIX #335: this used to swallow silently, so a single raise
+                # threw away the whole healed day and the client got the
+                # pre-#331 shape back with no trace in the log.
+                print(
+                    f"[FIX #331] D{day_num} heal aborted "
+                    f"({type(_exc_heal).__name__}: {_exc_heal})"
+                )
+            try:
+                items = self._reconcile_day_end_marker(
+                    items, ctx, day_num=day_num,
+                )
             except Exception:
                 pass
+            # FIX #335: the evening meal lands after the heal, so the hole it
+            # leaves behind is nobody's job to name. Client J4 D4 shipped
+            # 12:12–17:08 as blank canvas.
+            pool_exhausted = False
             try:
+                items, pool_exhausted = self._close_day_when_nothing_left(
+                    items, ctx, day_num=day_num,
+                )
+                items = self._name_remaining_holes(items, ctx, day_num=day_num)
+                items = self._collapse_adjacent_free_time(
+                    items, day_num=day_num, force=True,
+                )
+                # Naming a hole in front of the first stop is how #332 got
+                # `idle_start` back: a day that cannot start at 09:00 starts
+                # later, it does not stand still for 142 minutes.
+                items = self._drop_idle_morning_padding(
+                    items, ctx, day_num=day_num,
+                )
                 items = self._reconcile_day_end_marker(
                     items, ctx, day_num=day_num,
                 )
@@ -24610,8 +24663,22 @@ class PlanService:
                 folded = _fold_place_label(nm)
                 if folded:
                     used_names.add(folded)
+            upd_day: Dict[str, Any] = {"items": items}
+            if pool_exhausted:
+                # FIX #335: say it out loud instead of shipping five empty
+                # hours. The badge is what the auditor reads, the note is
+                # what the guest reads.
+                badges = list(getattr(day, "quality_badges", None) or [])
+                if _POOL_EXHAUSTED_BADGE not in badges:
+                    badges.append(_POOL_EXHAUSTED_BADGE)
+                upd_day["quality_badges"] = badges
+                upd_day["note"] = (
+                    "Krótszy dzień — w tym mieście skończyły się atrakcje "
+                    "pasujące do Twojego profilu. Wolne popołudnie zostaje "
+                    "do Twojej dyspozycji."
+                )
             try:
-                day = day.model_copy(update={"items": items})
+                day = day.model_copy(update=upd_day)
             except Exception:
                 try:
                     day.items = items
@@ -30506,6 +30573,19 @@ class PlanService:
         work = self._plant_into_long_free_time(
             work, ctx, day_num=day_num,
         )
+        try:
+            work = self._accept_if_not_worse(
+                work,
+                self._fill_naked_midday_gaps(work, ctx, day_num=day_num),
+                ctx,
+                day_num=day_num,
+                label="midday gap fill",
+            )
+        except Exception as _exc335:
+            print(
+                f"[FIX #335] D{day_num} midday gap fill failed "
+                f"({type(_exc335).__name__}: {_exc335})"
+            )
         work = self._clip_free_time_overlapping_hops(work)
         try:
             work = self._snap_meals_to_nearby_restaurants(
@@ -30926,6 +31006,187 @@ class PlanService:
             work = planted
         return self._sort_items_by_time(work)
 
+    def _close_day_when_nothing_left(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> Tuple[List[Any], bool]:
+        """FIX #335: when the city has nothing left, the day ends.
+
+        Client J4 D4 carried 311 min of free time between an 11:57 finish and
+        a 17:08 dinner, because the planting pool was down to a single
+        satellite POI. Parking the guest for five hours is worse than a short
+        honest day, so the stranded meal goes and `day_end` follows the last
+        real block. The day is badged so the plan can say why.
+        """
+        if not items:
+            return items, False
+        ctx = context or {}
+        ordered = self._sort_items_by_time(list(items))
+        blocks: List[Tuple[int, int, Any]] = []
+        for it in ordered:
+            if not (
+                _is_timeline_attraction(it) or self._occupied_stop_name(it)
+            ):
+                continue
+            try:
+                sm = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
+            blocks.append((sm, en, it))
+        if len(blocks) < 2:
+            return ordered, False
+        last_start, _last_end, last_it = blocks[-1]
+        prev_end = blocks[-2][1]
+        # Only an evening meal is droppable. Losing lunch would be worse than
+        # the hole it sits behind.
+        if _item_type_value(last_it) != ItemType.DINNER_BREAK.value:
+            return ordered, False
+        if last_start - prev_end < _STRANDED_MEAL_GAP_MIN:
+            return ordered, False
+        # The drive home is not padding — a satellite day still has to come
+        # back before it closes (client J8 D6 lost its return this way).
+        close_at = prev_end
+        keep: List[Any] = []
+        for it in ordered:
+            if it is last_it:
+                continue
+            tv = _item_type_value(it)
+            if tv == ItemType.DAY_END.value:
+                continue
+            try:
+                sm = time_to_minutes(
+                    getattr(it, "start_time", None)
+                    or getattr(it, "time", None)
+                    or ""
+                )
+            except Exception:
+                sm = None
+            if sm is not None and sm >= prev_end:
+                if tv == ItemType.FREE_TIME.value:
+                    continue
+                if tv == ItemType.TRANSIT.value:
+                    to = (getattr(it, "to_location", "") or "").strip()
+                    if not _is_hub_place_label(to):
+                        continue
+                    try:
+                        close_at = max(
+                            close_at,
+                            time_to_minutes(getattr(it, "end_time", "") or ""),
+                        )
+                    except Exception:
+                        pass
+            keep.append(it)
+        try:
+            keep.append(DayEndItem(time=minutes_to_time(close_at)))
+        except Exception:
+            return ordered, False
+        prev_end = close_at
+        print(
+            f"[FIX #335] Day {day_num}: nothing left to plant — day closes at "
+            f"{minutes_to_time(prev_end)} instead of holding "
+            f"{last_start - prev_end} min for a stranded dinner"
+        )
+        return self._sort_items_by_time(keep), True
+
+    def _accept_if_not_worse(
+        self,
+        before: List[Any],
+        after: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        label: str = "pass",
+    ) -> List[Any]:
+        """FIX #335: a healing step may not hand the client a worse day.
+
+        Filling a hole is only an improvement if it does not cost a return
+        drive, a real restaurant or the evening. The auditor already knows
+        what the client reads, so let it referee instead of guessing.
+        """
+        from app.domain.validators.client_invariants import audit_day
+
+        if after is None or after is before:
+            return before
+        ctx = dict(context or {})
+        try:
+            n_before = len(audit_day(before, day=day_num, context=ctx))
+            n_after = len(audit_day(after, day=day_num, context=ctx))
+        except Exception:
+            return after
+        if n_after > n_before:
+            print(
+                f"[FIX #335] D{day_num} rejected {label}: "
+                f"{n_before} → {n_after} defects"
+            )
+            return before
+        return after
+
+    def _fill_naked_midday_gaps(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #335: a hole between two blocks is still a hole.
+
+        `_extend_short_day` only looks past the *last* block, so a day that
+        already carries an evening dinner looked finished while 296 min sat
+        empty between lunch and that dinner (client J4 D4 12:12–17:08, J4 D5
+        13:00–17:15, J8 D7 14:57–17:51).
+        """
+        from app.domain.validators.client_invariants import _coords as _pt
+
+        if not items:
+            return items
+        ctx = context or {}
+        pool = ctx.get("poi_pool") or []
+        if isinstance(pool, dict):
+            pool = list(pool.values())
+        if not pool:
+            return items
+        work = self._sort_items_by_time(list(items))
+        for _round in range(4):
+            blocks: List[Tuple[int, int, str, Optional[Tuple[float, float]]]] = []
+            for it in work:
+                if not (
+                    _is_timeline_attraction(it) or self._occupied_stop_name(it)
+                ):
+                    continue
+                try:
+                    sm = time_to_minutes(getattr(it, "start_time", None) or "")
+                    en = time_to_minutes(getattr(it, "end_time", None) or "")
+                except Exception:
+                    continue
+                blocks.append((
+                    sm, en, self._occupied_stop_name(it) or "", _pt(it),
+                ))
+            planted = None
+            for (_s1, e1, nm1, pt1), (s2, _e2, _nm2, _pt2) in zip(
+                blocks, blocks[1:]
+            ):
+                if s2 - e1 < _MIDDAY_GAP_MIN:
+                    continue
+                planted = self._plant_afternoon_stop(
+                    work, ctx, list(pool),
+                    after_min=e1,
+                    from_name=nm1,
+                    from_pt=pt1,
+                    day_num=day_num,
+                    # Leave the ride onward to the block that already waits.
+                    window_end=s2 - 15,
+                )
+                if planted is not None:
+                    break
+            if planted is None:
+                break
+            work = planted
+        return self._sort_items_by_time(work)
+
     def _last_content_anchor(
         self, items: List[Any],
     ) -> Tuple[Optional[int], str, Optional[Tuple[float, float]]]:
@@ -31025,6 +31286,8 @@ class PlanService:
             rk = poi_trip_repeat_key(nm)
             if rk and rk in used_keys:
                 continue
+            if self._plant_poi_off_profile(poi, context):
+                continue
             kind = _timeline_satellite_kind(nm)
             if kind and not still_sat:
                 continue
@@ -31061,6 +31324,11 @@ class PlanService:
             start_vis = after_min + hop_guess
             if win and not (win[0] <= start_vis < win[1] - 15):
                 continue
+            # FIX #335: the Excel floor decides the visit, so a POI that no
+            # longer fits the window is the next candidate's turn — not a
+            # 30 min tick-box and not the end of the planting pass.
+            if start_vis + self._plant_visit_minutes(poi) > window_end:
+                continue
             pick = poi
             break
         if pick is None:
@@ -31082,36 +31350,19 @@ class PlanService:
         else:
             hop = max(8, int(round(honest / 30.0 * 60)) + 5)
             mode, src = TransitMode.CAR, "estimated_road"
-        try:
-            t_min = int(pick.get("time_min") or 40)
-        except (TypeError, ValueError):
-            t_min = 40
-        try:
-            t_max = int(pick.get("time_max") or 0)
-        except (TypeError, ValueError):
-            t_max = 0
-        visit = t_min if t_min > 0 else 40
-        if t_max > 0:
-            visit = min(visit, t_max)
-        visit = max(20, min(visit, 75))
-        if after_min + hop + visit > window_end:
-            visit = window_end - after_min - hop
-        if visit < 20:
+        # FIX #335: the Excel floor is the whole point of the column. A stop
+        # worth 90 min is not worth planting for 30 (client J1 D3: "Loopy's
+        # World tylko 30 min – to atrakcja która może być spokojnie na 90").
+        visit = self._plant_visit_minutes(pick)
+        if visit < 20 or after_min + hop + visit > window_end:
             return None
         hop_st = after_min
         hop_en = hop_st + hop
         vis_en = hop_en + visit
         try:
-            attr = AttractionItem.model_construct(
-                type=ItemType.ATTRACTION,
-                poi_id=str(pick.get("id") or ""),
-                name=nm,
-                description_short="",
-                start_time=minutes_to_time(hop_en),
-                end_time=minutes_to_time(vis_en),
-                duration_min=visit,
-                lat=lat,
-                lng=lng,
+            attr = self._planted_attraction_item(
+                pick, context, minutes_to_time(hop_en),
+                minutes_to_time(vis_en), visit, lat, lng,
             )
             leg = TransitItem(
                 type=ItemType.TRANSIT,
@@ -31135,6 +31386,93 @@ class PlanService:
         out.append(attr)
         return self._sort_items_by_time(out)
 
+    @staticmethod
+    def _plant_visit_minutes(poi: Dict[str, Any]) -> int:
+        """FIX #335: how long the Excel says this stop is worth."""
+        try:
+            t_min = int(poi.get("time_min") or 40)
+        except (TypeError, ValueError):
+            t_min = 40
+        try:
+            t_max = int(poi.get("time_max") or 0)
+        except (TypeError, ValueError):
+            t_max = 0
+        visit = t_min if t_min > 0 else 40
+        if t_max > 0:
+            visit = min(visit, t_max)
+        return max(20, min(visit, 120))
+
+    def _plant_poi_off_profile(
+        self, poi: Dict[str, Any], context: Dict[str, Any],
+    ) -> bool:
+        """FIX #335: the planting pool is the whole city, so it needs the same
+        audience gate the selection pass uses.
+
+        Client J2: "Parkiem Mamuta i Pixel XL nie mogą występować dla pary z
+        planem nastawionym na kulturę". J3: Park Mamuta for friends. J8 D1:
+        Bobolandia for a couple. All three arrived through this pool, which
+        filtered on distance and a name denylist and nothing else.
+        """
+        from app.domain.scoring.family_fit import should_exclude_by_target_group
+
+        usr = dict(context.get("user") or {})
+        if not usr.get("target_group"):
+            usr["target_group"] = str(context.get("group_type") or "")
+        try:
+            if should_exclude_by_target_group(poi, usr):
+                return True
+        except Exception:
+            pass
+        prefs = {
+            str(p).strip().lower()
+            for p in (usr.get("preferences") or context.get("preferences") or [])
+            if p
+        }
+        if prefs & _KIDS_PREFERENCES:
+            return False
+        kind = str(poi.get("type_of_attraction") or "").strip().lower()
+        return bool(kind) and any(m in kind for m in _KIDS_TYPE_MARKERS)
+
+    def _planted_attraction_item(
+        self,
+        poi: Dict[str, Any],
+        context: Dict[str, Any],
+        start_time: str,
+        end_time: str,
+        visit: int,
+        lat: float,
+        lng: float,
+    ) -> Any:
+        """FIX #335: a planted stop explains itself like every other stop.
+
+        `_plant_afternoon_stop` used to hand-build the item with an empty
+        `description_short` and no `why_selected`, so the client got Kosmopark
+        and Dom Krasnali as two bare names (J8 D5). The canonical builder owns
+        the copy, the tickets, the parking and the reasons — use it, and only
+        override the clocks the planting pass decided.
+        """
+        usr = dict(context.get("user") or {})
+        group = str(
+            usr.get("target_group") or context.get("group_type") or ""
+        )
+        try:
+            item = self._generate_attraction_item(
+                poi, start_time, usr, group, dict(context),
+            )
+            return item.model_copy(update={
+                "end_time": end_time,
+                "duration_min": visit,
+                "lat": lat,
+                "lng": lng,
+            })
+        except Exception as exc:
+            print(
+                f"[FIX #335] canonical build failed for "
+                f"{poi.get('name') or poi.get('Name')!r} "
+                f"({type(exc).__name__}: {exc})"
+            )
+            raise
+
     def _plant_short_day_dinner(
         self,
         items: List[Any],
@@ -31148,11 +31486,19 @@ class PlanService:
     ) -> Optional[List[Any]]:
         dur = 45
         start = max(after_min + 10, 17 * 60 + 15)
-        if start - after_min >= 90:
-            start = after_min + 10
         if start + dur > window_end:
             start = max(after_min + 10, window_end - dur)
         if start + dur > window_end or start < after_min or start >= window_end:
+            return None
+        # FIX #335: nobody eats dinner at 12:07. This used to pull the meal
+        # back to `after_min + 10` whenever the day ended early, which is how
+        # J8 D7 got "kolacja" at 11:40 and J4 D4 at 12:07. An early-closing
+        # day needs an afternoon, not a mislabelled lunch.
+        if start < _EARLIEST_DINNER_MIN:
+            print(
+                f"[FIX #335] Day {day_num}: no dinner at "
+                f"{minutes_to_time(start)} — too early to call it that"
+            )
             return None
         try:
             dinner = DinnerBreakItem.model_construct(
