@@ -24,7 +24,8 @@ GENERIC_MEAL = (
 # comes from one of her Wrocław remarks.
 SLIVER_MAX_MIN = 12
 SLIVER_RUN = 3
-LONG_FREE_TIME_MIN = 100
+# FIX #333: 79 min after the Rynek (client J8 D1) is the same hole as 100.
+LONG_FREE_TIME_MIN = 75
 SHORT_DAY_END_MIN = 15 * 60
 SHORT_DAY_WINDOW_MIN = 18 * 60
 CAR_MAX_KMH = 60.0
@@ -52,6 +53,35 @@ HOP_KM_UNDER_PAD = 0.3
 HOP_KM_UNDER_RATIO = 1.4
 HOP_KM_OVER_PAD = 0.5
 HOP_KM_OVER_RATIO = 2.5
+
+# FIX #333: third client mail — the polyline, the profile and the narrative.
+# The front end draws `geometry`, so a leg labelled "from: Ogród Botaniczny"
+# that starts at the Rynek is a lie no name check can see (client J9, J10).
+GEOM_TOL_KM = 0.25
+# Client J8 D6: lunch 13:12–13:52, then "Kolacja" at 14:37. That is one meal.
+MEAL_SPACING_MIN = 150
+DINNER_EARLIEST_MIN = 16 * 60 + 30
+# Client J1 D3: Loopy's World for 30 min, and the Excel asks for 90.
+UNDER_TIME_MIN_RATIO = 0.6
+UNDER_TIME_MIN_FLOOR = 45
+
+# A grown-up party is not the audience for a soft-play room (client J2, J3,
+# J4, J8 D1: Park Mamuta, Pixel XL, Bobolandia for a couple / for friends).
+_ADULT_GROUPS = frozenset({
+    "couples", "couple", "para", "friends", "znajomi", "solo",
+    "seniors", "seniorzy", "senior", "adults",
+})
+_KIDS_TARGET_GROUPS = frozenset({
+    "family_kids", "kids", "family", "families", "rodzina", "z dziecmi",
+})
+_KIDS_TYPE_MARKERS = (
+    "kids_attraction", "kids attraction", "theme_park", "theme park",
+    "playground", "atrakcje dla dzieci", "rozrywka dla dzieci",
+)
+_KIDS_PREFS = frozenset({
+    "attractions_for_kids", "kids_attractions", "theme_parks",
+    "water_attractions", "atrakcje dla dzieci",
+})
 
 # A square, a bridge or a viewpoint is a stop on the way, not half a day.
 _LOOK_AROUND_TOKENS = frozenset({
@@ -180,6 +210,66 @@ def _coords(it: Any) -> Optional[Tuple[float, float]]:
 def _mode(it: Any) -> str:
     m = getattr(it, "mode", None)
     return str(getattr(m, "value", m) or "").lower()
+
+
+def _geom_ends(
+    it: Any,
+) -> Tuple[Optional[Tuple[float, float]], Optional[Tuple[float, float]]]:
+    """FIX #333: first and last point of a transit polyline as (lat, lng).
+
+    ``geometry`` is GeoJSON, so it carries [lng, lat]; ``geometry_latlng``
+    carries [lat, lng]. Both ship in the response, both get drawn.
+    """
+    for attr, lat_first in (("geometry_latlng", True), ("geometry", False)):
+        pts = getattr(it, attr, None)
+        if not pts:
+            continue
+        try:
+            a, b = pts[0], pts[-1]
+            if lat_first:
+                first = (float(a[0]), float(a[1]))
+                last = (float(b[0]), float(b[1]))
+            else:
+                first = (float(a[1]), float(a[0]))
+                last = (float(b[1]), float(b[0]))
+        except (TypeError, ValueError, IndexError):
+            continue
+        return first, last
+    return None, None
+
+
+def _is_hub_label(label: str, context: Optional[Dict[str, Any]]) -> bool:
+    """A hub label ("Wrocław centrum") names the city, not a POI on the day."""
+    folded = _fold(label)
+    if not folded:
+        return True
+    if "centrum" in folded or "center" in folded or "centre" in folded:
+        return True
+    city = str((context or {}).get("requested_city") or "").strip()
+    return bool(city) and _names_match(label, city)
+
+
+def _resolve_place(
+    label: str,
+    place_pts: Dict[str, Tuple[float, float]],
+) -> Optional[Tuple[float, float]]:
+    """Coordinates of the stop this label names, or None when ambiguous."""
+    folded = _fold(label)
+    if not folded:
+        return None
+    hit = place_pts.get(folded)
+    if hit:
+        return hit
+    fuzzy = [pt for nm, pt in place_pts.items() if _names_match(nm, label)]
+    if len(fuzzy) == 1:
+        return fuzzy[0]
+    return None
+
+
+def _yes(raw: Any) -> bool:
+    return str(raw or "").strip().lower() in {
+        "yes", "y", "true", "1", "tak", "t",
+    }
 
 
 def _day_num(day: Any, fallback: int) -> int:
@@ -917,6 +1007,188 @@ def audit_day(
                     f"({getattr(x, 'from_location', '') or '?'} → {to or '?'})",
                     {"declared_km": declared, "real_km": real_km},
                 ))
+
+    # --- geom_from_mismatch / geom_to_mismatch ---
+    # Client J9 D1: "transit from: Bastion Sakwowy rozpoczyna geometrię w
+    # 51.1106992, 17.0323662, czyli dokładnie z Rynku." The label is right,
+    # the drawn line is not, and no name check can see the difference.
+    place_pts: Dict[str, Tuple[float, float]] = {}
+    for _idx_s, _it_s, _nm_s in stops:
+        _pt_s = _coords(_it_s)
+        if _pt_s:
+            place_pts.setdefault(_fold(_nm_s), _pt_s)
+    for it in ordered:
+        if not _is_transit(it):
+            continue
+        g_from, g_to = _geom_ends(it)
+        for attr, gpt, code, side in (
+            ("from_location", g_from, "geom_from_mismatch", "startuje"),
+            ("to_location", g_to, "geom_to_mismatch", "kończy się"),
+        ):
+            label = (getattr(it, attr, "") or "").strip()
+            if gpt is None or not label or _is_hub_label(label, context):
+                continue
+            pt = _resolve_place(label, place_pts)
+            if pt is None:
+                continue
+            off = haversine_km(pt[0], pt[1], gpt[0], gpt[1])
+            if off <= GEOM_TOL_KM:
+                continue
+            near = [
+                nm for nm, p in place_pts.items()
+                if haversine_km(p[0], p[1], gpt[0], gpt[1]) <= GEOM_TOL_KM
+            ]
+            defects.append(Defect(
+                code, day,
+                f"Dzień {day}: przejazd {label} → "
+                f"{(getattr(it, 'to_location', '') or '?')} {side} "
+                f"{off:.2f} km od {label}"
+                + (f" (to współrzędne {near[0]})" if near else ""),
+                {"label": label, "off_km": off, "geom_point": gpt},
+            ))
+
+    # --- hop_to_vs_meal: the ride goes to Emily, the lunch says Renesans ---
+    # Client J4 D3: "system prowadzi z Hali Targowej do Emily. Italian
+    # Stories, ale lunch jest oznaczony jako Renesans. Restauracja".
+    for idx, it in enumerate(ordered):
+        if not _is_transit(it):
+            continue
+        to = (getattr(it, "to_location", "") or "").strip()
+        if not to or _fold(to) in GENERIC_MEAL or _is_hub_label(to, context):
+            continue
+        nxt = next((x for x in ordered[idx + 1:] if _stop_name(x)), None)
+        if nxt is None or not _is_meal(nxt):
+            continue
+        sug = _meal_name(nxt)
+        if not sug or _fold(sug) in GENERIC_MEAL:
+            continue
+        if not _names_match(to, sug):
+            defects.append(Defect(
+                "hop_to_vs_meal", day,
+                f"Dzień {day}: przejazd prowadzi do {to!r}, "
+                f"a posiłek jest podpisany {sug!r}",
+                {"to": to, "meal": sug},
+            ))
+
+    # --- empty_narrative: a stop the guest cannot read ---
+    # Client J8 D5: "Kosmopark i Dom Krasnali, oba z pustymi opisami i bez
+    # why_selected". A planted POI still has to explain itself.
+    for it in ordered:
+        if not _is_attr(it):
+            continue
+        nm = (getattr(it, "name", "") or "").strip()
+        desc = str(getattr(it, "description_short", "") or "").strip()
+        why = [
+            w for w in (getattr(it, "why_selected", None) or [])
+            if str(w).strip()
+        ]
+        if desc and why:
+            continue
+        missing = ", ".join(
+            x for x in (
+                "description_short" if not desc else "",
+                "why_selected" if not why else "",
+            ) if x
+        )
+        defects.append(Defect(
+            "empty_narrative", day,
+            f"Dzień {day}: {nm} bez {missing}",
+            {"name": nm, "missing": missing},
+        ))
+
+    # --- kids_only_for_adults / profile_mismatch ---
+    # Client J2: "Parkiem Mamuta i Pixel XL nie mogą występować dla pary z
+    # planem nastawionym na kulturę". J3: "Park Mamuta nie pasuje do grupy
+    # znajomych". J8 D1: "Bobolandia nie może pojawiać się dla pary".
+    grp_now = _fold((context or {}).get("group_type") or "")
+    prefs = {
+        _fold(p) for p in ((context or {}).get("preferences") or []) if p
+    }
+    culture_only = bool(prefs) and not (prefs & _KIDS_PREFS)
+    if grp_now in _ADULT_GROUPS:
+        for it in ordered:
+            if not _is_attr(it):
+                continue
+            nm = (getattr(it, "name", "") or "").strip()
+            entry = meta_map.get(_fold(nm)) or {}
+            tgs = {_fold(t) for t in (entry.get("target_groups") or []) if t}
+            kids_locked = bool(tgs) and tgs <= _KIDS_TARGET_GROUPS
+            if _yes(entry.get("kids_only")) or kids_locked:
+                defects.append(Defect(
+                    "kids_only_for_adults", day,
+                    f"Dzień {day}: {nm} jest tylko dla dzieci, "
+                    f"a grupa to {grp_now!r}",
+                    {"name": nm, "group": grp_now, "target_groups": sorted(tgs)},
+                ))
+                continue
+            kind = _fold(entry.get("type_of_attraction"))
+            if culture_only and kind and any(
+                m in kind for m in _KIDS_TYPE_MARKERS
+            ):
+                defects.append(Defect(
+                    "profile_mismatch", day,
+                    f"Dzień {day}: {nm} ({kind}) przy preferencjach "
+                    f"{sorted(prefs)}",
+                    {"name": nm, "type": kind, "preferences": sorted(prefs)},
+                ))
+
+    # --- under_time_min: a 90 min stop ticked off in 30 ---
+    # Client J1 D3: "Loopy's World tylko 30 min – to atrakcja która może być
+    # spokojnie na 90 min".
+    for it in ordered:
+        if not _is_attr(it):
+            continue
+        nm = (getattr(it, "name", "") or "").strip()
+        entry = meta_map.get(_fold(nm)) or {}
+        try:
+            t_min = int(entry.get("time_min") or 0)
+        except (TypeError, ValueError):
+            continue
+        if t_min < UNDER_TIME_MIN_FLOOR:
+            continue
+        sm, em = _clock(it)
+        span = int(getattr(it, "duration_min", 0) or 0)
+        if sm is not None and em is not None and em > sm:
+            span = em - sm
+        if span and span < t_min * UNDER_TIME_MIN_RATIO:
+            defects.append(Defect(
+                "under_time_min", day,
+                f"Dzień {day}: {nm} przez {span} min, a Excel prosi "
+                f"o min. {t_min} min",
+                {"name": nm, "minutes": span, "time_min": t_min},
+            ))
+
+    # --- meal_too_close / early_dinner ---
+    # Client J8 D6: lunch 13:12–13:52 in Oława, "Kolacja" at 14:37.
+    # J8 D7: "kolacja" already at 11:40–12:25.
+    lunch_end: Optional[int] = None
+    dinner_start: Optional[int] = None
+    for it in ordered:
+        tv_now = _tv(it)
+        sm, em = _clock(it)
+        if tv_now == ItemType.LUNCH_BREAK.value:
+            lunch_end = max(lunch_end or (em or sm or 0), em or sm or 0)
+        elif tv_now == ItemType.DINNER_BREAK.value and dinner_start is None:
+            dinner_start = sm
+    if lunch_end and dinner_start and dinner_start - lunch_end < MEAL_SPACING_MIN:
+        defects.append(Defect(
+            "meal_too_close", day,
+            f"Dzień {day}: lunch do {_fmt(lunch_end)}, a kolacja już "
+            f"o {_fmt(dinner_start)} ({dinner_start - lunch_end} min przerwy)",
+            {"lunch_end": lunch_end, "dinner_start": dinner_start},
+        ))
+    if (
+        dinner_start is not None
+        and dinner_start < DINNER_EARLIEST_MIN
+        and window_end is not None
+        and window_end - dinner_start >= 120
+    ):
+        defects.append(Defect(
+            "early_dinner", day,
+            f"Dzień {day}: kolacja o {_fmt(dinner_start)} "
+            f"przy oknie do {_fmt(window_end)}",
+            {"dinner_start": dinner_start, "window_end": window_end},
+        ))
 
     # --- closed_stop: Kolejkowo at 09:10, opens at 10:00 ---
     defects.extend(_audit_opening_hours(ordered, day=day, context=context))

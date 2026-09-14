@@ -77,6 +77,12 @@ def poi_meta():
                 "opening_hours": p.get("opening_hours"),
                 "opening_hours_seasonal": p.get("opening_hours_seasonal"),
                 "time_max": p.get("time_max"),
+                # FIX #333: duration floor, audience and category all come
+                # from the same Excel row the client edits.
+                "time_min": p.get("time_min"),
+                "kids_only": p.get("kids_only"),
+                "target_groups": p.get("target_groups"),
+                "type_of_attraction": p.get("type_of_attraction"),
             })
     return out
 
@@ -110,6 +116,7 @@ def test_wroclaw_json_client_invariants(num, poi_meta):
         "travel_style": payload.get("travel_style"),
         "group_type": (payload.get("group") or {}).get("type"),
         "children_age": (payload.get("group") or {}).get("children_age"),
+        "preferences": payload.get("preferences") or [],
         "poi_meta": poi_meta,
     }
     try:
