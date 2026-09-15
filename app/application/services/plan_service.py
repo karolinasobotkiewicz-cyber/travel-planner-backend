@@ -20530,13 +20530,20 @@ class PlanService:
             new_dur = end_limit - st_m
             if tv == ItemType.TRANSIT.value and new_dur < 5:
                 continue
+            # FIX #338: for a visit the floor is what the Excel row asks, not a
+            # flat 20 min — a 60-min museum clamped to 23 min is a stop the
+            # guest cannot actually use.
+            floor = 20
+            if tv == ItemType.ATTRACTION.value:
+                floor = self._excel_visit_floor(it, context, default=20)
             if tv in (
                 ItemType.ATTRACTION.value, ItemType.LUNCH_BREAK.value,
                 ItemType.DINNER_BREAK.value,
-            ) and new_dur < 20:
+            ) and new_dur < floor:
                 print(
-                    f"[FIX #262] Day {day_num}: dropped truncated "
-                    f"{getattr(it, 'name', None) or tv} ({new_dur}min to day_end)"
+                    f"[FIX #338] Day {day_num}: dropped truncated "
+                    f"{getattr(it, 'name', None) or tv} "
+                    f"({new_dur}min to day_end, Excel asks {floor})"
                 )
                 continue
             try:
@@ -24075,6 +24082,7 @@ class PlanService:
     def _drop_items_after_day_end(
         self,
         items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
         *,
         day_num: int = 0,
     ) -> List[Any]:
@@ -24122,6 +24130,21 @@ class PlanService:
                 try:
                     en = time_to_minutes(en_raw)
                     if en > marker:
+                        # FIX #338: a visit squeezed by the marker below its
+                        # Excel minimum is not a visit. Ostrów Tumski lost 10 of
+                        # its 45 minutes here; the client would rather not see
+                        # it at all than see a stop she cannot use.
+                        if _is_timeline_attraction(it) and (
+                            marker - st
+                        ) < self._excel_visit_floor(it, context, default=1):
+                            print(
+                                f"[FIX #338] Day {day_num}: dropped "
+                                f"{getattr(it, 'name', '?')} — only "
+                                f"{marker - st} min before day_end "
+                                f"{minutes_to_time(marker)}"
+                            )
+                            dropped += 1
+                            continue
                         it = it.model_copy(update={
                             "end_time": minutes_to_time(marker),
                             "duration_min": max(1, marker - st),
@@ -24177,7 +24200,9 @@ class PlanService:
                             it = DayEndItem(time=minutes_to_time(limit))
                     snapped.append(it)
                 items = snapped
-        items = self._drop_items_after_day_end(items, day_num=day_num)
+        items = self._drop_items_after_day_end(
+            items, context, day_num=day_num,
+        )
         return self._drop_hops_not_to_next_stop(items, day_num=day_num)
 
     def _guard_trip_invariants(
@@ -24389,7 +24414,9 @@ class PlanService:
             except Exception:
                 pass
             try:
-                items = self._drop_items_after_day_end(items, day_num=day_num)
+                items = self._drop_items_after_day_end(
+                    items, ctx, day_num=day_num,
+                )
                 items = self._reconcile_day_end_marker(
                     items, ctx, day_num=day_num,
                 )
@@ -24579,6 +24606,13 @@ class PlanService:
                 items = self._respect_opening_hours(
                     items, ctx, day_num=day_num,
                 )
+                # FIX #338: dropping or sliding a stop for its Excel minimum
+                # orphans the leg that pointed at it (client J2 D1 got a hop
+                # from Most Tumski while standing on Rynek).
+                items = self._retarget_all_legs_to_prev_stop(
+                    items, day_num=day_num, context=ctx,
+                )
+                items = self._drop_hops_not_to_next_stop(items, day_num=day_num)
                 items = self._clip_free_time_overlapping_hops(items)
                 items = self._name_remaining_holes(items, ctx, day_num=day_num)
                 items = self._clip_free_time_overlapping_hops(items)
@@ -24632,6 +24666,12 @@ class PlanService:
             # The polyline is the last thing the front end draws, so it is the
             # last thing the guardian rewrites.
             try:
+                # FIX #338: the shape heal may still re-point a leg at a stop
+                # the opening-hours pass moved, so the labels are settled here
+                # — right before the geometry that has to agree with them.
+                items = self._retarget_all_legs_to_prev_stop(
+                    items, day_num=day_num, context=ctx,
+                )
                 items = self._seal_transit_geometry_to_timeline(
                     items, ctx, day_num=day_num,
                 )
@@ -31418,6 +31458,20 @@ class PlanService:
             visit = min(visit, t_max)
         return max(20, min(visit, 120))
 
+    @staticmethod
+    def _last_timed_end(items: List[Any], *, default: int = 0) -> int:
+        """The clock position the next block may start from."""
+        latest = default
+        for it in items or []:
+            raw = getattr(it, "end_time", None) or getattr(it, "time", None)
+            if not raw:
+                continue
+            try:
+                latest = max(latest, time_to_minutes(raw))
+            except Exception:
+                continue
+        return latest
+
     def _excel_visit_floor(
         self,
         item: Any,
@@ -32054,7 +32108,6 @@ class PlanService:
             if st >= open_min and en <= close_min:
                 out.append(it)
                 continue
-            new_st, new_en = max(st, open_min), min(en, close_min)
             # A later stop must not be pushed around by this repair.
             next_stop = None
             for nxt in ordered[idx + 1:]:
@@ -32068,15 +32121,25 @@ class PlanService:
                     except Exception:
                         next_stop = None
                     break
-            if next_stop is not None:
-                new_en = min(new_en, next_stop)
-            if new_en - new_st < min_visit:
+            # FIX #338: the client's rule — slide the visit earlier so it keeps
+            # its full length, and if the day cannot hold it, drop it. Clipping
+            # to the closing hour is what turned Hala Stulecia (Excel min. 60)
+            # into a 23-minute stop: "użytkownik dostaje rekomendację z której
+            # realnie nie skorzysta".
+            floor = self._excel_visit_floor(it, context, default=min_visit)
+            need = max(min_visit, min(en - st, floor))
+            earliest = max(open_min, self._last_timed_end(out, default=open_min))
+            latest_end = min(close_min, next_stop if next_stop else close_min)
+            new_st = max(st, earliest)
+            if new_st + need > latest_end:
+                new_st = earliest
+            new_en = min(latest_end, new_st + max(need, en - st))
+            if new_en - new_st < need:
                 print(
-                    f"[FIX #329] Day {day_num}: dropped "
-                    f"{getattr(it, 'name', '?')} — closed at "
-                    f"{getattr(it, 'start_time', '')} "
-                    f"(open {minutes_to_time(open_min)}–"
-                    f"{minutes_to_time(close_min)})"
+                    f"[FIX #338] Day {day_num}: dropped "
+                    f"{getattr(it, 'name', '?')} — only "
+                    f"{max(0, new_en - new_st)} min fit before closing "
+                    f"{minutes_to_time(close_min)}, Excel asks {need}"
                 )
                 continue
             print(
