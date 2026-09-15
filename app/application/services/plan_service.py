@@ -29699,7 +29699,15 @@ class PlanService:
                             kept_ft.append(pair)
                             continue
                         # FIX #275: do not plant leftovers into the afternoon tail.
-                        if _fst >= _cend_inj - 2 or _fst >= 15 * 60 + 30:
+                        if _fst >= _cend_inj - 2:
+                            continue
+                        # FIX #340: past 15:30 the pass used to give up on every
+                        # hole. A block over the client's 60-min ceiling is not a
+                        # leftover — "fajnie jakby najpierw silnik próbował
+                        # sensownie zagospodarować ten czas".
+                        if _fst >= 15 * 60 + 30 and int(
+                            getattr(pair[1], "duration_min", 0) or 0
+                        ) <= _MIDDAY_GAP_MIN:
                             continue
                         kept_ft.append(pair)
                     ft_blocks = kept_ft
