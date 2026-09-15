@@ -11849,14 +11849,11 @@ class PlanService:
     ) -> Any:
         """FIX #279: force a drawable polyline onto a transit (ORS optional)."""
         geom, gll = _straight_route_geometry(lat1, lng1, lat2, lng2)
+        mode_str = str(getattr(it, "mode", "") or "").lower()
+        walking = "walk" in mode_str or "foot" in mode_str
         src = str(getattr(it, "routing_source", None) or "estimated_road")
         if src.lower() == "haversine":
-            mode_str = str(getattr(it, "mode", "") or "").lower()
-            src = (
-                "estimated_walk"
-                if "walk" in mode_str or "foot" in mode_str
-                else "estimated_road"
-            )
+            src = "estimated_walk" if walking else "estimated_road"
         try:
             return it.model_copy(
                 update={
@@ -24613,7 +24610,6 @@ class PlanService:
                 items = self._retarget_all_legs_to_prev_stop(
                     items, day_num=day_num, context=ctx,
                 )
-                items = self._drop_hops_not_to_next_stop(items, day_num=day_num)
                 items = self._clip_free_time_overlapping_hops(items)
                 items = self._name_remaining_holes(items, ctx, day_num=day_num)
                 items = self._clip_free_time_overlapping_hops(items)
@@ -29586,6 +29582,112 @@ class PlanService:
             )
         return working
 
+    def _reconcile_meal_labels(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #341: a meal is called by the name of the place it happens in.
+
+        Client J4 D3 and J8 D4: the ride led to Emily. Italian Stories while
+        the meal was captioned "Renesans". The first suggestion is the venue
+        the guest is actually sent to, so the caption follows it.
+        """
+        from app.domain.validators.client_invariants import (
+            GENERIC_MEAL,
+            _names_match,
+        )
+
+        out: List[Any] = []
+        for it in items or []:
+            if _item_type_value(it) not in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            ):
+                out.append(it)
+                continue
+            venue = ""
+            for s in (getattr(it, "suggestions", None) or [])[:1]:
+                venue = (
+                    (s.get("name") if isinstance(s, dict) else
+                     getattr(s, "name", "")) or ""
+                ).strip()
+            label = (getattr(it, "label", None) or "").strip()
+            if not venue or not label:
+                out.append(it)
+                continue
+            if _fold_place_label(label) in GENERIC_MEAL or _names_match(
+                label, venue
+            ):
+                out.append(it)
+                continue
+            print(
+                f"[FIX #341] Day {day_num}: meal label {label!r} → {venue!r}"
+            )
+            try:
+                out.append(it.model_copy(update={"label": venue}))
+            except Exception:
+                out.append(it)
+        return out
+
+    def _hole_arrival_leg(
+        self,
+        ordered: List[Any],
+        hole_idx: int,
+        poi: Dict[str, Any],
+        hole_start: int,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Optional[Any], int]:
+        """FIX #341: the ride that gets the guest into a filled hole.
+
+        Returns the leg and how many minutes it eats. Without it the injected
+        stop begins on the hole's first minute and the plan claims the guest
+        teleported.
+        """
+        prev_name = ""
+        prev_pt = None
+        for j in range(hole_idx - 1, -1, -1):
+            it = ordered[j]
+            if not (_is_timeline_attraction(it) or self._occupied_stop_name(it)):
+                continue
+            prev_name = (getattr(it, "name", "") or "").strip()
+            try:
+                prev_pt = (
+                    float(getattr(it, "lat", None)),
+                    float(getattr(it, "lng", None)),
+                )
+            except (TypeError, ValueError):
+                prev_pt = None
+            break
+        try:
+            lat, lng = float(poi.get("lat")), float(poi.get("lng"))
+        except (TypeError, ValueError):
+            return None, 0
+        if not prev_name or prev_pt is None:
+            return None, 0
+        honest = round(
+            haversine_km(prev_pt[0], prev_pt[1], lat, lng) * 1.25, 3,
+        )
+        has_car = bool((context or {}).get("has_car", True))
+        if honest < 2.2 or not has_car:
+            hop = max(3, int(round(honest / 4.5 * 60)) + 2)
+            mode, src = TransitMode.WALK, "estimated_walk"
+        else:
+            hop = max(8, int(round(honest / 30.0 * 60)) + 5)
+            mode, src = TransitMode.CAR, "estimated_road"
+        leg = TransitItem(
+            type=ItemType.TRANSIT,
+            start_time=minutes_to_time(hole_start),
+            end_time=minutes_to_time(hole_start + hop),
+            duration_min=hop,
+            mode=mode,
+            from_location=prev_name,
+            to_location=poi.get("name") or poi.get("Name") or "",
+            distance_km=honest,
+            routing_source=src,
+        )
+        return leg, hop
+
     def _inject_attraction_into_free_time(
         self,
         items: List[Any],
@@ -30230,18 +30332,36 @@ class PlanService:
         ranked.sort(key=lambda x: -x[0])
         visit = None
         best = None
+        leg = None
+        vis_st = ft_st
+        vis_span = span
         for _sc, cand in ranked[:24]:
+            # FIX #341: the guest has to get there. This pass used to drop the
+            # stop straight onto the first minute of the hole with no ride in
+            # front of it, which the auditor reads as `missing_hop` (client J3
+            # D2: "CityPaintball startuje o 10:23 bez dojazdu").
+            try:
+                hop_leg, hop_min = self._hole_arrival_leg(
+                    ordered_ft, idx, cand, ft_st, context,
+                )
+            except Exception:
+                hop_leg, hop_min = None, 0
+            cand_st = ft_st + hop_min
+            cand_span = min(span, ft_en - cand_st)
+            if cand_span < self._plant_visit_minutes(cand):
+                continue
             try:
                 fresh = self._generate_attraction_item(
-                    cand, minutes_to_time(ft_st), user,
+                    cand, minutes_to_time(cand_st), user,
                     user.get("target_group", "solo"), context, None,
                 )
                 visit = fresh.model_copy(update={
-                    "start_time": minutes_to_time(ft_st),
-                    "end_time": minutes_to_time(ft_st + span),
-                    "duration_min": span,
+                    "start_time": minutes_to_time(cand_st),
+                    "end_time": minutes_to_time(cand_st + cand_span),
+                    "duration_min": cand_span,
                 })
-                best = cand
+                best, leg = cand, hop_leg
+                vis_st, vis_span = cand_st, cand_span
                 break
             except Exception:
                 continue
@@ -30250,16 +30370,19 @@ class PlanService:
         out = list(items)
         # Shrink / drop the free_time block we consumed.
         try:
-            if ft_en - (ft_st + span) >= 15:
+            if ft_en - (vis_st + vis_span) >= 15:
                 out[idx] = ft.model_copy(update={
-                    "start_time": minutes_to_time(ft_st + span),
-                    "duration_min": ft_en - (ft_st + span),
+                    "start_time": minutes_to_time(vis_st + vis_span),
+                    "duration_min": ft_en - (vis_st + vis_span),
                 })
                 out.insert(idx, visit)
             else:
                 out[idx] = visit
+            if leg is not None:
+                out.insert(idx, leg)
         except Exception:
             return items
+        span = vis_span
         print(
             f"[FIX #262] Day {day_num}: injected {best.get('name')} into "
             f"free_time ({span}min)"

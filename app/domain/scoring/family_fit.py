@@ -349,6 +349,25 @@ def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
             print(f"[DEBUG TARGET #{check_id}] -> ALLOW (family_kids + general POI {tg})")
             return False
 
+    # FIX #341: the Excel audience column is written from a marketing angle —
+    # Ogród Japoński, Pergola and Wyspa Słodowa are listed for couples and
+    # friends only, so a solo guest whose quiz asked for nature + relaxation
+    # was left with 100-minute holes in a ten-hour day. When the POI's own
+    # category is exactly what the guest asked for, the audience column stops
+    # being a hard gate. Every kids gate above has already run, so this cannot
+    # re-open Park Mamuta or Bobolandia for adults.
+    prefs_now = {_safe_str(p) for p in (user.get("preferences") or [])}
+    poi_types = {
+        t for t in _safe_str(poi.get("type_of_attraction"))
+        .replace(";", ",").split(",") if t
+    }
+    if prefs_now and poi_types & prefs_now:
+        print(
+            f"[DEBUG TARGET #{check_id}] -> ALLOW (FIX#341 type {poi_types} "
+            f"matches quiz {sorted(prefs_now)} despite target_groups={tg})"
+        )
+        return False
+
     # Jeśli user_group NIE jest w target_groups POI -> EXCLUDE
     if user_group not in tg:
         print(f"[DEBUG TARGET #{check_id}] -> EXCLUDE (user_group={user_group} NOT IN target_groups={tg})")
