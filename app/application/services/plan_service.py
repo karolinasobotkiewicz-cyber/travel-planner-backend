@@ -25578,12 +25578,7 @@ class PlanService:
                     continue
                 fl = _item_clock_floor_min(nxt)
                 # FIX #322: dinner never comes earlier than 17:30.
-                # Lunch 40–90 min hole may sit at 11:30.
-                if (
-                    _item_type_value(nxt) == ItemType.LUNCH_BREAK.value
-                    and 40 <= dur <= 90
-                ):
-                    fl = min(fl, 11 * 60 + 30)
+                # FIX #342: lunch never comes earlier than 12:00 (client J3 D2).
                 cut = min(cut, max(0, st_m - fl))
             if cut < 10:
                 continue
@@ -30944,6 +30939,11 @@ class PlanService:
             )
         except Exception:
             pass
+        try:
+            work = self._push_lunch_not_before_noon(work, day_num=day_num)
+            work = self._remove_timeline_overlaps(work, day_num)
+        except Exception:
+            pass
         return self._sort_items_by_time(work)
 
     def _drop_idle_morning_padding(
@@ -35644,6 +35644,11 @@ class PlanService:
             working = self._reconcile_day_end_marker(
                 working, context, day_num=day_num,
             )
+        except Exception:
+            pass
+        try:
+            working = self._push_lunch_not_before_noon(working, day_num=day_num)
+            working = self._remove_timeline_overlaps(working, day_num)
         except Exception:
             pass
         return working

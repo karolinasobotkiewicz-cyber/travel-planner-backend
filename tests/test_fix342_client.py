@@ -84,6 +84,39 @@ def test_lunch_before_noon_is_pushed_to_12():
     assert lunches[0].start_time == "12:00"
 
 
+def test_eat_free_time_does_not_pull_lunch_before_noon():
+    svc = _svc()
+    items = [
+        DayStartItem(time="09:00"),
+        _attr("Bastion Sakwowy", "10:19", "10:40", dur=21),
+        FreeTimeItem.model_construct(
+            type=ItemType.FREE_TIME,
+            start_time="10:40",
+            end_time="11:33",
+            duration_min=53,
+        ),
+        LunchBreakItem.model_construct(
+            type=ItemType.LUNCH_BREAK,
+            start_time="12:00",
+            end_time="12:45",
+            duration_min=45,
+            label="VaffaNapoli",
+            suggestions=[],
+        ),
+        DayEndItem(time="18:00"),
+    ]
+    out = svc._eat_long_free_time_before_attraction(
+        items, day_num=4, min_ft=40, keep=10, pull_lunch=True,
+    )
+    lunches = [
+        it for it in out
+        if str(getattr(getattr(it, "type", None), "value", getattr(it, "type", "")))
+        == "lunch_break"
+    ]
+    assert lunches
+    assert time_to_minutes(lunches[0].start_time) >= 12 * 60
+
+
 def test_satellite_lunch_after_hub_return_is_dropped():
     svc = _svc()
     items = [

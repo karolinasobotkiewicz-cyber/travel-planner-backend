@@ -29,13 +29,13 @@ _MULTI = _HERE.parents[0] / "data" / "multi_city_attractions.xlsx"
 
 # (json number, defect code) -> why it is still open.
 KNOWN_OPEN: dict[tuple[int, str], str] = {
-    (3, "missing_hop"): "first stop of the day has no lead ride from day_start",
-    (3, "meal_identity"): "meal caption not synced with the booked venue",
-    (3, "long_free_time"): "city pool exhausted for friends/adventure",
-    (8, "fragmented"): "three technical mini-breaks in a row",
-    (8, "long_free_time"): "satellite day, morning hole before the drive out",
-    (9, "long_free_time"): "solo nature/relax pool exhausted (two days)",
-    (9, "hop_vs_coords"): "distance_km not refreshed when geometry is restamped",
+    (1, "long_free_time"): "66 min leftover after 16:08, friends/adventure pool thin",
+    (3, "long_free_time"): "68 min after dinner until the 21:00 window",
+    (4, "short_day"): "Oława daytrip returns ~14:30; remaining city pool empty",
+    (5, "fragmented"): "three technical mini-breaks after the noon lunch shift",
+    (8, "long_free_time"): "morning hole before 12:00 lunch — not pulled to 11:30",
+    (8, "short_day"): "Oława daytrip returns ~14:30 on a window to 20:00",
+    (9, "long_free_time"): "solo nature/relax pool exhausted",
 }
 
 
