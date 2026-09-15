@@ -598,6 +598,45 @@ def _timeline_satellite_kind(name: str) -> Optional[str]:
     return None
 
 
+# Named day-trip drives: the 30 km/h plant formula turns Oława into 72 min;
+# ORS leftovers turn it into 8 min. Both are wrong (client J8 D6 / J4 D4).
+_NAMED_HOP_CAPS = (
+    ("wojsławic", 50, 60), ("wojslawic", 50, 60),
+    ("niemcza", 50, 60),
+    ("dolina tatarska", 50, 60),
+    ("ząbkowic", 55, 70), ("zabkowic", 55, 70),
+    ("frankenstein", 55, 70),
+    ("brzegu", 40, 55),
+    ("sochaczew", 45, 60),
+    ("żelazowa", 45, 60), ("zelazowa", 45, 60),
+    ("lednick", 40, 55),
+    ("dziekanowic", 40, 55),
+    ("wiśnicz", 50, 70), ("wisnicz", 50, 70),
+    ("flyspot", 25, 40),
+    ("fly spot", 25, 40),
+    ("aerodynamicz", 25, 40),
+    ("wena", 30, 45),
+    ("oław", 30, 45), ("olaw", 30, 45),
+    ("topacz", 20, 30),
+)
+
+
+def _capped_named_hop_minutes(
+    from_name: str,
+    to_name: str,
+    km: float,
+    fallback: int,
+) -> int:
+    blob = f"{from_name or ''} {to_name or ''}".lower()
+    named = next(((lo, hi) for m, lo, hi in _NAMED_HOP_CAPS if m in blob), None)
+    if not named:
+        return fallback
+    if not (km >= 12 or km <= 0.05):
+        return fallback
+    lo, hi = named
+    return min(hi, max(lo, int(fallback or 0)))
+
+
 def _day_items_satellite_kind(items: list) -> Optional[str]:
     counts: Dict[str, int] = {}
     for it in items or []:
@@ -11991,11 +12030,14 @@ class PlanService:
             folded = _fold_place_label(label)
             if not folded:
                 return None
+            # FIX #342: hub labels first. "Wrocław centrum" after an Oława
+            # return was matching leftover satellite coords, so the next hop
+            # claimed 31 km / 67 min into Muzeum Narodowe across the street.
+            if _is_hub_place_label(label) and city_pt:
+                return city_pt
             hit = pts.get(folded)
             if hit:
                 return hit
-            if _is_hub_place_label(label) and city_pt:
-                return city_pt
             fuzzy = [
                 pt for nm, pt in pts.items()
                 if min(len(nm), len(folded)) >= 8
@@ -12147,27 +12189,9 @@ class PlanService:
             "wiśnicz", "wisnicz",
         )
         blob = f"{frm} {to}".lower()
-        _HOP_CAPS = (
-            ("wojsławice", 50, 60), ("wojslawice", 50, 60),
-            ("niemcza", 50, 60),
-            ("dolina tatarska", 50, 60),
-            ("ząbkowice", 55, 70), ("zabkowice", 55, 70),
-            ("frankenstein", 55, 70),
-            ("brzegu", 40, 55),
-            ("sochaczew", 45, 60),
-            ("żelazowa", 45, 60), ("zelazowa", 45, 60),
-            ("lednick", 40, 55),
-            ("dziekanowic", 40, 55),
-            ("wiśnicz", 50, 70), ("wisnicz", 50, 70),
-            ("flyspot", 25, 40),
-            ("fly spot", 25, 40),
-            ("aerodynamicz", 25, 40),
-            ("wena", 30, 45),
-        )
-        named = next(((lo, hi) for m, lo, hi in _HOP_CAPS if m in blob), None)
+        named = next(((lo, hi) for m, lo, hi in _NAMED_HOP_CAPS if m in blob), None)
         if named and (item_dist >= 12 or item_dist <= 0.05):
-            lo, hi = named
-            need = min(hi, max(lo, cur if cur >= lo else lo))
+            need = _capped_named_hop_minutes(frm, to, item_dist, cur)
             st = time_to_minutes(getattr(it, "start_time", "09:00") or "09:00")
             try:
                 en_m = time_to_minutes(getattr(it, "end_time", None) or "")
@@ -21175,7 +21199,7 @@ class PlanService:
                     "end_time": minutes_to_time(en + shift),
                     "duration_min": (en + shift) - floor,
                 }))
-                print(f"[FIX #263] Day {day_num}: lunch pushed to 12:00")
+                print(f"[FIX #342] Day {day_num}: lunch pushed to 12:00 (was before noon)")
             except Exception:
                 out.append(it)
         return out
@@ -26845,8 +26869,21 @@ class PlanService:
                     if check_fn(blob) or _timeline_satellite_kind(blob) == kind:
                         continue
                 cleaned.append(it)
-            return cleaned
-        ctx = {**context, "complete_daytrip": True, "allow_soft_profile": True}
+            # FIX #342: dropping the only remaining stop left J8 D5 as
+            # day_start 11:30 + day_end 09:00. An empty day is worse than a
+            # repeat region — complete the cluster instead.
+            if any(_is_timeline_attraction(x) for x in cleaned):
+                return cleaned
+            print(
+                f"[FIX #342] Day {day_num}: keeping {kind} — drop would "
+                f"empty the day"
+            )
+        ctx = {
+            **context,
+            "complete_daytrip": True,
+            "allow_soft_profile": True,
+            "locked_satellite_kind": kind,
+        }
         working = list(items)
 
         def _in_kind319(nm: str) -> bool:
@@ -26950,7 +26987,15 @@ class PlanService:
                         if only_l in frm or only_l in to:
                             continue
                     cleaned.append(it)
-                return cleaned
+                # FIX #342: J8 D5 — keep_one_region already dropped the city
+                # stops, so this drop left a blank day. Keep the lonely
+                # satellite rather than send the guest home at 09:00.
+                if any(_is_timeline_attraction(x) for x in cleaned):
+                    return cleaned
+                print(
+                    f"[FIX #342] Day {day_num}: keeping lonely {kind} "
+                    f"{only_nm} — drop would empty the day"
+                )
         return working
 
     def _ensure_far_excursion_return(
@@ -27283,8 +27328,20 @@ class PlanService:
             elif (not is_walk) and km >= 0.8:
                 expected_car = max(8, int(round(km / 50.0 * 60)) + 6)
                 clock = span if span > 0 else dur
+                frm = getattr(it, "from_location", "") or ""
+                to = getattr(it, "to_location", "") or ""
+                named_need = _capped_named_hop_minutes(frm, to, km, clock or dur)
+                if named_need != (clock or dur):
+                    expected_car = named_need
+                    clock = named_need
+                    dur = named_need
+                    upd = {
+                        "duration_min": named_need,
+                        "end_time": minutes_to_time(st + named_need),
+                        "routing_source": "estimated_road",
+                    }
                 # FIX #306: 38–54 km in 12 min timestamps (Kampinos / Granica).
-                if km >= 8:
+                if km >= 8 and "duration_min" not in upd:
                     expected_car = max(expected_car, max(dur, int(round(km / 50.0 * 60)) + 8))
                 if clock < expected_car * 0.50 or dur < expected_car * 0.50 or (
                     km >= 8 and clock <= 15
@@ -29644,10 +29701,24 @@ class PlanService:
         stop begins on the hole's first minute and the plan claims the guest
         teleported.
         """
+        from app.infrastructure.routing.haversine import haversine_km
         prev_name = ""
         prev_pt = None
+        req_city = str((context or {}).get("requested_city") or "")
         for j in range(hole_idx - 1, -1, -1):
             it = ordered[j]
+            # FIX #342: a hub return is the origin, even if the last
+            # attraction was in Oława. Without this, Wrocław centrum →
+            # Muzeum Narodowe inherited 31 km / 67 min from the excursion.
+            if _item_type_value(it) == ItemType.TRANSIT.value:
+                to = (getattr(it, "to_location", "") or "").strip()
+                if to and _is_hub_place_label(to):
+                    prev_name = to
+                    prev_pt = _city_center_coords(to) or _city_center_coords(
+                        req_city
+                    )
+                    break
+                continue
             if not (_is_timeline_attraction(it) or self._occupied_stop_name(it)):
                 continue
             prev_name = (getattr(it, "name", "") or "").strip()
@@ -29674,6 +29745,8 @@ class PlanService:
             mode, src = TransitMode.WALK, "estimated_walk"
         else:
             hop = max(8, int(round(honest / 30.0 * 60)) + 5)
+            dest = poi.get("name") or poi.get("Name") or ""
+            hop = _capped_named_hop_minutes(prev_name, dest, honest, hop)
             mode, src = TransitMode.CAR, "estimated_road"
         leg = TransitItem(
             type=ItemType.TRANSIT,
@@ -29950,6 +30023,30 @@ class PlanService:
             # (json4 D2 swallowed Ząbkowice and D5 lost Niemcza).
             if context.get("city_holes_only") and cand_kind:
                 continue
+            # FIX #342: a city day does not grow a Ząbkowice stop in a hole.
+            # Mixing geographies made keep_one_region drop Wrocław and
+            # thin_daytrip drop Ząbkowice, leaving J8 D5 empty.
+            if (
+                cand_kind
+                and not context.get("complete_daytrip")
+                and not context.get("allow_new_satellite")
+            ):
+                already_this = any(
+                    _is_timeline_attraction(it)
+                    and _timeline_satellite_kind(
+                        getattr(it, "name", "") or ""
+                    ) == cand_kind
+                    for it in items
+                )
+                has_city = any(
+                    _is_timeline_attraction(it)
+                    and not _timeline_satellite_kind(
+                        getattr(it, "name", "") or ""
+                    )
+                    for it in items
+                )
+                if has_city and not already_this:
+                    continue
             if context.get("city_holes_only"):
                 try:
                     from app.domain.planner.engine import (
@@ -30752,6 +30849,15 @@ class PlanService:
             work, ctx, day_num=day_num,
         )
         try:
+            # FIX #342: afternoon plant can add Oława/Topacz after the first
+            # return pass, so a city day that filled a 130 min hole must still
+            # drive home (client J4 D4).
+            work = self._ensure_far_excursion_return(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
             work = self._accept_if_not_worse(
                 work,
                 self._fill_naked_midday_gaps(work, ctx, day_num=day_num),
@@ -31108,6 +31214,18 @@ class PlanService:
                 day_num=day_num,
                 window_end=window_end,
             )
+            if planted is None and not self._hub_return_end(work):
+                # FIX #342: city pool is empty, try a nearby town rather than
+                # a 130 min "czas dla siebie" (client J4 D4).
+                sat_ctx = {**ctx, "allow_new_satellite": True}
+                planted = self._plant_afternoon_stop(
+                    work, sat_ctx, pool,
+                    after_min=max(content_end, self._hub_return_end(work) or 0),
+                    from_name=last_nm,
+                    from_pt=last_pt,
+                    day_num=day_num,
+                    window_end=window_end,
+                )
             if planted is None:
                 break
             work = planted
@@ -31414,11 +31532,12 @@ class PlanService:
                 if to and _is_hub_place_label(to):
                     city = to
             name = city or name
-            center = _city_center_coords(city) or _city_center_coords(
-                (items and None) or ""
-            )
+            center = _city_center_coords(city)
             if center:
                 pt = center
+            # The guest is home: afternoon planting starts after the return,
+            # not after the last castle in Ząbkowice.
+            end = hub_en
         return end, name, pt
 
     def _hub_return_end(self, items: List[Any]) -> Optional[int]:
@@ -31486,7 +31605,7 @@ class PlanService:
             if self._plant_poi_off_profile(poi, context):
                 continue
             kind = _timeline_satellite_kind(nm)
-            if kind and not still_sat:
+            if kind and not still_sat and not context.get("allow_new_satellite"):
                 continue
             if still_sat and kind is None:
                 continue
@@ -31496,7 +31615,11 @@ class PlanService:
                 continue
             if from_pt:
                 far = haversine_km(from_pt[0], from_pt[1], lat, lng)
-                if far > (12.0 if still_sat else 6.0):
+                cap = 12.0 if still_sat else 6.0
+                if context.get("allow_new_satellite"):
+                    # Oława / Topacz are an afternoon; Ząbkowice is a whole day.
+                    cap = 35.0
+                if far > cap:
                     continue
             if any(
                 k in folded for k in (
@@ -31526,6 +31649,9 @@ class PlanService:
             # 30 min tick-box and not the end of the planting pass.
             if start_vis + self._plant_visit_minutes(poi) > window_end:
                 continue
+            if context.get("allow_new_satellite") and kind:
+                if start_vis + self._plant_visit_minutes(poi) + hop_guess > window_end:
+                    continue
             pick = poi
             break
         if pick is None:
@@ -31546,6 +31672,7 @@ class PlanService:
             mode, src = TransitMode.WALK, "estimated_walk"
         else:
             hop = max(8, int(round(honest / 30.0 * 60)) + 5)
+            hop = _capped_named_hop_minutes(from_name, nm, honest, hop)
             mode, src = TransitMode.CAR, "estimated_road"
         # FIX #335: the Excel floor is the whole point of the column. A stop
         # worth 90 min is not worth planting for 30 (client J1 D3: "Loopy's
@@ -31831,6 +31958,8 @@ class PlanService:
                     mode, src = TransitMode.WALK, "estimated_walk"
                 else:
                     need = max(8, int(round(honest / 30.0 * 60)) + 5)
+                    frm = getattr(leg, "from_location", "") or ""
+                    need = _capped_named_hop_minutes(frm, nb, honest, need)
                     mode, src = TransitMode.CAR, "estimated_road"
                 try:
                     st = time_to_minutes(getattr(leg, "start_time", None) or "")
@@ -34933,20 +35062,42 @@ class PlanService:
         *,
         day_num: int = 0,
     ) -> List[Any]:
-        """FIX #310: no Brzeg / Ząbkowice lunch on a Wrocław-only day."""
+        """FIX #310/#342: no Brzeg / Ząbkowice lunch on a Wrocław-only day.
+
+        A day that *visited* Ząbkowice still eats in Wrocław once the return
+        hop has landed (client J8 D5: Mała Grecja after "Wrocław centrum").
+        """
         if not items:
             return items
         sat_kinds = {"zabkowice", "brzeg", "olawa", "wojslawice"}
-        day_has_sat_attr = False
-        for it in items:
-            if not _is_timeline_attraction(it):
-                continue
-            kind = _timeline_satellite_kind(getattr(it, "name", "") or "")
-            if kind in sat_kinds:
-                day_has_sat_attr = True
-                break
-        if day_has_sat_attr:
-            return items
+        ordered = self._sort_items_by_time(list(items))
+        hub_home_from: Optional[int] = None
+        last_sat_end: Optional[int] = None
+        for it in ordered:
+            try:
+                en = time_to_minutes(
+                    getattr(it, "end_time", None)
+                    or getattr(it, "time", None)
+                    or ""
+                )
+            except Exception:
+                en = None
+            if _is_timeline_attraction(it):
+                kind = _timeline_satellite_kind(getattr(it, "name", "") or "")
+                if kind in sat_kinds and en is not None:
+                    last_sat_end = en
+            if (
+                _item_type_value(it) == ItemType.TRANSIT.value
+                and _is_hub_place_label(
+                    getattr(it, "to_location", "") or ""
+                )
+                and en is not None
+                and (last_sat_end is None or en >= last_sat_end)
+            ):
+                hub_home_from = en
+
+        day_has_sat_attr = last_sat_end is not None
+        # City-only days always strip. Satellite days strip only after return.
 
         def _blob_is_sat(text: str) -> bool:
             b = (text or "").lower()
@@ -34977,6 +35128,23 @@ class PlanService:
             if _item_type_value(it) not in meal_types:
                 out.append(it)
                 continue
+            try:
+                meal_st = time_to_minutes(
+                    getattr(it, "start_time", None) or ""
+                )
+            except Exception:
+                meal_st = None
+            guest_home = (
+                not day_has_sat_attr
+                or (
+                    hub_home_from is not None
+                    and meal_st is not None
+                    and meal_st >= hub_home_from - 2
+                )
+            )
+            if not guest_home:
+                out.append(it)
+                continue
             sugs = list(getattr(it, "suggestions", None) or [])
             kept = [s for s in sugs if not _sug_is_sat(s)]
             meal_blob = " ".join(
@@ -34987,8 +35155,8 @@ class PlanService:
             all_sugs_sat = bool(sugs) and not kept
             if all_sugs_sat or (meal_itself_sat and not kept):
                 print(
-                    f"[FIX #310] Day {day_num}: dropped satellite "
-                    f"{_item_type_value(it)}"
+                    f"[FIX #342] Day {day_num}: dropped satellite "
+                    f"{_item_type_value(it)} after hub return"
                 )
                 continue
             if kept != sugs:
@@ -35089,6 +35257,19 @@ class PlanService:
                             last_pt = _GLIWICE_DEFAULT_COORDS
                     except Exception:
                         last_pt = _GLIWICE_DEFAULT_COORDS
+                out.append(it)
+                continue
+            if _item_type_value(it) == ItemType.TRANSIT.value:
+                to = (getattr(it, "to_location", "") or "").strip()
+                if to and _is_hub_place_label(to):
+                    # FIX #342: guest is back. Next meal is a city meal, not
+                    # Mała Grecja in Ząbkowice (client J8 D5).
+                    cc = _city_center_coords(to) or _city_center_coords(
+                        str((context or {}).get("requested_city") or "")
+                    )
+                    if cc:
+                        last_pt = cc
+                        last_nm = to
                 out.append(it)
                 continue
             if _item_type_value(it) not in meal_types:

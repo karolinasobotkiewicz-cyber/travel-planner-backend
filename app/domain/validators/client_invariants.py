@@ -61,6 +61,8 @@ GEOM_TOL_KM = 0.25
 # Client J8 D6: lunch 13:12–13:52, then "Kolacja" at 14:37. That is one meal.
 MEAL_SPACING_MIN = 150
 DINNER_EARLIEST_MIN = 16 * 60 + 30
+# Client J3 D2: lunch at 11:00.
+LUNCH_EARLIEST_MIN = 12 * 60
 # Client J1 D3: Loopy's World for 30 min, and the Excel asks for 90.
 UNDER_TIME_MIN_RATIO = 0.6
 UNDER_TIME_MIN_FLOOR = 45
@@ -1198,6 +1200,20 @@ def audit_day(
             f"Dzień {day}: kolacja o {_fmt(dinner_start)} "
             f"przy oknie do {_fmt(window_end)}",
             {"dinner_start": dinner_start, "window_end": window_end},
+        ))
+    lunch_start = None
+    for it in ordered:
+        if _tv(it) != ItemType.LUNCH_BREAK.value:
+            continue
+        sm, _em = _clock(it)
+        lunch_start = sm
+        break
+    if lunch_start is not None and lunch_start < LUNCH_EARLIEST_MIN:
+        defects.append(Defect(
+            "early_lunch", day,
+            f"Dzień {day}: lunch o {_fmt(lunch_start)} "
+            f"(za wcześnie, min. {_fmt(LUNCH_EARLIEST_MIN)})",
+            {"lunch_start": lunch_start},
         ))
 
     # --- closed_stop: Kolejkowo at 09:10, opens at 10:00 ---
