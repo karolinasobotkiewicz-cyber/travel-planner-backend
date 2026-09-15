@@ -220,8 +220,9 @@ def _is_hub_place_label(name: Any) -> bool:
 # Client J8 D7: "kolacja" at 11:40. J4 D4: 12:07. That is a lunch with a
 # wrong label, so the planting pass refuses to plant one that early.
 _EARLIEST_DINNER_MIN = 16 * 60 + 30
-# A gap this long between two blocks is an afternoon, not a break.
-_MIDDAY_GAP_MIN = 90
+# A gap this long between two blocks is an afternoon, not a break. FIX #339:
+# the client set the ceiling for a single free block at 60 min.
+_MIDDAY_GAP_MIN = 60
 # Dropping the evening meal is a last resort, so it takes more than a long
 # afternoon: the client's cases were 178, 255 and 318 min of nothing. A dinner
 # two hours after the last museum is a normal day and stays put.
@@ -29797,6 +29798,12 @@ class PlanService:
             # quizzes for couples, friends and a solo guest (client J2–J8).
             if self._plant_poi_off_profile(poi, {**context, "user": user}):
                 continue
+            # FIX #338: the visit is stamped at exactly `span`, so a hole
+            # smaller than the Excel minimum cannot hold this stop. Loopy's
+            # World asks for 90 min and was being shown for 45 — "to nie jest
+            # atrakcja typu wpadnę na chwilę".
+            if self._plant_visit_minutes(poi) > span:
+                continue
             if _is_winter_plan_context(context) and any(k in pname for k in (
                 "ogród doświadczeń", "ogrod doswiadczen",
                 "wioski świata", "wioski swiata",
@@ -30589,8 +30596,11 @@ class PlanService:
         work = self._clip_free_time_overlapping_hops(work)
         work = self._rewrite_hop_origins(work, day_num=day_num)
         try:
+            # FIX #339: the client capped a single free block at 60 min, and
+            # asked that the engine try to use the time before it gives up —
+            # pulling the next stop earlier is the cheapest way to do that.
             work = self._pull_next_stop_over_large_gaps(
-                work, ctx, day_num=day_num, keep=20, min_gap=90,
+                work, ctx, day_num=day_num, keep=20, min_gap=60,
             )
         except Exception:
             pass

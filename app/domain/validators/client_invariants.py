@@ -24,8 +24,8 @@ GENERIC_MEAL = (
 # comes from one of her Wrocław remarks.
 SLIVER_MAX_MIN = 12
 SLIVER_RUN = 3
-# FIX #333: 79 min after the Rynek (client J8 D1) is the same hole as 100.
-LONG_FREE_TIME_MIN = 75
+# FIX #339: the client set the ceiling for a single free block at 60 min.
+LONG_FREE_TIME_MIN = 60
 SHORT_DAY_END_MIN = 15 * 60
 SHORT_DAY_WINDOW_MIN = 18 * 60
 CAR_MAX_KMH = 60.0
@@ -758,7 +758,7 @@ def audit_day(
     run_em: Optional[int] = None
 
     def _flush_ft_run() -> None:
-        if run_span >= LONG_FREE_TIME_MIN:
+        if run_span > LONG_FREE_TIME_MIN:
             defects.append(Defect(
                 "long_free_time", day,
                 f"Dzień {day}: free_time {run_span} min "
