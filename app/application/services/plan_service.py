@@ -31799,7 +31799,10 @@ class PlanService:
             # per-group name denylist and kids `type_of_attraction` all live
             # in `should_exclude_by_target_group` now, so the planting pass
             # cannot drift away from the selection pass again.
-            return bool(should_exclude_by_target_group(poi, usr))
+            if should_exclude_by_target_group(poi, usr):
+                return True
+            from app.domain.scoring.profile_poi_rules import should_deny_poi_for_profile
+            return bool(should_deny_poi_for_profile(poi, usr))
         except Exception:
             return False
 

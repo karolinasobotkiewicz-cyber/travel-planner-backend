@@ -82,8 +82,11 @@ _GROUP_POI_NAME_DENY: dict[str, tuple[str, ...]] = {
         "fabryka schindlera", "schindlera", "rynek główny", "rynek glowny",
         # FIX #231/#233 Kraków + Warszawa
         "kościół św. wojciecha", "sw. wojciecha", "bazylika mariacka",
-        "park decjusza", "kopiec krakusa", "aula leopoldina",
+        "park decjusza", "kopiec krakusa",
         "cmentarz powązkowski", "cmentarz powazkowski",
+        # FIX #343: a brewery is not a kids stop. Excel tags it friends/couples,
+        # and family_kids treats "friends" as an open audience.
+        "browar stu mostów", "browar stu mostow",
     ),
     "solo": (
         "pixel xl", "pixel", "centrum nauki kopernik",
@@ -155,6 +158,11 @@ def restaurant_hard_denied_for_group(restaurant: dict, user: dict) -> bool:
     # FIX #265: cocktail bars are wrong for family with kids (client: Le Barometre).
     if user_group == "family_kids" and any(
         k in rname for k in ("barometre", "cocktail", "drink & food", "drink and food")
+    ):
+        return True
+    # FIX #343: brewery tasting is not a family meal.
+    if user_group in ("family_kids", "family") and any(
+        k in rname for k in ("browar stu mostów", "browar stu mostow")
     ):
         return True
     target_groups = (
@@ -285,6 +293,11 @@ def should_exclude_by_target_group(poi: dict, user: dict) -> bool:
 
     # FIX #197: name-based denylist (Farma Wuja Toma/friends, Kopiec/seniors, …)
     poi_name = _safe_str(poi.get("name") or "")
+    # FIX #343: Aula Leopoldina is the same visit as Muzeum Uniwersytetu
+    # (same address). Keep the museum, never schedule the aula.
+    if "aula leopoldina" in poi_name or "leopoldina" in poi_name:
+        print(f"[DEBUG TARGET #{check_id}] -> EXCLUDE (FIX#343 Aula Leopoldina)")
+        return True
     for marker in _GROUP_POI_NAME_DENY.get(user_group, ()):
         if marker in poi_name:
             print(f"[DEBUG TARGET #{check_id}] -> EXCLUDE (FIX#197 name deny '{marker}')")

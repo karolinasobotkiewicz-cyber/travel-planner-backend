@@ -121,6 +121,11 @@ def poi_trip_repeat_key(name: str) -> str | None:
         ("pergola", "wro_pergola"),
         ("browar stu mostów", "wro_browar_stu"),
         ("browar stu mostow", "wro_browar_stu"),
+        # FIX #343: Aula Leopoldina == Muzeum Uniwersytetu (Excel typo Uniwesytetu).
+        ("aula leopoldina", "wro_muzeum_uniwersytetu"),
+        ("leopoldina", "wro_muzeum_uniwersytetu"),
+        ("muzeum uniwersytetu", "wro_muzeum_uniwersytetu"),
+        ("muzeum uniwesytetu", "wro_muzeum_uniwersytetu"),
         ("panorama racławicka", "wro_panorama"),
         ("panorama raclawicka", "wro_panorama"),
         ("kolejkowo", "wro_kolejkowo"),
@@ -794,10 +799,16 @@ def should_deny_poi_for_profile(poi: dict, user: dict) -> bool:
             return True
 
     # FIX #240 Wrocław family_kids — Dworzec Świebodzki, Browar (wieczorny)
-    if tg == "family_kids" and any(k in name for k in (
+    if tg in ("family_kids", "family") and any(k in name for k in (
         "dworzec świebodzki", "dworzec swiebodzki",
         "browar stu mostów", "browar stu mostow",
     )):
+        return True
+
+    # FIX #343: Aula Leopoldina is Muzeum Uniwersytetu. Drop the duplicate.
+    if "aula leopoldina" in name or (
+        "leopoldina" in name and "aula" in name
+    ):
         return True
 
     # FIX #240 Wrocław — Hala Targowa nie pasuje do active_sport + history_mystery
