@@ -124,6 +124,18 @@ HUB_SATELLITE_CITIES = {
         "Czosnów", "Góra Kalwaria", "Nowy Dwór Mazowiecki",
         "Izabelin", "Kampinos", "Pawilony", "Kiścinne",
     ),
+    "katowice": (
+        "Gliwice", "Zabrze", "Tychy", "Chorzów", "Dąbrowa Górnicza",
+    ),
+    "gdansk": ("Gdynia", "Sopot"),
+    "gdynia": ("Gdańsk", "Sopot"),
+    "sopot": ("Gdańsk", "Gdynia"),
+    "karpacz": ("Jelenia Góra", "Szklarska Poręba"),
+    "szklarska poreba": ("Jelenia Góra", "Karpacz"),
+    "jelenia gora": ("Karpacz", "Szklarska Poręba"),
+    "klodzko": ("Kudowa-Zdrój", "Polanica-Zdrój"),
+    "kudowa-zdroj": ("Kłodzko", "Polanica-Zdrój"),
+    "polanica-zdroj": ("Kłodzko", "Kudowa-Zdrój"),
 }
 HUB_RESTAURANT_CITIES = {
     "wroclaw": WROCLAW_RESTAURANT_CITIES,
@@ -141,6 +153,15 @@ HUB_RESTAURANT_CITIES = {
         "Katowice", "Gliwice", "Zabrze", "Tychy", "Chorzów",
         "Dąbrowa Górnicza",
     ),
+    "gdansk": ("Gdańsk", "Gdynia", "Sopot"),
+    "gdynia": ("Gdynia", "Gdańsk", "Sopot"),
+    "sopot": ("Sopot", "Gdańsk", "Gdynia"),
+    "karpacz": ("Karpacz", "Jelenia Góra", "Szklarska Poręba"),
+    "szklarska poreba": ("Szklarska Poręba", "Jelenia Góra", "Karpacz"),
+    "jelenia gora": ("Jelenia Góra", "Karpacz", "Szklarska Poręba"),
+    "klodzko": ("Kłodzko", "Kudowa-Zdrój", "Polanica-Zdrój"),
+    "kudowa-zdroj": ("Kudowa-Zdrój", "Kłodzko", "Polanica-Zdrój"),
+    "polanica-zdroj": ("Polanica-Zdrój", "Kłodzko", "Kudowa-Zdrój"),
 }
 
 
@@ -157,7 +178,7 @@ def wroclaw_poi_load_cities(requested_city: str) -> List[str]:
 
 
 def hub_poi_load_cities(requested_city: str) -> List[str]:
-    """FIX #277: hub + satellite towns for Wrocław / Kraków / Poznań / Warszawa."""
+    """Hub + satellite towns (Wrocław, remaining cities, Trójmiasto, mountains)."""
     if not requested_city:
         return []
     sats = HUB_SATELLITE_CITIES.get(_fold_pl_city(requested_city))
@@ -251,7 +272,7 @@ def is_city_tourism_trip(context: Optional[Dict[str, Any]] = None) -> bool:
     return any(
         k in city for k in (
             "kraków", "krakow", "wrocław", "wroclaw", "warszawa", "warsaw",
-            "poznań", "poznan", "gdańsk", "gdansk",
+            "poznań", "poznan", "gdańsk", "gdansk", "gdynia", "sopot",
             "katowice", "katowic",
         )
     )

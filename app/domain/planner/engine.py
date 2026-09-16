@@ -1820,7 +1820,7 @@ _FAR_GEO_REGIONS = frozenset({
     "region_sochaczew", "region_lednica",
     # FIX #281: Wrocław day-trips — don't reuse Niemcza/Wojsławice or Topacz.
     "region_wojslawice", "region_galowice", "region_topacz",
-    "region_wro_far",
+    "region_wro_far", "region_hub_far",
 })
 
 
@@ -1883,7 +1883,7 @@ def poi_geo_region_key(p: dict) -> str | None:
         k in blob for k in ("wrocław", "wroclaw")
     ):
         return "region_gliwice"
-    if "tychy" in city or "wodny park tychy" in blob:
+    if "tychy" in city or "wodny park tychy" in blob or "tyskie browar" in blob:
         return "region_tychy"
     if any(k in blob for k in ("park wodny nemo", "nemo")) or any(
         k in city for k in ("dąbrowa", "dabrowa")
@@ -2351,8 +2351,9 @@ def city_daytrip_quota(context: dict | None) -> int:
     99 = mountain / non-city trips keep the old far-region logic.
     Wrocław: 2–3 days stay in the city; 4–5 days get at most one full
     day-trip; 6+ days get at most two. Never used as a Day-1 opener.
-    Other city hubs: 2-day hard stop; Kraków / Katowice / Poznań / Warszawa
-    match Wrocław (3-day Czersk/Kampinos hops are a poor use of a short stay).
+    Other city hubs: 2-day hard stop; Kraków / Katowice / Poznań / Warszawa /
+    Trójmiasto match Wrocław (3-day Czersk/Kampinos hops are a poor use of a
+    short stay). Mountain clusters keep 99.
     """
     if not context:
         return 99
@@ -2364,12 +2365,14 @@ def city_daytrip_quota(context: dict | None) -> int:
     except (TypeError, ValueError):
         n = 1
     city = str(context.get("requested_city") or context.get("city") or "").lower()
-    wro = "wrocław" in city or "wroclaw" in city
-    krak = "kraków" in city or "krakow" in city
-    kat = "katowice" in city or "katowic" in city
-    poz = "poznań" in city or "poznan" in city
-    war = "warszawa" in city or "warsaw" in city
-    if not wro and not krak and not kat and not poz and not war:
+    hub = any(
+        k in city for k in (
+            "wrocław", "wroclaw", "kraków", "krakow", "katowice", "katowic",
+            "poznań", "poznan", "warszawa", "warsaw",
+            "gdańsk", "gdansk", "gdynia", "sopot",
+        )
+    )
+    if not hub:
         return 0 if n <= 2 else 99
     if n <= 3:
         return 0
@@ -2402,6 +2405,33 @@ def _katowice_coord_far(p: dict, context: dict | None) -> bool:
     return haversine_distance(50.2640, 19.0238, lat, lng) >= 28.0
 
 
+def _other_hub_coord_far(p: dict, context: dict | None) -> bool:
+    """Unnamed 28 km+ hops for remaining city hubs (not Wrocław / Zakopane)."""
+    city = str((context or {}).get("requested_city") or (context or {}).get("city") or "").lower()
+    if any(k in city for k in (
+        "wrocław", "wroclaw", "zakopane", "katowice", "katowic",
+    )):
+        return False
+    centers = {
+        "kraków": (50.0647, 19.9450), "krakow": (50.0647, 19.9450),
+        "warszawa": (52.2297, 21.0122), "warsaw": (52.2297, 21.0122),
+        "poznań": (52.4064, 16.9252), "poznan": (52.4064, 16.9252),
+        "gdańsk": (54.3520, 18.6466), "gdansk": (54.3520, 18.6466),
+        "gdynia": (54.5189, 18.5305), "sopot": (54.4416, 18.5601),
+    }
+    pt = next((c for k, c in centers.items() if k in city), None)
+    if not pt:
+        return False
+    try:
+        lat = float(p.get("lat") or 0)
+        lng = float(p.get("lng") or 0)
+    except (TypeError, ValueError):
+        return False
+    if lat == 0 or lng == 0:
+        return False
+    return haversine_distance(pt[0], pt[1], lat, lng) >= 28.0
+
+
 def _wroclaw_coord_far(p: dict, context: dict | None) -> bool:
     """FIX #289: unnamed 28 km+ hops (Grabowy / Złotniki mix) are still day-trips."""
     city = str((context or {}).get("requested_city") or (context or {}).get("city") or "").lower()
@@ -2427,6 +2457,8 @@ def should_block_city_daytrip_poi(p: dict, context: dict | None) -> bool:
         reg = "region_silesia_far"
     if (not reg or reg not in _FAR_GEO_REGIONS) and _wroclaw_coord_far(p, context):
         reg = "region_wro_far"
+    if (not reg or reg not in _FAR_GEO_REGIONS) and _other_hub_coord_far(p, context):
+        reg = "region_hub_far"
     if not reg or (reg not in _FAR_GEO_REGIONS and reg != "region_silesia_far"):
         return False
     day_reg = context.get("day_geo_region")
