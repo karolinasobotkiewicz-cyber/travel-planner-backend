@@ -1875,6 +1875,7 @@ def poi_geo_region_key(p: dict) -> str | None:
     # FIX #285: Gliwice icons often stored as City=Katowice.
     if any(k in blob for k in (
         "palmiarnia miejska", "willa caro", "park chopina",
+        "fryderyka chopina",
         "funzeum", "park chrobrego", "park pileckiego", "park pilecki",
         "pileckiego",
     )):

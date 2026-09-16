@@ -151,6 +151,9 @@ def classify_poi_category(poi: Dict[str, Any]) -> str:
     # FIX #255: Lustrzany Labirynt is indoor — not "na świeżym powietrzu".
     if "lustrzan" in name or ("mirror" in name and "labirynt" in name):
         return "mirror_maze"
+    # FIX #346: Bajkowy Labirynt is a themed indoor maze, not a hedge maze.
+    if "bajkowy labirynt" in name:
+        return "mirror_maze"
     if "park lotników" in name or "park lotnikow" in name:
         return "park"
 
@@ -318,6 +321,14 @@ def build_fallback_copy(poi: Dict[str, Any]) -> Tuple[str, Optional[str]]:
             "Zaplanuj czas na obiad lub degustację piwa na miejscu — "
             "wieczorem bywa tłoczno."
         )
+        return desc, tip
+    # FIX #346: Bajkowy Labirynt is indoor themed maze, not a hedge maze.
+    if "bajkowy labirynt" in name_l:
+        desc = (
+            "Bajkowy Labirynt — tematyczny labirynt w budynku z dekoracjami "
+            "z bajek, nie żywopłot na zewnątrz."
+        )
+        tip = "Sprawdź godzinę otwarcia — to atrakcja indoor, nie park żywopłotów."
         return desc, tip
     # FIX #258: Wedel — classic café is on Szpitalna; POI row is aleja Wedla 5.
     if any(k in name_l for k in ("wedel", "pijalnia czekolady")):

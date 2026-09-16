@@ -412,7 +412,7 @@ _KRAKOW_SCHINDLER_COORDS = (50.0474, 19.9617)
 _WROCLAW_BOTANICZNY_COORDS = (51.1163, 17.0478)
 _ZABRZE_NAME_MARKERS = (
     "zabrze", "zabrzu", "guido", "królowa luiza", "krolowa luiza", "sztolnia",
-    "animalworld", "animal world",
+    "animalworld", "animal world", "szyb maciej", "carboneum",
 )
 _GLIWICE_NAME_MARKERS = ("gliwice", "gliwic")
 _ZABRZE_DEFAULT_COORDS = (50.3249, 18.7857)
@@ -564,6 +564,8 @@ def _timeline_satellite_kind(name: str) -> Optional[str]:
         _is_gliwice_stop_name(nm)
         or "willa caro" in nm
         or "park chopina" in nm
+        or ("park" in nm and "chopina" in nm)
+        or "fryderyka chopina" in nm
         or "park chrobrego" in nm
         or "park pileckiego" in nm
         or "park pilecki" in nm
@@ -609,6 +611,41 @@ def _timeline_satellite_kind(name: str) -> Optional[str]:
     if _is_sochaczew_stop_name(nm):
         return "sochaczew"
     return None
+
+
+# FIX #346: satellite geography → the town the guest is actually in.
+_SATELLITE_KIND_CITY = {
+    "gliwice": "Gliwice",
+    "zabrze": "Zabrze",
+    "tychy": "Tychy",
+    "chorzow": "Chorzów",
+    "dabrowa": "Dąbrowa Górnicza",
+    "gniezno": "Gniezno",
+    "kornik": "Kórnik",
+    "lednica": "Lednogóra",
+    "pobiedziska": "Pobiedziska",
+    "wieliczka": "Wieliczka",
+    "ojcow": "Ojców",
+    "bochnia": "Bochnia",
+    "kampinos": "Kampinos",
+    "sochaczew": "Sochaczew",
+    "rogalin": "Rogalin",
+    "puszczykowo": "Puszczykowo",
+}
+
+
+def _satellite_city_for_stop(name: str) -> Optional[str]:
+    nm = (name or "").lower()
+    if any(k in nm for k in ("nikiszowiec", "giszowiec")):
+        return "Katowice"
+    if "planetarium" in nm and any(
+        k in nm for k in ("śląsk", "slask", "chorz")
+    ):
+        return "Chorzów"
+    kind = _timeline_satellite_kind(name)
+    if not kind:
+        return None
+    return _SATELLITE_KIND_CITY.get(kind)
 
 
 # Named day-trip drives: the 30 km/h plant formula turns Oława into 72 min;
@@ -727,9 +764,15 @@ def _katowice_seed_coords(name: str) -> Optional[tuple]:
         return _KATOWICE_MHK_COORDS
     if "wodny park" in nm and "tych" in nm:
         return _TYCHY_WODNY_COORDS
+    if "planetarium" in nm:
+        return _KATOWICE_PARK_SLASKI_COORDS
+    if "nikiszowiec" in nm:
+        return (50.2444, 19.0814)
+    if "szyb maciej" in nm or "carboneum" in nm:
+        return _ZABRZE_DEFAULT_COORDS
     if any(k in nm for k in (
         "park chopina", "park chrobrego", "willa caro", "sensorycz",
-        "palmiarnia",
+        "palmiarnia", "fryderyka chopina",
     )):
         return _GLIWICE_DEFAULT_COORDS
     return None
@@ -746,6 +789,10 @@ def _krakow_seed_coords(name: str) -> Optional[tuple]:
         return _KRAKOW_BULWARY_COORDS
     if "schindler" in nm:
         return _KRAKOW_SCHINDLER_COORDS
+    if _is_wieliczka_stop_name(nm):
+        return (49.9833, 20.0647)
+    if _is_ojcow_stop_name(nm) or "eliaszówk" in nm or "eliaszowk" in nm:
+        return _OJCOW_DEFAULT_COORDS
     return None
 
 
@@ -10919,6 +10966,7 @@ class PlanService:
             return items
         if (
             _quality_first_trip(context)
+            and _is_locked_city_context(context)
             and last_end < 17 * 60
             and sum(1 for it in items if _is_timeline_attraction(it)) >= 2
         ):
@@ -13774,6 +13822,9 @@ class PlanService:
         day_start_min = time_to_minutes(day_start_str)
         _city_bf = str(context.get("requested_city") or "").lower()
         _is_wro_bf = _city_needs_car_gap_polish(_city_bf)
+        has_lunch = any(
+            _item_type_value(it) == ItemType.LUNCH_BREAK.value for it in items
+        )
 
         first_block_min = None
         for it in items:
@@ -13789,7 +13840,7 @@ class PlanService:
         need_morning = (
             first_block_min is not None
             and first_block_min >= 11 * 60 + 30
-            and n_attr >= 1
+            and (n_attr >= 1 or has_lunch)
             and (
                 (user.get("target_group") == "friends" and _adv)
                 or (
@@ -14881,6 +14932,9 @@ class PlanService:
             prefs & {"nature_landscape", "relaxation"}
         ):
             # FIX #270: nature/relax days must not become a museum crawl.
+            max_mus = 1
+        elif style == "adventure" or "active_sport" in prefs:
+            # FIX #346: adventure/active_sport is not a museum marathon.
             max_mus = 1
         elif style == "balanced" and "museum_heritage" not in prefs:
             max_mus = 1
@@ -18441,8 +18495,18 @@ class PlanService:
                         frm0 = (
                             getattr(seed_it, "from_location", None) or ""
                         ).strip()
-                        if frm0 and self._name_is_scheduled_attraction(
-                            frm0, attr_names,
+                        hub_seed = (
+                            not _is_locked_city_context(context)
+                            and bool(frm0)
+                            and (
+                                _is_hub_place_label(frm0)
+                                or _fold_place_label(frm0)
+                                in _HUB_CITY_LABELS
+                            )
+                        )
+                        if frm0 and (
+                            self._name_is_scheduled_attraction(frm0, attr_names)
+                            or hub_seed
                         ):
                             car_parked_at = frm0
                             break
@@ -19821,6 +19885,25 @@ class PlanService:
         origin_label = city or "Centrum"
 
         dist_km = haversine_distance(float(h_lat), float(h_lng), to_lat, to_lng)
+        seed = _seed_first_stop_coords(name)
+        if (
+            seed
+            and not _is_locked_city_context(context)
+            and (
+                dist_km < 2.5
+                or _timeline_satellite_kind(name)
+                or _satellite_city_for_stop(name)
+            )
+        ):
+            to_lat, to_lng = seed
+            dist_km = haversine_distance(float(h_lat), float(h_lng), to_lat, to_lng)
+            try:
+                first_stop = first_stop.model_copy(update={
+                    "lat": to_lat, "lng": to_lng,
+                })
+                ordered[first_idx] = first_stop
+            except Exception:
+                pass
         gap = attr_st - day_start_min
         # FIX #315: only skip the hop when the first stop is the start
         # courtyard. Snapping the visit onto day_start (old 0.35 km rule)
@@ -24931,6 +25014,9 @@ class PlanService:
                     items = self._seal_transit_geometry_to_timeline(
                         items, ctx, day_num=day_num,
                     )
+                    items = self._seal_remaining_city_transport(
+                        items, ctx, day_num=day_num, coord_map=cm,
+                    )
             except Exception as _exc334:
                 print(
                     f"[FIX #334] D{day_num} geometry seal failed "
@@ -27547,7 +27633,9 @@ class PlanService:
                     or (km >= 1.5 and min(clock, dur or clock) <= 8)
                     or (km >= 0.7 and min(clock, dur or clock) <= 8)
                 )
-                too_slow_micro = km < 0.35 and max(clock, dur) >= 12
+                too_slow_micro = (
+                    km < 1.6 and max(clock, dur) >= max(12, int(expected * 2.5))
+                )
                 if too_fast:
                     upd = {
                         "mode": TransitMode.WALK,
@@ -27582,7 +27670,9 @@ class PlanService:
                     }
                 # FIX #306: 38–54 km in 12 min timestamps (Kampinos / Granica).
                 if km >= 8 and "duration_min" not in upd:
-                    expected_car = max(expected_car, max(dur, int(round(km / 50.0 * 60)) + 8))
+                    expected_car = max(
+                        expected_car, int(round(km / 50.0 * 60)) + 8,
+                    )
                 if clock < expected_car * 0.50 or dur < expected_car * 0.50 or (
                     km >= 8 and clock <= 15
                 ):
@@ -27591,8 +27681,9 @@ class PlanService:
                         "end_time": minutes_to_time(st + expected_car),
                         "routing_source": "estimated_road",
                     }
-                # FIX #312: 5.5 km car must not be a 50-min crawl.
-                elif km < 10 and max(clock, dur) > max(28, int(expected_car * 2.2)):
+                # FIX #312/#345: 5.5 km car must not be a 50-min crawl,
+                # and 23 km must not keep a 300-min walk timestamp.
+                elif max(clock, dur) > max(28, int(expected_car * 2.2)):
                     upd = {
                         "duration_min": expected_car,
                         "end_time": minutes_to_time(st + expected_car),
@@ -28540,7 +28631,7 @@ class PlanService:
         # Never advertise 23:59 when the guest asked for an evening close.
         if last_end >= 23 * 60 + 50 and window < 22 * 60:
             last_end = max(last_real, window)
-        elif last_end > window + 50:
+        elif last_end > window + 50 and _is_locked_city_context(context):
             last_end = min(last_end, window + 50)
         target = minutes_to_time(last_end)
         out: List[Any] = []
@@ -31003,6 +31094,11 @@ class PlanService:
                 ph in folded for ph in self._LOOK_AROUND_PHRASES
             ):
                 cap = look_cap if cap is None else min(cap, look_cap)
+            if not _is_locked_city_context(context):
+                if "bricks" in folded or "figs" in folded:
+                    cap = 60 if cap is None else min(cap, 60)
+                if "plac" in tokens:
+                    cap = 30 if cap is None else min(cap, 30)
             if cap is None:
                 out.append(it)
                 continue
@@ -31417,9 +31513,26 @@ class PlanService:
             ctx["group_type"] = usr.get("target_group") or usr.get("group_type") or ""
         if not ctx.get("preferences"):
             ctx["preferences"] = list(usr.get("preferences") or [])
+        if not ctx.get("travel_style"):
+            ctx["travel_style"] = usr.get("travel_style") or ""
+        if not ctx.get("travel_style"):
+            ctx["travel_style"] = usr.get("travel_style") or ""
         work = self._sort_items_by_time(list(items))
         try:
             work = self._drop_kids_only_for_adults(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            usr_mus = dict(ctx.get("user") or {})
+            if not usr_mus.get("travel_style"):
+                usr_mus["travel_style"] = ctx.get("travel_style") or ""
+            if not usr_mus.get("preferences"):
+                usr_mus["preferences"] = list(ctx.get("preferences") or [])
+            if not usr_mus.get("target_group"):
+                usr_mus["target_group"] = ctx.get("group_type") or ""
+            work = self._strip_excessive_museums_same_day(
+                work, usr_mus, day_num=day_num,
+            )
         except Exception:
             pass
         try:
@@ -31628,7 +31741,346 @@ class PlanService:
             work = self._reconcile_day_end_marker(work, ctx, day_num=day_num)
         except Exception:
             pass
+        try:
+            work = self._fill_naked_midday_gaps(work, ctx, day_num=day_num)
+            work = self._ensure_dinner_present(
+                work, ctx.get("day_end") or "20:00", ctx,
+            )
+            work = self._rewrite_katowice_satellite_copy(work, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            work = self._seal_remaining_city_transport(
+                work, ctx, day_num=day_num, coord_map=cm,
+            )
+        except Exception:
+            pass
         return self._sort_items_by_time(work)
+
+    def _seal_remaining_city_transport(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        coord_map: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #345: remaining cities keep Wrocław car-parking + honest hops."""
+        if not items or _is_locked_city_context(context):
+            return items
+        ctx = dict(context or {})
+        cm = self._merge_coord_map(coord_map or {}, items)
+        work = self._sort_items_by_time(list(items))
+        try:
+            work = self._drop_repeat_mounds(
+                work, day_num=day_num, context=ctx,
+            )
+            work = self._drop_far_low_roi_stops(
+                work, ctx, day_num=day_num,
+            )
+            work = self._drop_hops_not_to_next_stop(work, day_num=day_num)
+            work = self._cap_visit_durations(work, ctx, day_num=day_num)
+            work = self._force_excel_time_bounds(work, ctx, day_num=day_num)
+            work = self._respect_opening_hours(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            work = self._force_short_city_hops_walk(work, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            work = self._enforce_car_parking_logistics(
+                work, cm, ctx, day_num=day_num,
+            )
+            work = self._repair_car_chain(work, cm, ctx, day_num=day_num)
+            work = self._relabel_return_to_car_transits(work, day_num=day_num)
+            work = self._collapse_phantom_hub_detours(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._honest_transit_physics(work, day_num=day_num, context=ctx)
+            work = self._reconcile_leg_distances(work, day_num=day_num, context=ctx)
+        except Exception:
+            pass
+        try:
+            work = self._snap_day_start_to_first_leg(work, ctx, day_num=day_num)
+            work = self._reconcile_day_end_marker(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            work = self._seal_transit_geometry_to_timeline(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        return self._sort_items_by_time(work)
+
+    def _drop_repeat_mounds(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """Client KRK J6: too many kopce stacked on one day.
+
+        FIX #346: one kopiec per trip, not one per day.
+        """
+        if not items:
+            return items
+        trip_names = (context or {}).get("trip_attraction_names") or []
+        seen = any(
+            "kopiec" in _fold_place_label(str(n)) for n in trip_names
+        )
+        out: List[Any] = []
+        dropped: List[str] = []
+        for it in items:
+            if _is_timeline_attraction(it):
+                nm = getattr(it, "name", "") or ""
+                if "kopiec" in _fold_place_label(nm):
+                    if seen:
+                        dropped.append(nm)
+                        continue
+                    seen = True
+            out.append(it)
+        if dropped:
+            print(f"[FIX #346] Day {day_num}: kept one kopiec, dropped {dropped}")
+        return out
+
+    def _drop_far_low_roi_stops(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #346: 51 min drive for a 27 min Skansen is not a visit."""
+        if not items or _is_locked_city_context(context):
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        kinds: Dict[str, int] = {}
+        for it in ordered:
+            if not _is_timeline_attraction(it):
+                continue
+            k = _timeline_satellite_kind(getattr(it, "name", "") or "")
+            if k:
+                kinds[k] = kinds.get(k, 0) + 1
+        dedicated = {k for k, n in kinds.items() if n >= 2}
+        drop: set = set()
+        last_hop = None
+        for i, it in enumerate(ordered):
+            tv = _item_type_value(it)
+            if tv == ItemType.TRANSIT.value:
+                last_hop = it
+                continue
+            if not _is_timeline_attraction(it):
+                if tv in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                ):
+                    last_hop = None
+                continue
+            nm = getattr(it, "name", "") or ""
+            kind = _timeline_satellite_kind(nm)
+            if kind and kind in dedicated:
+                last_hop = None
+                continue
+            hop_dur = int(getattr(last_hop, "duration_min", 0) or 0) if last_hop else 0
+            try:
+                hop_km = float(getattr(last_hop, "distance_km", 0) or 0) if last_hop else 0.0
+            except (TypeError, ValueError):
+                hop_km = 0.0
+            visit = int(getattr(it, "duration_min", 0) or 0)
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+                if en > st:
+                    visit = en - st
+            except Exception:
+                pass
+            is_park = "park" in nm.lower() and "park wodny" not in nm.lower()
+            bad = bool(last_hop) and (
+                (hop_km >= 25.0 and visit < 45)
+                or (hop_km >= 28.0 and is_park)
+                or (hop_dur >= 40 and visit < 40 and hop_km >= 12.0)
+                or (hop_dur > visit and hop_km >= 15.0 and visit < 50)
+            )
+            if bad:
+                drop.add(i)
+                print(
+                    f"[FIX #346] Day {day_num}: dropped low-ROI "
+                    f"{nm} ({hop_km:.0f} km / {hop_dur} min → {visit} min)"
+                )
+            last_hop = None
+        if not drop:
+            return ordered
+        return [it for i, it in enumerate(ordered) if i not in drop]
+
+    def _collapse_phantom_hub_detours(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #347: A→Katowice walk 0.5 km then Katowice→B car is a detour."""
+        if not items or _is_locked_city_context(context):
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        out: List[Any] = []
+        i = 0
+        n = 0
+        while i < len(ordered):
+            it = ordered[i]
+            nxt = ordered[i + 1] if i + 1 < len(ordered) else None
+            if (
+                nxt is not None
+                and _item_type_value(it) == ItemType.TRANSIT.value
+                and _item_type_value(nxt) == ItemType.TRANSIT.value
+            ):
+                to1 = (getattr(it, "to_location", "") or "").strip()
+                frm1 = (getattr(it, "from_location", "") or "").strip()
+                frm2 = (getattr(nxt, "from_location", "") or "").strip()
+                to2 = (getattr(nxt, "to_location", "") or "").strip()
+                mode1 = str(
+                    getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
+                    or ""
+                ).lower()
+                mode2 = str(
+                    getattr(getattr(nxt, "mode", None), "value", getattr(nxt, "mode", ""))
+                    or ""
+                ).lower()
+                try:
+                    km1 = float(getattr(it, "distance_km", 0) or 0)
+                except (TypeError, ValueError):
+                    km1 = 0.0
+                src1 = str(getattr(it, "routing_source", "") or "").lower()
+                hub_walk = (
+                    "walk" in mode1
+                    and "car" in mode2
+                    and src1 != "return_to_car"
+                    and _is_hub_place_label(to1)
+                    and (
+                        _is_hub_place_label(frm2)
+                        or _place_names_match(to1, frm2)
+                    )
+                    and abs(km1 - 0.5) < 0.02
+                    and frm1
+                    and not _is_hub_place_label(frm1)
+                    and to2
+                    and not _is_hub_place_label(to2)
+                )
+                if hub_walk:
+                    try:
+                        nxt = nxt.model_copy(update={
+                            "from_location": frm1,
+                            "geometry": None,
+                            "geometry_latlng": None,
+                        })
+                    except Exception:
+                        pass
+                    out.append(nxt)
+                    n += 1
+                    i += 2
+                    continue
+            out.append(it)
+            i += 1
+        if n:
+            print(
+                f"[FIX #347] Day {day_num}: collapsed {n} hub-walk then car "
+                f"detour(s)"
+            )
+        return out
+
+    def _snap_day_start_to_first_leg(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """day_start 10:16 vs first walk 10:00 is a contradiction."""
+        if not items:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        marker_i = None
+        marker_min = None
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) != ItemType.DAY_START.value:
+                continue
+            marker_i = i
+            try:
+                marker_min = time_to_minutes(
+                    getattr(it, "time", None) or getattr(it, "start_time", None) or ""
+                )
+            except Exception:
+                marker_min = None
+            break
+        first_st = None
+        last_en = None
+        end_i = None
+        for i, it in enumerate(ordered):
+            tv = _item_type_value(it)
+            if tv == ItemType.DAY_END.value:
+                end_i = i
+                continue
+            if tv == ItemType.DAY_START.value:
+                continue
+            raw_s = getattr(it, "start_time", None) or getattr(it, "time", None)
+            raw_e = getattr(it, "end_time", None) or raw_s
+            try:
+                if raw_s:
+                    st = time_to_minutes(raw_s)
+                    first_st = st if first_st is None else min(first_st, st)
+                if raw_e:
+                    last_en = max(last_en or 0, time_to_minutes(raw_e))
+            except Exception:
+                continue
+        if marker_i is not None and first_st is not None and first_st < (marker_min or first_st):
+            try:
+                ordered[marker_i] = DayStartItem(time=minutes_to_time(first_st))
+                print(
+                    f"[FIX #345] Day {day_num}: day_start "
+                    f"{minutes_to_time(marker_min or 0)} → "
+                    f"{minutes_to_time(first_st)}"
+                )
+                marker_min = first_st
+            except Exception:
+                pass
+        end_min = None
+        if end_i is not None:
+            try:
+                end_min = time_to_minutes(
+                    getattr(ordered[end_i], "time", None)
+                    or getattr(ordered[end_i], "end_time", None)
+                    or ""
+                )
+            except Exception:
+                end_min = None
+        inverted = (
+            marker_min is not None
+            and end_min is not None
+            and end_min < marker_min
+        )
+        if (
+            end_i is not None
+            and marker_min is not None
+            and (
+                inverted
+                or (last_en is not None and last_en + 1 < marker_min)
+            )
+        ):
+            target = marker_min
+            if last_en is not None:
+                target = max(last_en, marker_min)
+            try:
+                ordered[end_i] = DayEndItem(time=minutes_to_time(target))
+                print(
+                    f"[FIX #346] Day {day_num}: inverted day_end snapped to "
+                    f"{minutes_to_time(target)}"
+                )
+            except Exception:
+                pass
+        return ordered
 
     def _drop_stops_past_window(
         self,
@@ -32884,12 +33336,35 @@ class PlanService:
             # behind it and no attraction anywhere on the day — its only
             # candidate was closed. A meal on its own is not a programme, so
             # the day closes and says so instead of faking one.
+            # FIX #346: remaining cities keep the meal so morning plant can
+            # fill; emptying here produced inverted 18:30–09:00 clocks.
+            remaining = not _is_locked_city_context(ctx)
+            if remaining and any(
+                _item_type_value(it) in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                )
+                for it in ordered
+            ):
+                print(
+                    f"[FIX #346] Day {day_num}: meal without attractions — "
+                    f"keep it for morning fill"
+                )
+                return ordered, False
             keep = [
                 it for it in ordered
                 if _item_type_value(it) == ItemType.DAY_START.value
             ]
             try:
                 close_at = time_to_minutes(ctx.get("day_start") or "09:00")
+                for it in keep:
+                    raw = getattr(it, "time", None) or getattr(it, "start_time", None)
+                    if not raw:
+                        continue
+                    try:
+                        close_at = max(close_at, time_to_minutes(raw))
+                    except Exception:
+                        pass
+                    break
                 keep.append(DayEndItem(time=minutes_to_time(close_at)))
             except Exception:
                 return ordered, True
@@ -33064,6 +33539,38 @@ class PlanService:
                     sm, en, self._occupied_stop_name(it) or "", _pt(it),
                 ))
             planted = None
+            # FIX #346: hole before the first stop (lunch-only mornings).
+            if not _is_locked_city_context(ctx) and blocks:
+                try:
+                    window_start = time_to_minutes(ctx.get("day_start") or "09:00")
+                except Exception:
+                    window_start = 9 * 60
+                first_sm, _fe, _fn, _fpt = blocks[0]
+                if first_sm - window_start >= _MIDDAY_GAP_MIN:
+                    hub_nm = str(ctx.get("requested_city") or "")
+                    hub_pt = _city_center_coords(hub_nm)
+                    planted = self._plant_afternoon_stop(
+                        work, {**ctx, "_morning_fill": True}, list(pool),
+                        after_min=window_start,
+                        from_name=hub_nm,
+                        from_pt=hub_pt,
+                        day_num=day_num,
+                        window_end=first_sm - 15,
+                    )
+                    if planted is None:
+                        planted = self._plant_afternoon_stop(
+                            work,
+                            {**ctx, "_morning_fill": True, "allow_new_satellite": True},
+                            list(pool),
+                            after_min=window_start,
+                            from_name=hub_nm,
+                            from_pt=hub_pt,
+                            day_num=day_num,
+                            window_end=first_sm - 15,
+                        )
+                    if planted is not None:
+                        work = planted
+                        continue
             for (_s1, e1, nm1, pt1), (s2, _e2, _nm2, _pt2) in zip(
                 blocks, blocks[1:]
             ):
@@ -33199,9 +33706,11 @@ class PlanService:
             if from_pt:
                 far = haversine_km(from_pt[0], from_pt[1], lat, lng)
                 cap = 12.0 if still_sat else 6.0
+                if context.get("_morning_fill"):
+                    cap = 12.0
                 if context.get("allow_new_satellite"):
                     # Oława / Topacz are an afternoon; Ząbkowice is a whole day.
-                    cap = 35.0
+                    cap = 16.0 if context.get("_morning_fill") else 35.0
                 if far > cap:
                     continue
             if any(
@@ -33218,8 +33727,15 @@ class PlanService:
             ):
                 continue
             win = self._poi_open_window(poi, date)
-            if not win or win == (0, 0):
+            if win == (0, 0):
                 continue
+            if not win:
+                # FIX #347: unknown hours are not "closed" — an empty morning
+                # still needs a city stop (Spodek / park) before lunch.
+                if context.get("_morning_fill"):
+                    win = (9 * 60, 18 * 60)
+                else:
+                    continue
             hop_guess = 15
             if from_pt:
                 hop_guess = max(
@@ -33875,7 +34391,7 @@ class PlanService:
 
             season = find_current_season((d.year, d.month, d.day), ohs)
             if not season:
-                return None
+                return 0, 0
             rows = (
                 season if any(
                     k in season for k in
@@ -33883,8 +34399,14 @@ class PlanService:
                 ) else season.get("opening_hours")
             )
             hours = parse_opening_hours_json(rows)
+            weekday_names = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+            published = isinstance(rows, dict) and any(
+                k in rows for k in weekday_names
+            )
             if not hours:
-                return None
+                # All weekdays "closed" is a published calendar, not "unknown".
+                # Barbakan in Excel was closed every day → None kept it in plans.
+                return (0, 0) if published else None
             win = hours.get(int(d.weekday()))
         except Exception:
             return None
@@ -36003,6 +36525,11 @@ class PlanService:
                     f"[FIX #273] Day {day_num}: dropped crushed Palmiarnia ({dur}m)"
                 )
                 continue
+            if "skansen" in nm and dur < 45:
+                print(
+                    f"[FIX #346] Day {day_num}: dropped crushed Skansen ({dur}m)"
+                )
+                continue
             if (
                 ("termy malta" in nm or "maltańskie" in nm or "maltanskie" in nm)
                 and "jezioro" not in nm
@@ -36358,7 +36885,7 @@ class PlanService:
         *,
         day_num: int = 0,
     ) -> List[Any]:
-        """FIX #273: city/Must-see/why_selected for Gliwice/Zabrze/Nikiszowiec."""
+        """FIX #273/#346: city/Must-see for satellites, not the hub stamp."""
         from app.domain.planner.city_copy import city_locative_pl
 
         out: List[Any] = []
@@ -36367,22 +36894,17 @@ class PlanService:
                 out.append(it)
                 continue
             nm = (getattr(it, "name", "") or "").lower()
-            city = None
-            if _is_gliwice_stop_name(nm) or any(
-                k in nm for k in ("palmiarnia miejska", "willa caro")
-            ):
-                city = "Gliwice"
-            elif _is_zabrze_stop_name(nm):
-                city = "Zabrze"
-            elif any(k in nm for k in ("chorzów", "chorzow", "park śląski", "park slaski")):
-                city = "Chorzów"
-            elif "tychy" in nm:
-                city = "Tychy"
+            city = _satellite_city_for_stop(getattr(it, "name", "") or "")
             why = list(getattr(it, "why_selected", None) or [])
             new_why = []
             for r in why:
                 rl = (r or "").lower()
-                if city and "must-see w katowicach" in rl:
+                if city and (
+                    "must-see w katowicach" in rl
+                    or "must-see w poznaniu" in rl
+                    or "must-see w krakowie" in rl
+                    or "must-see w warszawie" in rl
+                ):
                     r = f"Must-see {city_locative_pl(city)}"
                 if "nikiszowiec" in nm and "ekspozycja" in rl:
                     r = "Historyczne osiedle robotnicze z ceglaną zabudową"
@@ -36394,7 +36916,8 @@ class PlanService:
                     continue
                 new_why.append(r)
             upd: Dict[str, Any] = {}
-            if city and (getattr(it, "city", "") or "").lower() in ("", "katowice"):
+            cur = (getattr(it, "city", "") or "").strip()
+            if city and cur.lower() != city.lower():
                 upd["city"] = city
             if new_why != why:
                 upd["why_selected"] = new_why

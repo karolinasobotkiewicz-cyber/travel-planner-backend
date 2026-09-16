@@ -793,3 +793,150 @@ def test_guliwer_slides_past_lunch_to_opening():
     assert time_to_minutes(visit.start_time) >= 14 * 60
     codes = {d.code for d in audit_day(out, day=3, context=ctx)}
     assert "closed_stop" not in codes
+
+
+def test_all_closed_calendar_drops_barbakan():
+    from app.application.services.plan_service import PlanService
+    from app.domain.models.plan import AttractionItem, DayEndItem, DayStartItem, ItemType
+
+    svc = _svc344()
+    closed = {
+        "date_from": "01-01", "date_to": "12-31",
+        "mon": "closed", "tue": "closed", "wed": "closed",
+        "thu": "closed", "fri": "closed", "sat": "closed", "sun": "closed",
+    }
+    poi = {
+        "id": "b", "name": "Barbakan",
+        "opening_hours_seasonal": [closed],
+    }
+    win = PlanService._poi_open_window(poi, "2026-02-23")
+    assert win == (0, 0)
+    items = [
+        DayStartItem(time="09:00"),
+        AttractionItem.model_construct(
+            type=ItemType.ATTRACTION, poi_id="b", name="Barbakan",
+            description_short="", why_selected=["x"],
+            start_time="10:00", end_time="11:00", duration_min=60,
+            lat=50.065, lng=19.941,
+        ),
+        DayEndItem(time="19:00"),
+    ]
+    out = svc._respect_opening_hours(
+        items,
+        {"requested_city": "Kraków", "date": "2026-02-23", "poi_pool": [poi]},
+        day_num=1,
+    )
+    assert not any("Barbakan" in (getattr(it, "name", "") or "") for it in out)
+
+
+def test_walk_then_car_gets_parking_logistics():
+    from app.domain.models.plan import (
+        AttractionItem, DayEndItem, DayStartItem, ItemType, TransitItem, TransitMode,
+    )
+
+    svc = _svc344()
+    items = [
+        DayStartItem(time="09:00"),
+        TransitItem.model_construct(
+            type=ItemType.TRANSIT, start_time="09:00", end_time="09:12",
+            duration_min=12, from_location="Kraków", to_location="Planty",
+            mode=TransitMode.WALK, distance_km=0.8,
+        ),
+        AttractionItem.model_construct(
+            type=ItemType.ATTRACTION, poi_id="p", name="Planty",
+            description_short="", why_selected=["x"],
+            start_time="09:12", end_time="10:00", duration_min=48,
+            lat=50.061, lng=19.937,
+        ),
+        TransitItem.model_construct(
+            type=ItemType.TRANSIT, start_time="10:00", end_time="10:05",
+            duration_min=5, from_location="Planty",
+            to_location="Fabryka Emalia Oskara Schindlera",
+            mode=TransitMode.CAR, distance_km=3.4,
+        ),
+        AttractionItem.model_construct(
+            type=ItemType.ATTRACTION, poi_id="s", name="Fabryka Emalia Oskara Schindlera",
+            description_short="", why_selected=["x"],
+            start_time="10:05", end_time="12:00", duration_min=115,
+            lat=50.047, lng=19.961,
+        ),
+        DayEndItem(time="19:00"),
+    ]
+    ctx = {
+        "requested_city": "Kraków", "has_car": True,
+        "day_start": "09:00", "day_end": "19:00",
+    }
+    cm = {
+        "Planty": {"lat": 50.061, "lng": 19.937},
+        "Fabryka Emalia Oskara Schindlera": {"lat": 50.047, "lng": 19.961},
+        "Kraków": {"lat": 50.0617, "lng": 19.9373},
+    }
+    out = svc._seal_remaining_city_transport(items, ctx, day_num=1, coord_map=cm)
+    cars = [
+        it for it in out
+        if str(getattr(getattr(it, "type", None), "value", getattr(it, "type", "")))
+        == "transit"
+        and "car" in str(getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))).lower()
+    ]
+    assert cars
+    first_car_from = (getattr(cars[0], "from_location", "") or "").lower()
+    assert "planty" not in first_car_from
+
+
+def test_honest_physics_fixes_crawl_and_sprint():
+    from app.domain.models.plan import DayEndItem, DayStartItem, ItemType, TransitItem, TransitMode
+
+    svc = _svc344()
+    items = [
+        DayStartItem(time="09:00"),
+        TransitItem.model_construct(
+            type=ItemType.TRANSIT, start_time="16:28", end_time="21:28",
+            duration_min=300, from_location="Katowice",
+            to_location="Galeria Szyb Wilson",
+            mode=TransitMode.CAR, distance_km=23.8,
+        ),
+        TransitItem.model_construct(
+            type=ItemType.TRANSIT, start_time="10:00", end_time="10:40",
+            duration_min=40, from_location="Fotoplastykon",
+            to_location="plac Wolności",
+            mode=TransitMode.WALK, distance_km=0.65,
+        ),
+        DayEndItem(time="20:00"),
+    ]
+    ctx = {"requested_city": "Katowice", "has_car": True}
+    out = svc._honest_transit_physics(items, day_num=4, context=ctx)
+    long = next(it for it in out if (getattr(it, "to_location", "") or "").startswith("Galeria"))
+    assert int(long.duration_min) < 80
+    short = next(it for it in out if "plac" in (getattr(it, "to_location", "") or "").lower())
+    assert int(short.duration_min) <= 20
+
+
+def test_day_end_follows_dinner_in_remaining_cities():
+    from app.domain.models.plan import (
+        AttractionItem, DayEndItem, DayStartItem, DinnerBreakItem, ItemType,
+    )
+
+    svc = _svc344()
+    items = [
+        DayStartItem(time="09:00"),
+        AttractionItem.model_construct(
+            type=ItemType.ATTRACTION, poi_id="a", name="Spodek",
+            description_short="", why_selected=["x"],
+            start_time="10:00", end_time="11:00", duration_min=60,
+            lat=50.266, lng=19.023,
+        ),
+        DinnerBreakItem.model_construct(
+            type=ItemType.DINNER_BREAK,
+            start_time="19:50", end_time="20:40", duration_min=50,
+            suggestions=[], label="Restauracja",
+        ),
+        DayEndItem(time="19:50"),
+    ]
+    ctx = {"requested_city": "Katowice", "day_end": "19:00", "day_start": "09:00"}
+    out = svc._reconcile_day_end_marker(items, ctx, day_num=1)
+    end = next(
+        it for it in out
+        if str(getattr(getattr(it, "type", None), "value", getattr(it, "type", "")))
+        == "day_end"
+    )
+    assert getattr(end, "time", None) == "20:40"
