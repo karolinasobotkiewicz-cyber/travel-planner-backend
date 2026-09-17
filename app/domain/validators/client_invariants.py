@@ -32,6 +32,38 @@ CAR_MAX_KMH = 60.0
 CAR_HIGHWAY_KM = 15.0
 CAR_HIGHWAY_MAX_KMH = 95.0
 
+# FIX #348: remaining-city hub pins for phantom 0.5 km leading walks.
+_REMAINING_HUB_COORDS = {
+    "kraków": (50.0647, 19.9450),
+    "krakow": (50.0647, 19.9450),
+    "katowice": (50.2649, 19.0238),
+    "poznań": (52.4064, 16.9252),
+    "poznan": (52.4064, 16.9252),
+    "warszawa": (52.2297, 21.0122),
+    "warsaw": (52.2297, 21.0122),
+    "gdańsk": (54.3520, 18.6466),
+    "gdansk": (54.3520, 18.6466),
+    "gdynia": (54.5189, 18.5305),
+    "sopot": (54.4416, 18.5601),
+}
+
+
+def _locked_audit_city(context: Optional[Dict[str, Any]]) -> bool:
+    city = str((context or {}).get("requested_city") or "").lower()
+    return any(k in city for k in ("wrocław", "wroclaw", "zakopane"))
+
+
+def _remaining_hub_coords(context: Optional[Dict[str, Any]]):
+    city = str((context or {}).get("requested_city") or "").strip().lower()
+    if not city:
+        return None
+    if city in _REMAINING_HUB_COORDS:
+        return _REMAINING_HUB_COORDS[city]
+    for key, coords in _REMAINING_HUB_COORDS.items():
+        if key in city:
+            return coords
+    return None
+
 _ADRENALINE_MARKERS = (
     "bungee", "skok na", "paintball", "quad", "gokart", "go-kart", "kart",
     "adrenalin", "tyrolka", "zipline", "via ferrata", "wspinacz",
@@ -565,6 +597,29 @@ def audit_day(
                 f"z punktu startu (bufor {gap0} min nie zastępuje przejazdu)",
                 {"to": n0, "km": None, "buffer_min": gap0},
             ))
+        # FIX #348: 500 m / 9 min from the hub to a far stop is a fake pin.
+        if (
+            not _locked_audit_city(context)
+            and leading
+            and pt is not None
+        ):
+            hub = _remaining_hub_coords(context)
+            if hub is not None:
+                real_km = haversine_km(hub[0], hub[1], pt[0], pt[1])
+                for h in leading:
+                    try:
+                        decl = float(getattr(h, "distance_km", None) or 0)
+                    except (TypeError, ValueError):
+                        decl = 0.0
+                    walk = "walk" in _mode(h) or "foot" in _mode(h)
+                    if walk and abs(decl - 0.5) < 0.08 and real_km >= 2.5:
+                        defects.append(Defect(
+                            "phantom_lead", day,
+                            f"Dzień {day}: dojście z centrum do {n0} ma "
+                            f"{decl:.1f} km przy rzeczywistych {real_km:.1f} km",
+                            {"to": n0, "declared_km": decl, "real_km": real_km},
+                        ))
+                        break
 
     # --- honest_leg / urban_car / from_mismatch ---
     prev_stop: Optional[str] = None
@@ -634,6 +689,21 @@ def audit_day(
                 "urban_car", day,
                 f"Dzień {day}: samochód na {km:.2f} km ({frm} → {to})",
                 {"km": km},
+            ))
+        if (
+            not _locked_audit_city(context)
+            and frm
+            and to
+            and _names_match(frm, to)
+            and km > 0.2
+            and str(getattr(it, "routing_source", "") or "").lower()
+            != "return_to_car"
+        ):
+            defects.append(Defect(
+                "self_hop", day,
+                f"Dzień {day}: przejazd {frm} → {to} ({km:.2f} km) "
+                f"zaczyna i kończy się w tym samym miejscu",
+                {"from": frm, "to": to, "km": km},
             ))
         # FIX #324: 5.95 km by car in 4 min is 89 km/h through Wrocław.
         # A 65 km run to Niemcza at 65 km/h is just a road.

@@ -408,6 +408,23 @@ _KRAKOW_LOTNICTWA_COORDS = (50.0778, 19.9917)
 _KRAKOW_GOJUMP_COORDS = (50.0385, 19.9380)
 _KRAKOW_BULWARY_COORDS = (50.0520, 19.9566)
 _KRAKOW_SCHINDLER_COORDS = (50.0474, 19.9617)
+_KRAKOW_ZOO_COORDS = (50.0547, 19.8486)
+_KRAKOW_DOSWIADCZEN_COORDS = (50.0697, 20.0019)
+_KRAKOW_BLONIA_COORDS = (50.0600, 19.9160)
+_KRAKOW_ZAKRZOWEK_COORDS = (50.0331, 19.9147)
+_KRAKOW_JORDANA_COORDS = (50.0614, 19.9181)
+_KRAKOW_KOPIEC_PILSUDSKI_COORDS = (50.0606, 19.8372)
+_KRAKOW_KOPIEC_KRAKUSA_COORDS = (50.0380, 19.9584)
+_KRAKOW_KOPIEC_KOSCIUSZKI_COORDS = (50.0549, 19.8934)
+_KRAKOW_LAS_WOLSKI_COORDS = (50.0544, 19.8378)
+_KRAKOW_BEDNARSKIEGO_COORDS = (50.0378, 19.9585)
+_KATOWICE_TRZECH_STAWOW_COORDS = (50.2283, 19.0447)
+_KATOWICE_KOSCIUSZKI_COORDS = (50.2465, 19.0047)
+_POZNAN_CYTADELA_COORDS = (52.4210, 16.9350)
+_POZNAN_MALTA_COORDS = (52.4028, 16.9735)
+_POZNAN_TERMY_COORDS = (52.4044, 16.9786)
+_POZNAN_FORT_VA_COORDS = (52.3910, 16.8680)
+_POZNAN_BOTANICZNY_COORDS = (52.4203, 16.8822)
 # FIX #310: real Wrocław Botaniczny (Sienkiewicza 23), not the Pergola cluster.
 _WROCLAW_BOTANICZNY_COORDS = (51.1163, 17.0478)
 _ZABRZE_NAME_MARKERS = (
@@ -744,6 +761,18 @@ def _poznan_seed_coords(name: str) -> Optional[tuple]:
         return _ROGALIN_DEFAULT_COORDS
     if any(k in nm for k in ("lednick", "dziekanowic")):
         return _LEDNICA_DEFAULT_COORDS
+    if "cytadela" in nm and any(k in nm for k in ("poznań", "poznan", "park")):
+        return _POZNAN_CYTADELA_COORDS
+    if "termy malta" in nm or ("maltańsk" in nm or "maltansk" in nm):
+        return _POZNAN_TERMY_COORDS
+    if ("malta" in nm or "maltank" in nm) and any(
+        k in nm for k in ("poznań", "poznan", "jezioro", "park")
+    ):
+        return _POZNAN_MALTA_COORDS
+    if "fort va" in nm or "fort v " in nm:
+        return _POZNAN_FORT_VA_COORDS
+    if "botaniczn" in nm and any(k in nm for k in ("poznań", "poznan")):
+        return _POZNAN_BOTANICZNY_COORDS
     return None
 
 
@@ -766,6 +795,15 @@ def _katowice_seed_coords(name: str) -> Optional[tuple]:
         return _TYCHY_WODNY_COORDS
     if "planetarium" in nm:
         return _KATOWICE_PARK_SLASKI_COORDS
+    if "zoo" in nm and any(k in nm for k in ("śląsk", "slask", "chorz", "katowic")):
+        return _KATOWICE_PARK_SLASKI_COORDS
+    if "trzech staw" in nm:
+        return _KATOWICE_TRZECH_STAWOW_COORDS
+    if (
+        ("kościuszk" in nm or "kosciuszk" in nm)
+        and any(k in nm for k in ("katowic", "chorz", "śląsk", "slask"))
+    ):
+        return _KATOWICE_KOSCIUSZKI_COORDS
     if "nikiszowiec" in nm:
         return (50.2444, 19.0814)
     if "szyb maciej" in nm or "carboneum" in nm:
@@ -789,6 +827,36 @@ def _krakow_seed_coords(name: str) -> Optional[tuple]:
         return _KRAKOW_BULWARY_COORDS
     if "schindler" in nm:
         return _KRAKOW_SCHINDLER_COORDS
+    if (
+        ("zoo" in nm or "ogród zoologiczny" in nm or "ogrod zoologiczny" in nm)
+        and ("krak" in nm or "wolski" in nm)
+    ):
+        return _KRAKOW_ZOO_COORDS
+    if "doświadczeń" in nm or "doswiadczen" in nm:
+        return _KRAKOW_DOSWIADCZEN_COORDS
+    if (
+        ("błonia" in nm or "blonia" in nm)
+        and any(k in nm for k in ("krak", "wolski"))
+    ):
+        return _KRAKOW_BLONIA_COORDS
+    if "zakrzów" in nm or "zakrzow" in nm or "twardowsk" in nm:
+        return _KRAKOW_ZAKRZOWEK_COORDS
+    if "jordana" in nm and "krak" in nm:
+        return _KRAKOW_JORDANA_COORDS
+    if "park lotników" in nm or "park lotnikow" in nm:
+        return _KRAKOW_LOTNICTWA_COORDS
+    if "kopiec" in nm and ("piłsud" in nm or "pilsud" in nm):
+        return _KRAKOW_KOPIEC_PILSUDSKI_COORDS
+    if "kopiec" in nm and "krakus" in nm:
+        return _KRAKOW_KOPIEC_KRAKUSA_COORDS
+    if "kopiec" in nm and ("kościusz" in nm or "kosciusz" in nm):
+        return _KRAKOW_KOPIEC_KOSCIUSZKI_COORDS
+    if "las wolski" in nm or "lasu wolskiego" in nm:
+        return _KRAKOW_LAS_WOLSKI_COORDS
+    if "bednarskiego" in nm:
+        return _KRAKOW_BEDNARSKIEGO_COORDS
+    if "błonia" in nm or "blonia" in nm:
+        return _KRAKOW_BLONIA_COORDS
     if _is_wieliczka_stop_name(nm):
         return (49.9833, 20.0647)
     if _is_ojcow_stop_name(nm) or "eliaszówk" in nm or "eliaszowk" in nm:
@@ -859,13 +927,45 @@ _WINTER_CLOSED_MARKERS = (
 )
 
 
-def _seed_first_stop_coords(name: str) -> Optional[tuple]:
-    return (
+def _seed_first_stop_coords(name: str, city: str = "") -> Optional[tuple]:
+    city_l = (city or "").lower()
+    if any(k in city_l for k in ("wrocław", "wroclaw")):
+        return _wroclaw_seed_coords(name)
+    if "zakopane" in city_l:
+        return None
+    got = (
         _poznan_seed_coords(name)
         or _katowice_seed_coords(name)
         or _krakow_seed_coords(name)
         or _wroclaw_seed_coords(name)
     )
+    if got:
+        return got
+    nm = (name or "").lower()
+    if "zoo" in nm and "mini" not in nm:
+        if any(k in city_l for k in ("kraków", "krakow")):
+            return _KRAKOW_ZOO_COORDS
+        if "katowic" in city_l or "chorz" in city_l:
+            return _KATOWICE_PARK_SLASKI_COORDS
+        if any(k in city_l for k in ("poznań", "poznan")):
+            return _POZNAN_NOWE_ZOO_COORDS
+    if "botaniczn" in nm and any(k in city_l for k in ("poznań", "poznan")):
+        return _POZNAN_BOTANICZNY_COORDS
+    if ("błonia" in nm or "blonia" in nm) and any(
+        k in city_l for k in ("kraków", "krakow")
+    ):
+        return _KRAKOW_BLONIA_COORDS
+    if ("kościuszk" in nm or "kosciuszk" in nm) and (
+        "katowic" in city_l or "chorz" in city_l
+    ):
+        return _KATOWICE_KOSCIUSZKI_COORDS
+    if "cytadela" in nm and any(k in city_l for k in ("poznań", "poznan")):
+        return _POZNAN_CYTADELA_COORDS
+    if "malta" in nm and any(k in city_l for k in ("poznań", "poznan")):
+        return _POZNAN_MALTA_COORDS
+    if "jordana" in nm and any(k in city_l for k in ("kraków", "krakow")):
+        return _KRAKOW_JORDANA_COORDS
+    return None
 
 
 def _is_kampinos_stop_name(name: str) -> bool:
@@ -19767,6 +19867,7 @@ class PlanService:
         first_stop = None
         first_idx = None
         day_start_min = None
+        city_for_seed = str(context.get("requested_city") or "").strip()
         for i, it in enumerate(ordered):
             tv = _item_type_value(it)
             if tv in (ItemType.DAY_START.value, "day_start"):
@@ -19852,7 +19953,10 @@ class PlanService:
                 ordered[first_idx] = first_stop
             except Exception:
                 pass
-        seed = _seed_first_stop_coords(name)
+        if _is_locked_city_context(context):
+            seed = _seed_first_stop_coords(name)
+        else:
+            seed = _seed_first_stop_coords(name, city_for_seed)
         if seed and (not poi.get("lat") or not poi.get("lng")):
             poi["lat"], poi["lng"] = seed
             try:
@@ -19885,7 +19989,10 @@ class PlanService:
         origin_label = city or "Centrum"
 
         dist_km = haversine_distance(float(h_lat), float(h_lng), to_lat, to_lng)
-        seed = _seed_first_stop_coords(name)
+        if _is_locked_city_context(context):
+            seed = _seed_first_stop_coords(name)
+        else:
+            seed = _seed_first_stop_coords(name, city_for_seed)
         if (
             seed
             and not _is_locked_city_context(context)
@@ -20024,6 +20131,13 @@ class PlanService:
             transit = self._attach_route_metadata(transit, from_poi, to_poi, ctx)
         except Exception:
             pass
+        if not _is_locked_city_context(context):
+            try:
+                transit = transit.model_copy(update={
+                    "distance_km": round(float(dist_km), 3),
+                })
+            except Exception:
+                pass
         ordered.insert(first_idx, transit)
         print(
             f"[FIX #261] Day {day_num}: leading transit "
@@ -31559,7 +31673,7 @@ class PlanService:
             pass
         cm = self._merge_coord_map(coord_map or {}, work)
         try:
-            work = self._ensure_leading_transit(work, cm, ctx, day_num=day_num)
+            work = self._rewrite_phantom_leading_hop(work, cm, ctx, day_num=day_num)
         except Exception:
             pass
         try:
@@ -31757,6 +31871,231 @@ class PlanService:
             pass
         return self._sort_items_by_time(work)
 
+    def _rewrite_phantom_leading_hop(
+        self,
+        items: List[Any],
+        poi_coords: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #348: one honest hub→first-stop hop. Drop leftover 0.5 km leads."""
+        if not items or _is_locked_city_context(context):
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        first_stop = None
+        drop: set = set()
+        city_for_seed = str(context.get("requested_city") or "").strip()
+        for i, it in enumerate(ordered):
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, "day_start"):
+                continue
+            if _is_timeline_attraction(it):
+                first_stop = it
+                break
+            if tv == ItemType.TRANSIT.value:
+                to = (getattr(it, "to_location", "") or "").strip()
+                if _is_wojslawice_stop_name(to):
+                    return self._ensure_leading_transit(
+                        ordered, poi_coords, context, day_num=day_num,
+                    )
+                drop.add(i)
+                continue
+            if tv in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                return items
+        if first_stop is None:
+            return items
+        name = (getattr(first_stop, "name", "") or "").strip()
+        seed = _seed_first_stop_coords(name, city_for_seed)
+        hub = _city_center_coords(city_for_seed)
+        hotel = context.get("hotel") or context.get("start_location") or {}
+        if not isinstance(hotel, dict):
+            hotel = {}
+        if hotel.get("lat") is not None and hotel.get("lng") is not None:
+            try:
+                hub = (float(hotel["lat"]), float(hotel["lng"]))
+            except (TypeError, ValueError):
+                pass
+        pt = None
+        try:
+            if getattr(first_stop, "lat", None) is not None:
+                pt = (float(first_stop.lat), float(first_stop.lng))
+        except (TypeError, ValueError):
+            pt = None
+        if pt is None:
+            got = (poi_coords or {}).get(name) or {}
+            try:
+                if got.get("lat") is not None:
+                    pt = (float(got["lat"]), float(got["lng"]))
+            except (TypeError, ValueError):
+                pt = None
+        if hub and seed:
+            pin_km = haversine_distance(hub[0], hub[1], pt[0], pt[1]) if pt else 0.0
+            seed_km = haversine_distance(hub[0], hub[1], seed[0], seed[1])
+            if pt is None or pin_km < 2.5 or seed_km > pin_km + 1.0:
+                pt = seed
+                try:
+                    first_stop = first_stop.model_copy(update={
+                        "lat": seed[0], "lng": seed[1],
+                    })
+                except Exception:
+                    pass
+        stripped: List[Any] = []
+        stamped = False
+        for i, it in enumerate(ordered):
+            if i in drop:
+                continue
+            if (not stamped) and _is_timeline_attraction(it):
+                stripped.append(first_stop)
+                stamped = True
+                continue
+            stripped.append(it)
+        if drop:
+            print(
+                f"[FIX #348] Day {day_num}: dropped {len(drop)} leading hop(s) "
+                f"before {name or '?'}"
+            )
+        cm = dict(poi_coords or {})
+        if pt:
+            cm[name] = {
+                **(cm.get(name) if isinstance(cm.get(name), dict) else {}),
+                "lat": pt[0], "lng": pt[1], "name": name,
+            }
+        return self._ensure_leading_transit(
+            stripped, cm, context, day_num=day_num,
+        )
+
+    def _sequence_remaining_clock(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #348: no timed block starts before the previous one has finished."""
+        if not items or _is_locked_city_context(context):
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        skip = {
+            ItemType.DAY_START.value, "day_start",
+            ItemType.DAY_END.value, "day_end",
+        }
+        prev_end: Optional[int] = None
+        shifted = 0
+        i = 0
+        while i < len(ordered):
+            it = ordered[i]
+            if _item_type_value(it) in skip:
+                i += 1
+                continue
+            try:
+                st = time_to_minutes(
+                    getattr(it, "start_time", None)
+                    or getattr(it, "time", None)
+                    or ""
+                )
+                en_raw = getattr(it, "end_time", None)
+                en = time_to_minutes(en_raw) if en_raw else st
+            except Exception:
+                i += 1
+                continue
+            if prev_end is not None and st < prev_end:
+                delta = prev_end - st
+                ordered = self._shift_items_from(ordered, i, delta)
+                shifted += 1
+                try:
+                    st = time_to_minutes(
+                        getattr(ordered[i], "start_time", None)
+                        or getattr(ordered[i], "time", None)
+                        or ""
+                    )
+                    en_raw = getattr(ordered[i], "end_time", None)
+                    en = time_to_minutes(en_raw) if en_raw else st
+                except Exception:
+                    i += 1
+                    continue
+            prev_end = max(en, st)
+            i += 1
+        if shifted:
+            print(
+                f"[FIX #348] Day {day_num}: sequenced {shifted} overlapping block(s)"
+            )
+            try:
+                ordered = self._reconcile_day_end_marker(
+                    ordered, context, day_num=day_num,
+                )
+            except Exception:
+                pass
+        return ordered
+
+    def _arrive_before_visit(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #348: a stop cannot start while its inbound hop is still running."""
+        if not items or _is_locked_city_context(context):
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        shifted = 0
+        i = 0
+        while i < len(ordered):
+            it = ordered[i]
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                i += 1
+                continue
+            to = (getattr(it, "to_location", "") or "").strip()
+            try:
+                hop_en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                i += 1
+                continue
+            dest_idx = None
+            for j in range(i + 1, len(ordered)):
+                later = ordered[j]
+                tv = _item_type_value(later)
+                if tv in (
+                    ItemType.DAY_START.value, ItemType.DAY_END.value,
+                ):
+                    continue
+                dest_idx = j
+                break
+            if dest_idx is None:
+                i += 1
+                continue
+            dest = ordered[dest_idx]
+            try:
+                dest_st = time_to_minutes(
+                    getattr(dest, "start_time", None)
+                    or getattr(dest, "time", None)
+                    or ""
+                )
+            except Exception:
+                i += 1
+                continue
+            if dest_st >= hop_en:
+                i += 1
+                continue
+            delta = hop_en - dest_st
+            ordered = self._shift_items_from(ordered, dest_idx, delta)
+            shifted += 1
+            print(
+                f"[FIX #348] Day {day_num}: delayed "
+                f"{getattr(dest, 'name', None) or getattr(dest, 'label', None) or to} "
+                f"by {delta}min so inbound hop can finish"
+            )
+            i += 1
+        if shifted:
+            try:
+                ordered = self._reconcile_day_end_marker(
+                    ordered, context, day_num=day_num,
+                )
+            except Exception:
+                pass
+        return ordered
+
     def _seal_remaining_city_transport(
         self,
         items: List[Any],
@@ -31765,7 +32104,7 @@ class PlanService:
         day_num: int = 0,
         coord_map: Optional[Dict[str, Any]] = None,
     ) -> List[Any]:
-        """FIX #345: remaining cities keep Wrocław car-parking + honest hops."""
+        """FIX #345/#348: remaining cities keep honest hops, parking, arrive-before-visit."""
         if not items or _is_locked_city_context(context):
             return items
         ctx = dict(context or {})
@@ -31782,6 +32121,11 @@ class PlanService:
             work = self._cap_visit_durations(work, ctx, day_num=day_num)
             work = self._force_excel_time_bounds(work, ctx, day_num=day_num)
             work = self._respect_opening_hours(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            work = self._rewrite_phantom_leading_hop(work, cm, ctx, day_num=day_num)
+            cm = self._merge_coord_map(cm, work)
         except Exception:
             pass
         try:
@@ -31802,6 +32146,8 @@ class PlanService:
         try:
             work = self._honest_transit_physics(work, day_num=day_num, context=ctx)
             work = self._reconcile_leg_distances(work, day_num=day_num, context=ctx)
+            work = self._arrive_before_visit(work, ctx, day_num=day_num)
+            work = self._sequence_remaining_clock(work, ctx, day_num=day_num)
         except Exception:
             pass
         try:
@@ -31811,6 +32157,15 @@ class PlanService:
             pass
         try:
             work = self._seal_transit_geometry_to_timeline(work, ctx, day_num=day_num)
+            work = self._drop_hops_not_to_next_stop(work, day_num=day_num)
+            work = self._ensure_stop_to_stop_legs(
+                work, self._merge_coord_map(cm, work), ctx, day_num=day_num,
+            )
+            work = self._arrive_before_visit(work, ctx, day_num=day_num)
+            work = self._rewrite_phantom_leading_hop(
+                work, self._merge_coord_map(cm, work), ctx, day_num=day_num,
+            )
+            work = self._sequence_remaining_clock(work, ctx, day_num=day_num)
         except Exception:
             pass
         return self._sort_items_by_time(work)
