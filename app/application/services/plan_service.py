@@ -25037,7 +25037,7 @@ class PlanService:
                     items = self._ensure_far_excursion_return(
                         items, ctx, day_num=day_num,
                     )
-                    items = self._rewrite_hop_origins(items, day_num=day_num)
+                    items = self._rewrite_hop_origins(items, day_num=day_num, context=ctx)
                     items = self._dedupe_parallel_hops(items, day_num=day_num)
                     items = self._chain_overlapping_hops(items, day_num=day_num)
                     items = self._remove_timeline_overlaps(items, day_num)
@@ -25122,7 +25122,7 @@ class PlanService:
                     items = self._drop_idle_morning_padding(
                         items, ctx, day_num=day_num,
                     )
-                    items = self._rewrite_hop_origins(items, day_num=day_num)
+                    items = self._rewrite_hop_origins(items, day_num=day_num, context=ctx)
                     items = self._dedupe_parallel_hops(items, day_num=day_num)
                     items = self._remove_timeline_overlaps(items, day_num)
                     items = self._seal_transit_geometry_to_timeline(
@@ -31254,7 +31254,7 @@ class PlanService:
         usr = ctx.get("user") or {}
         work = self._sort_items_by_time(list(items))
         work = self._drop_idle_morning_padding(work, ctx, day_num=day_num)
-        work = self._rewrite_hop_origins(work, day_num=day_num)
+        work = self._rewrite_hop_origins(work, day_num=day_num, context=ctx)
         try:
             work = self._collapse_adjacent_free_time(
                 work, day_num=day_num, force=True,
@@ -31272,7 +31272,7 @@ class PlanService:
         except Exception:
             pass
         work = self._clip_free_time_overlapping_hops(work)
-        work = self._rewrite_hop_origins(work, day_num=day_num)
+        work = self._rewrite_hop_origins(work, day_num=day_num, context=ctx)
         try:
             # FIX #339: the client capped a single free block at 60 min, and
             # asked that the engine try to use the time before it gives up —
@@ -31347,7 +31347,7 @@ class PlanService:
         except Exception:
             pass
         work = self._remove_timeline_overlaps(work, day_num)
-        work = self._rewrite_hop_origins(work, day_num=day_num)
+        work = self._rewrite_hop_origins(work, day_num=day_num, context=ctx)
         try:
             work = self._name_remaining_holes(work, ctx, day_num=day_num)
         except Exception:
@@ -31971,11 +31971,20 @@ class PlanService:
         context: Optional[Dict[str, Any]] = None,
         *,
         day_num: int = 0,
+        preserve_order: bool = False,
     ) -> List[Any]:
-        """FIX #348: no timed block starts before the previous one has finished."""
+        """FIX #348: no timed block starts before the previous one has finished.
+
+        FIX #349: ``preserve_order`` keeps a just-inserted return-to-car
+        glued to its car hop. Sorting by the old start times would slide the
+        next attraction between them.
+        """
         if not items or _is_locked_city_context(context):
             return items
-        ordered = self._sort_items_by_time(list(items))
+        ordered = (
+            list(items) if preserve_order
+            else self._sort_items_by_time(list(items))
+        )
         skip = {
             ItemType.DAY_START.value, "day_start",
             ItemType.DAY_END.value, "day_end",
@@ -32026,6 +32035,234 @@ class PlanService:
                 )
             except Exception:
                 pass
+        return ordered
+
+    def _seal_remaining_car_token(
+        self,
+        items: List[Any],
+        poi_coords: Optional[Dict[str, Any]],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #349: the car stays where the last drive ended.
+
+        Walks and meals move people, not the car. A car hop may only start
+        from ``car_at``. Otherwise insert return-to-car first.
+        """
+        from app.domain.models.plan import TransitItem, TransitMode
+
+        if not items or _is_locked_city_context(context):
+            return items
+        if not bool((context or {}).get("has_car", True)):
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        city = str((context or {}).get("requested_city") or "").strip()
+        cm = poi_coords or {}
+        people_at: Optional[str] = None
+        car_at: Optional[str] = None
+        out: List[Any] = []
+
+        def _mode_of(it: Any) -> str:
+            return str(
+                getattr(
+                    getattr(it, "mode", None), "value", getattr(it, "mode", "")
+                ) or ""
+            ).lower()
+
+        def _pt(name: str):
+            if not name:
+                return None
+            hit = cm.get(name) or cm.get(name.strip())
+            if isinstance(hit, dict) and hit.get("lat") is not None:
+                try:
+                    return float(hit["lat"]), float(hit["lng"])
+                except (TypeError, ValueError, KeyError):
+                    return None
+            return self._lookup_coords(cm, name)
+
+        for it in ordered:
+            tv = _item_type_value(it)
+            if tv == ItemType.TRANSIT.value:
+                frm = (getattr(it, "from_location", "") or "").strip()
+                to = (getattr(it, "to_location", "") or "").strip()
+                mode = _mode_of(it)
+                if "walk" in mode or "foot" in mode:
+                    if car_at is None and frm and (
+                        _is_hub_place_label(frm)
+                        or (city and _place_names_match(frm, city))
+                    ):
+                        car_at = frm
+                    if to:
+                        people_at = to
+                    out.append(it)
+                    continue
+                if "car" not in mode:
+                    out.append(it)
+                    continue
+                last_people = None
+                for prev in reversed(out):
+                    if _item_type_value(prev) == ItemType.TRANSIT.value:
+                        if "walk" in _mode_of(prev) or "foot" in _mode_of(prev):
+                            dest = (getattr(prev, "to_location", "") or "").strip()
+                            if dest:
+                                last_people = dest
+                                break
+                        continue
+                    nm = self._occupied_stop_name(prev)
+                    if nm:
+                        last_people = nm
+                        break
+                if last_people:
+                    people_at = last_people
+                if car_at is None:
+                    car_at = frm or people_at
+                need_return = (
+                    bool(people_at)
+                    and bool(car_at)
+                    and not _place_names_match(people_at, car_at)
+                )
+                already = False
+                if out:
+                    prev = out[-1]
+                    already = (
+                        _item_type_value(prev) == ItemType.TRANSIT.value
+                        and ("walk" in _mode_of(prev) or "foot" in _mode_of(prev))
+                        and _place_names_match(
+                            getattr(prev, "to_location", "") or "", car_at or "",
+                        )
+                    )
+                if need_return and not already:
+                    a = _pt(people_at or "")
+                    b = _pt(car_at or "")
+                    dist_km = 0.5
+                    walk_min = 10
+                    if a and b:
+                        dist_km = max(
+                            0.1,
+                            haversine_distance(a[0], a[1], b[0], b[1]),
+                        )
+                        walk_min = max(5, min(40, int(round(dist_km / 4.5 * 60)) + 2))
+                    try:
+                        car_st = time_to_minutes(
+                            getattr(it, "start_time", None) or "12:00"
+                        )
+                    except Exception:
+                        car_st = 12 * 60
+                    car_dur = int(getattr(it, "duration_min", 0) or 0)
+                    if car_dur <= 0:
+                        try:
+                            car_dur = max(
+                                5,
+                                time_to_minutes(
+                                    getattr(it, "end_time", None) or ""
+                                ) - car_st,
+                            )
+                        except Exception:
+                            car_dur = 10
+                    walk_st = car_st
+                    walk_en = walk_st + walk_min
+                    try:
+                        ret = TransitItem(
+                            type=ItemType.TRANSIT,
+                            start_time=minutes_to_time(walk_st),
+                            end_time=minutes_to_time(walk_en),
+                            duration_min=walk_min,
+                            mode=TransitMode.WALK,
+                            from_location=people_at,
+                            to_location=car_at,
+                            distance_km=round(dist_km, 3),
+                            routing_source="return_to_car",
+                        )
+                        out.append(ret)
+                        print(
+                            f"[FIX #349] Day {day_num}: return-to-car "
+                            f"{people_at} → {car_at} ({walk_min}min)"
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        it = it.model_copy(update={
+                            "from_location": car_at,
+                            "start_time": minutes_to_time(walk_en),
+                            "end_time": minutes_to_time(walk_en + car_dur),
+                            "duration_min": car_dur,
+                        })
+                    except Exception:
+                        pass
+                if car_at and not _place_names_match(frm, car_at):
+                    try:
+                        it = it.model_copy(update={"from_location": car_at})
+                    except Exception:
+                        pass
+                cur_frm = (getattr(it, "from_location", "") or "").strip() or frm
+                if to and cur_frm and _place_names_match(cur_frm, to):
+                    continue
+                if to:
+                    people_at = to
+                    car_at = to
+                out.append(it)
+                continue
+            nm = self._occupied_stop_name(it)
+            if nm:
+                people_at = nm
+            out.append(it)
+        out = self._pull_late_car_hops_before_dest(out)
+        return self._sequence_remaining_clock(
+            out, context, day_num=day_num, preserve_order=True,
+        )
+
+    def _pull_late_car_hops_before_dest(self, items: List[Any]) -> List[Any]:
+        """FIX #349: a car to stop X cannot sit after the visit to X."""
+        if not items:
+            return items
+        ordered = list(items)
+        moved = True
+        while moved:
+            moved = False
+            for i, it in enumerate(ordered):
+                nm = self._occupied_stop_name(it)
+                if not nm:
+                    continue
+                for j in range(i + 1, len(ordered)):
+                    later = ordered[j]
+                    if _item_type_value(later) != ItemType.TRANSIT.value:
+                        continue
+                    mode = str(
+                        getattr(
+                            getattr(later, "mode", None), "value",
+                            getattr(later, "mode", ""),
+                        ) or ""
+                    ).lower()
+                    if "car" not in mode:
+                        continue
+                    dest = (getattr(later, "to_location", "") or "").strip()
+                    if not dest or not _place_names_match(dest, nm):
+                        continue
+                    start = j
+                    if j > 0:
+                        prev = ordered[j - 1]
+                        src = str(getattr(prev, "routing_source", "") or "").lower()
+                        pmode = str(
+                            getattr(
+                                getattr(prev, "mode", None), "value",
+                                getattr(prev, "mode", ""),
+                            ) or ""
+                        ).lower()
+                        if (
+                            _item_type_value(prev) == ItemType.TRANSIT.value
+                            and ("walk" in pmode or "foot" in pmode)
+                            and src == "return_to_car"
+                        ):
+                            start = j - 1
+                    block = ordered[start:j + 1]
+                    del ordered[start:j + 1]
+                    for k, piece in enumerate(block):
+                        ordered.insert(i + k, piece)
+                    moved = True
+                    break
+                if moved:
+                    break
         return ordered
 
     def _arrive_before_visit(
@@ -32137,7 +32374,6 @@ class PlanService:
                 work, cm, ctx, day_num=day_num,
             )
             work = self._repair_car_chain(work, cm, ctx, day_num=day_num)
-            work = self._relabel_return_to_car_transits(work, day_num=day_num)
             work = self._collapse_phantom_hub_detours(
                 work, ctx, day_num=day_num,
             )
@@ -32166,6 +32402,10 @@ class PlanService:
                 work, self._merge_coord_map(cm, work), ctx, day_num=day_num,
             )
             work = self._sequence_remaining_clock(work, ctx, day_num=day_num)
+            work = self._seal_remaining_car_token(
+                work, self._merge_coord_map(cm, work), ctx, day_num=day_num,
+            )
+            work = self._arrive_before_visit(work, ctx, day_num=day_num)
         except Exception:
             pass
         return self._sort_items_by_time(work)
@@ -33382,16 +33622,33 @@ class PlanService:
         items: List[Any],
         *,
         day_num: int = 0,
+        context: Optional[Dict[str, Any]] = None,
     ) -> List[Any]:
-        """FIX #331: a hop starts from the stop the guest is actually at."""
+        """FIX #331: a hop starts from the stop the guest is actually at.
+
+        FIX #349: that is true for walks. A car hop starts from where the
+        car was left, not from the last restaurant.
+        """
         if not items:
             return items
         ordered = self._sort_items_by_time(list(items))
         last = None
+        remaining = bool(context) and not _is_locked_city_context(context)
         out: List[Any] = []
         for it in ordered:
             if _item_type_value(it) == ItemType.TRANSIT.value:
+                mode = str(
+                    getattr(
+                        getattr(it, "mode", None), "value", getattr(it, "mode", "")
+                    ) or ""
+                ).lower()
                 frm = (getattr(it, "from_location", "") or "").strip()
+                if remaining and "car" in mode:
+                    dest = (getattr(it, "to_location", "") or "").strip()
+                    if dest:
+                        last = dest
+                    out.append(it)
+                    continue
                 if last and frm and not _place_names_match(frm, last):
                     try:
                         it = it.model_copy(update={"from_location": last})
@@ -36607,6 +36864,23 @@ class PlanService:
                 out.append(it)
                 continue
             if tv != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            mode = str(
+                getattr(
+                    getattr(it, "mode", None), "value", getattr(it, "mode", "")
+                ) or ""
+            ).lower()
+            # FIX #349: remaining-city car.from is the parking spot, not
+            # the restaurant/park the party walked to.
+            if (
+                "car" in mode
+                and context
+                and not _is_locked_city_context(context)
+            ):
+                dest = (getattr(it, "to_location", "") or "").strip()
+                if dest:
+                    last_stop = dest
                 out.append(it)
                 continue
             frm = (getattr(it, "from_location", "") or "").strip()

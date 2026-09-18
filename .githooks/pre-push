@@ -1,6 +1,6 @@
 #!/bin/sh
-# Wrocław regression gate. The client reviews these ten plans, so a push that
-# adds a defect to them should fail here rather than in her inbox.
+# Client JSON regression gates. A push that adds a defect she already mailed
+# should fail here rather than in her inbox.
 # Skip with: SKIP_WROCLAW_GATE=1 git push
 if [ -n "$SKIP_WROCLAW_GATE" ]; then
     echo "[gate] pominieta na zadanie (SKIP_WROCLAW_GATE)"
@@ -12,10 +12,20 @@ cd "$(dirname "$0")/.." || exit 0
 
 echo "[gate] audyt 10 JSON-ow Wroclawia (~4 min)..."
 PYTHONIOENCODING=utf-8 ORS_ENABLED=false \
-    python -m pytest tests/test_gate_wroclaw.py -q --no-cov -p no:cacheprovider
+    python -m pytest tests/test_gate_wroclaw.py -q --no-cov -p no:cacheprovider --disable-warnings
 if [ $? -ne 0 ]; then
     echo "[gate] push zatrzymany: audyt Wroclawia zglasza nowy defekt."
     exit 1
+fi
+
+if [ -f tests/test_gate_krakow.py ]; then
+    echo "[gate] audyt 10 JSON-ow Krakowa (token auta, ~2 min)..."
+    PYTHONIOENCODING=utf-8 ORS_ENABLED=false \
+        python -m pytest tests/test_gate_krakow.py -q --no-cov -p no:cacheprovider --disable-warnings
+    if [ $? -ne 0 ]; then
+        echo "[gate] push zatrzymany: audyt Krakowa zglasza teleport auta / fizyke hopow."
+        exit 1
+    fi
 fi
 echo "[gate] OK"
 exit 0

@@ -722,6 +722,66 @@ def audit_day(
         if to:
             prev_stop = to
 
+    # FIX #349: car cannot start from a walk/meal stop while parked elsewhere.
+    if not _locked_audit_city(context):
+        car_at: Optional[str] = None
+        people: Optional[str] = None
+        city = str((context or {}).get("requested_city") or "").strip()
+        for i, it in enumerate(ordered):
+            if _is_transit(it):
+                frm = (getattr(it, "from_location", "") or "").strip()
+                to = (getattr(it, "to_location", "") or "").strip()
+                is_walk = "walk" in _mode(it) or "foot" in _mode(it)
+                is_car = "car" in _mode(it)
+                src = str(getattr(it, "routing_source", "") or "").lower()
+                if is_walk:
+                    if car_at is None and frm and (
+                        _is_hub_label(frm, context) or (city and _names_match(frm, city))
+                    ):
+                        car_at = frm
+                    if to:
+                        people = to
+                    continue
+                if not is_car:
+                    continue
+                if people and car_at and not _names_match(people, car_at):
+                    returned = False
+                    for prev in reversed(ordered[:i]):
+                        ptv = _tv(prev)
+                        if ptv in (
+                            ItemType.DAY_START.value, ItemType.DAY_END.value,
+                            ItemType.FREE_TIME.value,
+                        ):
+                            continue
+                        returned = bool(
+                            _is_transit(prev)
+                            and ("walk" in _mode(prev) or "foot" in _mode(prev))
+                            and _names_match(
+                                getattr(prev, "to_location", "") or "",
+                                car_at,
+                            )
+                        )
+                        break
+                    if src != "return_to_car" and not returned:
+                        defects.append(Defect(
+                            "car_teleport", day,
+                            f"Dzień {day}: auto rusza z {frm or people!r}, "
+                            f"ale stoi przy {car_at!r} (ludzie są przy {people!r})",
+                            {"from": frm, "people": people, "car_at": car_at},
+                        ))
+                if to:
+                    car_at = to
+                    people = to
+                continue
+            if _is_attr(it):
+                nm = (getattr(it, "name", "") or "").strip()
+                if nm:
+                    people = nm
+            elif _is_meal(it):
+                nm = _meal_name(it) or _stop_name(it)
+                if nm:
+                    people = nm
+
     # --- meal identity (label vs suggestion) ---
     for it in ordered:
         if not _is_meal(it):
