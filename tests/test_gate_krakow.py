@@ -1,8 +1,7 @@
-"""FIX #349: Kraków car-token gate over the ten client JSONs.
+"""FIX #349/#350: Kraków client-mail gate over the ten JSONs.
 
-Wrocław stays on its own gate. This one only fails the physics classes
-the client mailed as car teleports (plus the #348 hop-clock seals they
-sit on). Profile / idle morning / season are out of this tura.
+Fails car teleports, idle mornings, winter-dusk parks, stacked walking
+parks, long holes, and the #348 hop-clock seals they sit on.
 """
 from __future__ import annotations
 
@@ -28,11 +27,18 @@ WATCH = (
     "phantom_lead",
     "self_hop",
     "missing_hop",
+    "idle_start",
+    "late_start",
+    "after_dark_outdoor",
+    "park_stack",
+    "long_free_time",
+    "after_day_end",
 )
+GAP_MIN = 45
 
 
 @pytest.mark.slow
-def test_krakow_car_token_defects_are_gone():
+def test_krakow_client_mail_defects_are_gone():
     if not _JSON_DIR.exists() or not _EXCEL.exists():
         pytest.skip("Kraków fixtures are not present in this checkout")
     os.environ.setdefault("ORS_ENABLED", "false")
@@ -58,7 +64,17 @@ def test_krakow_car_token_defects_are_gone():
             "children_age": (payload.get("group") or {}).get("children_age"),
             "preferences": payload.get("preferences") or [],
         }
+        start = payload.get("trip_length") or {}
+        if start.get("start_date"):
+            ctx["date"] = start.get("start_date")
         for d in audit_plan(plan.days, context=ctx):
+            if d.code == "anonymous_gap":
+                sm = (d.meta or {}).get("start")
+                em = (d.meta or {}).get("end")
+                if sm is None or em is None or em - sm < GAP_MIN:
+                    continue
+                hits.append(f"J{num} D{d.day} [{d.code}] {d.message}")
+                continue
             if d.code in WATCH:
                 hits.append(f"J{num} D{d.day} [{d.code}] {d.message}")
 

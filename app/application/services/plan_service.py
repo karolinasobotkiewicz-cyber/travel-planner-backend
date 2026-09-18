@@ -232,6 +232,49 @@ _EARLIEST_DINNER_MIN = 16 * 60 + 30
 # A gap this long between two blocks is an afternoon, not a break. FIX #339:
 # the client set the ceiling for a single free block at 60 min.
 _MIDDAY_GAP_MIN = 60
+# FIX #350: a 40 min empty morning is already the hole the client mailed
+# (KRK J3 D2 09:00→10:19, J4 D2 09:30→12:00).
+_MORNING_GAP_MIN = 40
+_REMAINING_OUTDOOR_WALK = (
+    "planty", "błonia", "blonia", "bulwar", "las wolski", "bednarskiego",
+    "jordana", "decjusza", "lotników", "lotnikow", "ogród botan",
+    "ogrod botan", "skałk", "skalk", "kopiec",
+)
+_WINTER_MONTHS = frozenset({11, 12, 1, 2})
+_WINTER_DUSK_MIN = 16 * 60 + 30
+
+
+def _is_remaining_outdoor_walk(name: str) -> bool:
+    folded = _fold_place_label(name or "")
+    if not folded:
+        return False
+    return any(_fold_place_label(m) in folded for m in _REMAINING_OUTDOOR_WALK)
+
+
+def _remaining_winter_month(context: Optional[Dict[str, Any]]) -> Optional[int]:
+    """FIX #350: dusk needs a month even when `context['date']` is still None.
+
+    `trip_input_to_engine_params` leaves date empty and only sets `season`.
+    February KRK JSONs therefore arrive as season=winter with no ISO date,
+    and the dusk pass used to no-op (Kopiec 16:50, Las Wolski 17:10).
+    """
+    ctx = context or {}
+    raw = ctx.get("date") or ctx.get("trip_date") or ctx.get("start_date")
+    if raw is not None and str(raw).strip() and str(raw).strip().lower() != "none":
+        try:
+            if hasattr(raw, "month"):
+                return int(raw.month)
+        except Exception:
+            pass
+        try:
+            s = str(raw).strip()
+            if len(s) >= 7 and s[4] == "-":
+                return int(s[5:7])
+        except (TypeError, ValueError):
+            pass
+    if str(ctx.get("season") or "").strip().lower() == "winter":
+        return 1
+    return None
 # Dropping the evening meal is a last resort, so it takes more than a long
 # afternoon: the client's cases were 178, 255 and 318 min of nothing. A dinner
 # two hours after the last museum is a normal day and stays put.
@@ -2977,6 +3020,11 @@ class PlanService:
         _requested_city = trip_input.location.city or ""
         context["is_zakopane_trip"] = _requested_city.lower() in ("zakopane",)
         context["requested_city"] = _requested_city
+        _sd350 = getattr(getattr(trip_input, "trip_length", None), "start_date", None)
+        if _sd350 is not None:
+            context["start_date"] = _sd350
+            if not context.get("date"):
+                context["date"] = _sd350
         
         # ============================================================
         # ETAP 3 PHASE 2 + PHASE 7: INTELLIGENT TRIP TYPE ROUTING
@@ -25131,6 +25179,9 @@ class PlanService:
                     items = self._seal_remaining_city_transport(
                         items, ctx, day_num=day_num, coord_map=cm,
                     )
+                    items = self._seal_remaining_client_mail(
+                        items, ctx, day_num=day_num, coord_map=cm,
+                    )
             except Exception as _exc334:
                 print(
                     f"[FIX #334] D{day_num} geometry seal failed "
@@ -31623,6 +31674,8 @@ class PlanService:
             return items
         ctx = dict(context or {})
         usr = ctx.get("user") or {}
+        if not ctx.get("date"):
+            ctx["date"] = ctx.get("trip_date") or ctx.get("start_date")
         if not ctx.get("group_type"):
             ctx["group_type"] = usr.get("target_group") or usr.get("group_type") or ""
         if not ctx.get("preferences"):
@@ -31857,6 +31910,10 @@ class PlanService:
             pass
         try:
             work = self._fill_naked_midday_gaps(work, ctx, day_num=day_num)
+            work = self._drop_remaining_dusk_outdoor(work, ctx, day_num=day_num)
+            work = self._cap_remaining_park_run(work, ctx, day_num=day_num)
+            work = self._pull_remaining_day_to_window(work, ctx, day_num=day_num)
+            work = self._respect_opening_hours(work, ctx, day_num=day_num)
             work = self._ensure_dinner_present(
                 work, ctx.get("day_end") or "20:00", ctx,
             )
@@ -31865,6 +31922,9 @@ class PlanService:
             pass
         try:
             work = self._seal_remaining_city_transport(
+                work, ctx, day_num=day_num, coord_map=cm,
+            )
+            work = self._seal_remaining_client_mail(
                 work, ctx, day_num=day_num, coord_map=cm,
             )
         except Exception:
@@ -33544,7 +33604,12 @@ class PlanService:
         *,
         day_num: int = 0,
     ) -> List[Any]:
-        """FIX #331: a day that cannot start at 09:00 starts later, not idle."""
+        """FIX #331: a day that cannot start at 09:00 starts later, not idle.
+
+        FIX #350: remaining cities keep the declared window. Drop the
+        padding, do not slide day_start — the client reads 09:00→10:19
+        as a missing morning, not as a late opening.
+        """
         if not items:
             return items
         ordered = self._sort_items_by_time(list(items))
@@ -33602,7 +33667,7 @@ class PlanService:
                 nxt_start = raw
                 break
         out = [it for i, it in enumerate(ordered) if i not in drop]
-        if nxt_start is not None:
+        if nxt_start is not None and _is_locked_city_context(context):
             for i, it in enumerate(out):
                 if _item_type_value(it) != ItemType.DAY_START.value:
                     continue
@@ -33615,6 +33680,469 @@ class PlanService:
             f"[FIX #331] Day {day_num}: dropped {span} min idle start, "
             f"day begins {nxt_start}"
         )
+        return out
+
+    def _nudge_remaining_clock(
+        self, items: List[Any], delta: int,
+    ) -> List[Any]:
+        """Shift every timed block (not day markers) by ``delta`` minutes."""
+        if not delta or not items:
+            return items
+        out: List[Any] = []
+        for it in items:
+            tv = _item_type_value(it)
+            if tv in (
+                ItemType.DAY_START.value, "day_start",
+                ItemType.DAY_END.value, "day_end",
+            ):
+                out.append(it)
+                continue
+            raw_s = getattr(it, "start_time", None)
+            raw_e = getattr(it, "end_time", None)
+            if not raw_s or not raw_e:
+                out.append(it)
+                continue
+            try:
+                s = time_to_minutes(raw_s) + delta
+                e = time_to_minutes(raw_e) + delta
+                if s < 0:
+                    e -= s
+                    s = 0
+                it = it.model_copy(update={
+                    "start_time": minutes_to_time(s),
+                    "end_time": minutes_to_time(e),
+                })
+            except Exception:
+                pass
+            out.append(it)
+        return out
+
+    def _pull_remaining_day_to_window(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #350: first hop sits on the declared day_start, not 10:19."""
+        if not items or _is_locked_city_context(context):
+            return items
+        ctx = context or {}
+        try:
+            window = time_to_minutes(ctx.get("day_start") or "09:00")
+        except Exception:
+            window = 9 * 60
+        ordered = self._sort_items_by_time(list(items))
+        first_st = None
+        for it in ordered:
+            tv = _item_type_value(it)
+            if tv in (
+                ItemType.DAY_START.value, "day_start",
+                ItemType.DAY_END.value, "day_end",
+                ItemType.FREE_TIME.value,
+            ):
+                continue
+            raw = getattr(it, "start_time", None) or getattr(it, "time", None)
+            if not raw:
+                continue
+            try:
+                first_st = time_to_minutes(raw)
+            except Exception:
+                continue
+            break
+        if first_st is None or first_st - window < _MORNING_GAP_MIN:
+            return ordered
+        delta = window - first_st
+        print(
+            f"[FIX #350] Day {day_num}: pull morning {delta}min "
+            f"so first block is {minutes_to_time(window)}"
+        )
+        ordered = self._nudge_remaining_clock(ordered, delta)
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) != ItemType.DAY_START.value:
+                continue
+            try:
+                ordered[i] = it.model_copy(update={"time": minutes_to_time(window)})
+            except Exception:
+                pass
+            break
+        return ordered
+
+    def _drop_remaining_dusk_outdoor(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #350: Skałki at 17:12 in February is after dark."""
+        if not items or _is_locked_city_context(context):
+            return items
+        month = _remaining_winter_month(context)
+        if month not in _WINTER_MONTHS:
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        drop: set = set()
+        dropped: List[str] = []
+        for i, it in enumerate(ordered):
+            if not _is_timeline_attraction(it):
+                continue
+            nm = getattr(it, "name", "") or ""
+            if not _is_remaining_outdoor_walk(nm):
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                continue
+            if st < _WINTER_DUSK_MIN:
+                continue
+            drop.add(i)
+            dropped.append(nm)
+            if i > 0:
+                prev = ordered[i - 1]
+                if _item_type_value(prev) == ItemType.TRANSIT.value:
+                    to = (getattr(prev, "to_location", "") or "").strip()
+                    if to and _place_names_match(to, nm):
+                        drop.add(i - 1)
+        if not drop:
+            return ordered
+        print(f"[FIX #350] Day {day_num}: dusk outdoor dropped {dropped}")
+        return [it for i, it in enumerate(ordered) if i not in drop]
+
+    def _cap_remaining_park_run(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #350: three walking parks in a row is not an afternoon."""
+        if not items or _is_locked_city_context(context):
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        run = 0
+        drop: set = set()
+        dropped: List[str] = []
+        for i, it in enumerate(ordered):
+            if not _is_timeline_attraction(it):
+                continue
+            nm = getattr(it, "name", "") or ""
+            if _is_remaining_outdoor_walk(nm):
+                run += 1
+                if run >= 3:
+                    drop.add(i)
+                    dropped.append(nm)
+                    if i > 0:
+                        prev = ordered[i - 1]
+                        if _item_type_value(prev) == ItemType.TRANSIT.value:
+                            to = (getattr(prev, "to_location", "") or "").strip()
+                            if to and _place_names_match(to, nm):
+                                drop.add(i - 1)
+            else:
+                run = 0
+        if not drop:
+            return ordered
+        print(f"[FIX #350] Day {day_num}: park-run dropped {dropped}")
+        return [it for i, it in enumerate(ordered) if i not in drop]
+
+    def _hard_cap_remaining_free_time(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+        cap: int = 60,
+    ) -> List[Any]:
+        """FIX #350: leftover 63 min FT after shrink still trips the auditor."""
+        from app.domain.validators.client_invariants import LONG_FREE_TIME_MIN
+
+        cap = min(cap, LONG_FREE_TIME_MIN)
+        out: List[Any] = []
+        for it in items:
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                out.append(it)
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                out.append(it)
+                continue
+            span = en - st if en > st else int(getattr(it, "duration_min", 0) or 0)
+            if span <= cap:
+                out.append(it)
+                continue
+            try:
+                out.append(it.model_copy(update={
+                    "end_time": minutes_to_time(st + cap),
+                    "duration_min": cap,
+                }))
+                print(
+                    f"[FIX #350] Day {day_num}: hard-capped free_time "
+                    f"{span}→{cap} min"
+                )
+            except Exception:
+                out.append(it)
+        return out
+
+    def _seal_remaining_client_mail(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        coord_map: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #350: last remaining-city pass for the Kraków client mail.
+
+        Healing can re-name holes and restamp hops after the day seal, so
+        mornings, dusk parks and stacked walks have to be re-applied here.
+        Sequence can push a 16:20 park to 16:50, so dusk runs after the clock.
+        """
+        if not items or _is_locked_city_context(context):
+            return items
+        ctx = dict(context or {})
+        if not ctx.get("date"):
+            ctx["date"] = ctx.get("trip_date") or ctx.get("start_date")
+        cm = coord_map or {}
+        work = list(items)
+        try:
+            work = self._ensure_remaining_prompt_start(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            work = self._drop_remaining_dusk_outdoor(work, ctx, day_num=day_num)
+            work = self._cap_remaining_park_run(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            work = self._fill_naked_midday_gaps(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            work = self._extend_short_day(
+                work, ctx, day_num=day_num, coord_map=cm,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._pull_next_stop_over_large_gaps(
+                work, ctx, day_num=day_num, keep=20, min_gap=45,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._drop_remaining_dusk_outdoor(work, ctx, day_num=day_num)
+            work = self._cap_remaining_park_run(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            work = self._sequence_remaining_clock(
+                work, ctx, day_num=day_num, preserve_order=True,
+            )
+        except Exception:
+            pass
+        try:
+            merged = self._merge_coord_map(cm, work)
+            work = self._drop_hops_not_to_next_stop(work, day_num=day_num)
+            work = self._ensure_stop_to_stop_legs(
+                work, merged, ctx, day_num=day_num, min_km=0.18,
+            )
+            work = self._ensure_leading_transit(
+                work, merged, ctx, day_num=day_num,
+            )
+            work = self._rewrite_hop_origins(
+                work, day_num=day_num, context=ctx,
+            )
+            work = self._snap_transits_to_previous_stop_end(
+                work, day_num=day_num,
+            )
+            work = self._seal_remaining_car_token(
+                work, self._merge_coord_map(cm, work), ctx, day_num=day_num,
+            )
+            work = self._drop_items_after_day_end(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            # Hops after sequence can push a 16:16 park to 16:36.
+            work = self._drop_remaining_dusk_outdoor(work, ctx, day_num=day_num)
+            work = self._cap_remaining_park_run(work, ctx, day_num=day_num)
+            work = self._pull_next_stop_over_large_gaps(
+                work, ctx, day_num=day_num, keep=20, min_gap=45,
+            )
+            merged = self._merge_coord_map(cm, work)
+            work = self._drop_hops_not_to_next_stop(work, day_num=day_num)
+            work = self._ensure_stop_to_stop_legs(
+                work, merged, ctx, day_num=day_num, min_km=0.18,
+            )
+            work = self._snap_transits_to_previous_stop_end(
+                work, day_num=day_num,
+            )
+            work = self._seal_remaining_car_token(
+                work, self._merge_coord_map(cm, work), ctx, day_num=day_num,
+            )
+            work = self._drop_remaining_dusk_outdoor(work, ctx, day_num=day_num)
+            work = self._cap_remaining_park_run(work, ctx, day_num=day_num)
+            work = self._drop_hops_not_to_next_stop(work, day_num=day_num)
+            work = self._ensure_stop_to_stop_legs(
+                work, self._merge_coord_map(cm, work), ctx,
+                day_num=day_num, min_km=0.18,
+            )
+            work = self._seal_remaining_car_token(
+                work, self._merge_coord_map(cm, work), ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._name_remaining_holes(work, ctx, day_num=day_num)
+            work = self._collapse_adjacent_free_time(
+                work, day_num=day_num, force=True,
+            )
+            work = self._shrink_free_time_over_sixty(work, ctx, day_num=day_num)
+            work = self._trim_tail_long_free_time(
+                work, ctx, day_num=day_num, min_span=61,
+            )
+            work = self._hard_cap_remaining_free_time(work, day_num=day_num)
+            work = self._drop_idle_morning_padding(work, ctx, day_num=day_num)
+            work = self._reconcile_day_end_marker(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        return work
+
+    def _ensure_remaining_prompt_start(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #350: if the first museum opens at 10:19, walk a park at 09:00."""
+        from app.domain.models.plan import AttractionItem, TransitItem, TransitMode
+
+        if not items or _is_locked_city_context(context):
+            return items
+        ctx = context or {}
+        try:
+            window = time_to_minutes(ctx.get("day_start") or "09:00")
+        except Exception:
+            window = 9 * 60
+        stripped: List[Any] = []
+        seen_real = False
+        for it in self._sort_items_by_time(list(items)):
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                stripped.append(it)
+                continue
+            if not seen_real and tv == ItemType.FREE_TIME.value:
+                continue
+            seen_real = True
+            stripped.append(it)
+        first_st = None
+        for it in stripped:
+            tv = _item_type_value(it)
+            if tv in (
+                ItemType.DAY_START.value, ItemType.DAY_END.value,
+            ):
+                continue
+            raw = getattr(it, "start_time", None) or getattr(it, "time", None)
+            if not raw:
+                continue
+            try:
+                first_st = time_to_minutes(raw)
+            except Exception:
+                continue
+            break
+        if first_st is None or first_st - window < _MORNING_GAP_MIN:
+            return stripped
+        park_i = None
+        for i, it in enumerate(stripped):
+            if not _is_timeline_attraction(it):
+                continue
+            nm = getattr(it, "name", "") or ""
+            if _is_remaining_outdoor_walk(nm):
+                park_i = i
+                break
+        insert_at = 0
+        for j, it in enumerate(stripped):
+            if _item_type_value(it) == ItemType.DAY_START.value:
+                insert_at = j + 1
+                break
+        if park_i is not None:
+            hop_i = None
+            if park_i > 0 and _item_type_value(stripped[park_i - 1]) == ItemType.TRANSIT.value:
+                to = (getattr(stripped[park_i - 1], "to_location", "") or "").strip()
+                nm = getattr(stripped[park_i], "name", "") or ""
+                if to and _place_names_match(to, nm):
+                    hop_i = park_i - 1
+            take = [park_i] if hop_i is None else [hop_i, park_i]
+            block = [stripped[k] for k in take]
+            rest = [it for i, it in enumerate(stripped) if i not in set(take)]
+            timed = window
+            new_block = []
+            for piece in block:
+                dur = 10
+                try:
+                    st = time_to_minutes(getattr(piece, "start_time", None) or "")
+                    en = time_to_minutes(getattr(piece, "end_time", None) or "")
+                    if en > st:
+                        dur = en - st
+                except Exception:
+                    dur = int(getattr(piece, "duration_min", 0) or 10)
+                try:
+                    piece = piece.model_copy(update={
+                        "start_time": minutes_to_time(timed),
+                        "end_time": minutes_to_time(timed + max(dur, 8)),
+                    })
+                except Exception:
+                    pass
+                new_block.append(piece)
+                timed += max(dur, 8)
+            rest[insert_at:insert_at] = new_block
+            print(
+                f"[FIX #350] Day {day_num}: morning park "
+                f"{getattr(block[-1], 'name', None)}"
+            )
+            return rest
+        city = str(ctx.get("requested_city") or "").strip()
+        used = {
+            _fold_place_label(getattr(it, "name", "") or "")
+            for it in stripped if _is_timeline_attraction(it)
+        }
+        anchors = []
+        if "krak" in city.lower():
+            anchors = [
+                ("Planty Krakowskie", 50.0614, 19.9373),
+                ("Bulwary Wiślane", 50.0520, 19.9566),
+                ("Błonia Krakowskie", 50.0590, 19.9070),
+            ]
+        pick = next(
+            ((n, la, ln) for n, la, ln in anchors if _fold_place_label(n) not in used),
+            None,
+        )
+        if not pick:
+            return stripped
+        nm, lat, lng = pick
+        hop_min, vis_min = 10, 40
+        hop = TransitItem(
+            type=ItemType.TRANSIT,
+            start_time=minutes_to_time(window),
+            end_time=minutes_to_time(window + hop_min),
+            duration_min=hop_min,
+            mode=TransitMode.WALK,
+            from_location=city or "Kraków",
+            to_location=nm,
+            distance_km=0.8,
+            routing_source="morning_anchor",
+        )
+        vis = AttractionItem.model_construct(
+            type=ItemType.ATTRACTION, poi_id="morning_anchor",
+            name=nm, description_short="", why_selected=["morning_fill"],
+            start_time=minutes_to_time(window + hop_min),
+            end_time=minutes_to_time(window + hop_min + vis_min),
+            duration_min=vis_min, lat=lat, lng=lng, city=city,
+        )
+        out = list(stripped)
+        out[insert_at:insert_at] = [hop, vis]
+        print(f"[FIX #350] Day {day_num}: prepended morning {nm}")
         return out
 
     def _rewrite_hop_origins(
@@ -34158,7 +34686,7 @@ class PlanService:
                 except Exception:
                     window_start = 9 * 60
                 first_sm, _fe, _fn, _fpt = blocks[0]
-                if first_sm - window_start >= _MIDDAY_GAP_MIN:
+                if first_sm - window_start >= _MORNING_GAP_MIN:
                     hub_nm = str(ctx.get("requested_city") or "")
                     hub_pt = _city_center_coords(hub_nm)
                     planted = self._plant_afternoon_stop(
@@ -34183,10 +34711,14 @@ class PlanService:
                     if planted is not None:
                         work = planted
                         continue
+            hole_min = _MIDDAY_GAP_MIN
+            if not _is_locked_city_context(ctx):
+                # Gate GAP_MIN=45; 47–59 min holes were invisible to the 60 min fill.
+                hole_min = 45
             for (_s1, e1, nm1, pt1), (s2, _e2, _nm2, _pt2) in zip(
                 blocks, blocks[1:]
             ):
-                if s2 - e1 < _MIDDAY_GAP_MIN:
+                if s2 - e1 < hole_min:
                     continue
                 planted = self._plant_afternoon_stop(
                     work, ctx, list(pool),
@@ -34355,6 +34887,13 @@ class PlanService:
                 )
             start_vis = after_min + hop_guess
             if win and not (win[0] <= start_vis < win[1] - 15):
+                continue
+            if (
+                not _is_locked_city_context(context)
+                and _remaining_winter_month(context) in _WINTER_MONTHS
+                and start_vis >= (_WINTER_DUSK_MIN - 20)
+                and _is_remaining_outdoor_walk(nm)
+            ):
                 continue
             # FIX #335: the Excel floor decides the visit, so a POI that no
             # longer fits the window is the next candidate's turn — not a

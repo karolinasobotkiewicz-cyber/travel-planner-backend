@@ -127,6 +127,15 @@ _LOOK_AROUND_TOKENS = frozenset({
 })
 _LOOK_AROUND_PHRASES = ("punkt widokowy", "wieza widokowa", "taras widokowy")
 _FAMILY_GROUPS = frozenset({"family_kids", "family", "rodzina", "z dziecmi"})
+_REMAINING_OUTDOOR_WALK = (
+    "planty", "błonia", "blonia", "bulwar", "las wolski", "bednarskiego",
+    "jordana", "decjusza", "lotników", "lotnikow", "ogród botan",
+    "ogrod botan", "skałk", "skalk", "kopiec",
+)
+_WINTER_MONTHS = frozenset({11, 12, 1, 2})
+_WINTER_DUSK_MIN = 16 * 60 + 30
+_MORNING_GAP_MIN = 40
+_PARK_RUN_CAP = 3
 
 
 @dataclass(frozen=True)
@@ -978,6 +987,79 @@ def audit_day(
                 {"minutes": span, "start": sm},
             ))
         break
+
+    # FIX #350: declared 09:00, first hop 10:19 is a missing morning.
+    if not _locked_audit_city(context):
+        declared = None
+        try:
+            raw_ds = (context or {}).get("day_start")
+            declared = time_to_minutes(raw_ds) if raw_ds else None
+        except Exception:
+            declared = None
+        origin = declared if declared is not None else marker_start
+        if origin is not None:
+            for it in ordered:
+                if _tv(it) in (
+                    ItemType.DAY_START.value, ItemType.DAY_END.value,
+                    ItemType.FREE_TIME.value,
+                ):
+                    continue
+                sm, _ = _clock(it)
+                if sm is not None and sm - origin >= _MORNING_GAP_MIN:
+                    defects.append(Defect(
+                        "late_start", day,
+                        f"Dzień {day}: pierwszy punkt o {_fmt(sm)} "
+                        f"przy starcie {_fmt(origin)} ({sm - origin} min dziury)",
+                        {"start": sm, "window": origin},
+                    ))
+                break
+        month = None
+        raw_date = (
+            (context or {}).get("date")
+            or (context or {}).get("trip_date")
+            or (context or {}).get("start_date")
+        )
+        if raw_date is not None:
+            try:
+                if hasattr(raw_date, "month"):
+                    month = int(raw_date.month)
+                else:
+                    month = int(str(raw_date)[5:7])
+            except (TypeError, ValueError):
+                month = None
+        if month not in _WINTER_MONTHS and str(
+            (context or {}).get("season") or ""
+        ).strip().lower() == "winter":
+            month = 1
+        run = 0
+        for it in ordered:
+            if not _is_attr(it):
+                continue
+            nm = (getattr(it, "name", "") or "").strip()
+            folded_nm = _fold(nm)
+            is_park = any(_fold(m) in folded_nm for m in _REMAINING_OUTDOOR_WALK)
+            if is_park:
+                run += 1
+                if run >= _PARK_RUN_CAP:
+                    defects.append(Defect(
+                        "park_stack", day,
+                        f"Dzień {day}: {run}. park/spacer pod rząd ({nm})",
+                        {"name": nm, "run": run},
+                    ))
+                sm, _ = _clock(it)
+                if (
+                    month in _WINTER_MONTHS
+                    and sm is not None
+                    and sm >= _WINTER_DUSK_MIN
+                ):
+                    defects.append(Defect(
+                        "after_dark_outdoor", day,
+                        f"Dzień {day}: {nm} o {_fmt(sm)} w lutym/zimie "
+                        f"(po zmroku)",
+                        {"name": nm, "start": sm},
+                    ))
+            else:
+                run = 0
 
     # --- no_return: satellite day that never drives back ---
     city = str((context or {}).get("requested_city") or "").strip()
