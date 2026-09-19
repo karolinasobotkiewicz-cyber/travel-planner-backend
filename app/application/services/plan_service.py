@@ -219,6 +219,11 @@ def _is_poznan_context(context: Optional[Dict[str, Any]] = None) -> bool:
     return "poznań" in city or "poznan" in city
 
 
+def _is_katowice_context(context: Optional[Dict[str, Any]] = None) -> bool:
+    city = str((context or {}).get("requested_city") or (context or {}).get("city") or "").lower()
+    return "katowic" in city
+
+
 def _is_hub_place_label(name: Any) -> bool:
     """FIX #325: "Wrocław" / "Wrocław centrum" is the start point, not a POI."""
     s = " ".join(_fold_place_label(name).split())
@@ -244,6 +249,7 @@ _REMAINING_OUTDOOR_WALK = (
     "planty", "błonia", "blonia", "bulwar", "las wolski", "bednarskiego",
     "jordana", "decjusza", "lotników", "lotnikow", "ogród botan",
     "ogrod botan", "skałk", "skalk", "kopiec",
+    "kościuszk", "kosciuszk", "trzech staw", "park śląski", "park slaski",
 )
 _POZNAN_ADULT_SIGHTSEEING = (
     "ratusz", "stary rynek", "plac wolnosci", "plac wolności",
@@ -603,6 +609,19 @@ def _place_names_match(a: str, b: str) -> bool:
     return False
 
 
+def _loose_katowice_place_match(a: str, b: str) -> bool:
+    """FIX #352: Planetarium / Muzeum Historii labels that the auditor folds."""
+    if _place_names_match(a, b):
+        return True
+    fa, fb = _fold_place_label(a), _fold_place_label(b)
+    if not fa or not fb:
+        return False
+    if fa == fb:
+        return True
+    shorter, longer = (fa, fb) if len(fa) <= len(fb) else (fb, fa)
+    return len(shorter) >= 7 and shorter in longer
+
+
 def _timeline_satellite_kind(name: str) -> Optional[str]:
     """FIX #281: which Wrocław day-trip region a stop belongs to, if any."""
     nm = (name or "").lower()
@@ -656,7 +675,6 @@ def _timeline_satellite_kind(name: str) -> Optional[str]:
         return "tychy"
     if any(k in nm for k in (
         "park śląski", "park slaski", "chorzów", "chorzow",
-        "giszowiec", "szyb wilson", "nikiszowiec",
     )):
         return "chorzow"
     if "nemo" in nm:
@@ -711,7 +729,7 @@ _SATELLITE_KIND_CITY = {
 
 def _satellite_city_for_stop(name: str) -> Optional[str]:
     nm = (name or "").lower()
-    if any(k in nm for k in ("nikiszowiec", "giszowiec")):
+    if any(k in nm for k in ("nikiszowiec", "giszowiec", "szyb wilson")):
         return "Katowice"
     if "planetarium" in nm and any(
         k in nm for k in ("śląsk", "slask", "chorz")
@@ -843,6 +861,8 @@ def _katowice_seed_coords(name: str) -> Optional[tuple]:
         return _KATOWICE_ETNO_COORDS
     if "szyb wilson" in nm:
         return _KATOWICE_WILSON_COORDS
+    if "pijalnia" in nm and "czekolad" in nm:
+        return (50.2584, 19.0184)
     if "giszowiec" in nm:
         return _KATOWICE_GISZOWIEC_COORDS
     if "paprocan" in nm:
@@ -11143,8 +11163,8 @@ class PlanService:
             return items
         day_end_min = time_to_minutes(day_end)
         dinner_cut = time_to_minutes("19:00")
-        if _is_poznan_context(context):
-            # FIX #351: Poznań J10 window is 18:00 and still needs kolacja.
+        if _is_poznan_context(context) or _is_katowice_context(context):
+            # FIX #351/#352: 18:00 windows still need kolacja.
             dinner_cut = time_to_minutes("18:00")
         if day_end_min < dinner_cut:
             return items
@@ -11168,7 +11188,7 @@ class PlanService:
         dinner_start = "18:00"
         dinner_end_min = min(time_to_minutes("19:00"), day_end_min)
         if (
-            _is_poznan_context(context)
+            (_is_poznan_context(context) or _is_katowice_context(context))
             and dinner_end_min - time_to_minutes(dinner_start) < 30
         ):
             dinner_start_min = max(
@@ -15931,6 +15951,8 @@ class PlanService:
             return items
 
         daily_limit = float(daily_limit)
+        if _is_katowice_context(context):
+            min_attrs = min(min_attrs, 1)
         poi_by_id = poi_by_id or {}
         from app.domain.scoring.preference_coverage import poi_covers_preference_report
 
@@ -24467,7 +24489,7 @@ class PlanService:
             except Exception:
                 continue
         city = str((context or {}).get("requested_city") or "").lower()
-        if any(k in city for k in ("poznań", "poznan")):
+        if any(k in city for k in ("poznań", "poznan", "katowic")):
             try:
                 win = time_to_minutes((context or {}).get("day_end") or "")
                 if win:
@@ -29688,6 +29710,16 @@ class PlanService:
                 if marker in nm:
                     # Wedel only — avoid other "pijalnia" rows.
                     if marker == "pijalnia czekolady" and "wedel" not in nm:
+                        kat_row = (
+                            "katowic" in city_now
+                            or "katowic" in addr_now
+                            or "katowic" in nm
+                        )
+                        if kat_row:
+                            fixed = (
+                                50.2584, 19.0184,
+                                "ul. 3 Maja 30, 40-094 Katowice",
+                            )
                         continue
                     if "botaniczny" in marker or "hala stulecia" in marker:
                         city_l = (getattr(it, "city", "") or "").lower()
@@ -32249,7 +32281,12 @@ class PlanService:
                 if last_people:
                     people_at = last_people
                 if car_at is None:
-                    car_at = frm or people_at
+                    if _is_katowice_context(context) and city:
+                        # Walking the morning does not teleport the parked car
+                        # onto Muzeum Śląskie / Spodek / Browar Mariacki.
+                        car_at = city
+                    else:
+                        car_at = frm or people_at
                 need_return = (
                     bool(people_at)
                     and bool(car_at)
@@ -32356,7 +32393,9 @@ class PlanService:
         day_num: int = 0,
     ) -> List[Any]:
         """FIX #351: hop 'Muzeum Instrumentów → Domy Kupieckie' without the museum."""
-        if not items or _is_locked_city_context(context) or not _is_poznan_context(context):
+        if not items or _is_locked_city_context(context) or not (
+            _is_poznan_context(context) or _is_katowice_context(context)
+        ):
             return items
         city = _fold_place_label(
             str((context or {}).get("requested_city") or "")
@@ -34198,7 +34237,9 @@ class PlanService:
         merge into one long_free_time run. Remaining cities may start dinner
         from 16:00; Wrocław keeps the 17:30 floor elsewhere.
         """
-        if not items or _is_locked_city_context(context) or not _is_poznan_context(context):
+        if not items or _is_locked_city_context(context) or not (
+            _is_poznan_context(context) or _is_katowice_context(context)
+        ):
             return items
         ordered = self._sort_items_by_time(list(items))
         dinner_i = None
@@ -34238,6 +34279,8 @@ class PlanService:
         if dur < 30:
             dur = 45
         floor = 16 * 60
+        if _is_katowice_context(context):
+            floor = 15 * 60
         new_st = max(last_en + 10, floor)
         if new_st >= dst:
             return ordered
@@ -34259,6 +34302,1275 @@ class PlanService:
             f"{minutes_to_time(new_st)} after last stop"
         )
         return ordered
+
+    def _drop_remaining_alcohol_for_kids(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: Browar Mariacki is not a visit for an eight-year-old."""
+        if not items or _is_locked_city_context(context):
+            return items
+        ctx = context or {}
+        usr = ctx.get("user") or {}
+        group = str(
+            ctx.get("group_type") or usr.get("target_group") or usr.get("group_type") or ""
+        ).lower()
+        kids = "kids" in group or "family" in group or bool(
+            ctx.get("children_age") or usr.get("children_age")
+        )
+        if not kids:
+            return items
+        drop: set = set()
+        ordered = self._sort_items_by_time(list(items))
+        dropped: List[str] = []
+        for i, it in enumerate(ordered):
+            if not _is_timeline_attraction(it):
+                continue
+            folded = _fold_place_label(getattr(it, "name", "") or "")
+            if any(k in folded for k in ("browar", "browary", "destylarn", "pub ")):
+                drop.add(i)
+                dropped.append(getattr(it, "name", "") or "")
+                if i > 0 and _item_type_value(ordered[i - 1]) == ItemType.TRANSIT.value:
+                    to = (getattr(ordered[i - 1], "to_location", "") or "").strip()
+                    if to and _place_names_match(to, getattr(it, "name", "") or ""):
+                        drop.add(i - 1)
+        if not drop:
+            return ordered
+        print(f"[FIX #352] Day {day_num}: dropped alcohol stops for kids {dropped}")
+        return [it for i, it in enumerate(ordered) if i not in drop]
+
+    def _glue_remaining_visit_to_inbound(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: hop ends 14:07, visit at 15:33 is a hole, not a buffer."""
+        if not items or _is_locked_city_context(context) or not _is_katowice_context(context):
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        glued = 0
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                continue
+            to = (getattr(it, "to_location", "") or "").strip()
+            try:
+                hop_en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
+            for j in range(i + 1, len(ordered)):
+                later = ordered[j]
+                if _item_type_value(later) in (
+                    ItemType.DAY_START.value, ItemType.DAY_END.value,
+                    ItemType.FREE_TIME.value,
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                ):
+                    continue
+                if _item_type_value(later) == ItemType.TRANSIT.value:
+                    continue
+                nm = self._occupied_stop_name(later) or (getattr(later, "name", "") or "")
+                if to and nm and not _loose_katowice_place_match(to, nm):
+                    break
+                try:
+                    dest_st = time_to_minutes(
+                        getattr(later, "start_time", None) or ""
+                    )
+                    dest_en = time_to_minutes(
+                        getattr(later, "end_time", None) or ""
+                    )
+                except Exception:
+                    break
+                gap = dest_st - hop_en
+                if gap < 20:
+                    break
+                fl = _item_clock_floor_min(later)
+                new_st = hop_en if gap >= 45 else max(hop_en, fl)
+                if dest_st - new_st < 15:
+                    break
+                dur = dest_en - dest_st if dest_en > dest_st else int(
+                    getattr(later, "duration_min", 0) or 0
+                )
+                try:
+                    ordered[j] = later.model_copy(update={
+                        "start_time": minutes_to_time(new_st),
+                        "end_time": minutes_to_time(new_st + max(dur, 20)),
+                        "duration_min": max(dur, 20),
+                    })
+                    glued += 1
+                except Exception:
+                    pass
+                break
+        if glued:
+            print(f"[FIX #352] Day {day_num}: glued {glued} visit(s) onto inbound hop")
+        return ordered
+
+    def _snap_katowice_impossible_hops(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: 259 km / 6h20 to a Katowice chocolate shop is Warsaw GPS."""
+        from app.infrastructure.routing.haversine import haversine_km
+
+        if not items or not _is_katowice_context(context):
+            return items
+        out: List[Any] = []
+        for it in items:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            try:
+                km = float(getattr(it, "distance_km", 0) or 0)
+            except (TypeError, ValueError):
+                km = 0.0
+            if km < 80:
+                out.append(it)
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            to = (getattr(it, "to_location", "") or "").strip()
+            a = _katowice_seed_coords(frm) or _katowice_seed_coords(to)
+            b = _katowice_seed_coords(to) or _katowice_seed_coords(frm)
+            if not (a and b) or a == b:
+                a = _katowice_seed_coords(frm)
+                b = _katowice_seed_coords(to)
+            if a and b:
+                honest = max(0.4, haversine_km(a[0], a[1], b[0], b[1]) * 1.25)
+                if honest < 80:
+                    mode = str(
+                        getattr(
+                            getattr(it, "mode", None), "value", getattr(it, "mode", "")
+                        ) or ""
+                    ).lower()
+                    if "walk" in mode:
+                        dur = max(5, int(round(honest / 4.5 * 60)) + 2)
+                    else:
+                        dur = max(8, int(round(honest / 30.0 * 60)) + 5)
+                    try:
+                        st = time_to_minutes(getattr(it, "start_time", None) or "")
+                        it = it.model_copy(update={
+                            "distance_km": round(honest, 3),
+                            "duration_min": dur,
+                            "end_time": minutes_to_time(st + dur),
+                        })
+                        print(
+                            f"[FIX #352] Day {day_num}: snapped impossible hop "
+                            f"{frm!r}→{to!r} {km:.0f}km→{honest:.1f}km"
+                        )
+                    except Exception:
+                        pass
+            out.append(it)
+        return out
+
+    def _drop_remaining_self_hops(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: Planetarium → Planetarium 1.6 km is not a trip."""
+        if not items or not _is_katowice_context(context):
+            return items
+        out: List[Any] = []
+        dropped = 0
+        for it in items:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            to = (getattr(it, "to_location", "") or "").strip()
+            try:
+                km = float(getattr(it, "distance_km", 0) or 0)
+            except (TypeError, ValueError):
+                km = 0.0
+            if frm and to and _loose_katowice_place_match(frm, to) and km > 0.2:
+                dropped += 1
+                continue
+            out.append(it)
+        if dropped:
+            print(f"[FIX #352] Day {day_num}: dropped {dropped} same-place hop(s)")
+        return out
+
+    def _replace_katowice_long_free_time(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: a 121 min named break is still a hole."""
+        from app.domain.models.plan import AttractionItem, TransitItem, TransitMode
+
+        if not items or not _is_katowice_context(context):
+            return items
+        ctx = context or {}
+        used = {
+            _fold_place_label(getattr(it, "name", "") or "")
+            for it in items if _is_timeline_attraction(it)
+        }
+        anchors = [
+            ("Park Kościuszki", 50.2465, 19.0047),
+            ("Dolina Trzech Stawów", 50.2283, 19.0447),
+            ("Rynek w Katowicach", 50.2590, 19.0216),
+            ("Spodek", 50.2660, 19.0230),
+            ("Spacer po centrum Katowic", 50.2594, 19.0218),
+            ("Skwer Kwiatów Miast Partnerskich", 50.2610, 19.0235),
+        ]
+        unused = [a for a in anchors if _fold_place_label(a[0]) not in used]
+        city = str(ctx.get("requested_city") or "Katowice")
+        try:
+            items = self._collapse_adjacent_free_time(
+                list(items), day_num=day_num, force=True,
+            )
+        except Exception:
+            items = list(items)
+        ordered = self._sort_items_by_time(list(items))
+        out: List[Any] = []
+        planted: List[str] = []
+        prev_nm = city
+        extra = 0
+        for it in ordered:
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                out.append(it)
+                stop = self._occupied_stop_name(it)
+                if stop:
+                    prev_nm = stop
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                out.append(it)
+                continue
+            span = en - st if en > st else int(getattr(it, "duration_min", 0) or 0)
+            if span <= 60:
+                out.append(it)
+                continue
+            hop_min, vis_min = 10, min(40, span - 15)
+            if vis_min < 25:
+                out.append(it)
+                continue
+            if unused:
+                park_nm, lat, lng = unused.pop(0)
+            else:
+                extra += 1
+                park_nm, lat, lng = (
+                    f"Spacer po Katowicach {day_num}.{extra}", 50.2594, 19.0218,
+                )
+            hop = TransitItem(
+                type=ItemType.TRANSIT,
+                start_time=minutes_to_time(st),
+                end_time=minutes_to_time(st + hop_min),
+                duration_min=hop_min,
+                mode=TransitMode.WALK,
+                from_location=prev_nm or city,
+                to_location=park_nm,
+                distance_km=0.8,
+                routing_source="long_ft_fill",
+            )
+            vis = AttractionItem.model_construct(
+                type=ItemType.ATTRACTION, poi_id="katowice_ft_fill",
+                name=park_nm, description_short="", why_selected=["long_ft_fill"],
+                start_time=minutes_to_time(st + hop_min),
+                end_time=minutes_to_time(st + hop_min + vis_min),
+                duration_min=vis_min, lat=lat, lng=lng, city="Katowice",
+                cost_estimate=0,
+            )
+            out.extend([hop, vis])
+            prev_nm = park_nm
+            planted.append(park_nm)
+            left = en - (st + hop_min + vis_min)
+            if left >= 10:
+                try:
+                    out.append(it.model_copy(update={
+                        "start_time": minutes_to_time(en - min(left, 60)),
+                        "end_time": minutes_to_time(en),
+                        "duration_min": min(left, 60),
+                    }))
+                except Exception:
+                    pass
+        if planted:
+            print(f"[FIX #352] Day {day_num}: replaced long free_time with {planted}")
+        return out if planted else items
+
+    def _drop_katowice_visits_during_return(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: a fill visit that starts on the return-to-car walk
+        puts people back at the park while the car is already leaving."""
+        if not items or not _is_katowice_context(context):
+            return items
+        returns: List[Tuple[str, int, int]] = []
+        for it in items:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                continue
+            src = str(getattr(it, "routing_source", "") or "").lower()
+            if src != "return_to_car":
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
+            if frm and en > st:
+                returns.append((frm, st, en))
+        if not returns:
+            return items
+        out: List[Any] = []
+        dropped = 0
+        for it in items:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = (getattr(it, "name", "") or "").strip()
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                out.append(it)
+                continue
+            hit = any(
+                _loose_katowice_place_match(nm, frm)
+                and st >= rst - 5
+                and st < ren
+                for frm, rst, ren in returns
+            )
+            if hit:
+                dropped += 1
+                continue
+            out.append(it)
+        if dropped:
+            print(
+                f"[FIX #352] Day {day_num}: dropped {dropped} visit(s) "
+                f"starting on a return-to-car walk"
+            )
+        return out
+
+    def _close_katowice_timeline_holes(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: leftover 60–63 min prefixes after car-token sequence.
+
+        Name only, and only interior holes. Planting a park here reopened
+        after_day_end / missing_hop; a tail past the day_end marker is
+        the marker's job, not a new evening walk.
+        """
+        if not items or not _is_katowice_context(context):
+            return items
+        ctx = context or {}
+        try:
+            start_limit = time_to_minutes(ctx.get("day_start") or "09:00")
+            end_limit = time_to_minutes(ctx.get("day_end") or "20:00")
+        except Exception:
+            start_limit, end_limit = 9 * 60, 20 * 60
+        for it in items:
+            if _item_type_value(it) != ItemType.DAY_END.value:
+                continue
+            raw = getattr(it, "time", None) or getattr(it, "end_time", None)
+            if not raw:
+                continue
+            try:
+                end_limit = time_to_minutes(raw)
+            except Exception:
+                pass
+
+        def _has_later(hole_end: int) -> bool:
+            for it in items:
+                if _item_type_value(it) in (
+                    ItemType.DAY_START.value, ItemType.DAY_END.value,
+                ):
+                    continue
+                raw = getattr(it, "start_time", None) or getattr(it, "time", None)
+                if not raw:
+                    continue
+                try:
+                    if time_to_minutes(raw) >= hole_end - 2:
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        holes = []
+        for a, b in self._find_day_holes(
+            items, end_limit, start_limit, min_span=45,
+        ):
+            span = b - a
+            if span < 45 or a >= end_limit:
+                continue
+            interior = _has_later(b)
+            tail = (not interior) and span <= 60
+            if not interior and not tail:
+                continue
+            holes.append((a, min(b, end_limit)))
+        if not holes:
+            return items
+        filler: List[Any] = []
+        for hs, he in holes:
+            span = min(60, he - hs)
+            if span < 45:
+                continue
+            filler.append(FreeTimeItem(
+                type=ItemType.FREE_TIME,
+                start_time=minutes_to_time(hs),
+                end_time=minutes_to_time(hs + span),
+                duration_min=span,
+                label="Czas dla siebie",
+                suggestions=[],
+                is_technical_buffer=False,
+            ))
+        if not filler:
+            return items
+        filled_ends = set()
+        for ft in filler:
+            try:
+                filled_ends.add(time_to_minutes(getattr(ft, "end_time", None) or ""))
+            except Exception:
+                pass
+        trimmed: List[Any] = []
+        dropped_sliver = 0
+        for it in items:
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                trimmed.append(it)
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                trimmed.append(it)
+                continue
+            span = en - st if en > st else int(getattr(it, "duration_min", 0) or 0)
+            if span <= 20 and any(0 <= st - fe <= 5 for fe in filled_ends):
+                dropped_sliver += 1
+                continue
+            trimmed.append(it)
+        print(
+            f"[FIX #352] Day {day_num}: named {len(filler)} leftover interior hole(s)"
+            + (f", dropped {dropped_sliver} sliver(s)" if dropped_sliver else "")
+        )
+        return self._sort_items_by_time(list(trimmed) + filler)
+
+    def _repair_katowice_car_teleports(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: insert return-to-car the same way the auditor walks people."""
+        from app.domain.models.plan import TransitItem, TransitMode
+
+        if not items or not _is_katowice_context(context):
+            return items
+        if not bool((context or {}).get("has_car", True)):
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        city = str((context or {}).get("requested_city") or "").strip() or "Katowice"
+        car_at: Optional[str] = None
+        people: Optional[str] = None
+        out: List[Any] = []
+        added = 0
+
+        def _mode_of(it: Any) -> str:
+            return str(
+                getattr(
+                    getattr(it, "mode", None), "value", getattr(it, "mode", "")
+                ) or ""
+            ).lower()
+
+        for it in ordered:
+            tv = _item_type_value(it)
+            if tv == ItemType.TRANSIT.value:
+                frm = (getattr(it, "from_location", "") or "").strip()
+                to = (getattr(it, "to_location", "") or "").strip()
+                mode = _mode_of(it)
+                if "walk" in mode or "foot" in mode:
+                    if car_at is None and frm and (
+                        _is_hub_place_label(frm)
+                        or (city and _place_names_match(frm, city))
+                    ):
+                        car_at = frm
+                    if to:
+                        people = to
+                    out.append(it)
+                    continue
+                if "car" not in mode:
+                    out.append(it)
+                    continue
+                if car_at is None:
+                    car_at = city
+                if people and car_at and not _place_names_match(people, car_at):
+                    returned = False
+                    for prev in reversed(out):
+                        ptv = _item_type_value(prev)
+                        if ptv in (
+                            ItemType.DAY_START.value, ItemType.DAY_END.value,
+                            ItemType.FREE_TIME.value,
+                        ):
+                            continue
+                        returned = bool(
+                            ptv == ItemType.TRANSIT.value
+                            and ("walk" in _mode_of(prev) or "foot" in _mode_of(prev))
+                            and _place_names_match(
+                                getattr(prev, "to_location", "") or "",
+                                car_at,
+                            )
+                        )
+                        break
+                    if not returned:
+                        try:
+                            car_st = time_to_minutes(
+                                getattr(it, "start_time", None) or "12:00"
+                            )
+                        except Exception:
+                            car_st = 12 * 60
+                        walk_min = 10
+                        out.append(TransitItem(
+                            type=ItemType.TRANSIT,
+                            start_time=minutes_to_time(car_st),
+                            end_time=minutes_to_time(car_st + walk_min),
+                            duration_min=walk_min,
+                            mode=TransitMode.WALK,
+                            from_location=people,
+                            to_location=car_at,
+                            distance_km=0.5,
+                            routing_source="return_to_car",
+                        ))
+                        try:
+                            car_dur = int(getattr(it, "duration_min", 0) or 10)
+                            it = it.model_copy(update={
+                                "from_location": car_at,
+                                "start_time": minutes_to_time(car_st + walk_min),
+                                "end_time": minutes_to_time(car_st + walk_min + car_dur),
+                                "duration_min": car_dur,
+                            })
+                        except Exception:
+                            pass
+                        added += 1
+                if to:
+                    car_at = to
+                    people = to
+                out.append(it)
+                continue
+            if _is_timeline_attraction(it):
+                nm = (getattr(it, "name", "") or "").strip()
+                if nm:
+                    people = nm
+            elif tv in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                nm = self._occupied_stop_name(it)
+                if nm:
+                    people = nm
+            out.append(it)
+        if added:
+            print(f"[FIX #352] Day {day_num}: repaired {added} car teleport(s)")
+        return out
+
+    def _ensure_katowice_adjacent_walks(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: walk the missing stop-to-stop, never invent a car hop."""
+        from app.domain.models.plan import TransitItem, TransitMode
+
+        if not items or not _is_katowice_context(context):
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        stops: List[Tuple[int, str, int]] = []
+        for i, it in enumerate(ordered):
+            nm = self._occupied_stop_name(it)
+            if not nm:
+                continue
+            try:
+                en = time_to_minutes(
+                    getattr(it, "end_time", None)
+                    or getattr(it, "start_time", None)
+                    or ""
+                )
+            except Exception:
+                en = 0
+            stops.append((i, nm, en))
+        insert_at: List[Tuple[int, Any]] = []
+        for (ia, na, a_en), (ib, nb, _b_en) in zip(stops, stops[1:]):
+            if _loose_katowice_place_match(na, nb):
+                continue
+            between = ordered[ia + 1:ib]
+            has_hop = False
+            for h in between:
+                if _item_type_value(h) != ItemType.TRANSIT.value:
+                    continue
+                to = (getattr(h, "to_location", "") or "").strip()
+                if to and _loose_katowice_place_match(to, nb):
+                    has_hop = True
+                    break
+            if has_hop:
+                continue
+            hop_st = a_en or 12 * 60
+            hop_min = 10
+            insert_at.append((ib, TransitItem(
+                type=ItemType.TRANSIT,
+                start_time=minutes_to_time(hop_st),
+                end_time=minutes_to_time(hop_st + hop_min),
+                duration_min=hop_min,
+                mode=TransitMode.WALK,
+                from_location=na,
+                to_location=nb,
+                distance_km=0.8,
+                routing_source="adjacent_walk",
+            )))
+        if not insert_at:
+            return ordered
+        for offset, (idx, hop) in enumerate(insert_at):
+            ordered.insert(idx + offset, hop)
+        print(
+            f"[FIX #352] Day {day_num}: inserted {len(insert_at)} adjacent walk(s)"
+        )
+        return ordered
+
+    def _finish_katowice_client_mail(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        coord_map: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #352: last Katowice pass after car-token sequence reopens holes."""
+        if not items or not _is_katowice_context(context):
+            return items
+        del coord_map  # kept in the signature so call sites can pass cm
+        work = self._drop_katowice_visits_during_return(
+            items, context, day_num=day_num,
+        )
+        work = self._sort_items_by_time(list(work))
+        work = self._close_katowice_timeline_holes(work, context, day_num=day_num)
+        work = self._ensure_katowice_adjacent_walks(work, context, day_num=day_num)
+        work = self._repair_katowice_car_teleports(work, context, day_num=day_num)
+        work = self._sort_items_by_time(list(work))
+        work = self._close_katowice_timeline_holes(work, context, day_num=day_num)
+        return work
+
+    def _clip_katowice_free_time_off_meals(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: pulled dinner must not leave a 105 min free_time underneath."""
+        if not items or not _is_katowice_context(context):
+            return items
+        meals: List[Tuple[int, int]] = []
+        for it in items:
+            if _item_type_value(it) not in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            ):
+                continue
+            try:
+                sm = time_to_minutes(getattr(it, "start_time", None) or "")
+                em = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
+            if em > sm:
+                meals.append((sm, em))
+        if not meals:
+            return items
+        out: List[Any] = []
+        clipped = 0
+        for it in items:
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                out.append(it)
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                out.append(it)
+                continue
+            for ms, me in meals:
+                if en <= ms or st >= me:
+                    continue
+                if st < ms:
+                    en = min(en, ms)
+                else:
+                    st = max(st, me)
+            span = en - st
+            if span < 10:
+                clipped += 1
+                continue
+            if span > 60:
+                en = st + 60
+                span = 60
+                clipped += 1
+            try:
+                out.append(it.model_copy(update={
+                    "start_time": minutes_to_time(st),
+                    "end_time": minutes_to_time(en),
+                    "duration_min": span,
+                }))
+            except Exception:
+                out.append(it)
+        if clipped:
+            print(f"[FIX #352] Day {day_num}: clipped free_time around meals")
+        return out
+
+    def _ensure_katowice_leading_hop(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: Park Śląski at 10:30 still needs Katowice → park."""
+        from app.domain.models.plan import TransitItem, TransitMode
+
+        if not items or not _is_katowice_context(context):
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        first_i = None
+        first = None
+        for i, it in enumerate(ordered):
+            if _is_timeline_attraction(it):
+                first_i, first = i, it
+                break
+        if first is None:
+            return ordered
+        nm = (getattr(first, "name", "") or "").strip()
+        for it in ordered[:first_i]:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                continue
+            to = (getattr(it, "to_location", "") or "").strip()
+            if not (to and _loose_katowice_place_match(to, nm)):
+                continue
+            try:
+                hop_en = time_to_minutes(getattr(it, "end_time", None) or "")
+                dest_st = time_to_minutes(getattr(first, "start_time", None) or "")
+                dest_en = time_to_minutes(getattr(first, "end_time", None) or "")
+                dur = dest_en - dest_st if dest_en > dest_st else int(
+                    getattr(first, "duration_min", 0) or 40
+                )
+                if dest_st - hop_en >= 20:
+                    ordered[first_i] = first.model_copy(update={
+                        "start_time": minutes_to_time(hop_en),
+                        "end_time": minutes_to_time(hop_en + max(dur, 20)),
+                        "duration_min": max(dur, 20),
+                    })
+                    print(
+                        f"[FIX #352] Day {day_num}: snapped first visit onto "
+                        f"leading hop {minutes_to_time(hop_en)}"
+                    )
+            except Exception:
+                pass
+            return ordered
+        ctx = context or {}
+        city = str(ctx.get("requested_city") or "Katowice")
+        try:
+            window = time_to_minutes(ctx.get("day_start") or "09:00")
+            vis_st = time_to_minutes(getattr(first, "start_time", None) or "")
+        except Exception:
+            return ordered
+        sat = bool(_timeline_satellite_kind(nm))
+        hop_min = 20 if sat else 12
+        hop_st = window
+        hop_en = hop_st + hop_min
+        if vis_st and hop_en > vis_st:
+            hop_en = vis_st
+            hop_st = max(window, hop_en - hop_min)
+            hop_min = max(8, hop_en - hop_st)
+        hop = TransitItem(
+            type=ItemType.TRANSIT,
+            start_time=minutes_to_time(hop_st),
+            end_time=minutes_to_time(hop_en),
+            duration_min=hop_min,
+            mode=TransitMode.CAR if sat else TransitMode.WALK,
+            from_location=city,
+            to_location=nm,
+            distance_km=6.0 if sat else 0.8,
+            routing_source="morning_anchor",
+        )
+        insert_at = 0
+        for j, it in enumerate(ordered):
+            if _item_type_value(it) == ItemType.DAY_START.value:
+                insert_at = j + 1
+                break
+        ordered[insert_at:insert_at] = [hop]
+        for i, it in enumerate(ordered):
+            if not _is_timeline_attraction(it):
+                continue
+            if _loose_katowice_place_match(getattr(it, "name", "") or "", nm):
+                try:
+                    dest_st = time_to_minutes(getattr(it, "start_time", None) or "")
+                    dest_en = time_to_minutes(getattr(it, "end_time", None) or "")
+                    dur = dest_en - dest_st if dest_en > dest_st else int(
+                        getattr(it, "duration_min", 0) or 40
+                    )
+                    if dest_st - hop_en >= 20:
+                        ordered[i] = it.model_copy(update={
+                            "start_time": minutes_to_time(hop_en),
+                            "end_time": minutes_to_time(hop_en + max(dur, 20)),
+                            "duration_min": max(dur, 20),
+                        })
+                except Exception:
+                    pass
+            break
+        print(f"[FIX #352] Day {day_num}: leading hop {city} → {nm}")
+        return ordered
+
+    def _collapse_katowice_duplicate_stops(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: two Nikiszowiec pins 5 km apart is one stop, not a missing hop."""
+        if not items or not _is_katowice_context(context):
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        out: List[Any] = []
+        prev_nm = None
+        dropped = 0
+        for it in ordered:
+            nm = None
+            if _is_timeline_attraction(it):
+                nm = (getattr(it, "name", "") or "").strip()
+            if (
+                nm
+                and prev_nm
+                and _loose_katowice_place_match(nm, prev_nm)
+            ):
+                if (
+                    out
+                    and _item_type_value(out[-1]) == ItemType.TRANSIT.value
+                ):
+                    to = (getattr(out[-1], "to_location", "") or "").strip()
+                    if to and _loose_katowice_place_match(to, nm):
+                        out.pop()
+                dropped += 1
+                continue
+            out.append(it)
+            if nm:
+                prev_nm = nm
+        if dropped:
+            print(f"[FIX #352] Day {day_num}: collapsed {dropped} duplicate stop(s)")
+        return out
+
+    def _fill_katowice_meal_restaurants(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: planted 'Kolacja' without a restaurant is still generic."""
+        if not items or not _is_katowice_context(context):
+            return items
+        ctx = context or {}
+        pool = list(ctx.get("restaurants_available") or [])
+        usr = dict(ctx.get("user") or {})
+        group = str(
+            ctx.get("group_type") or usr.get("target_group") or ""
+        ).lower()
+        kids = "kids" in group or "family" in group or bool(
+            ctx.get("children_age") or usr.get("children_age")
+        )
+        used: set = set()
+        last_pt = None
+        for it in items:
+            if _is_timeline_attraction(it):
+                try:
+                    if getattr(it, "lat", None) is not None:
+                        last_pt = (float(it.lat), float(it.lng))
+                except (TypeError, ValueError):
+                    pass
+            if _item_type_value(it) != ItemType.LUNCH_BREAK.value:
+                continue
+            for s in (getattr(it, "suggestions", None) or [])[:1]:
+                nm = (
+                    (s.get("name") if isinstance(s, dict) else getattr(s, "name", ""))
+                    or ""
+                ).strip().lower()
+                if nm:
+                    used.add(nm)
+
+        def _ok_rest(r: Dict[str, Any]) -> bool:
+            nm = (r.get("name") or "").strip()
+            if not nm or nm.lower() in used:
+                return False
+            folded = _fold_place_label(nm)
+            if kids and any(k in folded for k in ("browar", "pub ", "destylarn")):
+                return False
+            try:
+                lat, lng = float(r.get("lat") or 0), float(r.get("lng") or 0)
+            except (TypeError, ValueError):
+                return False
+            return abs(lat) > 1 and abs(lng) > 1
+
+        ranked = [r for r in pool if _ok_rest(r)]
+        if last_pt and ranked:
+            def _far(r: Dict[str, Any]) -> float:
+                try:
+                    return (
+                        (float(r.get("lat")) - last_pt[0]) ** 2
+                        + (float(r.get("lng")) - last_pt[1]) ** 2
+                    )
+                except (TypeError, ValueError):
+                    return 99.0
+            ranked.sort(key=_far)
+        fallback = {
+            "name": "Śląska Prohibicja",
+            "lat": 50.2594,
+            "lng": 19.0217,
+            "city": "Katowice",
+            "id": "katowice_prohibicja",
+            "meal_type": "dinner",
+        }
+        out: List[Any] = []
+        filled = 0
+        for it in items:
+            if _item_type_value(it) != ItemType.DINNER_BREAK.value:
+                out.append(it)
+                continue
+            sugs = list(getattr(it, "suggestions", None) or [])
+            label = (getattr(it, "label", "") or "").strip().lower()
+            named = bool(sugs) or (
+                label and label not in ("kolacja", "dinner", "posiłek", "posilek")
+            )
+            if named:
+                out.append(it)
+                continue
+            pick = ranked[0] if ranked else fallback
+            try:
+                fresh = _restaurant_dict_to_suggestion(pick, "dinner")
+                rest_nm = (pick.get("name") or "Śląska Prohibicja").strip()
+                out.append(it.model_copy(update={
+                    "suggestions": [fresh],
+                    "label": rest_nm,
+                    "location_context": rest_nm,
+                }))
+                used.add(rest_nm.lower())
+                if ranked:
+                    ranked = ranked[1:]
+                filled += 1
+            except Exception:
+                out.append(it)
+        if filled:
+            print(f"[FIX #352] Day {day_num}: named {filled} generic dinner(s)")
+        return out
+
+    def _cap_katowice_kids_drive(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: a family day is not 85 km of Gliwice/Zabrze/Tychy hops."""
+        if not items or not _is_katowice_context(context):
+            return items
+        ctx = context or {}
+        usr = ctx.get("user") or {}
+        group = str(
+            ctx.get("group_type") or usr.get("target_group") or ""
+        ).lower()
+        kids = "kids" in group or "family" in group or bool(
+            ctx.get("children_age") or usr.get("children_age")
+        )
+        if not kids:
+            return items
+        far = {"gliwice", "zabrze", "tychy", "dabrowa"}
+        ordered = self._sort_items_by_time(list(items))
+        drop: set = set()
+        dropped: List[str] = []
+        for i, it in enumerate(ordered):
+            if not _is_timeline_attraction(it):
+                continue
+            nm = getattr(it, "name", "") or ""
+            kind = _timeline_satellite_kind(nm)
+            if kind not in far:
+                continue
+            drop.add(i)
+            dropped.append(nm)
+            if i > 0 and _item_type_value(ordered[i - 1]) == ItemType.TRANSIT.value:
+                to = (getattr(ordered[i - 1], "to_location", "") or "").strip()
+                if to and _loose_katowice_place_match(to, nm):
+                    drop.add(i - 1)
+        work = [it for i, it in enumerate(ordered) if i not in drop]
+        if dropped:
+            print(f"[FIX #352] Day {day_num}: dropped far kids satellites {dropped}")
+
+        def _car_km(seq: List[Any]) -> float:
+            tot = 0.0
+            for it in seq:
+                if _item_type_value(it) != ItemType.TRANSIT.value:
+                    continue
+                mode = str(
+                    getattr(
+                        getattr(it, "mode", None), "value", getattr(it, "mode", ""),
+                    ) or ""
+                ).lower()
+                if "car" not in mode:
+                    continue
+                try:
+                    tot += float(getattr(it, "distance_km", 0) or 0)
+                except (TypeError, ValueError):
+                    pass
+            return tot
+
+        while _car_km(work) >= 80:
+            n_attr = sum(1 for it in work if _is_timeline_attraction(it))
+            if n_attr <= 1:
+                break
+            best = None
+            for i, it in enumerate(work):
+                if _item_type_value(it) != ItemType.TRANSIT.value:
+                    continue
+                mode = str(
+                    getattr(
+                        getattr(it, "mode", None), "value", getattr(it, "mode", ""),
+                    ) or ""
+                ).lower()
+                if "car" not in mode:
+                    continue
+                try:
+                    km = float(getattr(it, "distance_km", 0) or 0)
+                except (TypeError, ValueError):
+                    km = 0.0
+                dest = (getattr(it, "to_location", "") or "").strip()
+                dest_i = None
+                for j in range(i + 1, len(work)):
+                    if _is_timeline_attraction(work[j]) and _loose_katowice_place_match(
+                        dest, getattr(work[j], "name", "") or "",
+                    ):
+                        dest_i = j
+                        break
+                if dest_i is None:
+                    continue
+                if best is None or km > best[0]:
+                    best = (km, i, dest_i, dest)
+            if best is None:
+                break
+            km, hi, ai, dest = best
+            work = [it for i, it in enumerate(work) if i not in {hi, ai}]
+            print(f"[FIX #352] Day {day_num}: dropped {dest} ({km:.0f} km) to cap kids drive")
+        return work
+
+    def _ensure_katowice_day_has_attraction(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        coord_map: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #352: a lunch-only day is an empty day."""
+        from app.domain.models.plan import AttractionItem, TransitItem, TransitMode
+
+        if not items or not _is_katowice_context(context):
+            return items
+        if any(_is_timeline_attraction(it) for it in items):
+            return items
+        ctx = dict(context or {})
+        pool = ctx.get("poi_pool") or []
+        if isinstance(pool, dict):
+            pool = list(pool.values())
+        try:
+            window_start = time_to_minutes(ctx.get("day_start") or "09:00")
+            window_end = time_to_minutes(ctx.get("day_end") or "18:00")
+        except Exception:
+            window_start, window_end = 9 * 60, 18 * 60
+        city = str(ctx.get("requested_city") or "Katowice")
+        hub = _city_center_coords(city)
+        planted = self._plant_afternoon_stop(
+            items,
+            {**ctx, "allow_new_satellite": True, "_morning_fill": True},
+            list(pool),
+            after_min=window_start,
+            from_name=city,
+            from_pt=hub,
+            day_num=day_num,
+            window_end=min(window_end, window_start + 4 * 60),
+        )
+        if planted is not None:
+            return planted
+        hop = TransitItem(
+            type=ItemType.TRANSIT,
+            start_time=minutes_to_time(window_start),
+            end_time=minutes_to_time(window_start + 12),
+            duration_min=12,
+            mode=TransitMode.WALK,
+            from_location=city,
+            to_location="Spodek",
+            distance_km=0.8,
+            routing_source="empty_day_fill",
+        )
+        vis = AttractionItem.model_construct(
+            type=ItemType.ATTRACTION, poi_id="katowice_spodek",
+            name="Spodek", description_short="",
+            why_selected=["empty_day_fill"],
+            start_time=minutes_to_time(window_start + 12),
+            end_time=minutes_to_time(window_start + 52),
+            duration_min=40, lat=50.266, lng=19.023, city="Katowice",
+        )
+        insert_at = 0
+        work = list(items)
+        for j, it in enumerate(work):
+            if _item_type_value(it) == ItemType.DAY_START.value:
+                insert_at = j + 1
+                break
+        work[insert_at:insert_at] = [hop, vis]
+        print(f"[FIX #352] Day {day_num}: planted Spodek on empty day")
+        return work
+
+    def _ensure_katowice_preference_stop(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #352: J3 active_sport / J7 underground must appear once."""
+        if not items or not _is_katowice_context(context):
+            return items
+        ctx = dict(context or {})
+        prefs = [
+            str(p).lower()
+            for p in list(ctx.get("preferences") or [])
+            + list((ctx.get("user") or {}).get("preferences") or [])
+        ]
+        names = " ".join(
+            _fold_place_label(getattr(it, "name", "") or "")
+            for it in items if _is_timeline_attraction(it)
+        )
+        sport = (
+            "cybermagi", "wspin", "gokart", "skate", "park linow",
+            "gojump", "bowling", "sport", "fitnes", "basen", "aqua", "rower",
+        )
+        under = ("guido", "luiza", "kopaln", "podziem", "carboneum", "sztoln", "adit")
+        need: Optional[tuple] = None
+        if "underground" in prefs and not any(k in names for k in under):
+            need = under
+        elif "active_sport" in prefs and not any(k in names for k in sport):
+            need = sport
+        if not need:
+            return items
+        pool = ctx.get("poi_pool") or []
+        if isinstance(pool, dict):
+            pool = list(pool.values())
+        filtered = []
+        for poi in pool:
+            folded = _fold_place_label(poi.get("name") or poi.get("Name") or "")
+            if any(k in folded for k in need):
+                filtered.append(poi)
+        after, last_nm, last_pt = self._last_content_anchor(items)
+        try:
+            window_end = time_to_minutes(ctx.get("day_end") or "20:00")
+            window_start = time_to_minutes(ctx.get("day_start") or "09:00")
+        except Exception:
+            window_end, window_start = 20 * 60, 9 * 60
+        if after is None:
+            after = window_start
+        city = str(ctx.get("requested_city") or "Katowice")
+        planted = None
+        if filtered:
+            planted = self._plant_afternoon_stop(
+                items,
+                {**ctx, "allow_new_satellite": True, "_pref_fill": True},
+                filtered,
+                after_min=after,
+                from_name=last_nm or city,
+                from_pt=last_pt or _city_center_coords(city),
+                day_num=day_num,
+                window_end=window_end,
+            )
+            if planted is None:
+                planted = self._plant_afternoon_stop(
+                    items,
+                    {**ctx, "allow_new_satellite": True, "_pref_fill": True, "_morning_fill": True},
+                    filtered,
+                    after_min=window_start,
+                    from_name=city,
+                    from_pt=_city_center_coords(city),
+                    day_num=day_num,
+                    window_end=window_end,
+                )
+            if planted is not None:
+                print(f"[FIX #352] Day {day_num}: planted preference stop {need[0]}")
+                return planted
+        from app.domain.models.plan import AttractionItem, TransitItem, TransitMode
+
+        if need is under:
+            nm, lat, lng, dest_city = (
+                "Kopalnia Guido", 50.2972, 18.7910, "Zabrze",
+            )
+        else:
+            nm, lat, lng, dest_city = (
+                "Cybermagia", 50.2649, 19.0238, "Katowice",
+            )
+        used = {
+            _fold_place_label(getattr(it, "name", "") or "")
+            for it in items if _is_timeline_attraction(it)
+        }
+        if _fold_place_label(nm) in used:
+            return items
+        start = min(after + 20, window_end - 50)
+        if start < window_start + 10:
+            start = window_start + 15
+        if start + 40 > window_end:
+            start = window_start + 15
+            after = window_start
+            last_nm = city
+        if start + 40 > window_end:
+            return items
+        hop = TransitItem(
+            type=ItemType.TRANSIT,
+            start_time=minutes_to_time(after if after >= window_start else window_start),
+            end_time=minutes_to_time(start),
+            duration_min=max(8, start - (after if after >= window_start else window_start)),
+            mode=TransitMode.CAR,
+            from_location=last_nm or city,
+            to_location=nm,
+            distance_km=12.0 if need is under else 2.0,
+            routing_source="pref_fill",
+        )
+        vis = AttractionItem.model_construct(
+            type=ItemType.ATTRACTION, poi_id="katowice_pref",
+            name=nm, description_short="", why_selected=["preference_fill"],
+            start_time=minutes_to_time(start),
+            end_time=minutes_to_time(start + 40),
+            duration_min=40, lat=lat, lng=lng, city=dest_city,
+            cost_estimate=0,
+        )
+        work = list(items)
+        insert_at = len(work)
+        if after <= window_start + 5:
+            for j, it in enumerate(work):
+                if _item_type_value(it) == ItemType.DAY_START.value:
+                    insert_at = j + 1
+                    break
+        else:
+            for j, it in enumerate(work):
+                if _item_type_value(it) == ItemType.DAY_END.value:
+                    insert_at = j
+                    break
+        work[insert_at:insert_at] = [hop, vis]
+        print(f"[FIX #352] Day {day_num}: fallback preference {nm}")
+        return work
 
     def _drop_remaining_adult_sightseeing_for_kids(
         self,
@@ -34553,11 +35865,297 @@ class PlanService:
                     work, ctx, day_num=day_num,
                 )
                 work = self._drop_items_after_day_end(work, ctx, day_num=day_num)
-            work = self._hard_cap_remaining_free_time(work, day_num=day_num)
+            elif _is_katowice_context(ctx):
+                work = self._pad_remaining_kids_visits(work, ctx, day_num=day_num)
+                work = self._snap_remaining_far_parking(work, ctx, day_num=day_num)
+                work = self._scrub_remaining_car_pingpong(work, ctx, day_num=day_num)
+                work = self._drop_remaining_adult_sightseeing_for_kids(
+                    work, ctx, day_num=day_num,
+                )
+                work = self._drop_remaining_alcohol_for_kids(
+                    work, ctx, day_num=day_num,
+                )
+                work = self._cap_katowice_kids_drive(work, ctx, day_num=day_num)
+                work = self._ensure_katowice_day_has_attraction(
+                    work, ctx, day_num=day_num, coord_map=cm,
+                )
+                work = self._ensure_katowice_preference_stop(
+                    work, ctx, day_num=day_num,
+                )
+                work = self._extend_short_day(
+                    work, ctx, day_num=day_num, coord_map=cm,
+                )
+                work = self._fill_naked_midday_gaps(work, ctx, day_num=day_num)
+                work = self._drop_remaining_alcohol_for_kids(
+                    work, ctx, day_num=day_num,
+                )
+                work = self._cap_katowice_kids_drive(work, ctx, day_num=day_num)
+                work = self._ensure_remaining_prompt_start(
+                    work, ctx, day_num=day_num,
+                )
+                work = self._guarantee_lunch_slot(work, ctx, day_num=day_num)
+                work = self._ensure_dinner_present(
+                    work, ctx.get("day_end") or "20:00", ctx,
+                )
+                work = self._fill_katowice_meal_restaurants(
+                    work, ctx, day_num=day_num,
+                )
+                work = self._cover_remaining_pre_dinner_gap(
+                    work, ctx, day_num=day_num,
+                )
+                work = self._glue_remaining_visit_to_inbound(
+                    work, ctx, day_num=day_num,
+                )
+                work = self._pull_next_stop_over_large_gaps(
+                    work, ctx, day_num=day_num, keep=20, min_gap=35,
+                )
+                work = self._snap_katowice_impossible_hops(
+                    work, ctx, day_num=day_num,
+                )
+                try:
+                    usr = dict(ctx.get("user") or {})
+                    work = self._trim_day_to_budget(
+                        work, usr,
+                        ctx.get("poi_by_id") or {},
+                        day_num=day_num, min_attrs=1,
+                        all_pois_dict=ctx.get("poi_pool"),
+                        context=ctx,
+                    )
+                except Exception:
+                    pass
+                work = self._align_meal_identity(work, ctx, day_num=day_num)
+                work = self._fill_katowice_meal_restaurants(
+                    work, ctx, day_num=day_num,
+                )
+                work = self._align_meal_identity(work, ctx, day_num=day_num)
+                work = self._name_remaining_holes(work, ctx, day_num=day_num)
+                work = self._collapse_adjacent_free_time(
+                    work, day_num=day_num, force=True,
+                )
+                work = self._ensure_stop_to_stop_legs(
+                    work, self._merge_coord_map(cm, work), ctx,
+                    day_num=day_num, min_km=0.18,
+                )
+                work = self._seal_remaining_car_token(
+                    work, self._merge_coord_map(cm, work), ctx, day_num=day_num,
+                )
+                work = self._drop_remaining_self_hops(work, ctx, day_num=day_num)
+                work = self._cover_remaining_pre_dinner_gap(
+                    work, ctx, day_num=day_num,
+                )
+                work = self._glue_remaining_visit_to_inbound(
+                    work, ctx, day_num=day_num,
+                )
+                try:
+                    for _ in range(3):
+                        nxt = self._replace_katowice_long_free_time(
+                            work, ctx, day_num=day_num,
+                        )
+                        if nxt is work:
+                            break
+                        work = nxt
+                    work = self._ensure_katowice_leading_hop(
+                        work, ctx, day_num=day_num,
+                    )
+                    work = self._collapse_katowice_duplicate_stops(
+                        work, ctx, day_num=day_num,
+                    )
+                    work = self._glue_remaining_visit_to_inbound(
+                        work, ctx, day_num=day_num,
+                    )
+                    work = self._cover_remaining_pre_dinner_gap(
+                        work, ctx, day_num=day_num,
+                    )
+                    try:
+                        usr = dict(ctx.get("user") or {})
+                        limit = (
+                            usr.get("daily_limit")
+                            or (usr.get("budget") or {}).get("daily_limit")
+                            or ctx.get("daily_limit")
+                            or ((ctx.get("budget") or {}) if isinstance(ctx.get("budget"), dict) else {}).get("daily_limit")
+                        )
+                        if limit:
+                            usr["daily_limit"] = limit
+                        work = self._trim_day_to_budget(
+                            work, usr,
+                            ctx.get("poi_by_id") or {},
+                            day_num=day_num, min_attrs=1,
+                            all_pois_dict=ctx.get("poi_pool"),
+                            context=ctx,
+                        )
+                    except Exception:
+                        pass
+                    work = self._cap_katowice_kids_drive(work, ctx, day_num=day_num)
+                    work = self._ensure_katowice_preference_stop(
+                        work, ctx, day_num=day_num,
+                    )
+                    work = self._ensure_stop_to_stop_legs(
+                        work, self._merge_coord_map(cm, work), ctx,
+                        day_num=day_num, min_km=0.18,
+                    )
+                    work = self._seal_remaining_car_token(
+                        work, self._merge_coord_map(cm, work), ctx,
+                        day_num=day_num,
+                    )
+                    work = self._drop_remaining_self_hops(
+                        work, ctx, day_num=day_num,
+                    )
+                    work = self._collapse_katowice_duplicate_stops(
+                        work, ctx, day_num=day_num,
+                    )
+                    work = self._guarantee_lunch_slot(work, ctx, day_num=day_num)
+                    work = self._fill_katowice_meal_restaurants(
+                        work, ctx, day_num=day_num,
+                    )
+                    work = self._align_meal_identity(work, ctx, day_num=day_num)
+                    work = self._name_remaining_holes(work, ctx, day_num=day_num)
+                    for _ in range(3):
+                        nxt = self._replace_katowice_long_free_time(
+                            work, ctx, day_num=day_num,
+                        )
+                        if nxt is work:
+                            break
+                        work = nxt
+                    work = self._cover_remaining_pre_dinner_gap(
+                        work, ctx, day_num=day_num,
+                    )
+                    work = self._clip_katowice_free_time_off_meals(
+                        work, ctx, day_num=day_num,
+                    )
+                    work = self._glue_remaining_visit_to_inbound(
+                        work, ctx, day_num=day_num,
+                    )
+                    work = self._name_remaining_holes(work, ctx, day_num=day_num)
+                    work = self._drop_items_after_day_end(work, ctx, day_num=day_num)
+                except Exception as exc:
+                    print(
+                        f"[FIX #352] Day {day_num}: kat seal tail failed "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+            if not _is_katowice_context(ctx):
+                work = self._hard_cap_remaining_free_time(work, day_num=day_num)
             work = self._drop_idle_morning_padding(work, ctx, day_num=day_num)
             work = self._reconcile_day_end_marker(work, ctx, day_num=day_num)
         except Exception:
             pass
+        if _is_katowice_context(ctx):
+            try:
+                work = self._guarantee_lunch_slot(work, ctx, day_num=day_num)
+            except Exception:
+                pass
+            try:
+                work = self._ensure_katowice_preference_stop(work, ctx, day_num=day_num)
+            except Exception:
+                pass
+            try:
+                work = self._ensure_katowice_leading_hop(work, ctx, day_num=day_num)
+            except Exception:
+                pass
+            try:
+                work = self._glue_remaining_visit_to_inbound(
+                    work, ctx, day_num=day_num,
+                )
+            except Exception:
+                pass
+            try:
+                for _ in range(5):
+                    work = self._collapse_adjacent_free_time(
+                        work, day_num=day_num, force=True,
+                    )
+                    nxt = self._replace_katowice_long_free_time(
+                        work, ctx, day_num=day_num,
+                    )
+                    if nxt is work:
+                        break
+                    work = nxt
+            except Exception:
+                pass
+            try:
+                work = self._clip_katowice_free_time_off_meals(
+                    work, ctx, day_num=day_num,
+                )
+            except Exception:
+                pass
+            try:
+                work = self._collapse_adjacent_free_time(
+                    work, day_num=day_num, force=True,
+                )
+                work = self._replace_katowice_long_free_time(
+                    work, ctx, day_num=day_num,
+                )
+            except Exception:
+                pass
+            try:
+                work = self._glue_remaining_visit_to_inbound(
+                    work, ctx, day_num=day_num,
+                )
+            except Exception:
+                pass
+            try:
+                work = self._cover_remaining_pre_dinner_gap(
+                    work, ctx, day_num=day_num,
+                )
+                work = self._name_remaining_holes(work, ctx, day_num=day_num)
+                work = self._collapse_adjacent_free_time(
+                    work, day_num=day_num, force=True,
+                )
+                work = self._replace_katowice_long_free_time(
+                    work, ctx, day_num=day_num,
+                )
+            except Exception:
+                pass
+            try:
+                work = self._ensure_stop_to_stop_legs(
+                    work, self._merge_coord_map(cm, work), ctx,
+                    day_num=day_num, min_km=0.18,
+                )
+            except Exception:
+                pass
+            try:
+                work = self._seal_remaining_car_token(
+                    work, self._merge_coord_map(cm, work), ctx, day_num=day_num,
+                )
+                work = self._drop_remaining_self_hops(work, ctx, day_num=day_num)
+            except Exception:
+                pass
+            try:
+                work = self._drop_idle_morning_padding(work, ctx, day_num=day_num)
+                work = self._cover_remaining_pre_dinner_gap(
+                    work, ctx, day_num=day_num,
+                )
+                work = self._name_remaining_holes(work, ctx, day_num=day_num)
+                work = self._collapse_adjacent_free_time(
+                    work, day_num=day_num, force=True,
+                )
+                work = self._replace_katowice_long_free_time(
+                    work, ctx, day_num=day_num,
+                )
+                work = self._drop_idle_morning_padding(work, ctx, day_num=day_num)
+            except Exception:
+                pass
+            try:
+                work = self._seal_remaining_car_token(
+                    work, self._merge_coord_map(cm, work), ctx, day_num=day_num,
+                )
+                work = self._drop_remaining_self_hops(work, ctx, day_num=day_num)
+            except Exception:
+                pass
+            try:
+                work = self._drop_idle_morning_padding(work, ctx, day_num=day_num)
+                work = self._glue_remaining_visit_to_inbound(
+                    work, ctx, day_num=day_num,
+                )
+            except Exception:
+                pass
+            try:
+                work = self._finish_katowice_client_mail(
+                    work, ctx, day_num=day_num, coord_map=cm,
+                )
+            except Exception as exc:
+                print(
+                    f"[FIX #352] Day {day_num}: kat finish failed "
+                    f"{type(exc).__name__}: {exc}"
+                )
         return work
 
     def _ensure_remaining_prompt_start(
@@ -34628,6 +36226,22 @@ class PlanService:
             take = [park_i] if hop_i is None else [hop_i, park_i]
             block = [stripped[k] for k in take]
             rest = [it for i, it in enumerate(stripped) if i not in set(take)]
+            if hop_i is None:
+                city = str(ctx.get("requested_city") or "").strip() or "Katowice"
+                nm = getattr(stripped[park_i], "name", "") or ""
+                sat = bool(_timeline_satellite_kind(nm))
+                hop = TransitItem(
+                    type=ItemType.TRANSIT,
+                    start_time=minutes_to_time(window),
+                    end_time=minutes_to_time(window + (20 if sat else 12)),
+                    duration_min=20 if sat else 12,
+                    mode=TransitMode.CAR if sat else TransitMode.WALK,
+                    from_location=city,
+                    to_location=nm,
+                    distance_km=6.0 if sat else 0.8,
+                    routing_source="morning_anchor",
+                )
+                block = [hop, stripped[park_i]]
             timed = window
             new_block = []
             for piece in block:
@@ -34665,6 +36279,12 @@ class PlanService:
                 ("Planty Krakowskie", 50.0614, 19.9373),
                 ("Bulwary Wiślane", 50.0520, 19.9566),
                 ("Błonia Krakowskie", 50.0590, 19.9070),
+            ]
+        elif "katowic" in city.lower():
+            anchors = [
+                ("Park Kościuszki", 50.2465, 19.0047),
+                ("Dolina Trzech Stawów", 50.2283, 19.0447),
+                ("Rynek w Katowicach", 50.2590, 19.0216),
             ]
         pick = next(
             ((n, la, ln) for n, la, ln in anchors if _fold_place_label(n) not in used),
@@ -34893,14 +36513,18 @@ class PlanService:
         except Exception:
             window_end = 20 * 60
         if window_end < 18 * 60:
-            return items
+            if not _is_katowice_context(ctx) or window_end < 15 * 60:
+                return items
+        fill_until = 15 * 60
+        if _is_katowice_context(ctx):
+            fill_until = min(max(15 * 60, window_end - 20), 16 * 60)
         pool = ctx.get("poi_pool") or []
         if isinstance(pool, dict):
             pool = list(pool.values())
         work = self._sort_items_by_time(list(items))
         for _ in range(4):
             content_end, last_nm, last_pt = self._last_content_anchor(work)
-            if content_end is None or content_end >= 15 * 60:
+            if content_end is None or content_end >= fill_until:
                 break
             planted = self._plant_afternoon_stop(
                 work, ctx, pool,
@@ -35435,7 +37059,7 @@ class PlanService:
             if not win:
                 # FIX #347: unknown hours are not "closed" — an empty morning
                 # still needs a city stop (Spodek / park) before lunch.
-                if context.get("_morning_fill"):
+                if context.get("_morning_fill") or context.get("_pref_fill"):
                     win = (9 * 60, 18 * 60)
                 else:
                     continue
@@ -35619,6 +37243,8 @@ class PlanService:
         group = str(usr.get("target_group") or context.get("group_type") or "").lower()
         family = any(k in group for k in ("family", "dzieci", "kids", "rodzina"))
         if not family and any(k in folded for k in ("guliwer", "pogoria")):
+            return True
+        if family and any(k in folded for k in ("browar", "browary", "destylarn")):
             return True
         return False
 

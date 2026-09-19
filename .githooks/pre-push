@@ -36,5 +36,15 @@ if [ -f tests/test_gate_poznan.py ]; then
         exit 1
     fi
 fi
+
+if [ -f tests/test_gate_katowice.py ]; then
+    echo "[gate] audyt 10 JSON-ow Katowic (token auta / pijalnia / kids, ~2 min)..."
+    PYTHONIOENCODING=utf-8 ORS_ENABLED=false \
+        python -m pytest tests/test_gate_katowice.py -q --no-cov -p no:cacheprovider --disable-warnings
+    if [ $? -ne 0 ]; then
+        echo "[gate] push zatrzymany: audyt Katowic zglasza defekt z maila klientki."
+        exit 1
+    fi
+fi
 echo "[gate] OK"
 exit 0
