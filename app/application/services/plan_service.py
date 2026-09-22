@@ -224,6 +224,22 @@ def _is_katowice_context(context: Optional[Dict[str, Any]] = None) -> bool:
     return "katowic" in city
 
 
+def _is_krakow_context(context: Optional[Dict[str, Any]] = None) -> bool:
+    city = str((context or {}).get("requested_city") or (context or {}).get("city") or "").lower()
+    return "kraków" in city or "krakow" in city
+
+
+def _is_open_mail_city(context: Optional[Dict[str, Any]] = None) -> bool:
+    """FIX #353: Kraków / Katowice / Poznań still take the client-mail seal."""
+    if _is_locked_city_context(context):
+        return False
+    return (
+        _is_krakow_context(context)
+        or _is_katowice_context(context)
+        or _is_poznan_context(context)
+    )
+
+
 def _is_hub_place_label(name: Any) -> bool:
     """FIX #325: "Wrocław" / "Wrocław centrum" is the start point, not a POI."""
     s = " ".join(_fold_place_label(name).split())
@@ -11163,8 +11179,7 @@ class PlanService:
             return items
         day_end_min = time_to_minutes(day_end)
         dinner_cut = time_to_minutes("19:00")
-        if _is_poznan_context(context) or _is_katowice_context(context):
-            # FIX #351/#352: 18:00 windows still need kolacja.
+        if _is_open_mail_city(context):
             dinner_cut = time_to_minutes("18:00")
         if day_end_min < dinner_cut:
             return items
@@ -11175,7 +11190,9 @@ class PlanService:
             en = getattr(it, "end_time", None)
             if en:
                 last_end = max(last_end or 0, time_to_minutes(en))
-        if last_end is None or last_end > time_to_minutes("18:30"):
+        if last_end is None:
+            return items
+        if last_end > time_to_minutes("18:30") and not _is_open_mail_city(context):
             return items
         if (
             _quality_first_trip(context)
@@ -11187,16 +11204,28 @@ class PlanService:
         from app.domain.planner.time_utils import minutes_to_time
         dinner_start = "18:00"
         dinner_end_min = min(time_to_minutes("19:00"), day_end_min)
-        if (
-            (_is_poznan_context(context) or _is_katowice_context(context))
-            and dinner_end_min - time_to_minutes(dinner_start) < 30
-        ):
-            dinner_start_min = max(
-                (last_end or 0) + 10,
-                day_end_min - 45,
-            )
+        if _is_open_mail_city(context):
+            # Sit dinner on the JSON window, close to the last stop — waiting
+            # until 18:00 after a 15:24 close leaves a 3h hole the auditor
+            # counts as long_free_time / no_dinner.
+            # Sit on the JSON window. If the last stop is already after 19:00,
+            # plant at 18:00 and let the clip pass shorten the late visit —
+            # last_end+10 would land at 22:00 and get dropped.
+            dinner_start_min = 18 * 60
+            if last_end and last_end < 19 * 60:
+                dinner_start_min = max(_EARLIEST_DINNER_MIN, last_end + 10)
+            dinner_start_min = max(dinner_start_min, _EARLIEST_DINNER_MIN)
+            if dinner_start_min + 45 > day_end_min + 15:
+                dinner_start_min = max(
+                    _EARLIEST_DINNER_MIN, day_end_min - 45,
+                )
+            if dinner_start_min + 30 > day_end_min + 15:
+                return items
             dinner_start = minutes_to_time(dinner_start_min)
-            dinner_end_min = day_end_min
+            dinner_end_min = min(
+                max(day_end_min, dinner_start_min + 45),
+                dinner_start_min + 45,
+            )
         if dinner_end_min - time_to_minutes(dinner_start) < 30:
             return items
         items = list(items)
@@ -32253,9 +32282,14 @@ class PlanService:
                 to = (getattr(it, "to_location", "") or "").strip()
                 mode = _mode_of(it)
                 if "walk" in mode or "foot" in mode:
-                    if car_at is None and frm and (
-                        _is_hub_place_label(frm)
-                        or (city and _place_names_match(frm, city))
+                    if (
+                        car_at is None
+                        and not _is_open_mail_city(context)
+                        and frm
+                        and (
+                            _is_hub_place_label(frm)
+                            or (city and _place_names_match(frm, city))
+                        )
                     ):
                         car_at = frm
                     if to:
@@ -32281,16 +32315,25 @@ class PlanService:
                 if last_people:
                     people_at = last_people
                 if car_at is None:
-                    if _is_katowice_context(context) and city:
-                        # Walking the morning does not teleport the parked car
-                        # onto Muzeum Śląskie / Spodek / Browar Mariacki.
+                    if _is_open_mail_city(context):
+                        # FIX #353: a walking morning did not park the car at
+                        # the generic city pin. The first drive starts from
+                        # where people already are — no return-to-hub.
+                        car_at = people_at or frm or city
+                    elif _is_katowice_context(context) and city:
                         car_at = city
                     else:
                         car_at = frm or people_at
+                first_drive = _is_open_mail_city(context) and not any(
+                    _item_type_value(prev) == ItemType.TRANSIT.value
+                    and "car" in _mode_of(prev)
+                    for prev in out
+                )
                 need_return = (
                     bool(people_at)
                     and bool(car_at)
                     and not _place_names_match(people_at, car_at)
+                    and not first_drive
                 )
                 already = False
                 if out:
@@ -32313,53 +32356,59 @@ class PlanService:
                             haversine_distance(a[0], a[1], b[0], b[1]),
                         )
                         walk_min = max(5, min(40, int(round(dist_km / 4.5 * 60)) + 2))
-                    try:
-                        car_st = time_to_minutes(
-                            getattr(it, "start_time", None) or "12:00"
-                        )
-                    except Exception:
-                        car_st = 12 * 60
-                    car_dur = int(getattr(it, "duration_min", 0) or 0)
-                    if car_dur <= 0:
+                    if _is_krakow_context(context) and dist_km > 2.6:
+                        # Client KRK J7: 6.3 km walk back to the car is not a
+                        # plan. Adopt the current stop instead of inventing it.
+                        car_at = people_at
+                        need_return = False
+                    if need_return:
                         try:
-                            car_dur = max(
-                                5,
-                                time_to_minutes(
-                                    getattr(it, "end_time", None) or ""
-                                ) - car_st,
+                            car_st = time_to_minutes(
+                                getattr(it, "start_time", None) or "12:00"
                             )
                         except Exception:
-                            car_dur = 10
-                    walk_st = car_st
-                    walk_en = walk_st + walk_min
-                    try:
-                        ret = TransitItem(
-                            type=ItemType.TRANSIT,
-                            start_time=minutes_to_time(walk_st),
-                            end_time=minutes_to_time(walk_en),
-                            duration_min=walk_min,
-                            mode=TransitMode.WALK,
-                            from_location=people_at,
-                            to_location=car_at,
-                            distance_km=round(dist_km, 3),
-                            routing_source="return_to_car",
-                        )
-                        out.append(ret)
-                        print(
-                            f"[FIX #349] Day {day_num}: return-to-car "
-                            f"{people_at} → {car_at} ({walk_min}min)"
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        it = it.model_copy(update={
-                            "from_location": car_at,
-                            "start_time": minutes_to_time(walk_en),
-                            "end_time": minutes_to_time(walk_en + car_dur),
-                            "duration_min": car_dur,
-                        })
-                    except Exception:
-                        pass
+                            car_st = 12 * 60
+                        car_dur = int(getattr(it, "duration_min", 0) or 0)
+                        if car_dur <= 0:
+                            try:
+                                car_dur = max(
+                                    5,
+                                    time_to_minutes(
+                                        getattr(it, "end_time", None) or ""
+                                    ) - car_st,
+                                )
+                            except Exception:
+                                car_dur = 10
+                        walk_st = car_st
+                        walk_en = walk_st + walk_min
+                        try:
+                            ret = TransitItem(
+                                type=ItemType.TRANSIT,
+                                start_time=minutes_to_time(walk_st),
+                                end_time=minutes_to_time(walk_en),
+                                duration_min=walk_min,
+                                mode=TransitMode.WALK,
+                                from_location=people_at,
+                                to_location=car_at,
+                                distance_km=round(dist_km, 3),
+                                routing_source="return_to_car",
+                            )
+                            out.append(ret)
+                            print(
+                                f"[FIX #349] Day {day_num}: return-to-car "
+                                f"{people_at} → {car_at} ({walk_min}min)"
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            it = it.model_copy(update={
+                                "from_location": car_at,
+                                "start_time": minutes_to_time(walk_en),
+                                "end_time": minutes_to_time(walk_en + car_dur),
+                                "duration_min": car_dur,
+                            })
+                        except Exception:
+                            pass
                 if car_at and not _place_names_match(frm, car_at):
                     try:
                         it = it.model_copy(update={"from_location": car_at})
@@ -33809,7 +33858,12 @@ class PlanService:
         if em > sm:
             span = em - sm
         if start_min is not None and sm - start_min > 3:
-            return ordered
+            if not (
+                _is_krakow_context(context)
+                and sm - start_min <= 25
+                and span >= 15
+            ):
+                return ordered
         if span < 15:
             return ordered
         drop = {first_i}
@@ -34047,6 +34101,186 @@ class PlanService:
                 out.append(it)
         return out
 
+    def _split_capped_mail_free_time(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        cap: int = 55,
+    ) -> List[Any]:
+        """FIX #353: a 112 min hole capped to 55 still leaves 57 min unnamed."""
+        from app.domain.models.plan import FreeTimeItem
+
+        if not items or not _is_open_mail_city(context):
+            return items
+        ordered = self._sort_items_by_time(list(items))
+        extra: List[Any] = []
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                continue
+            try:
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
+            nxt = None
+            for later in ordered[i + 1:]:
+                tv = _item_type_value(later)
+                if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                    continue
+                raw = getattr(later, "start_time", None) or getattr(later, "time", None)
+                if not raw:
+                    continue
+                try:
+                    nxt = time_to_minutes(raw)
+                except Exception:
+                    continue
+                break
+            if nxt is None:
+                continue
+            leftover = nxt - en
+            if leftover < 45:
+                continue
+            cursor = en + 6
+            while nxt - cursor >= 45:
+                span = min(cap, nxt - cursor)
+                if span < 15:
+                    break
+                try:
+                    extra.append(FreeTimeItem.model_construct(
+                        type=ItemType.FREE_TIME,
+                        start_time=minutes_to_time(cursor),
+                        end_time=minutes_to_time(cursor + span),
+                        duration_min=span,
+                        label="Czas dla siebie",
+                    ))
+                except Exception:
+                    break
+                cursor += span + 6
+        if not extra:
+            return ordered
+        print(
+            f"[FIX #353] Day {day_num}: split {len(extra)} leftover free_time"
+        )
+        return self._sort_items_by_time(ordered + extra)
+
+    def _clip_remaining_overlap_for_dinner(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #353: a 19:36–21:56 museum eats the kolacja slot."""
+        if not items or not _is_open_mail_city(context):
+            return items
+        ctx = context or {}
+        try:
+            window = time_to_minutes(ctx.get("day_end") or "20:00")
+        except Exception:
+            window = 20 * 60
+        if window < 18 * 60:
+            return items
+        if not any(_is_timeline_attraction(it) for it in items):
+            return items
+        slot = 18 * 60
+        ordered = self._sort_items_by_time(list(items))
+        moved = False
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) != ItemType.LUNCH_BREAK.value:
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                break
+            if st < 15 * 60 + 30:
+                break
+            dur = max(40, en - st if en > st else 40)
+            target = 13 * 60
+            for other in ordered:
+                if _item_type_value(other) != ItemType.FREE_TIME.value:
+                    continue
+                try:
+                    fs = time_to_minutes(getattr(other, "start_time", None) or "")
+                    fe = time_to_minutes(getattr(other, "end_time", None) or "")
+                except Exception:
+                    continue
+                if fe - fs >= dur and 12 * 60 <= fs <= 15 * 60:
+                    target = fs
+                    break
+            try:
+                ordered[i] = it.model_copy(update={
+                    "start_time": minutes_to_time(target),
+                    "end_time": minutes_to_time(target + dur),
+                    "duration_min": dur,
+                })
+                moved = True
+            except Exception:
+                pass
+            break
+        if moved:
+            lunch_span = (target, target + dur)
+            trimmed_ft: List[Any] = []
+            for it in ordered:
+                if _item_type_value(it) != ItemType.FREE_TIME.value:
+                    trimmed_ft.append(it)
+                    continue
+                try:
+                    fs = time_to_minutes(getattr(it, "start_time", None) or "")
+                    fe = time_to_minutes(getattr(it, "end_time", None) or "")
+                except Exception:
+                    trimmed_ft.append(it)
+                    continue
+                if fe <= lunch_span[0] or fs >= lunch_span[1]:
+                    trimmed_ft.append(it)
+                    continue
+            items = trimmed_ft
+        if any(_item_type_value(it) == ItemType.DINNER_BREAK.value for it in items):
+            return self._sort_items_by_time(list(items))
+        out: List[Any] = []
+        for it in items:
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                out.append(it)
+                continue
+            try:
+                st = time_to_minutes(
+                    getattr(it, "start_time", None)
+                    or getattr(it, "time", None)
+                    or ""
+                )
+                en_raw = getattr(it, "end_time", None)
+                en = time_to_minutes(en_raw) if en_raw else st
+            except Exception:
+                out.append(it)
+                continue
+            if en <= slot or st >= slot + 45:
+                out.append(it)
+                continue
+            if st < slot and slot - st >= 20:
+                try:
+                    it = it.model_copy(update={
+                        "end_time": minutes_to_time(slot),
+                        "duration_min": slot - st,
+                    })
+                except Exception:
+                    pass
+                out.append(it)
+                continue
+            if _is_timeline_attraction(it) or tv == ItemType.FREE_TIME.value:
+                continue
+            out.append(it)
+        out.append(DinnerBreakItem(
+            type=ItemType.DINNER_BREAK,
+            start_time=minutes_to_time(slot),
+            end_time=minutes_to_time(slot + 45),
+            duration_min=45,
+            suggestions=[],
+        ))
+        print(f"[FIX #353] Day {day_num}: planted dinner at 18:00 over late visit")
+        return self._sort_items_by_time(out)
+
     def _remaining_kids_named_floor(
         self,
         name: str,
@@ -34237,9 +34471,7 @@ class PlanService:
         merge into one long_free_time run. Remaining cities may start dinner
         from 16:00; Wrocław keeps the 17:30 floor elsewhere.
         """
-        if not items or _is_locked_city_context(context) or not (
-            _is_poznan_context(context) or _is_katowice_context(context)
-        ):
+        if not items or not _is_open_mail_city(context):
             return items
         ordered = self._sort_items_by_time(list(items))
         dinner_i = None
@@ -34281,7 +34513,17 @@ class PlanService:
         floor = 16 * 60
         if _is_katowice_context(context):
             floor = 15 * 60
+        lunch_en = None
+        for it in ordered[:dinner_i]:
+            if _item_type_value(it) != ItemType.LUNCH_BREAK.value:
+                continue
+            try:
+                lunch_en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
         new_st = max(last_en + 10, floor)
+        if lunch_en is not None:
+            new_st = max(new_st, lunch_en + 90)
         if new_st >= dst:
             return ordered
         new_en = new_st + dur
@@ -34475,7 +34717,9 @@ class PlanService:
         day_num: int = 0,
     ) -> List[Any]:
         """FIX #352: Planetarium → Planetarium 1.6 km is not a trip."""
-        if not items or not _is_katowice_context(context):
+        if not items or _is_locked_city_context(context):
+            return items
+        if not _is_open_mail_city(context):
             return items
         out: List[Any] = []
         dropped = 0
@@ -34489,7 +34733,14 @@ class PlanService:
                 km = float(getattr(it, "distance_km", 0) or 0)
             except (TypeError, ValueError):
                 km = 0.0
-            if frm and to and _loose_katowice_place_match(frm, to) and km > 0.2:
+            same = (
+                _place_names_match(frm, to)
+                or (
+                    _is_katowice_context(context)
+                    and _loose_katowice_place_match(frm, to)
+                )
+            )
+            if frm and to and same and km > 0.2:
                 dropped += 1
                 continue
             out.append(it)
@@ -34798,11 +35049,8 @@ class PlanService:
                 to = (getattr(it, "to_location", "") or "").strip()
                 mode = _mode_of(it)
                 if "walk" in mode or "foot" in mode:
-                    if car_at is None and frm and (
-                        _is_hub_place_label(frm)
-                        or (city and _place_names_match(frm, city))
-                    ):
-                        car_at = frm
+                    # FIX #353: a walking morning did not park the car at
+                    # the generic Katowice hub. First drive starts from people.
                     if to:
                         people = to
                     out.append(it)
@@ -34811,7 +35059,16 @@ class PlanService:
                     out.append(it)
                     continue
                 if car_at is None:
-                    car_at = city
+                    car_at = people or frm
+                if (
+                    car_at
+                    and (
+                        _is_hub_place_label(car_at)
+                        or (city and _place_names_match(car_at, city))
+                    )
+                    and people
+                ):
+                    car_at = people
                 if people and car_at and not _place_names_match(people, car_at):
                     returned = False
                     for prev in reversed(out):
@@ -34920,6 +35177,30 @@ class PlanService:
                     break
             if has_hop:
                 continue
+            a_pt = b_pt = None
+            for sit in ordered:
+                sn = (getattr(sit, "name", "") or "").strip()
+                slat = getattr(sit, "lat", None)
+                slng = getattr(sit, "lng", None)
+                if slat in (None, 0, 0.0) or slng in (None, 0, 0.0):
+                    continue
+                try:
+                    pt = (float(slat), float(slng))
+                except (TypeError, ValueError):
+                    continue
+                if a_pt is None and _place_names_match(sn, na):
+                    a_pt = pt
+                if b_pt is None and _place_names_match(sn, nb):
+                    b_pt = pt
+            if a_pt and b_pt:
+                try:
+                    from app.infrastructure.routing.haversine import (
+                        haversine_km as _adj_hk,
+                    )
+                    if float(_adj_hk(a_pt[0], a_pt[1], b_pt[0], b_pt[1])) > 2.6:
+                        continue
+                except Exception:
+                    pass
             hop_st = a_en or 12 * 60
             hop_min = 10
             insert_at.append((ib, TransitItem(
@@ -36156,7 +36437,999 @@ class PlanService:
                     f"[FIX #352] Day {day_num}: kat finish failed "
                     f"{type(exc).__name__}: {exc}"
                 )
+        if _is_open_mail_city(ctx):
+            try:
+                work = self._scrub_remaining_mail_physics(
+                    work, ctx, day_num=day_num, coord_map=cm,
+                )
+            except Exception as exc:
+                print(
+                    f"[FIX #353] Day {day_num}: mail physics failed "
+                    f"{type(exc).__name__}: {exc}"
+                )
         return work
+
+    def _polish_remaining_mail_without_restamp(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        coord_map: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #353: KAT/POZ meals, ghost hub-returns, dishonest legs.
+
+        No Kraków restamp / drop-long-walks — that undoes #351/#352.
+        """
+        from app.domain.models.plan import AttractionItem, TransitItem, TransitMode
+        from app.infrastructure.routing.haversine import haversine_km as _hk
+
+        if (
+            not items
+            or not _is_open_mail_city(context)
+            or _is_krakow_context(context)
+        ):
+            return items
+        ctx = context or {}
+        city = str(ctx.get("requested_city") or "").strip()
+        cm = self._merge_coord_map(coord_map or {}, items)
+        ordered = self._sort_items_by_time(list(items))
+
+        def _mode_of(it: Any) -> str:
+            return str(
+                getattr(
+                    getattr(it, "mode", None), "value", getattr(it, "mode", "")
+                ) or ""
+            ).lower()
+
+        def _hub(nm: str) -> bool:
+            return bool(
+                nm
+                and (
+                    _is_hub_place_label(nm)
+                    or (city and _place_names_match(nm, city))
+                )
+            )
+
+        def _pt(name: str):
+            if not name:
+                return None
+            try:
+                return self._lookup_coords(cm, name)
+            except Exception:
+                return None
+
+        saw_car = False
+        people: Optional[str] = None
+        out: List[Any] = []
+        dropped = 0
+        for it in ordered:
+            tv = _item_type_value(it)
+            if tv == ItemType.TRANSIT.value:
+                frm = (getattr(it, "from_location", "") or "").strip()
+                to = (getattr(it, "to_location", "") or "").strip()
+                mode = _mode_of(it)
+                src = str(getattr(it, "routing_source", "") or "").lower()
+                if "walk" in mode or "foot" in mode:
+                    if "return_to_car" in src and (
+                        (not saw_car and _hub(to)) or _hub(to)
+                    ):
+                        dropped += 1
+                        continue
+                    if to:
+                        people = to
+                    out.append(it)
+                    continue
+                if "car" in mode:
+                    saw_car = True
+                    if to:
+                        people = to
+                    out.append(it)
+                    continue
+                out.append(it)
+                continue
+            nm = self._occupied_stop_name(it)
+            if nm:
+                people = nm
+            out.append(it)
+
+        restamped = 0
+        honest: List[Any] = []
+        for it in out:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                honest.append(it)
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            to = (getattr(it, "to_location", "") or "").strip()
+            mode = _mode_of(it)
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                pace = int(getattr(it, "duration_min", 0) or 0)
+                if pace <= 0:
+                    pace = max(
+                        1,
+                        time_to_minutes(getattr(it, "end_time", None) or "") - st,
+                    )
+            except Exception:
+                honest.append(it)
+                continue
+            try:
+                km = float(getattr(it, "distance_km", 0) or 0)
+            except (TypeError, ValueError):
+                km = 0.0
+            a, b = _pt(frm), _pt(to)
+            if a and b:
+                try:
+                    km = float(_hk(a[0], a[1], b[0], b[1]))
+                except Exception:
+                    pass
+            update = None
+            if "walk" in mode or "foot" in mode:
+                if km > 2.6:
+                    dropped += 1
+                    continue
+                elif km >= 0.7 and pace > 0 and (km / (pace / 60.0)) > 8.0:
+                    mins = max(5, min(50, int(round((km or 0.4) / 4.5 * 60)) + 2))
+                    update = {
+                        "distance_km": round(km, 3),
+                        "duration_min": mins,
+                        "end_time": minutes_to_time(st + mins),
+                    }
+                elif km >= 0.5 and pace <= 2:
+                    mins = max(5, min(50, int(round((km or 0.4) / 4.5 * 60)) + 2))
+                    update = {
+                        "distance_km": round(km, 3),
+                        "duration_min": mins,
+                        "end_time": minutes_to_time(st + mins),
+                    }
+            elif "car" in mode and km >= 1.0 and pace > 0:
+                kmh = km / (pace / 60.0)
+                ceiling = 90.0 if km >= 15 else 55.0
+                if kmh > ceiling:
+                    kmh_use = 55.0 if km >= 15 else 28.0
+                    mins = max(8, min(75, int(round(km / kmh_use * 60)) + 3))
+                    update = {
+                        "distance_km": round(km, 3),
+                        "duration_min": mins,
+                        "end_time": minutes_to_time(st + mins),
+                    }
+            if update:
+                try:
+                    it = it.model_copy(update=update)
+                    restamped += 1
+                except Exception:
+                    pass
+            honest.append(it)
+
+        work = honest
+        try:
+            work = self._fix_remaining_mail_meals(work, ctx, day_num=day_num)
+            work = self._ensure_stop_to_stop_legs(
+                work, cm, ctx, day_num=day_num, min_km=0.18,
+            )
+            work = self._seal_remaining_car_token(
+                work, cm, ctx, day_num=day_num,
+            )
+            work = self._rewrite_hop_origins(work, day_num=day_num, context=ctx)
+            work = self._drop_remaining_self_hops(work, ctx, day_num=day_num)
+            work = self._clip_remaining_overlap_for_dinner(
+                work, ctx, day_num=day_num,
+            )
+            work = self._cover_remaining_pre_dinner_gap(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+
+        visits = {
+            _fold_place_label(getattr(it, "name", "") or "")
+            for it in work if _is_timeline_attraction(it)
+        }
+        planted = 0
+        rebuilt: List[Any] = []
+        try:
+            window_end = time_to_minutes(ctx.get("day_end") or "20:00")
+        except Exception:
+            window_end = 20 * 60
+        for i, it in enumerate(work):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                rebuilt.append(it)
+                continue
+            dest = (getattr(it, "to_location", "") or "").strip()
+            later_stop = False
+            for later in work[i + 1:]:
+                if self._occupied_stop_name(later) or _is_timeline_attraction(later):
+                    later_stop = True
+                    break
+            if later_stop or not dest:
+                rebuilt.append(it)
+                continue
+            try:
+                hop_en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                rebuilt.append(it)
+                continue
+            already = _fold_place_label(dest) in visits
+            too_late = hop_en >= window_end - 5 or hop_en >= 20 * 60 + 15
+            if _hub(dest) or already or too_late:
+                dropped += 1
+                continue
+            vis_en = min(hop_en + 20, window_end)
+            if vis_en - hop_en < 8:
+                vis_en = hop_en + 15
+            pt = _pt(dest)
+            rebuilt.append(it)
+            rebuilt.append(AttractionItem.model_construct(
+                type=ItemType.ATTRACTION, poi_id="mail_dangling_fill",
+                name=dest, description_short="",
+                why_selected=["mail_visit"],
+                start_time=minutes_to_time(hop_en),
+                end_time=minutes_to_time(vis_en),
+                duration_min=max(8, vis_en - hop_en),
+                lat=(pt[0] if pt else None),
+                lng=(pt[1] if pt else None),
+                city=city or None, cost_estimate=0,
+            ))
+            visits.add(_fold_place_label(dest))
+            planted += 1
+        work = rebuilt
+
+        try:
+            work = self._sequence_remaining_clock(
+                work, ctx, day_num=day_num, preserve_order=True,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._seal_remaining_car_token(
+                work, cm, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        capped: List[Any] = []
+        for it in work:
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                capped.append(it)
+                continue
+            try:
+                st0 = time_to_minutes(
+                    getattr(it, "start_time", None)
+                    or getattr(it, "time", None)
+                    or ""
+                )
+            except Exception:
+                capped.append(it)
+                continue
+            if st0 >= 22 * 60 or st0 >= window_end + 15:
+                dropped += 1
+                continue
+            capped.append(it)
+        work = capped
+        try:
+            work = self._rewrite_hop_origins(work, day_num=day_num, context=ctx)
+        except Exception:
+            pass
+        if _is_katowice_context(ctx):
+            try:
+                work = self._fill_katowice_meal_restaurants(
+                    work, ctx, day_num=day_num,
+                )
+                work = self._clip_katowice_free_time_off_meals(
+                    work, ctx, day_num=day_num,
+                )
+            except Exception:
+                pass
+        trimmed: List[Any] = []
+        for i, it in enumerate(work):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                trimmed.append(it)
+                continue
+            has_later = any(
+                self._occupied_stop_name(later)
+                or _is_timeline_attraction(later)
+                for later in work[i + 1:]
+            )
+            if has_later:
+                trimmed.append(it)
+                continue
+            dropped += 1
+        work = trimmed
+        try:
+            if window_end >= 18 * 60:
+                work = self._ensure_dinner_present(
+                    work, minutes_to_time(window_end),
+                    {**ctx, "day_end": minutes_to_time(window_end)},
+                )
+                if _is_katowice_context(ctx):
+                    work = self._fill_katowice_meal_restaurants(
+                        work, ctx, day_num=day_num,
+                    )
+            work = self._sequence_remaining_clock(
+                work, ctx, day_num=day_num, preserve_order=True,
+            )
+        except Exception:
+            pass
+        padded: List[Any] = []
+        for it in work:
+            if _item_type_value(it) != ItemType.LUNCH_BREAK.value:
+                padded.append(it)
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                padded.append(it)
+                continue
+            if en - st < 30:
+                try:
+                    it = it.model_copy(update={
+                        "end_time": minutes_to_time(st + 40),
+                        "duration_min": 40,
+                    })
+                except Exception:
+                    pass
+            padded.append(it)
+        work = padded
+        if dropped or restamped or planted:
+            print(
+                f"[FIX #353] Day {day_num}: kat/poz polish drop={dropped} "
+                f"restamp={restamped} plant={planted}"
+            )
+        return work
+
+    def _scrub_remaining_mail_physics(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        coord_map: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #353: drop ghost hub-returns, teleport walks, and fake km/min.
+
+        Katowice / Poznań keep the #351/#352 seal plus a meal/ghost polish.
+        The first restamp loop stays Kraków-only.
+        """
+        from app.domain.models.plan import AttractionItem
+        from app.infrastructure.routing.haversine import haversine_km as _hk
+
+        if not items:
+            return items
+        if not _is_krakow_context(context):
+            return self._polish_remaining_mail_without_restamp(
+                items, context, day_num=day_num, coord_map=coord_map,
+            )
+        ctx = context or {}
+        city = str(ctx.get("requested_city") or "").strip()
+        cm = self._merge_coord_map(coord_map or {}, items)
+        ordered = self._sort_items_by_time(list(items))
+
+        def _mode_of(it: Any) -> str:
+            return str(
+                getattr(
+                    getattr(it, "mode", None), "value", getattr(it, "mode", "")
+                ) or ""
+            ).lower()
+
+        def _hub(nm: str) -> bool:
+            return bool(
+                nm
+                and (
+                    _is_hub_place_label(nm)
+                    or (city and _place_names_match(nm, city))
+                )
+            )
+
+        def _pt(name: str):
+            if not name:
+                return None
+            try:
+                return self._lookup_coords(cm, name)
+            except Exception:
+                return None
+
+        people: Optional[str] = None
+        car_at: Optional[str] = None
+        saw_car = False
+        out: List[Any] = []
+        dropped = 0
+        for it in ordered:
+            tv = _item_type_value(it)
+            if tv == ItemType.TRANSIT.value:
+                frm = (getattr(it, "from_location", "") or "").strip()
+                to = (getattr(it, "to_location", "") or "").strip()
+                mode = _mode_of(it)
+                src = str(getattr(it, "routing_source", "") or "").lower()
+                if "walk" in mode or "foot" in mode:
+                    if "return_to_car" in src and not saw_car:
+                        dropped += 1
+                        continue
+                    if "return_to_car" in src and car_at and _hub(to):
+                        to = car_at
+                        try:
+                            it = it.model_copy(update={"to_location": car_at})
+                        except Exception:
+                            pass
+                    if (
+                        "return_to_car" in src
+                        and car_at
+                        and people
+                        and _place_names_match(people, car_at)
+                    ):
+                        dropped += 1
+                        continue
+                    if people and to and _place_names_match(people, to) and (
+                        not frm or not _place_names_match(frm, people)
+                    ):
+                        dropped += 1
+                        continue
+                    if (
+                        people
+                        and frm
+                        and not _place_names_match(frm, people)
+                        and not _hub(frm)
+                    ):
+                        if to and _place_names_match(to, people):
+                            dropped += 1
+                            continue
+                        try:
+                            it = it.model_copy(update={"from_location": people})
+                            frm = people
+                        except Exception:
+                            dropped += 1
+                            continue
+                    if to:
+                        people = to
+                    out.append(it)
+                    continue
+                if "car" not in mode:
+                    out.append(it)
+                    continue
+                if car_at is None:
+                    car_at = people or frm or city
+                if to and frm and _place_names_match(frm, to):
+                    dropped += 1
+                    continue
+                if (
+                    _is_krakow_context(ctx)
+                    and people
+                    and to
+                    and _place_names_match(people, to)
+                ):
+                    dropped += 1
+                    continue
+                saw_car = True
+                if to:
+                    people = to
+                    car_at = to
+                out.append(it)
+                continue
+            nm = self._occupied_stop_name(it)
+            if nm:
+                people = nm
+            out.append(it)
+
+        # Drop a reverse walk planted before its destination visit.
+        ordered = self._sort_items_by_time(out)
+        drop_idx: set = set()
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                continue
+            if "walk" not in _mode_of(it) and "foot" not in _mode_of(it):
+                continue
+            dest = (getattr(it, "to_location", "") or "").strip()
+            frm = (getattr(it, "from_location", "") or "").strip()
+            src = str(getattr(it, "routing_source", "") or "").lower()
+            if not dest or not frm:
+                continue
+            later_car_from_dest = False
+            dest_visit_after = False
+            for later in ordered[i + 1:]:
+                if _is_timeline_attraction(later):
+                    nm = (getattr(later, "name", "") or "").strip()
+                    if nm and _place_names_match(nm, dest):
+                        dest_visit_after = True
+                    if nm and _place_names_match(nm, frm):
+                        break
+                if _item_type_value(later) != ItemType.TRANSIT.value:
+                    continue
+                if "car" not in _mode_of(later):
+                    continue
+                cf = (getattr(later, "from_location", "") or "").strip()
+                ct = (getattr(later, "to_location", "") or "").strip()
+                if dest and cf and _place_names_match(dest, ct) and (
+                    frm and _place_names_match(frm, cf)
+                    or src in ("long_ft_fill", "adjacent_walk", "return_to_car")
+                ):
+                    later_car_from_dest = True
+                    break
+            if later_car_from_dest and not dest_visit_after:
+                drop_idx.add(i)
+        if drop_idx:
+            dropped += len(drop_idx)
+            ordered = [it for i, it in enumerate(ordered) if i not in drop_idx]
+
+        # Drive to X with no visit: plant a short stop when we have coords.
+        visits = {
+            _fold_place_label(getattr(it, "name", "") or "")
+            for it in ordered if _is_timeline_attraction(it)
+        }
+        planted: List[Any] = []
+        skip_next_car = set()
+        for i, it in enumerate(ordered):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                continue
+            if "car" not in _mode_of(it):
+                continue
+            dest = (getattr(it, "to_location", "") or "").strip()
+            if not dest or _hub(dest):
+                continue
+            if _fold_place_label(dest) in visits:
+                continue
+            later_visit = False
+            for later in ordered[i + 1:]:
+                nm = self._occupied_stop_name(later)
+                if nm and _place_names_match(nm, dest):
+                    later_visit = True
+                    break
+            if later_visit:
+                continue
+            pt = _pt(dest)
+            try:
+                hop_en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
+            vis = AttractionItem.model_construct(
+                type=ItemType.ATTRACTION, poi_id="mail_dangling_fill",
+                name=dest, description_short="", why_selected=["mail_visit"],
+                start_time=minutes_to_time(hop_en),
+                end_time=minutes_to_time(hop_en + 40),
+                duration_min=40,
+                lat=(pt[0] if pt else None), lng=(pt[1] if pt else None),
+                city=city or None, cost_estimate=0,
+            )
+            planted.append((i + 1, vis))
+            visits.add(_fold_place_label(dest))
+        if planted:
+            for offset, (idx, vis) in enumerate(planted):
+                ordered.insert(idx + offset, vis)
+
+        # Restamp km / minutes from pins.
+        restamped = 0
+        out2: List[Any] = []
+        for it in ordered:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out2.append(it)
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            to = (getattr(it, "to_location", "") or "").strip()
+            a, b = _pt(frm), _pt(to)
+            mode = _mode_of(it)
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                out2.append(it)
+                continue
+            km = None
+            if a and b:
+                try:
+                    km = float(_hk(a[0], a[1], b[0], b[1]))
+                except Exception:
+                    km = None
+            if km is None:
+                try:
+                    km = float(getattr(it, "distance_km", 0) or 0)
+                except (TypeError, ValueError):
+                    km = 0.0
+            if "walk" in mode or "foot" in mode:
+                if km > 2.6:
+                    dropped += 1
+                    continue
+                mins = max(5, min(50, int(round((km or 0.4) / 4.5 * 60)) + 2))
+            elif "car" in mode:
+                kmh = 55.0 if (km or 0) >= 15 else 28.0
+                mins = max(8, min(75, int(round((km or 1.0) / kmh * 60)) + 3))
+            else:
+                out2.append(it)
+                continue
+            try:
+                it = it.model_copy(update={
+                    "distance_km": round(float(km or 0), 3),
+                    "duration_min": mins,
+                    "end_time": minutes_to_time(st + mins),
+                })
+                restamped += 1
+            except Exception:
+                pass
+            out2.append(it)
+
+        if not _is_krakow_context(ctx):
+            work = out2
+            try:
+                work = self._ensure_stop_to_stop_legs(
+                    work, cm, ctx, day_num=day_num, min_km=0.18,
+                )
+                work = self._rewrite_hop_origins(
+                    work, day_num=day_num, context=ctx,
+                )
+                work = self._seal_remaining_car_token(
+                    work, cm, ctx, day_num=day_num,
+                )
+                work = self._drop_idle_morning_padding(work, ctx, day_num=day_num)
+                work = self._sequence_remaining_clock(
+                    work, ctx, day_num=day_num, preserve_order=True,
+                )
+            except Exception:
+                pass
+            if dropped or restamped or planted:
+                print(
+                    f"[FIX #353] Day {day_num}: physics drop={dropped} "
+                    f"restamp={restamped} plant={len(planted)}"
+                )
+            return work
+        work = self._fix_remaining_mail_meals(out2, ctx, day_num=day_num)
+        try:
+            work = self._ensure_stop_to_stop_legs(
+                work, cm, ctx, day_num=day_num, min_km=0.18,
+            )
+            work = self._rewrite_hop_origins(
+                work, day_num=day_num, context=ctx,
+            )
+            work = self._seal_remaining_car_token(
+                work, cm, ctx, day_num=day_num,
+            )
+            here: Optional[str] = None
+            no_here: List[Any] = []
+            for it in self._sort_items_by_time(list(work)):
+                tv = _item_type_value(it)
+                if tv == ItemType.TRANSIT.value:
+                    to = (getattr(it, "to_location", "") or "").strip()
+                    mode = str(
+                        getattr(
+                            getattr(it, "mode", None), "value",
+                            getattr(it, "mode", ""),
+                        ) or ""
+                    ).lower()
+                    if (
+                        "car" in mode
+                        and here
+                        and to
+                        and _place_names_match(here, to)
+                    ):
+                        dropped += 1
+                        continue
+                    if to:
+                        here = to
+                    no_here.append(it)
+                    continue
+                nm = self._occupied_stop_name(it)
+                if nm:
+                    here = nm
+                no_here.append(it)
+            work = no_here
+            work = self._drop_remaining_self_hops(work, ctx, day_num=day_num)
+            work = self._drop_idle_morning_padding(work, ctx, day_num=day_num)
+            work = self._cover_remaining_pre_dinner_gap(
+                work, ctx, day_num=day_num,
+            )
+            work = self._drop_remaining_dusk_outdoor(work, ctx, day_num=day_num)
+            work = self._name_remaining_holes(work, ctx, day_num=day_num)
+            work = self._collapse_adjacent_free_time(
+                work, day_num=day_num, force=True,
+            )
+            work = self._hard_cap_remaining_free_time(
+                work, day_num=day_num, cap=55,
+            )
+            work = self._split_capped_mail_free_time(
+                work, ctx, day_num=day_num, cap=55,
+            )
+            work = self._drop_idle_morning_padding(work, ctx, day_num=day_num)
+            work = self._sequence_remaining_clock(
+                work, ctx, day_num=day_num, preserve_order=True,
+            )
+        except Exception:
+            pass
+        kept: List[Any] = []
+        for it in work:
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                kept.append(it)
+                continue
+            try:
+                st0 = time_to_minutes(
+                    getattr(it, "start_time", None)
+                    or getattr(it, "time", None)
+                    or ""
+                )
+            except Exception:
+                kept.append(it)
+                continue
+            if st0 >= 22 * 60:
+                dropped += 1
+                continue
+            kept.append(it)
+        work = kept
+        try:
+            work = self._clip_remaining_overlap_for_dinner(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        dinner_st = None
+        for it in work:
+            if _item_type_value(it) != ItemType.DINNER_BREAK.value:
+                continue
+            try:
+                dinner_st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                dinner_st = None
+            break
+        relabelled: List[Any] = []
+        for it in work:
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                relabelled.append(it)
+                continue
+            label = (getattr(it, "label", "") or "").strip().lower()
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                relabelled.append(it)
+                continue
+            if "kolacji" in label and (dinner_st is None or st < dinner_st):
+                try:
+                    it = it.model_copy(update={"label": "Czas dla siebie"})
+                except Exception:
+                    pass
+            relabelled.append(it)
+        work = relabelled
+        for i, it in enumerate(work):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                continue
+            dest = (getattr(it, "to_location", "") or "").strip()
+            if not dest or _hub(dest):
+                continue
+            later_stop = False
+            for later in work[i + 1:]:
+                if self._occupied_stop_name(later) or _is_timeline_attraction(later):
+                    later_stop = True
+                    break
+            if later_stop:
+                continue
+            try:
+                hop_en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
+            nxt = None
+            for later in work[i + 1:]:
+                tv = _item_type_value(later)
+                if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                    continue
+                raw = getattr(later, "start_time", None) or getattr(later, "time", None)
+                if not raw:
+                    continue
+                try:
+                    nxt = time_to_minutes(raw)
+                except Exception:
+                    continue
+                break
+            vis_en = hop_en + 20
+            if nxt is not None:
+                vis_en = max(hop_en + 8, min(vis_en, nxt))
+            if vis_en - hop_en < 8:
+                vis_en = hop_en + 15
+            pt = _pt(dest)
+            vis = AttractionItem.model_construct(
+                type=ItemType.ATTRACTION, poi_id="mail_dangling_fill",
+                name=dest, description_short="",
+                why_selected=["mail_visit"],
+                start_time=minutes_to_time(hop_en),
+                end_time=minutes_to_time(vis_en),
+                duration_min=max(8, vis_en - hop_en),
+                lat=(pt[0] if pt else None),
+                lng=(pt[1] if pt else None),
+                city=city or None, cost_estimate=0,
+            )
+            work.insert(i + 1, vis)
+            planted.append((i, vis))
+            break
+        try:
+            work = self._drop_remaining_dusk_outdoor(work, ctx, day_num=day_num)
+            work = self._reconcile_day_end_marker(work, ctx, day_num=day_num)
+        except Exception:
+            pass
+        if dropped or restamped or planted:
+            print(
+                f"[FIX #353] Day {day_num}: physics drop={dropped} "
+                f"restamp={restamped} plant={len(planted)}"
+            )
+        return work
+
+    def _fix_remaining_mail_meals(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #353: short/early dinners, 23:59 lunches, FT labelled after dinner."""
+        if not items or not _is_open_mail_city(context):
+            return items
+        ctx = context or {}
+        try:
+            window_end = time_to_minutes(ctx.get("day_end") or "20:00")
+        except Exception:
+            window_end = 20 * 60
+        # Use the declared JSON window, not the early-close day_end marker.
+        # J8 D1 closed at 15:24 while the guest still asked for 20:00 dinner.
+        ordered = self._sort_items_by_time(list(items))
+        out: List[Any] = []
+        lunch_en = None
+        dinner_st = None
+        for it in ordered:
+            tv = _item_type_value(it)
+            if tv == ItemType.LUNCH_BREAK.value:
+                try:
+                    st = time_to_minutes(getattr(it, "start_time", None) or "")
+                    en = time_to_minutes(getattr(it, "end_time", None) or "")
+                except Exception:
+                    out.append(it)
+                    continue
+                if st >= 22 * 60 or (en - st) <= 0:
+                    continue
+                dur = en - st if en > st else int(getattr(it, "duration_min", 0) or 0)
+                if dur < 40:
+                    en = st + 40
+                    try:
+                        it = it.model_copy(update={
+                            "end_time": minutes_to_time(en),
+                            "duration_min": 40,
+                        })
+                    except Exception:
+                        pass
+                lunch_en = en
+                out.append(it)
+                continue
+            if tv == ItemType.DINNER_BREAK.value:
+                try:
+                    st = time_to_minutes(getattr(it, "start_time", None) or "")
+                    en = time_to_minutes(getattr(it, "end_time", None) or "")
+                except Exception:
+                    out.append(it)
+                    continue
+                if lunch_en is not None and st - lunch_en < 90:
+                    st = lunch_en + 150
+                    if st + 45 > window_end + 20:
+                        continue
+                    en = st + 45
+                dur = en - st if en > st else int(getattr(it, "duration_min", 0) or 0)
+                if dur < 45:
+                    en = st + 45
+                    dur = 45
+                try:
+                    it = it.model_copy(update={
+                        "start_time": minutes_to_time(st),
+                        "end_time": minutes_to_time(en),
+                        "duration_min": max(45, dur, en - st),
+                    })
+                except Exception:
+                    pass
+                dinner_st = st
+                out.append(it)
+                continue
+            if tv == ItemType.FREE_TIME.value:
+                label = (getattr(it, "label", "") or "").strip().lower()
+                try:
+                    st = time_to_minutes(getattr(it, "start_time", None) or "")
+                    en = time_to_minutes(getattr(it, "end_time", None) or "")
+                except Exception:
+                    out.append(it)
+                    continue
+                if "kolacji" in label and (dinner_st is None or st < dinner_st):
+                    try:
+                        it = it.model_copy(update={
+                            "label": "Czas dla siebie",
+                        })
+                    except Exception:
+                        pass
+                clock = en - st if en > st else 0
+                dur = int(getattr(it, "duration_min", 0) or 0)
+                if clock >= 10 and dur and abs(clock - dur) >= 10:
+                    try:
+                        it = it.model_copy(update={"duration_min": clock})
+                    except Exception:
+                        pass
+                out.append(it)
+                continue
+            out.append(it)
+        has_dinner = any(
+            _item_type_value(it) == ItemType.DINNER_BREAK.value for it in out
+        )
+        n_attr = sum(1 for it in out if _is_timeline_attraction(it))
+        try:
+            out = self._guarantee_lunch_slot(out, ctx, day_num=day_num)
+        except Exception:
+            pass
+        try:
+            user = {
+                "target_group": ctx.get("group_type"),
+                "children_age": ctx.get("children_age"),
+            }
+            out = self._resit_late_lunch_after_morning_stop(
+                out, user, day_num=day_num,
+            )
+            out = _fix_late_lunch(out, latest_min=15 * 60 + 29)
+        except Exception:
+            pass
+        if (
+            not has_dinner
+            and n_attr >= 1
+            and window_end >= 18 * 60
+        ):
+            try:
+                out = self._ensure_dinner_present(
+                    out,
+                    minutes_to_time(window_end),
+                    {**ctx, "day_end": minutes_to_time(window_end)},
+                )
+            except Exception:
+                pass
+            if _is_katowice_context(ctx):
+                try:
+                    out = self._fill_katowice_meal_restaurants(
+                        out, ctx, day_num=day_num,
+                    )
+                except Exception:
+                    pass
+        # Relabel after planting — name_holes / dinner insert can still
+        # leave "Po kolacji" sitting in front of the meal.
+        dinner_st = None
+        lunch_en = None
+        for it in out:
+            tv = _item_type_value(it)
+            if tv == ItemType.LUNCH_BREAK.value:
+                try:
+                    lunch_en = time_to_minutes(getattr(it, "end_time", None) or "")
+                except Exception:
+                    pass
+            if tv == ItemType.DINNER_BREAK.value:
+                try:
+                    dinner_st = time_to_minutes(
+                        getattr(it, "start_time", None) or ""
+                    )
+                    den = time_to_minutes(getattr(it, "end_time", None) or "")
+                except Exception:
+                    continue
+                if lunch_en and dinner_st and dinner_st - lunch_en < 90:
+                    dinner_st = lunch_en + 90
+                    den = dinner_st + 45
+                    try:
+                        it_idx = out.index(it)
+                        out[it_idx] = it.model_copy(update={
+                            "start_time": minutes_to_time(dinner_st),
+                            "end_time": minutes_to_time(den),
+                            "duration_min": 45,
+                        })
+                    except Exception:
+                        pass
+        relabelled: List[Any] = []
+        for it in out:
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                relabelled.append(it)
+                continue
+            label = (getattr(it, "label", "") or "").strip().lower()
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                relabelled.append(it)
+                continue
+            if "kolacji" in label and (dinner_st is None or st < dinner_st):
+                try:
+                    it = it.model_copy(update={"label": "Czas dla siebie"})
+                except Exception:
+                    pass
+            relabelled.append(it)
+        return relabelled
 
     def _ensure_remaining_prompt_start(
         self,
@@ -36350,13 +37623,6 @@ class PlanService:
                     out.append(it)
                     continue
                 if last and frm and not _place_names_match(frm, last):
-                    src = str(getattr(it, "routing_source", "") or "").lower()
-                    if remaining and "return_to_car" in src:
-                        dest = (getattr(it, "to_location", "") or "").strip()
-                        if dest:
-                            last = dest
-                        out.append(it)
-                        continue
                     try:
                         it = it.model_copy(update={"from_location": last})
                         print(

@@ -65,16 +65,12 @@ def test_walk_to_museum_then_car_inserts_return_to_hub():
     hops = _transits(out)
     cars = [h for h in hops if "car" in _mode(h)]
     assert cars
-    assert "obwarzan" not in (getattr(cars[0], "from_location", "") or "").lower()
-    assert any(
-        "return_to_car" in str(getattr(h, "routing_source", "") or "").lower()
-        or (
-            "walk" in _mode(h)
-            and "obwarzan" in (getattr(h, "from_location", "") or "").lower()
-            and "krak" in (getattr(h, "to_location", "") or "").lower()
-        )
-        for h in hops
-    )
+    assert "obwarzan" in (getattr(cars[0], "from_location", "") or "").lower()
+    returns = [
+        h for h in hops
+        if "return_to_car" in str(getattr(h, "routing_source", "") or "").lower()
+    ]
+    assert not returns
     wro = svc._seal_remaining_car_token(items, cm, {**ctx, "requested_city": "Wrocław"}, day_num=3)
     wro_cars = [h for h in _transits(wro) if "car" in _mode(h)]
     assert "obwarzan" in (getattr(wro_cars[0], "from_location", "") or "").lower()
@@ -193,7 +189,7 @@ def test_auditor_flags_car_teleport():
         TransitItem.model_construct(
             type=ItemType.TRANSIT, start_time="09:00", end_time="09:20",
             duration_min=20, from_location="Kraków",
-            to_location="Park Bednarskiego", mode=TransitMode.WALK,
+            to_location="Park Bednarskiego", mode=TransitMode.CAR,
             distance_km=3.2,
         ),
         AttractionItem.model_construct(
@@ -203,8 +199,13 @@ def test_auditor_flags_car_teleport():
             lat=50.0378, lng=19.9585, city="Kraków",
         ),
         TransitItem.model_construct(
-            type=ItemType.TRANSIT, start_time="11:00", end_time="11:20",
-            duration_min=20, from_location="Park Bednarskiego",
+            type=ItemType.TRANSIT, start_time="11:00", end_time="11:15",
+            duration_min=15, from_location="Park Bednarskiego",
+            to_location="Sioux", mode=TransitMode.WALK, distance_km=0.6,
+        ),
+        TransitItem.model_construct(
+            type=ItemType.TRANSIT, start_time="12:00", end_time="12:20",
+            duration_min=20, from_location="Sioux",
             to_location="Wawel", mode=TransitMode.CAR, distance_km=4.0,
         ),
         DayEndItem(time="18:00"),

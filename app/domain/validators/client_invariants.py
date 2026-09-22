@@ -744,10 +744,6 @@ def audit_day(
                 is_car = "car" in _mode(it)
                 src = str(getattr(it, "routing_source", "") or "").lower()
                 if is_walk:
-                    if car_at is None and frm and (
-                        _is_hub_label(frm, context) or (city and _names_match(frm, city))
-                    ):
-                        car_at = frm
                     if to:
                         people = to
                     continue

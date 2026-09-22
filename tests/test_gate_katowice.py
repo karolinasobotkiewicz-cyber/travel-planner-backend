@@ -15,6 +15,7 @@ from app.domain.models.plan import ItemType
 from app.domain.validators.client_invariants import audit_plan, _tv
 from app.infrastructure.repositories.poi_repository import POIRepository
 from app.domain.planner.time_utils import time_to_minutes
+from tests.mail_gate_checks import WATCH, GAP_MIN, collect_day_mail_hits
 
 _HERE = Path(__file__).resolve().parent
 _JSON_DIR = _HERE.parents[1] / "json_miasta" / "Katowice"
@@ -31,6 +32,10 @@ WATCH = (
     "park_stack",
     "long_free_time",
     "after_day_end",
+    "from_mismatch",
+    "dishonest_leg",
+    "overlap",
+    "dangling_hop",
 )
 GAP_MIN = 45
 SPORT = (
@@ -241,6 +246,9 @@ def test_katowice_client_mail_defects_are_gone():
                 hits.append(
                     f"J{num} D{day.day} [kids_drive] {car_km:.0f} km"
                 )
+            hits.extend(collect_day_mail_hits(
+                num=num, day=day, payload=payload, city="Katowice",
+            ))
         if num == 3 and "active_sport" in prefs and not sport_hit:
             hits.append("J3 [no_active_sport]")
         if num == 7 and "underground" in prefs and not under_hit:

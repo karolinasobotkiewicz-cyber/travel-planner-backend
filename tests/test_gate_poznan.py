@@ -15,6 +15,7 @@ from app.domain.models.plan import ItemType
 from app.domain.validators.client_invariants import audit_plan, _tv
 from app.infrastructure.repositories.poi_repository import POIRepository
 from app.domain.planner.time_utils import time_to_minutes
+from tests.mail_gate_checks import WATCH, GAP_MIN, collect_day_mail_hits
 
 _HERE = Path(__file__).resolve().parent
 _JSON_DIR = _HERE.parents[1] / "json_miasta" / "Poznań"
@@ -31,6 +32,10 @@ WATCH = (
     "park_stack",
     "long_free_time",
     "after_day_end",
+    "from_mismatch",
+    "dishonest_leg",
+    "overlap",
+    "dangling_hop",
 )
 GAP_MIN = 45
 
@@ -210,6 +215,9 @@ def test_poznan_client_mail_defects_are_gone():
                 hits.append(
                     f"J{num} D{day.day} [dup_evening_ft] {ft_labels[0]!r}"
                 )
+            hits.extend(collect_day_mail_hits(
+                num=num, day=day, payload=payload, city="Poznań",
+            ))
 
     assert not hits, (
         "Poznań client-mail defects still in the JSON fixtures:\n"

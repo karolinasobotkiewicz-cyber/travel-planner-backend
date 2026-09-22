@@ -17,25 +17,11 @@ from app.application.services.plan_service import PlanService
 from app.domain.models.trip_input import TripInput
 from app.domain.validators.client_invariants import audit_plan
 from app.infrastructure.repositories.poi_repository import POIRepository
+from tests.mail_gate_checks import WATCH, GAP_MIN, collect_day_mail_hits
 
 _HERE = Path(__file__).resolve().parent
 _JSON_DIR = _HERE.parents[1] / "json_miasta" / "Kraków"
 _EXCEL = _HERE.parents[0] / "data" / "zakopane.xlsx"
-
-WATCH = (
-    "car_teleport",
-    "phantom_lead",
-    "self_hop",
-    "missing_hop",
-    "idle_start",
-    "late_start",
-    "after_dark_outdoor",
-    "park_stack",
-    "long_free_time",
-    "after_day_end",
-)
-GAP_MIN = 45
-
 
 @pytest.mark.slow
 def test_krakow_client_mail_defects_are_gone():
@@ -77,6 +63,10 @@ def test_krakow_client_mail_defects_are_gone():
                 continue
             if d.code in WATCH:
                 hits.append(f"J{num} D{d.day} [{d.code}] {d.message}")
+        for day in plan.days:
+            hits.extend(collect_day_mail_hits(
+                num=num, day=day, payload=payload, city="Kraków",
+            ))
 
     assert not hits, (
         "Kraków car/physics defects still in the client JSONs:\n"
