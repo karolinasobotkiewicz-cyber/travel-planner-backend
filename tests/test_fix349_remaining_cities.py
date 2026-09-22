@@ -65,12 +65,12 @@ def test_walk_to_museum_then_car_inserts_return_to_hub():
     hops = _transits(out)
     cars = [h for h in hops if "car" in _mode(h)]
     assert cars
-    assert "obwarzan" in (getattr(cars[0], "from_location", "") or "").lower()
+    assert "obwarzan" not in (getattr(cars[0], "from_location", "") or "").lower()
     returns = [
         h for h in hops
         if "return_to_car" in str(getattr(h, "routing_source", "") or "").lower()
     ]
-    assert not returns
+    assert returns
     wro = svc._seal_remaining_car_token(items, cm, {**ctx, "requested_city": "Wrocław"}, day_num=3)
     wro_cars = [h for h in _transits(wro) if "car" in _mode(h)]
     assert "obwarzan" in (getattr(wro_cars[0], "from_location", "") or "").lower()

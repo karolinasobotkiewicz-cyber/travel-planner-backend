@@ -11211,13 +11211,15 @@ class PlanService:
             # Sit on the JSON window. If the last stop is already after 19:00,
             # plant at 18:00 and let the clip pass shorten the late visit —
             # last_end+10 would land at 22:00 and get dropped.
+            dinner_floor = 17 * 60
             dinner_start_min = 18 * 60
             if last_end and last_end < 19 * 60:
-                dinner_start_min = max(_EARLIEST_DINNER_MIN, last_end + 10)
-            dinner_start_min = max(dinner_start_min, _EARLIEST_DINNER_MIN)
+                dinner_start_min = max(dinner_floor, last_end + 10)
+            dinner_start_min = max(dinner_start_min, dinner_floor)
+            dinner_start_min = min(dinner_start_min, 20 * 60)
             if dinner_start_min + 45 > day_end_min + 15:
                 dinner_start_min = max(
-                    _EARLIEST_DINNER_MIN, day_end_min - 45,
+                    dinner_floor, day_end_min - 45,
                 )
             if dinner_start_min + 30 > day_end_min + 15:
                 return items
@@ -14728,6 +14730,10 @@ class PlanService:
             "etnograficzn",
             "giszowiec",
             "paprocan",
+            "planty",
+            "park kościuszki", "park kosciuszki",
+            "trzech staw", "dolina trzech",
+            "spodek",
         )
         out_days: List[Any] = []
         for day in days:
@@ -32284,13 +32290,15 @@ class PlanService:
                 if "walk" in mode or "foot" in mode:
                     if (
                         car_at is None
-                        and not _is_open_mail_city(context)
                         and frm
                         and (
                             _is_hub_place_label(frm)
                             or (city and _place_names_match(frm, city))
                         )
                     ):
+                        # New client mail: a walking morning left the car at
+                        # the day's start. Driving from the first POI is a
+                        # teleport. Return-to-start is the honest move.
                         car_at = frm
                     if to:
                         people_at = to
@@ -32315,25 +32323,14 @@ class PlanService:
                 if last_people:
                     people_at = last_people
                 if car_at is None:
-                    if _is_open_mail_city(context):
-                        # FIX #353: a walking morning did not park the car at
-                        # the generic city pin. The first drive starts from
-                        # where people already are — no return-to-hub.
-                        car_at = people_at or frm or city
-                    elif _is_katowice_context(context) and city:
+                    if _is_katowice_context(context) and city:
                         car_at = city
                     else:
                         car_at = frm or people_at
-                first_drive = _is_open_mail_city(context) and not any(
-                    _item_type_value(prev) == ItemType.TRANSIT.value
-                    and "car" in _mode_of(prev)
-                    for prev in out
-                )
                 need_return = (
                     bool(people_at)
                     and bool(car_at)
                     and not _place_names_match(people_at, car_at)
-                    and not first_drive
                 )
                 already = False
                 if out:
@@ -34501,8 +34498,6 @@ class PlanService:
                 last_en = time_to_minutes(raw)
             except Exception:
                 continue
-        if last_en is None or dst - last_en < 45:
-            return ordered
         try:
             window = time_to_minutes((context or {}).get("day_end") or "20:00")
         except Exception:
@@ -34510,9 +34505,7 @@ class PlanService:
         dur = den - dst if den > dst else int(getattr(dinner, "duration_min", 0) or 45)
         if dur < 30:
             dur = 45
-        floor = 16 * 60
-        if _is_katowice_context(context):
-            floor = 15 * 60
+        floor = 17 * 60
         lunch_en = None
         for it in ordered[:dinner_i]:
             if _item_type_value(it) != ItemType.LUNCH_BREAK.value:
@@ -34521,10 +34514,31 @@ class PlanService:
                 lunch_en = time_to_minutes(getattr(it, "end_time", None) or "")
             except Exception:
                 continue
-        new_st = max(last_en + 10, floor)
-        if lunch_en is not None:
-            new_st = max(new_st, lunch_en + 90)
-        if new_st >= dst:
+        too_early = dst < floor or (
+            lunch_en is not None and dst - lunch_en < 180
+        )
+        too_late = dst >= 20 * 60 + 30
+        big_gap = last_en is not None and dst - last_en >= 45
+        if not too_early and not too_late and not big_gap:
+            return ordered
+        new_st = dst
+        if too_early:
+            new_st = floor
+            if lunch_en is not None:
+                new_st = max(new_st, lunch_en + 180)
+            if last_en is not None:
+                new_st = max(new_st, last_en + 10)
+            new_st = min(new_st, 20 * 60)
+        elif too_late:
+            new_st = 20 * 60
+        elif last_en is not None:
+            new_st = max(last_en + 10, floor)
+            if lunch_en is not None:
+                new_st = max(new_st, lunch_en + 180)
+            new_st = min(new_st, 20 * 60)
+            if new_st >= dst:
+                return ordered
+        if new_st == dst:
             return ordered
         new_en = new_st + dur
         if new_en > window and window - new_st >= 30:
@@ -34540,8 +34554,8 @@ class PlanService:
         except Exception:
             return ordered
         print(
-            f"[FIX #351] Day {day_num}: pulled dinner {minutes_to_time(dst)}→"
-            f"{minutes_to_time(new_st)} after last stop"
+            f"[FIX #351] Day {day_num}: moved dinner {minutes_to_time(dst)}→"
+            f"{minutes_to_time(new_st)}"
         )
         return ordered
 
@@ -35049,8 +35063,11 @@ class PlanService:
                 to = (getattr(it, "to_location", "") or "").strip()
                 mode = _mode_of(it)
                 if "walk" in mode or "foot" in mode:
-                    # FIX #353: a walking morning did not park the car at
-                    # the generic Katowice hub. First drive starts from people.
+                    if car_at is None and frm and (
+                        _is_hub_place_label(frm)
+                        or (city and _place_names_match(frm, city))
+                    ):
+                        car_at = frm
                     if to:
                         people = to
                     out.append(it)
@@ -35059,16 +35076,7 @@ class PlanService:
                     out.append(it)
                     continue
                 if car_at is None:
-                    car_at = people or frm
-                if (
-                    car_at
-                    and (
-                        _is_hub_place_label(car_at)
-                        or (city and _place_names_match(car_at, city))
-                    )
-                    and people
-                ):
-                    car_at = people
+                    car_at = city or frm
                 if people and car_at and not _place_names_match(people, car_at):
                     returned = False
                     for prev in reversed(out):
@@ -35459,7 +35467,7 @@ class PlanService:
         day_num: int = 0,
     ) -> List[Any]:
         """FIX #352: planted 'Kolacja' without a restaurant is still generic."""
-        if not items or not _is_katowice_context(context):
+        if not items or not _is_open_mail_city(context):
             return items
         ctx = context or {}
         pool = list(ctx.get("restaurants_available") or [])
@@ -36125,6 +36133,9 @@ class PlanService:
                 work = self._ensure_dinner_present(
                     work, ctx.get("day_end") or "20:00", ctx,
                 )
+                work = self._fill_katowice_meal_restaurants(
+                    work, ctx, day_num=day_num,
+                )
                 work = self._cover_remaining_pre_dinner_gap(
                     work, ctx, day_num=day_num,
                 )
@@ -36449,6 +36460,75 @@ class PlanService:
                 )
         return work
 
+    def _strip_mail_technical_fillers(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """Client mail: mail_dangling_fill / restaurant-as-attraction stay off the front."""
+        if not items or not _is_open_mail_city(context):
+            return items
+        foodish = (
+            "restauracj", "bar mlecz", "milkbar", "kukur", "kocur",
+            "bistro", " vis a vis", "nooks", "schaboszczak",
+        )
+        out: List[Any] = []
+        dropped = 0
+        for it in items:
+            pid = str(getattr(it, "poi_id", "") or "").lower()
+            why = [
+                str(x).lower()
+                for x in (getattr(it, "why_selected", None) or [])
+            ]
+            if "mail_dangling" in pid or any("mail_visit" in w for w in why):
+                dropped += 1
+                continue
+            if _is_timeline_attraction(it):
+                folded = _fold_place_label(getattr(it, "name", "") or "")
+                city_fix = None
+                if "guido" in folded or "krolowa luiza" in folded or "królowa luiza" in folded:
+                    city_fix = "Zabrze"
+                elif "carboneum" in folded or "teznia" in folded or "tężnia" in folded:
+                    city_fix = "Zabrze"
+                elif "palmiarnia" in folded or "funzeum" in folded:
+                    city_fix = "Gliwice"
+                if city_fix:
+                    try:
+                        it = it.model_copy(update={"city": city_fix})
+                    except Exception:
+                        pass
+                if "mocak" in folded:
+                    try:
+                        en = time_to_minutes(getattr(it, "end_time", None) or "")
+                        st = time_to_minutes(getattr(it, "start_time", None) or "")
+                    except Exception:
+                        en = None
+                    if en is not None and en > 19 * 60:
+                        try:
+                            it = it.model_copy(update={
+                                "end_time": "19:00",
+                                "duration_min": max(20, 19 * 60 - st),
+                            })
+                        except Exception:
+                            pass
+                try:
+                    dur = int(getattr(it, "duration_min", 0) or 0)
+                    if not dur:
+                        st = time_to_minutes(getattr(it, "start_time", None) or "")
+                        en = time_to_minutes(getattr(it, "end_time", None) or "")
+                        dur = en - st
+                except Exception:
+                    dur = 0
+                if dur and dur <= 25 and any(k in folded for k in foodish):
+                    dropped += 1
+                    continue
+            out.append(it)
+        if dropped:
+            print(f"[FIX #353] Day {day_num}: stripped {dropped} technical filler(s)")
+        return out
+
     def _polish_remaining_mail_without_restamp(
         self,
         items: List[Any],
@@ -36501,6 +36581,7 @@ class PlanService:
 
         saw_car = False
         people: Optional[str] = None
+        car_at: Optional[str] = None
         out: List[Any] = []
         dropped = 0
         for it in ordered:
@@ -36511,8 +36592,14 @@ class PlanService:
                 mode = _mode_of(it)
                 src = str(getattr(it, "routing_source", "") or "").lower()
                 if "walk" in mode or "foot" in mode:
-                    if "return_to_car" in src and (
-                        (not saw_car and _hub(to)) or _hub(to)
+                    if car_at is None and frm and _hub(frm):
+                        car_at = frm
+                    if (
+                        "return_to_car" in src
+                        and _hub(to)
+                        and car_at
+                        and not _hub(car_at)
+                        and not _place_names_match(to, car_at)
                     ):
                         dropped += 1
                         continue
@@ -36524,6 +36611,7 @@ class PlanService:
                     saw_car = True
                     if to:
                         people = to
+                        car_at = to
                     out.append(it)
                     continue
                 out.append(it)
@@ -36649,29 +36737,8 @@ class PlanService:
             except Exception:
                 rebuilt.append(it)
                 continue
-            already = _fold_place_label(dest) in visits
-            too_late = hop_en >= window_end - 5 or hop_en >= 20 * 60 + 15
-            if _hub(dest) or already or too_late:
-                dropped += 1
-                continue
-            vis_en = min(hop_en + 20, window_end)
-            if vis_en - hop_en < 8:
-                vis_en = hop_en + 15
-            pt = _pt(dest)
-            rebuilt.append(it)
-            rebuilt.append(AttractionItem.model_construct(
-                type=ItemType.ATTRACTION, poi_id="mail_dangling_fill",
-                name=dest, description_short="",
-                why_selected=["mail_visit"],
-                start_time=minutes_to_time(hop_en),
-                end_time=minutes_to_time(vis_en),
-                duration_min=max(8, vis_en - hop_en),
-                lat=(pt[0] if pt else None),
-                lng=(pt[1] if pt else None),
-                city=city or None, cost_estimate=0,
-            ))
-            visits.add(_fold_place_label(dest))
-            planted += 1
+            # Never invent a frontend POI (mail_dangling_fill). Drop the hop.
+            dropped += 1
         work = rebuilt
 
         try:
@@ -36710,16 +36777,17 @@ class PlanService:
             work = self._rewrite_hop_origins(work, day_num=day_num, context=ctx)
         except Exception:
             pass
-        if _is_katowice_context(ctx):
-            try:
-                work = self._fill_katowice_meal_restaurants(
-                    work, ctx, day_num=day_num,
-                )
+        try:
+            work = self._fill_katowice_meal_restaurants(
+                work, ctx, day_num=day_num,
+            )
+            if _is_katowice_context(ctx):
                 work = self._clip_katowice_free_time_off_meals(
                     work, ctx, day_num=day_num,
                 )
-            except Exception:
-                pass
+        except Exception:
+            pass
+        work = self._strip_mail_technical_fillers(work, ctx, day_num=day_num)
         trimmed: List[Any] = []
         for i, it in enumerate(work):
             if _item_type_value(it) != ItemType.TRANSIT.value:
@@ -36842,9 +36910,8 @@ class PlanService:
                 mode = _mode_of(it)
                 src = str(getattr(it, "routing_source", "") or "").lower()
                 if "walk" in mode or "foot" in mode:
-                    if "return_to_car" in src and not saw_car:
-                        dropped += 1
-                        continue
+                    if car_at is None and frm and _hub(frm):
+                        car_at = frm
                     if "return_to_car" in src and car_at and _hub(to):
                         to = car_at
                         try:
@@ -36950,17 +37017,15 @@ class PlanService:
             dropped += len(drop_idx)
             ordered = [it for i, it in enumerate(ordered) if i not in drop_idx]
 
-        # Drive to X with no visit: plant a short stop when we have coords.
+        # Drive to X with no visit: drop the hop. Do not invent a frontend POI.
         visits = {
             _fold_place_label(getattr(it, "name", "") or "")
             for it in ordered if _is_timeline_attraction(it)
         }
         planted: List[Any] = []
-        skip_next_car = set()
+        drop_dang: set = set()
         for i, it in enumerate(ordered):
             if _item_type_value(it) != ItemType.TRANSIT.value:
-                continue
-            if "car" not in _mode_of(it):
                 continue
             dest = (getattr(it, "to_location", "") or "").strip()
             if not dest or _hub(dest):
@@ -36975,25 +37040,10 @@ class PlanService:
                     break
             if later_visit:
                 continue
-            pt = _pt(dest)
-            try:
-                hop_en = time_to_minutes(getattr(it, "end_time", None) or "")
-            except Exception:
-                continue
-            vis = AttractionItem.model_construct(
-                type=ItemType.ATTRACTION, poi_id="mail_dangling_fill",
-                name=dest, description_short="", why_selected=["mail_visit"],
-                start_time=minutes_to_time(hop_en),
-                end_time=minutes_to_time(hop_en + 40),
-                duration_min=40,
-                lat=(pt[0] if pt else None), lng=(pt[1] if pt else None),
-                city=city or None, cost_estimate=0,
-            )
-            planted.append((i + 1, vis))
-            visits.add(_fold_place_label(dest))
-        if planted:
-            for offset, (idx, vis) in enumerate(planted):
-                ordered.insert(idx + offset, vis)
+            drop_dang.add(i)
+        if drop_dang:
+            dropped += len(drop_dang)
+            ordered = [it for i, it in enumerate(ordered) if i not in drop_dang]
 
         # Restamp km / minutes from pins.
         restamped = 0
@@ -37196,48 +37246,15 @@ class PlanService:
                     break
             if later_stop:
                 continue
-            try:
-                hop_en = time_to_minutes(getattr(it, "end_time", None) or "")
-            except Exception:
-                continue
-            nxt = None
-            for later in work[i + 1:]:
-                tv = _item_type_value(later)
-                if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
-                    continue
-                raw = getattr(later, "start_time", None) or getattr(later, "time", None)
-                if not raw:
-                    continue
-                try:
-                    nxt = time_to_minutes(raw)
-                except Exception:
-                    continue
-                break
-            vis_en = hop_en + 20
-            if nxt is not None:
-                vis_en = max(hop_en + 8, min(vis_en, nxt))
-            if vis_en - hop_en < 8:
-                vis_en = hop_en + 15
-            pt = _pt(dest)
-            vis = AttractionItem.model_construct(
-                type=ItemType.ATTRACTION, poi_id="mail_dangling_fill",
-                name=dest, description_short="",
-                why_selected=["mail_visit"],
-                start_time=minutes_to_time(hop_en),
-                end_time=minutes_to_time(vis_en),
-                duration_min=max(8, vis_en - hop_en),
-                lat=(pt[0] if pt else None),
-                lng=(pt[1] if pt else None),
-                city=city or None, cost_estimate=0,
-            )
-            work.insert(i + 1, vis)
-            planted.append((i, vis))
+            work.pop(i)
+            dropped += 1
             break
         try:
             work = self._drop_remaining_dusk_outdoor(work, ctx, day_num=day_num)
             work = self._reconcile_day_end_marker(work, ctx, day_num=day_num)
         except Exception:
             pass
+        work = self._strip_mail_technical_fillers(work, ctx, day_num=day_num)
         if dropped or restamped or planted:
             print(
                 f"[FIX #353] Day {day_num}: physics drop={dropped} "
@@ -37277,6 +37294,10 @@ class PlanService:
                     continue
                 if st >= 22 * 60 or (en - st) <= 0:
                     continue
+                if st < 12 * 60:
+                    dur0 = en - st if en > st else 40
+                    st = 12 * 60
+                    en = st + max(40, dur0)
                 dur = en - st if en > st else int(getattr(it, "duration_min", 0) or 0)
                 if dur < 40:
                     en = st + 40
@@ -37297,11 +37318,17 @@ class PlanService:
                 except Exception:
                     out.append(it)
                     continue
-                if lunch_en is not None and st - lunch_en < 90:
-                    st = lunch_en + 150
-                    if st + 45 > window_end + 20:
-                        continue
+                if lunch_en is not None and st - lunch_en < 180:
+                    st = lunch_en + 180
                     en = st + 45
+                if st < 17 * 60:
+                    st = 17 * 60
+                    en = st + 45
+                if st > 20 * 60:
+                    st = 20 * 60
+                    en = st + 45
+                if st + 30 > window_end + 20:
+                    continue
                 dur = en - st if en > st else int(getattr(it, "duration_min", 0) or 0)
                 if dur < 45:
                     en = st + 45

@@ -60,6 +60,15 @@ def collect_day_mail_hits(
                 pass
         if tv == ItemType.ATTRACTION.value:
             n_attr += 1
+            pid = str(getattr(it, "poi_id", "") or "").lower()
+            why = [
+                str(x).lower()
+                for x in (getattr(it, "why_selected", None) or [])
+            ]
+            if "mail_dangling" in pid or any("mail_visit" in w for w in why):
+                hits.append(
+                    f"J{num} D{day.day} [tech_fill] {getattr(it, 'name', '')}"
+                )
         if tv == ItemType.LUNCH_BREAK.value:
             has_lunch = True
             try:
@@ -89,10 +98,14 @@ def collect_day_mail_hits(
                 hits.append(
                     f"J{num} D{day.day} [short_dinner] {dinner_dur} min"
                 )
+            if dinner_st is not None and dinner_st < 17 * 60:
+                hits.append(
+                    f"J{num} D{day.day} [early_dinner] {it.start_time}"
+                )
             if (
                 lunch_en is not None
                 and dinner_st is not None
-                and dinner_st - lunch_en < 90
+                and dinner_st - lunch_en < 180
             ):
                 hits.append(
                     f"J{num} D{day.day} [early_dinner] "
@@ -125,6 +138,7 @@ def collect_day_mail_hits(
             if (
                 "return_to_car" in src
                 and dest
+                and saw_car
                 and (
                     _is_hub_place_label(dest)
                     or _place_names_match(dest, city)
@@ -133,10 +147,9 @@ def collect_day_mail_hits(
                 hits.append(
                     f"J{num} D{day.day} [hub_return] {dest}"
                 )
-            if "return_to_car" in src and not saw_car and "car" not in mode:
-                hits.append(
-                    f"J{num} D{day.day} [ghost_car] {dest}"
-                )
+            pid = str(getattr(it, "poi_id", "") or "").lower()
+            if "mail_dangling" in pid:
+                hits.append(f"J{num} D{day.day} [tech_fill] {dest}")
     if (
         win_end >= 18 * 60
         and n_attr >= 1

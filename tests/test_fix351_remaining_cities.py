@@ -137,7 +137,7 @@ def test_pre_dinner_hole_pulls_kolacja_onto_last_stop():
         if str(getattr(getattr(it, "type", None), "value", "")) == "dinner_break"
     )
     st = time_to_minutes(dinner.start_time)
-    assert st <= 16 * 60 + 40
+    assert 17 * 60 <= st <= 17 * 60 + 20
     wro = svc._cover_remaining_pre_dinner_gap(
         items, {**ctx, "requested_city": "Wrocław"}, day_num=2,
     )

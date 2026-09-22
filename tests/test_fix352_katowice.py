@@ -94,12 +94,12 @@ def test_first_katowice_car_hop_does_not_adopt_current_stop():
         and "car" in str(getattr(getattr(it, "mode", None), "value", "")).lower()
     ]
     assert cars
-    assert "spodek" in (getattr(cars[0], "from_location", "") or "").lower()
+    assert "spodek" not in (getattr(cars[0], "from_location", "") or "").lower()
     returns = [
         it for it in out
         if str(getattr(it, "routing_source", "") or "").lower() == "return_to_car"
     ]
-    assert not returns
+    assert returns
 
 
 def test_generic_dinner_gets_a_restaurant_name():

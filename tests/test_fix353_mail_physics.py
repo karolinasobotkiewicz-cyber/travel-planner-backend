@@ -52,7 +52,9 @@ def test_ghost_return_to_hub_is_dropped_before_first_drive():
         it for it in out
         if str(getattr(it, "routing_source", "") or "").lower() == "return_to_car"
     ]
-    assert not returns
+    # Car stayed at the day's start (Kraków). Walking back there is honest.
+    assert returns
+    assert "krak" in (getattr(returns[0], "to_location", "") or "").lower()
 
 
 def test_po_kolacji_before_dinner_is_relabelled():
@@ -78,3 +80,28 @@ def test_po_kolacji_before_dinner_is_relabelled():
         it for it in out if getattr(it, "label", None)
     )
     assert "kolacji" not in (ft.label or "").lower()
+
+
+def test_dangling_fill_is_stripped_from_frontend():
+    from app.domain.models.plan import (
+        AttractionItem, DayEndItem, DayStartItem, ItemType,
+    )
+
+    svc = _svc()
+    items = [
+        DayStartItem(time="09:00"),
+        AttractionItem.model_construct(
+            type=ItemType.ATTRACTION, poi_id="mail_dangling_fill",
+            name="Modra Kuchnia", description_short="",
+            why_selected=["mail_visit"],
+            start_time="15:00", end_time="15:20", duration_min=20,
+            lat=52.4, lng=16.9, city="Poznań",
+        ),
+        DayEndItem(time="18:00"),
+    ]
+    ctx = {"requested_city": "Poznań"}
+    out = svc._strip_mail_technical_fillers(items, ctx, day_num=3)
+    assert not any(
+        "mail_dangling" in str(getattr(it, "poi_id", "") or "")
+        for it in out
+    )
