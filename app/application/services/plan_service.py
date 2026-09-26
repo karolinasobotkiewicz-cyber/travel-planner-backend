@@ -38190,7 +38190,59 @@ class PlanService:
                 except Exception:
                     break
                 cursor += block
-        work = seated
+        # A moved visit must not sit on the break that followed it, and two
+        # breaks must stay 10 min apart so they do not merge past an hour.
+        tightened: List[Any] = []
+        for idx, it in enumerate(seated):
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                tightened.append(it)
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                tightened.append(it)
+                continue
+            dur = en - st
+            if dur > 44:
+                dur = 44
+                st = en - dur
+            prev = tightened[-1] if tightened else None
+            if prev is not None:
+                raw_prev = getattr(prev, "end_time", None) or getattr(prev, "time", None)
+                try:
+                    prev_en = time_to_minutes(raw_prev) if raw_prev else None
+                except Exception:
+                    prev_en = None
+                pad = 10 if _item_type_value(prev) == ItemType.FREE_TIME.value else 0
+                if prev_en is not None and st < prev_en + pad:
+                    st = prev_en + pad
+            nxt_st = None
+            for later in seated[idx + 1:]:
+                if _item_type_value(later) == ItemType.FREE_TIME.value:
+                    continue
+                raw_n = getattr(later, "start_time", None) or getattr(later, "time", None)
+                if not raw_n:
+                    continue
+                try:
+                    nxt_st = time_to_minutes(raw_n)
+                except Exception:
+                    nxt_st = None
+                break
+            if nxt_st is not None and st + dur > nxt_st:
+                dur = nxt_st - st
+            if dur < 5:
+                continue
+            try:
+                it = it.model_copy(update={
+                    "start_time": minutes_to_time(st),
+                    "end_time": minutes_to_time(st + dur),
+                    "duration_min": dur,
+                })
+            except Exception:
+                pass
+            tightened.append(it)
+        work = tightened
 
         # A drive must not keep a walking route source, and its minutes follow km.
         stamped: List[Any] = []
