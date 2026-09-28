@@ -38008,17 +38008,26 @@ class PlanService:
                 for v in visits | meals
             )
 
-        # A hop that starts and ends on the same name is not a hop.
+        # A hop that starts and ends on the same name is not a hop, and
+        # neither is a hop that arrives where the group already stands.
         dropped: List[Any] = []
+        here: Optional[str] = None
         for it in work:
             if _item_type_value(it) != ItemType.TRANSIT.value:
+                got = self._occupied_stop_name(it)
+                if got:
+                    here = got
                 dropped.append(it)
                 continue
             frm = (getattr(it, "from_location", "") or "").strip()
             to = (getattr(it, "to_location", "") or "").strip()
             if _same(frm, to):
                 continue
+            if here and to and _same(to, here):
+                continue
             dropped.append(it)
+            if to:
+                here = to
         work = dropped
 
         # Two hops A → X → B, and X is never a visit or a meal: one hop A → B.
@@ -38547,7 +38556,290 @@ class PlanService:
                 placed = True
             if placed:
                 out = rebuilt
-        return out
+
+        # A guest who already stands at the restaurant does not wait an hour
+        # for the meal. Pull the meal down to the arrival and carry the rest
+        # of the day with it, as far as the dinner floor allows.
+        for _ in range(2):
+            target = None
+            for idx, it in enumerate(out):
+                tv = _item_type_value(it)
+                if tv not in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                ):
+                    continue
+                name = self._occupied_stop_name(it)
+                if not name:
+                    continue
+                try:
+                    meal_st = time_to_minutes(getattr(it, "start_time", None) or "")
+                except Exception:
+                    continue
+                arrival = None
+                for j in range(idx - 1, -1, -1):
+                    if _item_type_value(out[j]) != ItemType.TRANSIT.value:
+                        continue
+                    if _same((getattr(out[j], "to_location", "") or ""), name):
+                        try:
+                            arrival = time_to_minutes(
+                                getattr(out[j], "end_time", None) or ""
+                            )
+                        except Exception:
+                            arrival = None
+                        break
+                if arrival is None or meal_st - arrival < 40:
+                    continue
+                floor = 12 * 60
+                if tv == ItemType.DINNER_BREAK.value:
+                    floor = 17 * 60 + 30
+                    for earlier in out[:idx]:
+                        if _item_type_value(earlier) != ItemType.LUNCH_BREAK.value:
+                            continue
+                        try:
+                            l_en = time_to_minutes(
+                                getattr(earlier, "end_time", None) or ""
+                            )
+                            floor = max(floor, l_en + 180)
+                        except Exception:
+                            pass
+                shift = meal_st - max(arrival, floor)
+                if shift <= 0:
+                    continue
+                for later in out[idx:]:
+                    if _item_type_value(later) != ItemType.DINNER_BREAK.value:
+                        continue
+                    if later is it:
+                        continue
+                    try:
+                        d_st = time_to_minutes(getattr(later, "start_time", None) or "")
+                        shift = min(shift, max(0, d_st - (17 * 60 + 30)))
+                    except Exception:
+                        pass
+                if shift <= 0:
+                    continue
+                target = (idx, shift)
+                break
+            if target is None:
+                break
+            at, shift = target
+            new_meal_st = None
+            try:
+                new_meal_st = time_to_minutes(
+                    getattr(out[at], "start_time", None) or ""
+                ) - shift
+            except Exception:
+                new_meal_st = None
+            moved: List[Any] = []
+            for it in out[:at]:
+                if (
+                    new_meal_st is not None
+                    and _item_type_value(it) == ItemType.FREE_TIME.value
+                ):
+                    try:
+                        f_st = time_to_minutes(getattr(it, "start_time", None) or "")
+                        f_en = time_to_minutes(getattr(it, "end_time", None) or "")
+                    except Exception:
+                        moved.append(it)
+                        continue
+                    if f_en > new_meal_st:
+                        f_en = new_meal_st
+                        if f_en - f_st < 5:
+                            continue
+                        try:
+                            it = it.model_copy(update={
+                                "end_time": minutes_to_time(f_en),
+                                "duration_min": f_en - f_st,
+                            })
+                        except Exception:
+                            pass
+                moved.append(it)
+            for it in out[at:]:
+                if _item_type_value(it) == ItemType.DAY_END.value:
+                    moved.append(it)
+                    continue
+                update: Dict[str, Any] = {}
+                for field in ("start_time", "end_time", "time"):
+                    raw = getattr(it, field, None)
+                    if not raw:
+                        continue
+                    try:
+                        update[field] = minutes_to_time(
+                            max(0, time_to_minutes(raw) - shift)
+                        )
+                    except Exception:
+                        pass
+                try:
+                    it = it.model_copy(update=update) if update else it
+                except Exception:
+                    pass
+                moved.append(it)
+            out = moved
+
+        # When the meal cannot move down (a dinner sits on its floor), the
+        # drive waits instead. Nobody parks at the restaurant for four hours.
+        for _ in range(3):
+            late = None
+            for idx, it in enumerate(out):
+                if _item_type_value(it) not in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                ):
+                    continue
+                name = self._occupied_stop_name(it)
+                if not name:
+                    continue
+                try:
+                    meal_st = time_to_minutes(getattr(it, "start_time", None) or "")
+                except Exception:
+                    continue
+                hop_at = None
+                for j in range(idx - 1, -1, -1):
+                    if self._occupied_stop_name(out[j]):
+                        break
+                    if (
+                        _item_type_value(out[j]) == ItemType.TRANSIT.value
+                        and _same((getattr(out[j], "to_location", "") or ""), name)
+                    ):
+                        hop_at = j
+                        break
+                if hop_at is None:
+                    continue
+                # Without an earlier stop the group is still at the hotel, and
+                # holding the drive back would only empty the morning.
+                if not any(
+                    self._occupied_stop_name(earlier) for earlier in out[:hop_at]
+                ):
+                    continue
+                try:
+                    hop_en = time_to_minutes(
+                        getattr(out[hop_at], "end_time", None) or ""
+                    )
+                except Exception:
+                    continue
+                if meal_st - hop_en < 40:
+                    continue
+                late = (hop_at, idx, meal_st)
+                break
+            if late is None:
+                break
+            hop_at, meal_at, meal_st = late
+            hop = out[hop_at]
+            try:
+                dur = int(getattr(hop, "duration_min", 0) or 0)
+                if dur <= 0:
+                    dur = meal_st - time_to_minutes(
+                        getattr(hop, "start_time", None) or ""
+                    )
+            except Exception:
+                dur = 10
+            dur = max(4, min(dur, 90))
+            new_st = meal_st - dur
+            try:
+                hop = hop.model_copy(update={
+                    "start_time": minutes_to_time(new_st),
+                    "end_time": minutes_to_time(meal_st),
+                })
+            except Exception:
+                pass
+            middle: List[Any] = []
+            for k in range(hop_at + 1, meal_at):
+                item = out[k]
+                if _item_type_value(item) != ItemType.FREE_TIME.value:
+                    middle.append(item)
+                    continue
+                try:
+                    f_st = time_to_minutes(getattr(item, "start_time", None) or "")
+                    f_en = time_to_minutes(getattr(item, "end_time", None) or "")
+                except Exception:
+                    continue
+                f_en = min(f_en, new_st)
+                if f_en - f_st < 5:
+                    continue
+                try:
+                    middle.append(item.model_copy(update={
+                        "end_time": minutes_to_time(f_en),
+                        "duration_min": f_en - f_st,
+                    }))
+                except Exception:
+                    middle.append(item)
+            out = list(out[:hop_at]) + middle + [hop] + list(out[meal_at:])
+        last_real = None
+        for it in out:
+            if _item_type_value(it) in (
+                ItemType.DAY_START.value, ItemType.DAY_END.value,
+            ):
+                continue
+            raw = getattr(it, "end_time", None) or getattr(it, "time", None)
+            if not raw:
+                continue
+            try:
+                last_real = max(last_real or 0, time_to_minutes(raw))
+            except Exception:
+                continue
+        if last_real is not None:
+            snapped: List[Any] = []
+            for it in out:
+                if _item_type_value(it) != ItemType.DAY_END.value:
+                    snapped.append(it)
+                    continue
+                try:
+                    it = it.model_copy(update={"time": minutes_to_time(last_real)})
+                except Exception:
+                    pass
+                snapped.append(it)
+            out = snapped
+
+        # Last: a hop that arrives where the group already stands is noise,
+        # a hop that starts in the middle of a meal is noise, and every
+        # remaining hop starts at the last real stop.
+        meal_spans: List[Tuple[int, int]] = []
+        for it in out:
+            if _item_type_value(it) not in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            ):
+                continue
+            try:
+                ms = time_to_minutes(getattr(it, "start_time", None) or "")
+                me = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                continue
+            meal_spans.append((ms, me))
+        cleaned: List[Any] = []
+        here = None
+        for it in out:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                got = self._occupied_stop_name(it)
+                if got:
+                    here = got
+                cleaned.append(it)
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            to = (getattr(it, "to_location", "") or "").strip()
+            try:
+                hop_st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                hop_st = None
+            if hop_st is not None and any(ms < hop_st < me for ms, me in meal_spans):
+                continue
+            if _same(frm, to):
+                continue
+            if here and to and _same(to, here):
+                continue
+            if here and frm and not _same(frm, here) and not _hub(frm):
+                try:
+                    it = it.model_copy(update={
+                        "from_location": here,
+                        "geometry": None,
+                        "geometry_latlng": None,
+                    })
+                    frm = here
+                except Exception:
+                    pass
+                if _same(frm, to):
+                    continue
+            cleaned.append(it)
+            if to:
+                here = to
+        return cleaned
 
 
     def _strip_mail_technical_fillers(
