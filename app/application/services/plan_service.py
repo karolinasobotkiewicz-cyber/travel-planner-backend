@@ -38268,18 +38268,33 @@ class PlanService:
                     dist = float(getattr(it, "distance_km", 0) or 0)
                 except (TypeError, ValueError):
                     dist = 0.0
+            try:
+                stored = float(getattr(it, "distance_km", 0) or 0)
+            except (TypeError, ValueError):
+                stored = 0.0
+            pin_km = _km(frm, to) if frm and to else None
             update: Dict[str, Any] = {}
             if "walk" in src or "foot" in src:
                 update["routing_source"] = "haversine"
                 update["geometry"] = None
                 update["geometry_latlng"] = None
-            if dist and dist > 0 and ("walk" in src or "foot" in src):
+            pin_off = (
+                pin_km is not None and pin_km > 0.2
+                and (stored <= 0 or abs(stored - pin_km) / max(pin_km, 0.2) > 0.45)
+            )
+            if pin_off:
+                dist = pin_km
+            if dist and dist > 0 and ("walk" in src or "foot" in src or pin_off):
                 mins = _honest_car(dist)
                 try:
                     st = time_to_minutes(getattr(it, "start_time", None) or "")
                     update["distance_km"] = round(dist, 3)
                     update["duration_min"] = mins
                     update["end_time"] = minutes_to_time(st + mins)
+                    update["geometry"] = None
+                    update["geometry_latlng"] = None
+                    if pin_off:
+                        update["routing_source"] = "haversine"
                 except Exception:
                     pass
             if update:
@@ -38381,11 +38396,12 @@ class PlanService:
             prefs.append("kids")
         catalog = (
             ("underground", ("guido", "luiza", "sztoln", "podziem", "kopaln")),
-            ("active_sport", ("gokart", "wspin", "linow", "cybermagi", "bowling", "skate")),
-            ("nature", ("dolina trzech", "park slaski", "ogrod botan")),
-            ("water", ("malta", "term", "aquapark", "jezior")),
+            ("active_sport", ("gokart", "wspin", "linow", "cybermagi", "bowling", "skate", "jump")),
+            ("water_attractions", ("malta", "term", "aquapark", "jezior", "park wodny", "basen")),
+            ("nature_landscape", ("park slaski", "ogrod botan", "palmiarnia")),
+            ("local_food_experience", ("browar", "obwarzanka", "rogalowe", "fabryka wodki", "pijalnia")),
+            ("relaxation", ("spa", "teznia", "tężnia")),
             ("kids", ("bajk", "pixel", "zoo", "labirynt", "dinozaur", "funzeum")),
-            ("relax", ("spa", "teznia", "tężnia")),
         )
         blob = " ".join(prefs)
         have = " ".join(
@@ -38522,6 +38538,52 @@ class PlanService:
                                 pass
                         seen.add(key)
                         self._open_mail_seen = seen
+
+        # A named meal still needs a hop from the last real stop.
+        with_meals: List[Any] = []
+        prev_stop = None
+        for it in out:
+            nm = self._occupied_stop_name(it)
+            if (
+                nm and prev_stop and not _same(nm, prev_stop)
+                and _item_type_value(it) in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                )
+            ):
+                hit = False
+                for prev in reversed(with_meals):
+                    if self._occupied_stop_name(prev):
+                        break
+                    if (
+                        _item_type_value(prev) == ItemType.TRANSIT.value
+                        and _same(getattr(prev, "to_location", "") or "", nm)
+                    ):
+                        hit = True
+                        break
+                if not hit:
+                    dist = _km(prev_stop, nm)
+                    if dist is not None and 0.20 <= dist <= 2.2:
+                        mins = max(5, int(round(max(dist, 0.3) / 4.5 * 60)) + 2)
+                        try:
+                            meal_st = time_to_minutes(getattr(it, "start_time", None) or "12:00")
+                        except Exception:
+                            meal_st = 12 * 60
+                        hop_st = max(0, meal_st - mins)
+                        with_meals.append(TransitItem(
+                            type=ItemType.TRANSIT,
+                            start_time=minutes_to_time(hop_st),
+                            end_time=minutes_to_time(hop_st + mins),
+                            duration_min=mins,
+                            mode=TransitMode.WALK,
+                            from_location=prev_stop,
+                            to_location=nm,
+                            distance_km=round(dist, 3),
+                            routing_source="haversine",
+                        ))
+            if nm:
+                prev_stop = nm
+            with_meals.append(it)
+        out = with_meals
 
         has_lunch = any(
             _item_type_value(it) == ItemType.LUNCH_BREAK.value for it in out
@@ -38874,7 +38936,7 @@ class PlanService:
                     city_fix = "Zabrze"
                 elif "carboneum" in folded or "teznia" in folded or "tężnia" in folded:
                     city_fix = "Zabrze"
-                elif "palmiarnia" in folded or "funzeum" in folded:
+                elif "palmiarnia" in folded or "funzeum" in folded or "czary mary" in folded:
                     city_fix = "Gliwice"
                 if city_fix:
                     try:
