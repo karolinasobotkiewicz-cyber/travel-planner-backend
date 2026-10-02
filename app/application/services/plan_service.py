@@ -37549,18 +37549,22 @@ class PlanService:
                     ff
                     and ("park" in ff or "muzeum" in ff)
                     and not any(ff in v or v in ff for v in visited)
-                    and prev_stop
-                    and not _hub(prev_stop)
                 ):
-                    frm = prev_stop
-                    try:
-                        it = it.model_copy(update={
-                            "from_location": prev_stop,
-                            "geometry": None,
-                            "geometry_latlng": None,
-                        })
-                    except Exception:
-                        pass
+                    target = None
+                    if prev_stop and not _hub(prev_stop):
+                        target = prev_stop
+                    elif city:
+                        target = city
+                    if target:
+                        frm = target
+                        try:
+                            it = it.model_copy(update={
+                                "from_location": target,
+                                "geometry": None,
+                                "geometry_latlng": None,
+                            })
+                        except Exception:
+                            pass
                 if (
                     prev_stop
                     and frm
