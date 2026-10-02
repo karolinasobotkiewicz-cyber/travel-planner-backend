@@ -36592,9 +36592,13 @@ class PlanService:
             elif any(k in folded for k in (
                 "guido", "bajkowy labirynt", "carboneum", "krolowa luiza",
                 "pileckiego",
-            )) or "teznia" in folded:
+            )) or (
+                "teznia" in folded
+                and "wielicz" not in folded
+                and _is_katowice_context(context)
+            ):
                 label = "Zabrze"
-            elif any(k in folded for k in (
+            elif _is_katowice_context(context) and any(k in folded for k in (
                 "palmiarnia", "willa caro", "radiostacja", "funzeum",
             )):
                 label = "Gliwice"
@@ -37545,11 +37549,16 @@ class PlanService:
                     ff
                     and ("park" in ff or "muzeum" in ff)
                     and not any(ff in v or v in ff for v in visited)
-                    and city
+                    and prev_stop
+                    and not _hub(prev_stop)
                 ):
-                    frm = city
+                    frm = prev_stop
                     try:
-                        it = it.model_copy(update={"from_location": city})
+                        it = it.model_copy(update={
+                            "from_location": prev_stop,
+                            "geometry": None,
+                            "geometry_latlng": None,
+                        })
                     except Exception:
                         pass
                 if (
@@ -38114,6 +38123,206 @@ class PlanService:
             i += 1
         work = spliced
 
+        # A → B → A with only a break between drops out. When B is visited
+        # later, the arrival stays and only the hop back is removed.
+        unlooped: List[Any] = []
+        i = 0
+        while i < len(work):
+            it = work[i]
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                unlooped.append(it)
+                i += 1
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            to = (getattr(it, "to_location", "") or "").strip()
+            j = None
+            gap_ok = True
+            for k in range(i + 1, len(work)):
+                tvk = _item_type_value(work[k])
+                if tvk == ItemType.TRANSIT.value:
+                    j = k
+                    break
+                if tvk not in (
+                    ItemType.FREE_TIME.value,
+                    ItemType.DAY_START.value,
+                    ItemType.DAY_END.value,
+                ):
+                    gap_ok = False
+                    break
+            if j is None or not gap_ok or not to or not frm or _hub(to):
+                unlooped.append(it)
+                i += 1
+                continue
+            back_from = (getattr(work[j], "from_location", "") or "").strip()
+            back_to = (getattr(work[j], "to_location", "") or "").strip()
+            if not (_same(back_from, to) and _same(back_to, frm)):
+                unlooped.append(it)
+                i += 1
+                continue
+            later_visit = any(
+                _is_timeline_attraction(work[k])
+                and _same(getattr(work[k], "name", "") or "", to)
+                for k in range(j + 1, len(work))
+            )
+            first_car = "car" in _mode(it)
+            second_walk = "walk" in _mode(work[j]) or "foot" in _mode(work[j])
+            if later_visit or (first_car and second_walk):
+                unlooped.append(it)
+                for k in range(i + 1, j):
+                    unlooped.append(work[k])
+                i = j + 1
+                continue
+            prev_end = None
+            if unlooped:
+                raw_prev = (
+                    getattr(unlooped[-1], "end_time", None)
+                    or getattr(unlooped[-1], "time", None)
+                )
+                try:
+                    prev_end = time_to_minutes(raw_prev) if raw_prev else None
+                except Exception:
+                    prev_end = None
+            nxt = work[j + 1] if j + 1 < len(work) else None
+            nxt_st = None
+            if nxt is not None:
+                raw_n = getattr(nxt, "start_time", None) or getattr(nxt, "time", None)
+                try:
+                    nxt_st = time_to_minutes(raw_n) if raw_n else None
+                except Exception:
+                    nxt_st = None
+            if (
+                prev_end is not None
+                and nxt_st is not None
+                and nxt_st - prev_end >= 45
+            ):
+                block = min(44, nxt_st - prev_end - 1)
+                if block >= 5:
+                    unlooped.append(FreeTimeItem(
+                        start_time=minutes_to_time(nxt_st - block),
+                        end_time=minutes_to_time(nxt_st),
+                        duration_min=block,
+                        label="Czas dla siebie",
+                    ))
+            i = j + 1
+        work = unlooped
+
+        # Arrival, then a meal or a hop away, then a hop back, then the visit.
+        # The visit sits on the arrival and the hop back is dropped. A shift
+        # longer than half an hour is left alone so dinner is not pushed
+        # into the next attraction.
+        collapsed: List[Any] = []
+        skip_at: set[int] = set()
+        for i, it in enumerate(work):
+            if i in skip_at:
+                continue
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                collapsed.append(it)
+                continue
+            to = (getattr(it, "to_location", "") or "").strip()
+            if not to or _hub(to):
+                collapsed.append(it)
+                continue
+            vis_i = None
+            blocked = False
+            for j in range(i + 1, len(work)):
+                if _is_timeline_attraction(work[j]):
+                    if _same(getattr(work[j], "name", "") or "", to):
+                        vis_i = j
+                    else:
+                        blocked = True
+                    break
+            if vis_i is None or blocked:
+                collapsed.append(it)
+                continue
+            returns = [
+                j for j in range(i + 1, vis_i)
+                if _item_type_value(work[j]) == ItemType.TRANSIT.value
+                and _same((getattr(work[j], "to_location", "") or ""), to)
+            ]
+            if not returns:
+                collapsed.append(it)
+                continue
+            try:
+                hop_en = time_to_minutes(getattr(it, "end_time", None) or "")
+                dur = int(getattr(work[vis_i], "duration_min", 0) or 40) or 40
+            except Exception:
+                collapsed.append(it)
+                continue
+            vis_end = hop_en + dur
+            earliest = None
+            for j in range(i + 1, vis_i):
+                if j in returns:
+                    continue
+                if _item_type_value(work[j]) in (
+                    ItemType.DAY_START.value, ItemType.DAY_END.value,
+                ):
+                    continue
+                try:
+                    st = time_to_minutes(getattr(work[j], "start_time", None) or "")
+                except Exception:
+                    continue
+                if earliest is None or st < earliest:
+                    earliest = st
+            shift = max(0, vis_end - earliest) if earliest is not None else 0
+            after = None
+            for j in range(vis_i + 1, len(work)):
+                if _item_type_value(work[j]) in (
+                    ItemType.FREE_TIME.value,
+                    ItemType.DAY_START.value,
+                    ItemType.DAY_END.value,
+                ):
+                    continue
+                raw = getattr(work[j], "start_time", None) or getattr(work[j], "time", None)
+                try:
+                    after = time_to_minutes(raw) if raw else None
+                except Exception:
+                    after = None
+                break
+            if shift > 30:
+                collapsed.append(it)
+                continue
+            if after is not None and vis_end + shift > after:
+                collapsed.append(it)
+                continue
+            vis = work[vis_i]
+            try:
+                vis = vis.model_copy(update={
+                    "start_time": minutes_to_time(hop_en),
+                    "end_time": minutes_to_time(vis_end),
+                    "duration_min": dur,
+                })
+            except Exception:
+                collapsed.append(it)
+                continue
+            collapsed.append(it)
+            collapsed.append(vis)
+            for j in range(i + 1, vis_i):
+                if j in returns:
+                    continue
+                mid = work[j]
+                if shift and getattr(mid, "start_time", None):
+                    try:
+                        st = time_to_minutes(getattr(mid, "start_time", None) or "")
+                        en = time_to_minutes(
+                            getattr(mid, "end_time", None)
+                            or getattr(mid, "time", None)
+                            or ""
+                        )
+                        mid = mid.model_copy(update={
+                            "start_time": minutes_to_time(st + shift),
+                            "end_time": minutes_to_time(en + shift),
+                        })
+                    except Exception:
+                        pass
+                collapsed.append(mid)
+            skip_at.add(vis_i)
+            for j in returns:
+                skip_at.add(j)
+            for j in range(i + 1, vis_i):
+                skip_at.add(j)
+        if skip_at:
+            work = collapsed
+
         # If the only thing between an arrival and its visit is free time,
         # the visit sits on that arrival. A visit behind another stop stays.
         seated: List[Any] = []
@@ -38308,7 +38517,81 @@ class PlanService:
                 except Exception:
                     pass
             stamped.append(it)
-        work = stamped
+        walked: List[Any] = []
+        for idx, it in enumerate(stamped):
+            mode = _mode(it)
+            if _item_type_value(it) != ItemType.TRANSIT.value or (
+                "walk" not in mode and "foot" not in mode
+            ):
+                walked.append(it)
+                continue
+            src = str(getattr(it, "routing_source", "") or "").lower()
+            frm = (getattr(it, "from_location", "") or "").strip()
+            to = (getattr(it, "to_location", "") or "").strip()
+            pin_km = _km(frm, to) if frm and to else None
+            try:
+                stored = float(getattr(it, "distance_km", 0) or 0)
+            except (TypeError, ValueError):
+                stored = 0.0
+            clear = {"geometry": None, "geometry_latlng": None}
+            if "return_to_car" in src or pin_km is None:
+                try:
+                    it = it.model_copy(update=clear)
+                except Exception:
+                    pass
+                walked.append(it)
+                continue
+            off = stored <= 0 or abs(stored - pin_km) / max(pin_km, 0.2) > 0.45
+            if not off:
+                try:
+                    it = it.model_copy(update=clear)
+                except Exception:
+                    pass
+                walked.append(it)
+                continue
+            use_car = pin_km > 2.2 and ctx.get("has_car", True)
+            mins = (
+                _honest_car(pin_km) if use_car
+                else max(5, int(round(pin_km / 4.5 * 60)) + 2)
+            )
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                walked.append(it)
+                continue
+            nxt_st = None
+            for nxt in stamped[idx + 1:]:
+                if _item_type_value(nxt) in (
+                    ItemType.DAY_START.value, ItemType.DAY_END.value,
+                    ItemType.FREE_TIME.value,
+                ):
+                    continue
+                raw = getattr(nxt, "start_time", None) or getattr(nxt, "time", None)
+                try:
+                    nxt_st = time_to_minutes(raw) if raw else None
+                except Exception:
+                    nxt_st = None
+                break
+            if nxt_st is not None and st + mins > nxt_st:
+                try:
+                    it = it.model_copy(update=clear)
+                except Exception:
+                    pass
+                walked.append(it)
+                continue
+            try:
+                it = it.model_copy(update={
+                    **clear,
+                    "mode": TransitMode.CAR if use_car else TransitMode.WALK,
+                    "distance_km": round(pin_km, 3),
+                    "duration_min": mins,
+                    "end_time": minutes_to_time(st + mins),
+                    "routing_source": "haversine",
+                })
+            except Exception:
+                pass
+            walked.append(it)
+        work = walked
 
         # The next car hop starts where the previous one ended.
         # A short walk back is shown. A long separation means the car
@@ -38947,16 +39230,19 @@ class PlanService:
             "stare miasto", "sukiennice",
         )
         parked = False
+        seen_stop = False
         core_fixed: List[Any] = []
         for idx, it in enumerate(out):
             if _item_type_value(it) != ItemType.TRANSIT.value or "car" not in _mode(it):
+                if self._occupied_stop_name(it):
+                    seen_stop = True
                 core_fixed.append(it)
                 continue
             frm = (getattr(it, "from_location", "") or "").strip()
             to = (getattr(it, "to_location", "") or "").strip()
             folded_to = _fold_place_label(to)
             dist = _km(frm, to) if frm and to else None
-            if not parked and frm and not _hub(frm):
+            if not parked and not seen_stop and frm and not _hub(frm):
                 try:
                     it = it.model_copy(update={
                         "from_location": city or frm,
@@ -39026,41 +39312,153 @@ class PlanService:
             meal_spans.append((ms, me))
         cleaned: List[Any] = []
         here = None
+        car_park = None
+        last_clock = None
         for it in out:
             if _item_type_value(it) != ItemType.TRANSIT.value:
+                if _item_type_value(it) in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                ) and last_clock is not None:
+                    try:
+                        st = time_to_minutes(getattr(it, "start_time", None) or "")
+                        en = time_to_minutes(getattr(it, "end_time", None) or "")
+                    except Exception:
+                        st = en = None
+                    if st is not None and en is not None and st < last_clock:
+                        dur = max(20, en - st)
+                        try:
+                            it = it.model_copy(update={
+                                "start_time": minutes_to_time(last_clock),
+                                "end_time": minutes_to_time(last_clock + dur),
+                                "duration_min": dur,
+                            })
+                        except Exception:
+                            pass
                 got = self._occupied_stop_name(it)
                 if got:
                     here = got
                 cleaned.append(it)
+                raw_e = getattr(it, "end_time", None) or getattr(it, "time", None)
+                try:
+                    if raw_e:
+                        last_clock = time_to_minutes(raw_e)
+                except Exception:
+                    pass
                 continue
             frm = (getattr(it, "from_location", "") or "").strip()
             to = (getattr(it, "to_location", "") or "").strip()
+            is_car = "car" in _mode(it)
             try:
                 hop_st = time_to_minutes(getattr(it, "start_time", None) or "")
+                hop_en = time_to_minutes(getattr(it, "end_time", None) or "")
             except Exception:
-                hop_st = None
+                hop_st = hop_en = None
+            if (
+                hop_st is not None and hop_en is not None
+                and last_clock is not None and hop_st < last_clock
+                and last_clock - hop_st <= 40
+            ):
+                dur = max(4, hop_en - hop_st)
+                try:
+                    it = it.model_copy(update={
+                        "start_time": minutes_to_time(last_clock),
+                        "end_time": minutes_to_time(last_clock + dur),
+                        "duration_min": dur,
+                        "geometry": None,
+                        "geometry_latlng": None,
+                    })
+                    hop_st = last_clock
+                    hop_en = last_clock + dur
+                except Exception:
+                    pass
             if hop_st is not None and any(ms < hop_st < me for ms, me in meal_spans):
                 continue
             if _same(frm, to):
                 continue
             if here and to and _same(to, here):
                 continue
+            if here and not _hub(here) and frm and _hub(frm):
+                if not is_car or car_park is None or _same(car_park, here):
+                    try:
+                        it = it.model_copy(update={
+                            "from_location": here,
+                            "geometry": None,
+                            "geometry_latlng": None,
+                        })
+                        frm = here
+                    except Exception:
+                        pass
+                    if _same(frm, to):
+                        continue
             if here and frm and not _same(frm, here) and not _hub(frm):
-                try:
-                    it = it.model_copy(update={
-                        "from_location": here,
-                        "geometry": None,
-                        "geometry_latlng": None,
-                    })
-                    frm = here
-                except Exception:
-                    pass
-                if _same(frm, to):
-                    continue
+                if not is_car or car_park is None or _same(car_park, here):
+                    try:
+                        it = it.model_copy(update={
+                            "from_location": here,
+                            "geometry": None,
+                            "geometry_latlng": None,
+                        })
+                        frm = here
+                    except Exception:
+                        pass
+                    if _same(frm, to):
+                        continue
+            try:
+                it = it.model_copy(update={
+                    "geometry": None,
+                    "geometry_latlng": None,
+                })
+            except Exception:
+                pass
             cleaned.append(it)
+            if hop_en is not None:
+                last_clock = hop_en
             if to:
                 here = to
-        return cleaned
+                if is_car:
+                    car_park = to
+
+        def _span(item: Any):
+            if _item_type_value(item) in (
+                ItemType.DAY_START.value, ItemType.DAY_END.value,
+            ):
+                return None
+            raw_s = getattr(item, "start_time", None) or getattr(item, "time", None)
+            raw_e = getattr(item, "end_time", None) or getattr(item, "time", None)
+            try:
+                sm = time_to_minutes(raw_s) if raw_s else None
+                em = time_to_minutes(raw_e) if raw_e else None
+            except Exception:
+                return None
+            if sm is None or em is None or em <= sm:
+                return None
+            return sm, em
+
+        covered: List[Any] = []
+        last_end = None
+        last_ft = False
+        for it in cleaned:
+            sp = _span(it)
+            if sp is not None and last_end is not None and 45 <= sp[0] - last_end < 89:
+                head = 6 if last_ft else 0
+                tail = 6 if _item_type_value(it) == ItemType.FREE_TIME.value else 0
+                start = last_end + head
+                end = sp[0] - tail
+                if end - start > 44:
+                    end = start + 44
+                block = end - start
+                if block >= 5 and end > start:
+                    covered.append(FreeTimeItem(
+                        start_time=minutes_to_time(start),
+                        end_time=minutes_to_time(end),
+                        duration_min=block,
+                        label="Czas dla siebie",
+                    ))
+            covered.append(it)
+            if sp is not None:
+                last_end = sp[1] if last_end is None else max(last_end, sp[1])
+                last_ft = _item_type_value(it) == ItemType.FREE_TIME.value
+        return covered
 
 
     def _strip_mail_technical_fillers(
@@ -39093,9 +39491,16 @@ class PlanService:
                 city_fix = None
                 if "guido" in folded or "krolowa luiza" in folded or "królowa luiza" in folded:
                     city_fix = "Zabrze"
-                elif "carboneum" in folded or "teznia" in folded or "tężnia" in folded:
+                elif "carboneum" in folded or (
+                    ("teznia" in folded or "tężnia" in folded)
+                    and "wielicz" not in folded
+                    and _is_katowice_context(context)
+                ):
                     city_fix = "Zabrze"
-                elif "palmiarnia" in folded or "funzeum" in folded or "czary mary" in folded:
+                elif _is_katowice_context(context) and (
+                    "palmiarnia" in folded or "funzeum" in folded
+                    or "czary mary" in folded
+                ):
                     city_fix = "Gliwice"
                 if city_fix:
                     try:
