@@ -37950,7 +37950,7 @@ class PlanService:
         drive from a place the auditor still treats as the parked car.
         """
         from app.domain.models.plan import (
-            FreeTimeItem, LunchBreakItem, TransitItem, TransitMode,
+            AttractionItem, FreeTimeItem, LunchBreakItem, TransitItem, TransitMode,
         )
         from app.infrastructure.routing.haversine import haversine_km as _hk
 
@@ -39226,6 +39226,424 @@ class PlanService:
                 taken_vis.add(j)
             glued_vis.append(vis)
         out = glued_vis
+
+        # A long run of "Czas dla siebie" takes the nearest unused Excel
+        # point. The hop leaves the last real stop. When a later ride still
+        # starts there, the group walks back to that stop before the ride.
+        # The free time we do not use stays as short blocks, so the day
+        # does not gain an empty hole. A day with four visits stays.
+        pool = ctx.get("poi_pool") or []
+        if isinstance(pool, dict):
+            pool = list(pool.values())
+        skipped_runs: set = set()
+        for _fill in range(3):
+            if sum(1 for it in out if _is_timeline_attraction(it)) >= 4:
+                break
+            dinner_st = None
+            for it in out:
+                if _item_type_value(it) != ItemType.DINNER_BREAK.value:
+                    continue
+                try:
+                    dinner_st = time_to_minutes(getattr(it, "start_time", None) or "")
+                except Exception:
+                    dinner_st = None
+                break
+            clusters: List[List[int]] = []
+            current: List[int] = []
+            for idx, it in enumerate(out):
+                if _item_type_value(it) != ItemType.FREE_TIME.value:
+                    if current:
+                        clusters.append(current)
+                        current = []
+                    continue
+                if not current:
+                    current = [idx]
+                    continue
+                try:
+                    prev_en = time_to_minutes(
+                        getattr(out[current[-1]], "end_time", None) or ""
+                    )
+                    st = time_to_minutes(getattr(it, "start_time", None) or "")
+                except Exception:
+                    clusters.append(current)
+                    current = [idx]
+                    continue
+                if idx == current[-1] + 1 and st - prev_en <= 12:
+                    current.append(idx)
+                else:
+                    clusters.append(current)
+                    current = [idx]
+            if current:
+                clusters.append(current)
+            ranked: List[Tuple[List[int], int, int]] = []
+            for cluster in clusters:
+                if cluster[0] in skipped_runs:
+                    continue
+                try:
+                    st = time_to_minutes(getattr(out[cluster[0]], "start_time", None) or "")
+                    en = time_to_minutes(getattr(out[cluster[-1]], "end_time", None) or "")
+                except Exception:
+                    continue
+                if dinner_st is not None and st >= dinner_st - 5:
+                    continue
+                clip = en
+                if dinner_st is not None and dinner_st < clip:
+                    clip = dinner_st
+                if clip - st < 70:
+                    continue
+                ranked.append((cluster, clip - st, clip))
+            ranked.sort(key=lambda row: row[1], reverse=True)
+            if not ranked:
+                break
+            planted = False
+            for best, _span, best_end in ranked:
+                origin = None
+                origin_pt = None
+                car_at = None
+                for it in out[:best[0]]:
+                    if _item_type_value(it) == ItemType.TRANSIT.value:
+                        to = (getattr(it, "to_location", "") or "").strip()
+                        if to and not _hub(to):
+                            origin = to
+                            origin_pt = _pt(to)
+                        if "car" in _mode(it) and to:
+                            car_at = to
+                        continue
+                    got = self._occupied_stop_name(it)
+                    if got and not _hub(got):
+                        origin = got
+                        origin_pt = _pt(got)
+                if not origin or not origin_pt:
+                    skipped_runs.add(best[0])
+                    continue
+                try:
+                    run_st = time_to_minutes(
+                        getattr(out[best[0]], "start_time", None) or ""
+                    )
+                except Exception:
+                    skipped_runs.add(best[0])
+                    continue
+                fence = best_end
+                depart_st = None
+                for j in range(best[-1] + 1, len(out)):
+                    nxt = out[j]
+                    if _item_type_value(nxt) in (
+                        ItemType.DAY_START.value, ItemType.DAY_END.value,
+                        ItemType.FREE_TIME.value,
+                    ):
+                        continue
+                    raw = getattr(nxt, "start_time", None) or getattr(nxt, "time", None)
+                    try:
+                        nxt_st = time_to_minutes(raw or "")
+                    except Exception:
+                        nxt_st = None
+                    if nxt_st is not None and run_st < nxt_st < fence:
+                        fence = nxt_st
+                    if _item_type_value(nxt) != ItemType.TRANSIT.value:
+                        continue
+                    frm = (getattr(nxt, "from_location", "") or "").strip()
+                    leaves_here = bool(frm and _same(frm, origin))
+                    leaves_car = (
+                        "car" in _mode(nxt)
+                        and car_at is not None
+                        and _same(car_at, origin)
+                    )
+                    if (leaves_here or leaves_car) and nxt_st is not None:
+                        depart_st = nxt_st
+                        break
+                if depart_st is not None and depart_st < fence:
+                    fence = depart_st
+                needs_return = depart_st is not None
+                have = {
+                    _fold_place_label(getattr(it, "name", "") or "")
+                    for it in out if _is_timeline_attraction(it)
+                }
+                seen = getattr(self, "_open_mail_seen", None) or set()
+                pick = None
+                pick_dist = None
+                pick_mode = "walk"
+                for poi in pool:
+                    if not isinstance(poi, dict):
+                        continue
+                    nm = str(poi.get("name") or poi.get("Name") or "").strip()
+                    folded = _fold_place_label(nm)
+                    if not nm or not folded or folded in have or _same(nm, origin):
+                        continue
+                    if any(b in folded for b in (
+                        "restaurac", "pizzer", "milkbar", "bistro",
+                    )):
+                        continue
+                    pid = str(poi.get("id") or poi.get("ID") or "")
+                    if "ft_fill" in pid.lower() or "mail_dangling" in pid.lower():
+                        continue
+                    if folded in seen:
+                        continue
+                    try:
+                        lat_f = float(poi.get("lat"))
+                        lng_f = float(poi.get("lng"))
+                    except (TypeError, ValueError):
+                        continue
+                    try:
+                        dist = float(_hk(origin_pt[0], origin_pt[1], lat_f, lng_f))
+                    except Exception:
+                        continue
+                    if dist < 0.25 or dist > 8:
+                        continue
+                    mode = "walk"
+                    if dist > 2.2:
+                        if needs_return:
+                            continue
+                        parked_here = (
+                            car_at is None or _hub(car_at) or _same(car_at, origin)
+                        )
+                        if not ctx.get("has_car", True) or not parked_here:
+                            continue
+                        mode = "car"
+                    hop_try = (
+                        _honest_car(dist) if mode == "car"
+                        else max(5, int(round(dist / 4.5 * 60)) + 2)
+                    )
+                    back_try = hop_try if needs_return else 0
+                    room = fence - run_st - hop_try - back_try
+                    if room < 25:
+                        continue
+                    if pick_dist is None or dist < pick_dist:
+                        pick = (poi, nm, folded, lat_f, lng_f, pid)
+                        pick_dist = dist
+                        pick_mode = mode
+                if pick is None or pick_dist is None:
+                    skipped_runs.add(best[0])
+                    continue
+                poi, nm, folded, lat_f, lng_f, pid = pick
+                hop_mins = (
+                    _honest_car(pick_dist) if pick_mode == "car"
+                    else max(5, int(round(pick_dist / 4.5 * 60)) + 2)
+                )
+                back_mins = hop_mins if needs_return else 0
+                visit = 40
+                if run_st + hop_mins + visit + back_mins > fence:
+                    visit = fence - run_st - hop_mins - back_mins
+                if visit < 25:
+                    skipped_runs.add(best[0])
+                    continue
+                vis_end = run_st + hop_mins + visit
+                occupy_end = vis_end + back_mins
+                next_name = None
+                next_item = None
+                next_st = None
+                existing_hop_st = None
+                for j in range(best[-1] + 1, len(out)):
+                    nxt = out[j]
+                    tv = _item_type_value(nxt)
+                    if tv in (
+                        ItemType.DAY_START.value, ItemType.DAY_END.value,
+                        ItemType.FREE_TIME.value,
+                    ):
+                        continue
+                    raw = getattr(nxt, "start_time", None) or getattr(nxt, "time", None)
+                    try:
+                        nxt_st = time_to_minutes(raw or "")
+                    except Exception:
+                        nxt_st = None
+                    if tv == ItemType.TRANSIT.value:
+                        to = (getattr(nxt, "to_location", "") or "").strip()
+                        if to and nxt_st is not None and existing_hop_st is None:
+                            existing_hop_st = (to, nxt_st)
+                        continue
+                    got = self._occupied_stop_name(nxt)
+                    if got:
+                        next_name = got
+                        next_item = nxt
+                        next_st = nxt_st
+                        break
+                link = None
+                if (
+                    existing_hop_st is not None
+                    and next_name
+                    and _same(existing_hop_st[0], next_name)
+                ):
+                    if existing_hop_st[1] < fence:
+                        fence = existing_hop_st[1]
+                elif next_name and next_item is not None and next_st is not None:
+                    stand_at = origin if needs_return else nm
+                    if not _same(stand_at, next_name):
+                        from app.domain.validators.client_invariants import (
+                            _coords as _item_coords,
+                        )
+                        stand_pt = origin_pt if needs_return else (lat_f, lng_f)
+                        far = _item_coords(next_item) or _pt(next_name)
+                        dist_next = None
+                        if stand_pt and far:
+                            try:
+                                dist_next = float(_hk(
+                                    stand_pt[0], stand_pt[1], far[0], far[1],
+                                ))
+                            except Exception:
+                                dist_next = None
+                        if dist_next is None or dist_next >= 0.20:
+                            if dist_next is None:
+                                skipped_runs.add(best[0])
+                                continue
+                            if dist_next <= 2.2:
+                                link_mode = "walk"
+                                link_mins = max(
+                                    5, int(round(dist_next / 4.5 * 60)) + 2,
+                                )
+                            elif (
+                                pick_mode == "car"
+                                and not needs_return
+                                and 0.80 <= dist_next <= 8
+                            ):
+                                link_mode = "car"
+                                link_mins = _honest_car(dist_next)
+                            else:
+                                skipped_runs.add(best[0])
+                                continue
+                            if occupy_end + link_mins > next_st:
+                                deficit = occupy_end + link_mins - next_st
+                                if visit - deficit < 25:
+                                    skipped_runs.add(best[0])
+                                    continue
+                                visit -= deficit
+                                vis_end -= deficit
+                                occupy_end -= deficit
+                            link = (
+                                stand_at, next_name, dist_next,
+                                link_mins, link_mode, next_st,
+                            )
+                            if next_st - link_mins < fence:
+                                fence = next_st - link_mins
+                blocked = False
+                for j, other in enumerate(out):
+                    if j in best:
+                        continue
+                    if _item_type_value(other) in (
+                        ItemType.DAY_START.value, ItemType.DAY_END.value,
+                        ItemType.FREE_TIME.value,
+                    ):
+                        continue
+                    raw_s = getattr(other, "start_time", None) or getattr(other, "time", None)
+                    raw_e = getattr(other, "end_time", None) or raw_s
+                    try:
+                        os_ = time_to_minutes(raw_s or "")
+                        oe = time_to_minutes(raw_e or "")
+                    except Exception:
+                        continue
+                    if os_ < occupy_end and run_st < oe:
+                        blocked = True
+                        break
+                if blocked:
+                    skipped_runs.add(best[0])
+                    continue
+                dest_city = str(poi.get("city") or city)
+                if _is_katowice_context(ctx):
+                    if any(k in folded for k in ("guido", "krolowa luiza", "carboneum", "pileckiego")):
+                        dest_city = "Zabrze"
+                    elif "teznia" in folded and "wielicz" not in folded:
+                        dest_city = "Zabrze"
+                    elif any(k in folded for k in ("palmiarnia", "funzeum", "czary mary")):
+                        dest_city = "Gliwice"
+                if "wielicz" in folded:
+                    dest_city = "Wieliczka"
+                cm[nm] = {"lat": lat_f, "lng": lng_f}
+                hop = TransitItem(
+                    type=ItemType.TRANSIT,
+                    start_time=minutes_to_time(run_st),
+                    end_time=minutes_to_time(run_st + hop_mins),
+                    duration_min=hop_mins,
+                    mode=TransitMode.CAR if pick_mode == "car" else TransitMode.WALK,
+                    from_location=origin,
+                    to_location=nm,
+                    distance_km=round(pick_dist, 3),
+                    routing_source="haversine",
+                )
+                vis = AttractionItem.model_construct(
+                    type=ItemType.ATTRACTION,
+                    poi_id=pid or folded[:24],
+                    name=nm,
+                    description_short=str(
+                        poi.get("description_short") or poi.get("description") or nm
+                    ),
+                    why_selected=["excel_pool"],
+                    start_time=minutes_to_time(run_st + hop_mins),
+                    end_time=minutes_to_time(vis_end),
+                    duration_min=visit,
+                    lat=lat_f,
+                    lng=lng_f,
+                    city=dest_city,
+                )
+                planted_items: List[Any] = [hop, vis]
+                if needs_return:
+                    planted_items.append(TransitItem(
+                        type=ItemType.TRANSIT,
+                        start_time=minutes_to_time(vis_end),
+                        end_time=minutes_to_time(occupy_end),
+                        duration_min=back_mins,
+                        mode=TransitMode.WALK,
+                        from_location=nm,
+                        to_location=origin,
+                        distance_km=round(pick_dist, 3),
+                        routing_source="haversine",
+                    ))
+                chunk_end = fence
+                for j in range(best[-1] + 1, len(out)):
+                    nxt = out[j]
+                    if _item_type_value(nxt) in (
+                        ItemType.DAY_START.value, ItemType.DAY_END.value,
+                    ):
+                        continue
+                    if _item_type_value(nxt) != ItemType.FREE_TIME.value:
+                        break
+                    try:
+                        nxt_st = time_to_minutes(getattr(nxt, "start_time", None) or "")
+                    except Exception:
+                        break
+                    if nxt_st - chunk_end <= 5:
+                        chunk_end = min(chunk_end, nxt_st - 6)
+                    break
+                cursor = occupy_end
+                while chunk_end - cursor >= 15:
+                    block = min(44, chunk_end - cursor)
+                    rest = chunk_end - cursor - block
+                    if 0 < rest < 15 and block + rest <= 44:
+                        block += rest
+                    if block < 15:
+                        break
+                    planted_items.append(FreeTimeItem(
+                        start_time=minutes_to_time(cursor),
+                        end_time=minutes_to_time(cursor + block),
+                        duration_min=block,
+                        label="Czas dla siebie",
+                    ))
+                    cursor += block + 6
+                if link is not None:
+                    stand_at, next_name, dist_next, link_mins, link_mode, next_st = link
+                    planted_items.append(TransitItem(
+                        type=ItemType.TRANSIT,
+                        start_time=minutes_to_time(next_st - link_mins),
+                        end_time=minutes_to_time(next_st),
+                        duration_min=link_mins,
+                        mode=(
+                            TransitMode.CAR if link_mode == "car"
+                            else TransitMode.WALK
+                        ),
+                        from_location=stand_at,
+                        to_location=next_name,
+                        distance_km=round(dist_next, 3),
+                        routing_source="haversine",
+                    ))
+                seen.add(folded)
+                self._open_mail_seen = seen
+                drop = set(best)
+                out = (
+                    list(out[:best[0]])
+                    + planted_items
+                    + [it for i, it in enumerate(out) if i not in drop and i > best[0]]
+                )
+                planted = True
+                break
+            if not planted:
+                break
 
         # A car does not enter the pedestrian core, and the first drive of
         # the day leaves the hotel, not a place reached on foot.
