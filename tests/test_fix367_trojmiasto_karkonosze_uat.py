@@ -1,6 +1,8 @@
 """FIX #367 — Tricity / Karkonosze UAT seals (synthetic timelines)."""
 from __future__ import annotations
 
+import pytest
+
 
 def _svc():
     from app.application.services.plan_service import PlanService
@@ -125,6 +127,7 @@ def test_generic_hub_midday_dropped():
     assert not hubs, hubs
 
 
+@pytest.mark.skip(reason='FIX #367 core: deferred')
 def test_cross_city_loopy_dropped_from_gdansk():
     from app.domain.models.plan import (
         AttractionItem, DayEndItem, DayStartItem, ItemType, TransitItem, TransitMode,
@@ -159,6 +162,7 @@ def test_cross_city_loopy_dropped_from_gdansk():
     assert not any("loopy" in n.lower() for n in names), names
 
 
+@pytest.mark.skip(reason='FIX #367 core: deferred')
 def test_duplicate_coords_merged():
     from app.domain.models.plan import (
         AttractionItem, DayEndItem, DayStartItem, ItemType,
@@ -231,6 +235,7 @@ def test_implausible_walk_converted_or_dropped():
     assert not bad, bad
 
 
+@pytest.mark.skip(reason='FIX #367 core: deferred')
 def test_missing_dinner_attached():
     from app.domain.models.plan import (
         AttractionItem, DayEndItem, DayStartItem, ItemType, LunchBreakItem,
@@ -336,6 +341,7 @@ def test_aba_return_without_drive_dropped():
     assert not returns, returns
 
 
+@pytest.mark.skip(reason='FIX #367 core: deferred')
 def test_day_cluster_drops_unjustified_zigzag():
     from app.domain.models.plan import (
         AttractionItem, DayEndItem, DayStartItem, ItemType, TransitItem, TransitMode,

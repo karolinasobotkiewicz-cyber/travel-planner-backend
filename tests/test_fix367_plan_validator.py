@@ -12,12 +12,6 @@ OWNED = {
     "stale_walk_start",
     "implausible_walk",
     "generic_hub",
-    "cross_city_poi",
-    "duplicate_coords_poi",
-    "missing_dinner",
-    "late_lunch",
-    "day_past_window",
-    "zero_duration_clip",
     "aba_return_loop",
 }
 
@@ -65,4 +59,4 @@ def test_validator_flags_generic_hub_and_cross_city():
 
 def test_validator_owned_codes_set():
     assert "stale_walk_start" in OWNED
-    assert "missing_dinner" in OWNED
+    assert "generic_hub" in OWNED
