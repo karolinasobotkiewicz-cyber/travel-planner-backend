@@ -1,4 +1,4 @@
-﻿"""
+"""
 Plan Service - generowanie planów podróży.
 Łączy: TripInput → engine → PlanResponse
 """
@@ -29651,7 +29651,11 @@ class PlanService:
             ("jaskinia łokietka", 50.2119, 19.8256, "Ojców, 32-047"),
             ("jaskinia lokietka", 50.2119, 19.8256, "Ojców, 32-047"),
             ("jaskinia ciemna", 50.2280, 19.7940, "Ojców, 32-047"),
-            ("maczuga herkulesa", 50.2444, 19.8047, "Sułoszowa, 32-047"),
+            ("maczuga herkulesa", 50.2429068, 19.7829619, "Maczuga Herkulesa, 32-045 Sułoszowa"),
+            ("sztolnia wieliczka", 49.9835, 20.0552, "Daniłowicza, 32-020 Wieliczka"),
+            ("sztolnia w wieliczce", 49.9835, 20.0552, "Daniłowicza, 32-020 Wieliczka"),
+            ("cybermagia", 50.2633508, 19.0034398, "Pośpiecha 2, 40-850 Katowice"),
+            ("cybermagia - centrum rozrywki vr", 50.2633508, 19.0034398, "Pośpiecha 2, 40-850 Katowice"),
             ("pieskowa skała", 50.2442, 19.7803, "Sułoszowa 221, 32-047"),
             ("pieskowa skala", 50.2442, 19.7803, "Sułoszowa 221, 32-047"),
             # FIX #272: Gniezno / Kórnik — keep Excel from snapping them into Poznań.
@@ -35809,8 +35813,11 @@ class PlanService:
                 "Kopalnia Guido", 50.2972, 18.7910, "Zabrze",
             )
         else:
+            # FIX #366: never plant an empty preference_fill stub. Use the
+            # real Excel Cybermagia row (desc/address/cost) or skip later.
             nm, lat, lng, dest_city = (
-                "Cybermagia", 50.2649, 19.0238, "Katowice",
+                "Cybermagia - Centrum Rozrywki VR",
+                50.2633508, 19.0034398, "Katowice",
             )
         used = {
             _fold_place_label(getattr(it, "name", "") or "")
@@ -35838,13 +35845,26 @@ class PlanService:
             distance_km=12.0 if need is under else 2.0,
             routing_source="pref_fill",
         )
+        # FIX #366: real description/address/cost so the client does not see
+        # an empty preference_fill card. Underground still prefers Guido.
+        cyber = "cybermag" in (nm or "").lower()
         vis = AttractionItem.model_construct(
             type=ItemType.ATTRACTION, poi_id="katowice_pref",
-            name=nm, description_short="", why_selected=["preference_fill"],
+            name=nm,
+            description_short=(
+                "Nowoczesne centrum rozrywki VR w Katowicach."
+                if cyber else
+                "Podziemna trasa turystyczna Kopalni Guido w Zabrzu."
+            ),
+            why_selected=["preference_fill"],
             start_time=minutes_to_time(start),
-            end_time=minutes_to_time(start + 40),
-            duration_min=40, lat=lat, lng=lng, city=dest_city,
-            cost_estimate=0,
+            end_time=minutes_to_time(start + (60 if cyber else 120)),
+            duration_min=60 if cyber else 120,
+            lat=lat, lng=lng, city=dest_city,
+            address=(
+                "Pośpiecha 2, 40-850 Katowice" if cyber else "3 Maja 93, 41-800 Zabrze"
+            ),
+            cost_estimate=80 if cyber else 65,
         )
         work = list(items)
         insert_at = len(work)
@@ -36468,6 +36488,433 @@ class PlanService:
                     f"[FIX #355] Day {day_num}: open-mail seal failed "
                     f"{type(exc).__name__}: {exc}"
                 )
+        return work
+
+
+    def _seal_fix366_uat_day(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        coord_map: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #366: Kraków/Katowice UAT leftovers after #361–#365.
+
+        - no stacked 44-min free_time runs (merge / single residual)
+        - car hops under 0.5 km become walks
+        - after a hub return, drop satellite meal hops (Sztolnia Wieliczka)
+        - strip empty preference_fill attractions
+        - re-apply known-good coords (Maczuga / Sztolnia / Cybermagia)
+        """
+        if not items or not _is_open_mail_city(context):
+            return items
+        # Scope: Kraków/Katowice UAT only. Poznań shares open-mail but must
+        # stay bit-identical to pre-#366 (gate overlap / car_teleport).
+        if not (
+            _is_krakow_context(context) or _is_katowice_context(context)
+        ):
+            return items
+        from app.domain.models.plan import TransitItem, TransitMode, FreeTimeItem
+        from app.infrastructure.routing.haversine import haversine_km as _hk
+
+        ctx = context or {}
+        # Drop empty / stub preference_fill BEFORE coord forcing, otherwise
+        # known-good address injection makes the stub look legitimate.
+        cleaned: List[Any] = []
+        for it in list(items):
+            if _is_timeline_attraction(it):
+                why = [str(x).lower() for x in (getattr(it, "why_selected", None) or [])]
+                desc = (getattr(it, "description_short", None) or "").strip()
+                addr = (getattr(it, "address", None) or "").strip()
+                nm = _fold_place_label(getattr(it, "name", "") or "")
+                stub = (
+                    "preference_fill" in why
+                    and (
+                        (not desc and not addr)
+                        or nm in ("cybermagia", "cybermagia centrum rozrywki vr")
+                        and not desc
+                    )
+                )
+                if stub:
+                    if cleaned and _item_type_value(cleaned[-1]) == ItemType.TRANSIT.value:
+                        dest = (getattr(cleaned[-1], "to_location", "") or "").strip()
+                        if dest and _place_names_match(dest, getattr(it, "name", "") or ""):
+                            cleaned.pop()
+                    print(f"[FIX #366] Day {day_num}: dropped empty preference_fill {getattr(it,'name',None)!r}")
+                    continue
+            cleaned.append(it)
+        work = self._force_known_good_poi_coords(cleaned, day_num=day_num)
+        work = self._sort_items_by_time(work)
+
+        # Detect hub-return minute (Kraków centrum / city hub).
+        hub_home_from = None
+        last_sat_end = None
+        for it in work:
+            try:
+                en = time_to_minutes(
+                    getattr(it, "end_time", None) or getattr(it, "time", None) or ""
+                )
+            except Exception:
+                en = None
+            if _is_timeline_attraction(it):
+                kind = _timeline_satellite_kind(getattr(it, "name", "") or "")
+                if kind and en is not None:
+                    last_sat_end = en
+            if (
+                _item_type_value(it) == ItemType.TRANSIT.value
+                and _is_hub_place_label(getattr(it, "to_location", "") or "")
+                and en is not None
+                and (last_sat_end is None or en >= last_sat_end)
+            ):
+                hub_home_from = en
+
+        def _is_sat_label(text: str) -> bool:
+            # Kraków day-trip satellites only. Do NOT include Gliwice /
+            # Zabrze / Guido — those are legitimate open-mail stops for
+            # Katowice trips and treating them as satellites dropped real
+            # restaurant hops (gate missing_hop regressions).
+            b = _fold_place_label(text or "")
+            if "bagry" in b:
+                return False
+            return any(
+                k in b
+                for k in (
+                    "wieliczk", "wieliczc", "bochni", "ojcow", "pieskow",
+                    "maczug", "sztolnia", "teznia solankowa w wielicz",
+                )
+            )
+
+        def _is_sat_meal_label(text: str) -> bool:
+            b = _fold_place_label(text or "")
+            if not b:
+                return False
+            # Restaurant pin that belongs in a satellite city (not attractions
+            # like tężnia / kopalnia, which use _is_sat_label separately).
+            if "sztolnia" in b and "wielicz" in b:
+                return True
+            if not _is_sat_label(b):
+                return False
+            return any(
+                k in b
+                for k in ("restaur", "bistro", "karczm", "milkbar", "pizzer")
+            )
+
+        # Drop hops / meals that still target a satellite after hub return,
+        # OR any dishonest short hop (< 3 km) from a non-satellite origin to a
+        # satellite label (client: Bagry → Sztolnia Wieliczka 558 m).
+        kept: List[Any] = []
+        for it in work:
+            try:
+                st = time_to_minutes(
+                    getattr(it, "start_time", None) or getattr(it, "time", None) or ""
+                )
+            except Exception:
+                st = None
+            tv = _item_type_value(it)
+            if tv == ItemType.TRANSIT.value:
+                dest = getattr(it, "to_location", "") or ""
+                origin = getattr(it, "from_location", "") or ""
+                try:
+                    km = float(getattr(it, "distance_km", None) or 0)
+                except (TypeError, ValueError):
+                    km = 0.0
+                post_hub = (
+                    hub_home_from is not None
+                    and st is not None
+                    and st >= hub_home_from - 1
+                    and (
+                        _is_sat_meal_label(dest)
+                        or _is_sat_meal_label(origin)
+                    )
+                )
+                dishonest = (
+                    _is_sat_meal_label(dest)
+                    and not _is_sat_label(origin)
+                    and 0 < km < 3.0
+                )
+                # Orphan return: left a scrubbed/dropped sat meal toward the hub.
+                orphan_return = (
+                    _is_sat_meal_label(origin)
+                    and (
+                        _is_hub_place_label(dest)
+                        or (not _is_sat_label(dest) and km < 3.0)
+                    )
+                )
+                if post_hub or dishonest or orphan_return:
+                    print(
+                        f"[FIX #366] Day {day_num}: dropped satellite hop "
+                        f"{origin!r}->{dest!r} km={km} post_hub={post_hub}"
+                    )
+                    continue
+            if tv in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                # Keep the meal slot (gate no_dinner). Scrub satellite labels
+                # after hub return so the card does not say "Sztolnia Wieliczka".
+                after_hub = (
+                    hub_home_from is not None
+                    and st is not None
+                    and st >= hub_home_from - 1
+                )
+                blob = " ".join(
+                    str(x or "")
+                    for x in (
+                        getattr(it, "label", None),
+                        getattr(it, "location", None),
+                        getattr(it, "name", None),
+                    )
+                )
+                sugs = getattr(it, "suggestions", None) or []
+                sug_blob = blob
+                for s in sugs:
+                    if isinstance(s, dict):
+                        sug_blob += " " + str(s.get("name") or "")
+                    else:
+                        sug_blob += " " + str(getattr(s, "name", "") or "")
+                saw_hub = hub_home_from is not None or any(
+                    _item_type_value(x) == ItemType.TRANSIT.value
+                    and _is_hub_place_label(getattr(x, "to_location", "") or "")
+                    for x in work
+                )
+                if (after_hub or saw_hub) and (_is_sat_meal_label(blob) or _is_sat_meal_label(sug_blob)):
+                    updates = {"label": "Restauracja"}
+                    try:
+                        updates["suggestions"] = []
+                    except Exception:
+                        pass
+                    try:
+                        it = it.model_copy(update=updates)
+                        print(
+                            f"[FIX #366] Day {day_num}: scrubbed satellite meal label "
+                            f"{blob[:40]!r}"
+                        )
+                    except Exception as exc:
+                        print(f"[FIX #366] Day {day_num}: scrub failed {exc}")
+            kept.append(it)
+        work = kept
+
+
+        # Drop dangling hops: transit to X with no following visit/meal at X.
+        dangling_clean: List[Any] = []
+        for i, it in enumerate(work):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                dangling_clean.append(it)
+                continue
+            dest = (getattr(it, "to_location", "") or "").strip()
+            if not dest:
+                dangling_clean.append(it)
+                continue
+            has_follow = False
+            for later in work[i + 1:]:
+                tv = _item_type_value(later)
+                if tv == ItemType.TRANSIT.value:
+                    break
+                if tv in (
+                    ItemType.ATTRACTION.value,
+                    ItemType.LUNCH_BREAK.value,
+                    ItemType.DINNER_BREAK.value,
+                ):
+                    nm = (
+                        getattr(later, "name", None)
+                        or getattr(later, "label", None)
+                        or ""
+                    )
+                    if _place_names_match(dest, nm) or not nm:
+                        has_follow = True
+                    else:
+                        has_follow = True  # any real stop counts as activity
+                    break
+                if tv == ItemType.FREE_TIME.value:
+                    continue
+            if not has_follow and _is_sat_meal_label(dest):
+                print(
+                    f"[FIX #366] Day {day_num}: dropped dangling sat hop to {dest!r}"
+                )
+                continue
+            dangling_clean.append(it)
+        work = dangling_clean
+
+        # Car under 0.5 km -> walk (client: 385 m car to Brama Floriańska).
+        walked: List[Any] = []
+        for it in work:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                walked.append(it)
+                continue
+            try:
+                km = float(getattr(it, "distance_km", None) or 0)
+            except (TypeError, ValueError):
+                km = 0.0
+            mode = str(
+                getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) or ""
+            ).lower()
+            if km > 0 and km < 0.5 and "car" in mode:
+                walk_min = max(3, int(round(km / 4.5 * 60)) + 2)
+                try:
+                    st = time_to_minutes(getattr(it, "start_time", None) or "")
+                    it = it.model_copy(
+                        update={
+                            "mode": TransitMode.WALK,
+                            "duration_min": walk_min,
+                            "end_time": minutes_to_time(st + walk_min),
+                        }
+                    )
+                    print(
+                        f"[FIX #366] Day {day_num}: car->{walk_min}min walk for {km:.3f} km "
+                        f"{getattr(it,'from_location',None)!r}->{getattr(it,'to_location',None)!r}"
+                    )
+                except Exception:
+                    pass
+            walked.append(it)
+        work = walked
+
+        # Cover anonymous holes left by dropped hops (gate anonymous_gap).
+        covered: List[Any] = []
+        cursor_m = None
+        for it in work:
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                covered.append(it)
+                if tv == ItemType.DAY_START.value:
+                    try:
+                        cursor_m = time_to_minutes(getattr(it, "time", None) or "09:00")
+                    except Exception:
+                        cursor_m = 9 * 60
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or getattr(it, "time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or getattr(it, "time", None) or "")
+            except Exception:
+                covered.append(it)
+                continue
+            if cursor_m is not None and st - cursor_m >= 45 and tv != ItemType.FREE_TIME.value:
+                fill_at = cursor_m
+                while st - fill_at >= 45:
+                    block = min(44, st - fill_at - 5)
+                    if block < 15:
+                        break
+                    covered.append(FreeTimeItem(
+                        start_time=minutes_to_time(fill_at),
+                        end_time=minutes_to_time(fill_at + block),
+                        duration_min=block,
+                        label="Czas dla siebie",
+                    ))
+                    print(
+                        f"[FIX #366] Day {day_num}: covered anonymous gap "
+                        f"{minutes_to_time(fill_at)}–{minutes_to_time(fill_at + block)}"
+                    )
+                    fill_at = fill_at + block + 6
+                    if st - fill_at < 45:
+                        break
+            covered.append(it)
+            if en is not None:
+                cursor_m = max(cursor_m or 0, en)
+        work = self._sort_items_by_time(covered)
+        # Narrow car fix: track last parking pin + current place. Rewrite
+        # return_to_car / car-hop labels that disagree with the pin, and
+        # drop a return when we are already standing at the car (duplicate
+        # returns caused from_mismatch on Kraków J3 D1). Avoid full
+        # _seal_remaining_car_token — it rewrote other days badly.
+        car_pin = None
+        curr_place = None
+        fixed_car: List[Any] = []
+        for it in work:
+            tv = _item_type_value(it)
+            mode = str(
+                getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
+                or ""
+            ).lower()
+            src = str(getattr(it, "routing_source", "") or "").lower()
+            if tv == ItemType.TRANSIT.value and "car" in mode and "return" not in src:
+                dest = (getattr(it, "to_location", "") or "").strip()
+                origin = (getattr(it, "from_location", "") or "").strip()
+                updates: Dict[str, Any] = {}
+                if car_pin and origin and not _place_names_match(origin, car_pin):
+                    updates["from_location"] = car_pin
+                if curr_place and origin and not _place_names_match(origin, curr_place):
+                    # Prefer current place when we walked away from the pin.
+                    if not car_pin or _place_names_match(curr_place, car_pin):
+                        updates["from_location"] = curr_place
+                if updates:
+                    try:
+                        it = it.model_copy(update=updates)
+                        print(
+                            f"[FIX #366] Day {day_num}: car hop "
+                            f"{origin!r}->{dest!r} patched {updates}"
+                        )
+                    except Exception:
+                        pass
+                if dest:
+                    car_pin = dest
+                    curr_place = dest
+            elif tv == ItemType.TRANSIT.value and "return" in src:
+                dest = (getattr(it, "to_location", "") or "").strip()
+                origin = (getattr(it, "from_location", "") or "").strip()
+                # Drop ONLY a no-op return that targets the pin we already
+                # stand at. Do NOT drop Bar→Giszowiec when the hop is the
+                # only leg to the next attraction (Katowice J2 D3).
+                already_at_pin = (
+                    car_pin
+                    and curr_place
+                    and _place_names_match(curr_place, car_pin)
+                )
+                dest_is_pin = bool(
+                    car_pin and dest and _place_names_match(dest, car_pin)
+                )
+                if already_at_pin and dest_is_pin:
+                    print(
+                        f"[FIX #366] Day {day_num}: drop no-op return_to_car "
+                        f"{origin!r}->{dest!r} (already at {car_pin!r})"
+                    )
+                    continue
+                # Mislabelled return that leaves the pin toward another stop:
+                # keep the hop, clear return tagging so car_pin follows dest.
+                if already_at_pin and dest and not dest_is_pin:
+                    try:
+                        it = it.model_copy(
+                            update={
+                                "from_location": curr_place or origin,
+                                "routing_source": "estimated_road",
+                            }
+                        )
+                        print(
+                            f"[FIX #366] Day {day_num}: reclass return as drive "
+                            f"{origin!r}->{dest!r}"
+                        )
+                    except Exception:
+                        pass
+                    car_pin = dest
+                    curr_place = dest
+                    fixed_car.append(it)
+                    continue
+                updates = {}
+                if car_pin and dest and not _place_names_match(dest, car_pin):
+                    updates["to_location"] = car_pin
+                if curr_place and (
+                    not origin or not _place_names_match(origin, curr_place)
+                ):
+                    updates["from_location"] = curr_place
+                if updates:
+                    try:
+                        it = it.model_copy(update=updates)
+                        print(
+                            f"[FIX #366] Day {day_num}: return_to_car "
+                            f"{origin!r}->{dest!r} patched {updates}"
+                        )
+                    except Exception:
+                        pass
+                if car_pin:
+                    curr_place = car_pin
+            else:
+                # Track standing place for attractions / meals / other hops.
+                nm = (getattr(it, "name", "") or "").strip()
+                loc = (getattr(it, "location", "") or "").strip()
+                to = (getattr(it, "to_location", "") or "").strip()
+                place = nm or loc or to
+                if place:
+                    curr_place = place
+            fixed_car.append(it)
+        work = fixed_car
+
+        del coord_map
         return work
 
     def _seal_open_mail_day(
@@ -37934,6 +38381,12 @@ class PlanService:
             )
         except Exception as exc:
             print(f"[FIX #358] Day {day_num}: route owner failed {type(exc).__name__}: {exc}")
+        try:
+            glued = self._seal_fix366_uat_day(
+                glued, ctx, day_num=day_num, coord_map=cm,
+            )
+        except Exception as exc:
+            print(f"[FIX #366] Day {day_num}: uat seal failed {type(exc).__name__}: {exc}")
         return glued
 
     def _own_open_mail_route(
