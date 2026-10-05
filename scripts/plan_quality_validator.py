@@ -260,6 +260,106 @@ def validate_day(
                 )
                 break
 
+    # FIX #367 hard-fail codes (Tricity / Karkonosze UAT)
+    user_at = None
+    car_at = None
+    hub_names = {
+        "gdansk", "gdynia", "sopot", "karpacz", "jelenia gora",
+        "szklarska poreba", "krakow", "katowice", "poznan", "warszawa",
+    }
+    n_transits = sum(1 for it in items if _tv(it) == ItemType.TRANSIT.value)
+    t_idx = 0
+    for it in items:
+        tv = _tv(it)
+        if tv != ItemType.TRANSIT.value:
+            if tv == ItemType.ATTRACTION.value:
+                user_at = _fold(_nm(it))
+            continue
+        t_idx += 1
+        frm = _fold(getattr(it, "from_location", "") or "")
+        to = _fold(getattr(it, "to_location", "") or "")
+        mode = str(
+            getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) or ""
+        ).lower()
+        src = str(getattr(it, "routing_source", "") or "").lower()
+        try:
+            km = float(getattr(it, "distance_km", None) or 0)
+        except (TypeError, ValueError):
+            km = 0.0
+        is_hub = frm in hub_names or to in hub_names
+        mid = 1 < t_idx < max(n_transits, 2)
+        if is_hub and mid and 0 < km <= 0.6:
+            report.add(city, num, day_num, "generic_hub", f"{frm}->{to} {km}km")
+        if ("walk" in mode or "foot" in mode) and user_at and frm:
+            if user_at not in frm and frm not in user_at:
+                report.add(
+                    city, num, day_num, "stale_walk_start",
+                    f"walk from {frm} but user_at={user_at}",
+                )
+        if "return" in src and user_at and car_at and user_at == car_at:
+            report.add(
+                city, num, day_num, "aba_return_loop",
+                f"return_to_car while already at car ({car_at})",
+            )
+        if "walk" in mode or "foot" in mode:
+            if to:
+                user_at = to
+            if "return" in src and car_at:
+                user_at = car_at
+        elif "car" in mode:
+            if to:
+                user_at = to
+                car_at = to
+
+    has_dinner = any(_tv(it) == ItemType.DINNER_BREAK.value for it in items)
+    last_en = None
+    for it in items:
+        st, en = _clock(it)
+        if en is not None:
+            last_en = en if last_en is None else max(last_en, en)
+        if _tv(it) == ItemType.LUNCH_BREAK.value and st is not None and st >= 15 * 60:
+            report.add(city, num, day_num, "late_lunch", f"lunch@{st}")
+        if st is not None and en is not None and en <= st and st >= 23 * 60:
+            report.add(city, num, day_num, "zero_duration_clip", f"{_nm(it) or _tv(it)}")
+        if st is not None and st >= 23 * 60 + 50:
+            report.add(city, num, day_num, "day_past_window", f"{_nm(it) or _tv(it)}@{st}")
+    if last_en is not None and last_en >= 17 * 60 and not has_dinner:
+        report.add(city, num, day_num, "missing_dinner", f"last_end={last_en}")
+
+    coords_seen: Dict[Tuple[float, float], str] = {}
+    foreign_stems = (
+        ("loopy", "wroclaw"),
+        ("jumpcity", "katowice"),
+        ("hala targowa", "wroclaw"),
+        ("piaskowa 17", "wroclaw"),
+    )
+    city_f = _fold(city)
+    for it in items:
+        if _tv(it) != ItemType.ATTRACTION.value:
+            continue
+        nm = _fold(_nm(it))
+        for stem, home in foreign_stems:
+            if stem in nm and home not in city_f:
+                if any(
+                    k in city_f
+                    for k in ("gdansk", "gdynia", "sopot", "karpacz", "jelenia", "szklarska")
+                ):
+                    report.add(city, num, day_num, "cross_city_poi", _nm(it))
+        try:
+            lat = round(float(getattr(it, "lat")), 4)
+            lng = round(float(getattr(it, "lng")), 4)
+        except (TypeError, ValueError):
+            continue
+        key = (lat, lng)
+        if key in coords_seen and coords_seen[key] != nm:
+            report.add(
+                city, num, day_num, "duplicate_coords_poi",
+                f"{_nm(it)} same as {coords_seen[key]}",
+            )
+        else:
+            coords_seen[key] = nm
+
+
     # seniors mismatch
     if "senior" in (group_type or "").lower():
         for it in items:
@@ -312,6 +412,9 @@ def city_json_dir(city: str) -> Path:
         "Poznań": OUTER / "json_miasta" / "Poznan",
         "Gdynia": OUTER / "json_miasta" / "Gdynia",
         "Sopot": OUTER / "json_miasta" / "Sopot",
+        "Gdańsk": OUTER / "json_miasta" / "Gdańsk",
+        "Karpacz": OUTER / "json_miasta" / "Karpacz",
+        "Jelenia Góra": OUTER / "json_miasta" / "Jelenia Góra",
         "Szklarska Poręba": OUTER / "json_miasta" / "Szklarska Poreba",
     }
     return mapping[city]
