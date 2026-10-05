@@ -240,6 +240,96 @@ def _is_open_mail_city(context: Optional[Dict[str, Any]] = None) -> bool:
     )
 
 
+
+# --- FIX #367 helpers (inserted after _is_open_mail_city) ---
+
+def _is_trojmiasto_context(context: Optional[Dict[str, Any]] = None) -> bool:
+    city = str((context or {}).get("requested_city") or (context or {}).get("city") or "").lower()
+    folded = _fold_place_label(city)
+    return any(k in folded for k in ("gdansk", "gdynia", "sopot"))
+
+
+def _is_karkonosze_context(context: Optional[Dict[str, Any]] = None) -> bool:
+    city = str((context or {}).get("requested_city") or (context or {}).get("city") or "").lower()
+    folded = _fold_place_label(city)
+    return any(k in folded for k in ("karpacz", "jelenia", "szklarska"))
+
+
+def _is_fix367_city(context: Optional[Dict[str, Any]] = None) -> bool:
+    """FIX #367: Tricity + Karkonosze UAT cities (Wroclaw/Zakopane stay frozen)."""
+    if _is_locked_city_context(context):
+        return False
+    return _is_trojmiasto_context(context) or _is_karkonosze_context(context)
+
+
+# Subregion anchors for day clustering (lat, lng, radius_km).
+_FIX367_SUBREGIONS: Dict[str, Tuple[float, float, float]] = {
+    "gdansk": (54.3520, 18.6466, 12.0),
+    "sopot": (54.4418, 18.5601, 6.0),
+    "gdynia": (54.5189, 18.5305, 10.0),
+    "karpacz": (50.7767, 15.7590, 10.0),
+    "szklarska": (50.8256, 15.5225, 10.0),
+    "jelenia": (50.9044, 15.7344, 12.0),
+}
+
+# Known cross-city pollution names (folded stem -> home city stem).
+_FIX367_FOREIGN_POI_HOMES: Tuple[Tuple[str, str], ...] = (
+    ("loopy", "wroclaw"),
+    ("loopys", "wroclaw"),
+    ("hala targowa", "wroclaw"),
+    ("piaskowa 17", "wroclaw"),
+    ("jumpcity", "katowice"),
+    ("jump city", "katowice"),
+    ("lesna huta", "karpacz"),  # only valid near Karpacz cluster
+    ("krucze skaly", "karpacz"),
+)
+
+# Region bounding boxes (min_lat, max_lat, min_lng, max_lng) for hard fail.
+_FIX367_REGION_BBOX: Dict[str, Tuple[float, float, float, float]] = {
+    "trojmiasto": (54.20, 54.70, 18.30, 18.95),
+    "karkonosze": (50.70, 51.00, 15.30, 16.00),
+}
+
+
+def _fix367_region_key(context: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    if _is_trojmiasto_context(context):
+        return "trojmiasto"
+    if _is_karkonosze_context(context):
+        return "karkonosze"
+    return None
+
+
+def _fix367_subregion_of(
+    lat: Optional[float],
+    lng: Optional[float],
+    prefer: Optional[str] = None,
+) -> Optional[str]:
+    if lat is None or lng is None:
+        return None
+    # Prefer the plan-city cluster whenever the POI sits inside its radius.
+    # Tricity centroids overlap (Brzezno/Jelitkowo look closer to Sopot).
+    if prefer and prefer in _FIX367_SUBREGIONS:
+        clat, clng, rad = _FIX367_SUBREGIONS[prefer]
+        if _geo_km((float(lat), float(lng)), (clat, clng)) <= rad:
+            return prefer
+    best = None
+    best_d = 1e9
+    for name, (clat, clng, rad) in _FIX367_SUBREGIONS.items():
+        d = _geo_km((float(lat), float(lng)), (clat, clng))
+        if d <= rad and d < best_d:
+            best = name
+            best_d = d
+    return best
+
+
+def _fix367_home_city_ok(poi_home: str, plan_city_folded: str, region: Optional[str]) -> bool:
+    home = _fold_place_label(poi_home)
+    if region == "trojmiasto":
+        return home in ("gdansk", "gdynia", "sopot", "trojmiasto")
+    if region == "karkonosze":
+        return any(k in home for k in ("karpacz", "jelenia", "szklarska", "karkonosze"))
+    return home in plan_city_folded or plan_city_folded in home
+
 def _is_hub_place_label(name: Any) -> bool:
     """FIX #325: "Wrocław" / "Wrocław centrum" is the start point, not a POI."""
     s = " ".join(_fold_place_label(name).split())
@@ -20703,7 +20793,15 @@ class PlanService:
             ("warsaw", ("wrocław", "wroclaw", "kraków", "krakow")),
             ("wrocław", ("warszawa", "warsaw", "kraków", "krakow")),
             ("wroclaw", ("warszawa", "warsaw", "kraków", "krakow")),
-        )
+        
+            # FIX #367: Tricity / Karkonosze must not import foreign-city POIs.
+            ("gdansk", ("wroclaw", "krakow", "katowice", "warszawa", "warsaw", "poznan")),
+            ("gdynia", ("wroclaw", "krakow", "katowice", "warszawa", "warsaw")),
+            ("sopot", ("wroclaw", "krakow", "katowice", "warszawa", "warsaw")),
+            ("karpacz", ("wroclaw", "krakow", "katowice", "warszawa", "warsaw", "gdansk")),
+            ("szklarska", ("wroclaw", "krakow", "katowice", "warszawa", "warsaw")),
+            ("jelenia", ("wroclaw", "krakow", "katowice", "warszawa", "warsaw")),
+)
         banned: tuple = ()
         for home, others in foreign_markers:
             if home in city:
@@ -36488,6 +36586,15 @@ class PlanService:
                     f"[FIX #355] Day {day_num}: open-mail seal failed "
                     f"{type(exc).__name__}: {exc}"
                 )
+        try:
+            work = self._seal_fix367_uat_day(
+                work, ctx, day_num=day_num, coord_map=cm,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #367] Day {day_num}: uat seal failed "
+                f"{type(exc).__name__}: {exc}"
+            )
         return work
 
 
@@ -36916,6 +37023,622 @@ class PlanService:
 
         del coord_map
         return work
+
+    def _seal_fix367_uat_day(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        coord_map: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #367: Tricity/Karkonosze UAT seal — location cursor, hubs, pollution.
+
+        Global invariants for active (non-frozen) Tricity + Karkonosze cities:
+        - maintain user_at / car_at; walks and drives may not teleport
+        - ban generic city hubs mid-timeline
+        - drop cross-city polluted POIs and implausible walks
+        - merge duplicate-coord attractions
+        - soft day-cluster (one subregion anchor)
+        - meal/day-window hygiene (late lunch, missing dinner, 23:59 clips)
+        Does not reopen Wroclaw or Zakopane.
+        """
+        if not items or not _is_fix367_city(context):
+            return items
+        from app.domain.models.plan import (
+            TransitItem, TransitMode, FreeTimeItem, DinnerBreakItem, LunchBreakItem,
+        )
+        from app.infrastructure.routing.haversine import haversine_km as _hk
+
+        ctx = context or {}
+        cm = self._merge_coord_map(coord_map or {}, items)
+        region = _fix367_region_key(ctx)
+        plan_city = _fold_place_label(
+            str(ctx.get("requested_city") or ctx.get("city") or "")
+        )
+        work = self._sort_items_by_time(list(items))
+
+        # --- C: cross-city POI pollution ---
+        cleaned: List[Any] = []
+        for it in work:
+            if _is_timeline_attraction(it):
+                nm = _fold_place_label(getattr(it, "name", "") or "")
+                addr = _fold_place_label(getattr(it, "address", "") or "")
+                city_attr = _fold_place_label(getattr(it, "city", "") or "")
+                blob = f"{nm} {addr} {city_attr}"
+                drop = False
+                for stem, home in _FIX367_FOREIGN_POI_HOMES:
+                    if stem in blob and not _fix367_home_city_ok(home, plan_city, region):
+                        # Special-case: Lesna Huta / Krucze near Karpacz are OK
+                        # only when the trip itself is Karkonosze.
+                        if stem in ("lesna huta", "krucze skaly") and region == "karkonosze":
+                            continue
+                        drop = True
+                        break
+                if not drop and region:
+                    lat = getattr(it, "lat", None)
+                    lng = getattr(it, "lng", None)
+                    try:
+                        lat_f = float(lat) if lat is not None else None
+                        lng_f = float(lng) if lng is not None else None
+                    except (TypeError, ValueError):
+                        lat_f = lng_f = None
+                    bbox = _FIX367_REGION_BBOX.get(region)
+                    if bbox and lat_f is not None and lng_f is not None:
+                        min_la, max_la, min_ln, max_ln = bbox
+                        if not (min_la <= lat_f <= max_la and min_ln <= lng_f <= max_ln):
+                            drop = True
+                    # Address mentions a clearly foreign big city.
+                    foreign_tokens = (
+                        "wroclaw", "krakow", "katowice", "warszawa", "warsaw",
+                        "poznan",
+                    )
+                    if region == "trojmiasto":
+                        if any(t in blob for t in foreign_tokens):
+                            drop = True
+                    elif region == "karkonosze":
+                        if any(t in blob for t in foreign_tokens + ("gdansk", "gdynia", "sopot")):
+                            drop = True
+                if drop:
+                    # Also drop inbound transit to this POI.
+                    if cleaned and _item_type_value(cleaned[-1]) == ItemType.TRANSIT.value:
+                        dest = (getattr(cleaned[-1], "to_location", "") or "").strip()
+                        if dest and _place_names_match(dest, getattr(it, "name", "") or ""):
+                            cleaned.pop()
+                    print(
+                        f"[FIX #367] Day {day_num}: dropped cross-city POI "
+                        f"{getattr(it, 'name', None)!r}"
+                    )
+                    continue
+            cleaned.append(it)
+        work = cleaned
+
+        # --- E: merge duplicate-coord attractions ---
+        seen_coords: Dict[Tuple[float, float], int] = {}
+        deduped: List[Any] = []
+        for it in work:
+            if _is_timeline_attraction(it):
+                try:
+                    lat = round(float(getattr(it, "lat")), 4)
+                    lng = round(float(getattr(it, "lng")), 4)
+                except (TypeError, ValueError):
+                    lat = lng = None
+                if lat is not None and lng is not None:
+                    key = (lat, lng)
+                    if key in seen_coords:
+                        print(
+                            f"[FIX #367] Day {day_num}: merge duplicate-coord "
+                            f"{getattr(it, 'name', None)!r} @ {key}"
+                        )
+                        # Drop inbound hop to the duplicate.
+                        if deduped and _item_type_value(deduped[-1]) == ItemType.TRANSIT.value:
+                            dest = (getattr(deduped[-1], "to_location", "") or "").strip()
+                            if dest and _place_names_match(
+                                dest, getattr(it, "name", "") or ""
+                            ):
+                                deduped.pop()
+                        continue
+                    seen_coords[key] = 1
+            deduped.append(it)
+        work = deduped
+
+        # --- D: day cluster (one subregion anchor) ---
+        # Prefer the requested city so a Gdansk trip does not lock onto the
+        # first Sopot satellite and then drop the rest of Gdansk.
+        anchor = None
+        for key in _FIX367_SUBREGIONS:
+            if key in plan_city:
+                anchor = key
+                break
+        clustered: List[Any] = []
+        for it in work:
+            if _is_timeline_attraction(it):
+                try:
+                    lat_f = float(getattr(it, "lat"))
+                    lng_f = float(getattr(it, "lng"))
+                except (TypeError, ValueError):
+                    lat_f = lng_f = None
+                sub = _fix367_subregion_of(lat_f, lng_f, prefer=anchor)
+                if anchor is None and sub:
+                    anchor = sub
+                elif (
+                    anchor
+                    and sub
+                    and sub != anchor
+                    and region in ("trojmiasto", "karkonosze")
+                ):
+                    # Allow if previous block was a justified car drive into
+                    # this cluster; otherwise drop the zig-zag stop.
+                    prev_drive = False
+                    if clustered:
+                        prev = clustered[-1]
+                        if _item_type_value(prev) == ItemType.TRANSIT.value:
+                            mode = str(
+                                getattr(
+                                    getattr(prev, "mode", None),
+                                    "value",
+                                    getattr(prev, "mode", ""),
+                                )
+                                or ""
+                            ).lower()
+                            try:
+                                km = float(getattr(prev, "distance_km", None) or 0)
+                            except (TypeError, ValueError):
+                                km = 0.0
+                            if "car" in mode and km >= 3.0:
+                                prev_drive = True
+                                # Keep plan-city anchor; neighbour visits need a drive but do not re-home the day.
+                    if not prev_drive:
+                        print(
+                            f"[FIX #367] Day {day_num}: drop off-cluster "
+                            f"{getattr(it, 'name', None)!r} ({sub} vs {anchor})"
+                        )
+                        if clustered and _item_type_value(clustered[-1]) == ItemType.TRANSIT.value:
+                            dest = (getattr(clustered[-1], "to_location", "") or "").strip()
+                            if dest and _place_names_match(
+                                dest, getattr(it, "name", "") or ""
+                            ):
+                                clustered.pop()
+                        continue
+            clustered.append(it)
+        work = clustered
+
+        # --- B: ban generic hubs mid-day ---
+        # Count real stops to know start/end.
+        real_idxs = [
+            i for i, it in enumerate(work)
+            if _is_timeline_attraction(it)
+            or _item_type_value(it) in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            )
+        ]
+        first_real = real_idxs[0] if real_idxs else None
+        last_real = real_idxs[-1] if real_idxs else None
+        no_hub: List[Any] = []
+        for i, it in enumerate(work):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                no_hub.append(it)
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            to = (getattr(it, "to_location", "") or "").strip()
+            hub_from = _is_hub_place_label(frm)
+            hub_to = _is_hub_place_label(to)
+            at_edge = (
+                (first_real is not None and i < first_real)
+                or (last_real is not None and i > last_real)
+            )
+            try:
+                km = float(getattr(it, "distance_km", None) or 0)
+            except (TypeError, ValueError):
+                km = 0.0
+            # Fake 0.5 km hub segments mid-day.
+            if (hub_from or hub_to) and not at_edge and km <= 0.6:
+                print(
+                    f"[FIX #367] Day {day_num}: drop generic hub hop "
+                    f"{frm!r}->{to!r} ({km} km)"
+                )
+                continue
+            if (hub_from or hub_to) and not at_edge and km < 3.0:
+                # Rewrite hub endpoint to current concrete place when possible.
+                updates: Dict[str, Any] = {}
+                if hub_from and no_hub:
+                    prev_place = None
+                    for prev in reversed(no_hub):
+                        nm = (
+                            getattr(prev, "name", None)
+                            or getattr(prev, "to_location", None)
+                            or getattr(prev, "label", None)
+                        )
+                        if nm and not _is_hub_place_label(nm):
+                            prev_place = str(nm).strip()
+                            break
+                    if prev_place:
+                        updates["from_location"] = prev_place
+                if hub_to:
+                    # Prefer skipping; without a concrete dest drop the hop.
+                    print(
+                        f"[FIX #367] Day {day_num}: drop mid-day hub dest "
+                        f"{frm!r}->{to!r}"
+                    )
+                    continue
+                if updates:
+                    try:
+                        it = it.model_copy(update=updates)
+                    except Exception:
+                        pass
+            no_hub.append(it)
+        work = no_hub
+
+        # --- A: location cursor (user_at / car_at) ---
+        user_at: Optional[str] = None
+        car_at: Optional[str] = None
+        has_car = bool(ctx.get("has_car", True))
+        cursor_out: List[Any] = []
+        for it in work:
+            tv = _item_type_value(it)
+            mode = str(
+                getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
+                or ""
+            ).lower()
+            src = str(getattr(it, "routing_source", "") or "").lower()
+            if tv == ItemType.TRANSIT.value:
+                frm = (getattr(it, "from_location", "") or "").strip()
+                to = (getattr(it, "to_location", "") or "").strip()
+                is_walk = "walk" in mode or "foot" in mode
+                is_car = "car" in mode
+                is_return = "return" in src
+                updates = {}
+                if is_walk:
+                    # Walk must start from user_at (stale after car moved).
+                    if user_at and frm and not _place_names_match(frm, user_at):
+                        updates["from_location"] = user_at
+                        print(
+                            f"[FIX #367] Day {day_num}: stale walk start "
+                            f"{frm!r} -> {user_at!r}"
+                        )
+                    # return_to_car only when car != user and a drive follows.
+                    if is_return:
+                        drive_follows = False
+                        # peek remaining items in work after current — approximate
+                        # via later processing; here: keep only if car differs.
+                        if (
+                            not has_car
+                            or not car_at
+                            or not user_at
+                            or _place_names_match(user_at, car_at)
+                        ):
+                            print(
+                                f"[FIX #367] Day {day_num}: drop noop/stale "
+                                f"return_to_car {frm!r}->{to!r}"
+                            )
+                            continue
+                        if to and car_at and not _place_names_match(to, car_at):
+                            updates["to_location"] = car_at
+                    if updates:
+                        try:
+                            it = it.model_copy(update=updates)
+                        except Exception:
+                            pass
+                    if to:
+                        user_at = to
+                        if is_return and car_at:
+                            user_at = car_at
+                    cursor_out.append(it)
+                    continue
+                if is_car and has_car:
+                    # Drive must start from car_at; people must be at car.
+                    if car_at is None:
+                        car_at = frm or user_at
+                    if (
+                        user_at
+                        and car_at
+                        and not _place_names_match(user_at, car_at)
+                        and not is_return
+                    ):
+                        # Insert return walk before drive.
+                        try:
+                            a = None
+                            b = None
+                            pa = cm.get(user_at) if isinstance(cm.get(user_at), dict) else None
+                            pb = cm.get(car_at) if isinstance(cm.get(car_at), dict) else None
+                            if pa and pb and pa.get("lat") is not None and pb.get("lat") is not None:
+                                a = (float(pa["lat"]), float(pa["lng"]))
+                                b = (float(pb["lat"]), float(pb["lng"]))
+                            dist = 0.5
+                            walk_min = 10
+                            if a and b:
+                                dist = max(0.1, _hk(a[0], a[1], b[0], b[1]))
+                                walk_min = max(5, min(35, int(round(dist / 4.5 * 60)) + 2))
+                            car_st = time_to_minutes(getattr(it, "start_time", None) or "12:00")
+                            car_dur = int(getattr(it, "duration_min", 0) or 10)
+                            ret = TransitItem(
+                                type=ItemType.TRANSIT,
+                                start_time=minutes_to_time(car_st),
+                                end_time=minutes_to_time(car_st + walk_min),
+                                duration_min=walk_min,
+                                mode=TransitMode.WALK,
+                                from_location=user_at,
+                                to_location=car_at,
+                                distance_km=round(dist, 3),
+                                routing_source="return_to_car",
+                            )
+                            cursor_out.append(ret)
+                            it = it.model_copy(update={
+                                "from_location": car_at,
+                                "start_time": minutes_to_time(car_st + walk_min),
+                                "end_time": minutes_to_time(car_st + walk_min + car_dur),
+                            })
+                            user_at = car_at
+                            print(
+                                f"[FIX #367] Day {day_num}: insert return_to_car "
+                                f"before drive to {to!r}"
+                            )
+                        except Exception as exc:
+                            print(
+                                f"[FIX #367] Day {day_num}: return insert failed "
+                                f"{type(exc).__name__}"
+                            )
+                    elif car_at and frm and not _place_names_match(frm, car_at):
+                        try:
+                            it = it.model_copy(update={"from_location": car_at})
+                        except Exception:
+                            pass
+                    if to:
+                        user_at = to
+                        car_at = to
+                    cursor_out.append(it)
+                    continue
+                # other transit
+                if to:
+                    user_at = to
+                cursor_out.append(it)
+                continue
+            # attractions / meals update user_at (never free_time buffers)
+            if tv not in (
+                ItemType.FREE_TIME.value,
+                ItemType.DAY_START.value,
+                ItemType.DAY_END.value,
+            ):
+                nm = (
+                    getattr(it, "name", None)
+                    or getattr(it, "label", None)
+                    or getattr(it, "location", None)
+                )
+                if nm and not _is_hub_place_label(nm):
+                    folded_nm = _fold_place_label(nm)
+                    if "przerwa" not in folded_nm and "bufor" not in folded_nm:
+                        user_at = str(nm).strip()
+            cursor_out.append(it)
+        work = cursor_out
+
+        # Second pass: drop return_to_car that is not followed by a drive.
+        final_rt: List[Any] = []
+        for i, it in enumerate(work):
+            src = str(getattr(it, "routing_source", "") or "").lower()
+            if (
+                _item_type_value(it) == ItemType.TRANSIT.value
+                and "return" in src
+            ):
+                follows_drive = False
+                for later in work[i + 1 : i + 4]:
+                    if _item_type_value(later) != ItemType.TRANSIT.value:
+                        if _item_type_value(later) in (
+                            ItemType.FREE_TIME.value,
+                        ):
+                            continue
+                        break
+                    mode = str(
+                        getattr(
+                            getattr(later, "mode", None),
+                            "value",
+                            getattr(later, "mode", ""),
+                        )
+                        or ""
+                    ).lower()
+                    if "car" in mode:
+                        follows_drive = True
+                    break
+                if not follows_drive:
+                    print(
+                        f"[FIX #367] Day {day_num}: drop return_to_car without "
+                        f"following drive"
+                    )
+                    continue
+            final_rt.append(it)
+        work = final_rt
+
+        # --- implausible walks ---
+        plausible: List[Any] = []
+        for it in work:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                plausible.append(it)
+                continue
+            mode = str(
+                getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
+                or ""
+            ).lower()
+            try:
+                km = float(getattr(it, "distance_km", None) or 0)
+            except (TypeError, ValueError):
+                km = 0.0
+            dur = int(getattr(it, "duration_min", 0) or 0)
+            if "walk" in mode and km > 0 and dur > 0:
+                speed = km / (dur / 60.0)
+                if speed > 8.0 or (km >= 3.0 and dur <= 45):
+                    # Convert long implausible walks to car when has_car,
+                    # else drop.
+                    if has_car and km >= 1.5:
+                        car_min = max(8, int(round(km / 35.0 * 60)) + 3)
+                        try:
+                            st = time_to_minutes(getattr(it, "start_time", None) or "")
+                            it = it.model_copy(update={
+                                "mode": TransitMode.CAR,
+                                "duration_min": car_min,
+                                "end_time": minutes_to_time(st + car_min),
+                            })
+                            print(
+                                f"[FIX #367] Day {day_num}: implausible walk "
+                                f"-> car {km} km"
+                            )
+                        except Exception:
+                            print(
+                                f"[FIX #367] Day {day_num}: drop implausible walk "
+                                f"{km} km in {dur} min"
+                            )
+                            continue
+                    else:
+                        print(
+                            f"[FIX #367] Day {day_num}: drop implausible walk "
+                            f"{km} km in {dur} min"
+                        )
+                        continue
+            plausible.append(it)
+        work = plausible
+
+        # --- F: meals / day window ---
+        # Drop zero-duration 23:59 clips.
+        windowed: List[Any] = []
+        for it in work:
+            try:
+                st = time_to_minutes(
+                    getattr(it, "start_time", None) or getattr(it, "time", None) or ""
+                )
+                en = time_to_minutes(
+                    getattr(it, "end_time", None) or getattr(it, "time", None) or ""
+                )
+            except Exception:
+                windowed.append(it)
+                continue
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                windowed.append(it)
+                continue
+            if st is not None and en is not None and en <= st and st >= 23 * 60:
+                print(
+                    f"[FIX #367] Day {day_num}: drop zero-duration clip "
+                    f"{getattr(it, 'name', None) or tv} @ 23:59"
+                )
+                continue
+            if st is not None and st >= 23 * 60 + 50:
+                print(
+                    f"[FIX #367] Day {day_num}: drop past-window item "
+                    f"{getattr(it, 'name', None) or tv}"
+                )
+                continue
+            windowed.append(it)
+        work = windowed
+
+        # Late lunch: pull start back to 13:30 when after 15:00.
+        meals_fixed: List[Any] = []
+        has_lunch = False
+        has_dinner = False
+        last_end = None
+        for it in work:
+            tv = _item_type_value(it)
+            if tv == ItemType.LUNCH_BREAK.value:
+                has_lunch = True
+                try:
+                    st = time_to_minutes(getattr(it, "start_time", None) or "")
+                    dur = int(getattr(it, "duration_min", 0) or 45)
+                    if st >= 15 * 60:
+                        new_st = 13 * 60 + 30
+                        it = it.model_copy(update={
+                            "start_time": minutes_to_time(new_st),
+                            "end_time": minutes_to_time(new_st + dur),
+                        })
+                        print(
+                            f"[FIX #367] Day {day_num}: late lunch "
+                            f"{minutes_to_time(st)} -> 13:30"
+                        )
+                except Exception:
+                    pass
+            if tv == ItemType.DINNER_BREAK.value:
+                has_dinner = True
+            try:
+                en = time_to_minutes(
+                    getattr(it, "end_time", None) or getattr(it, "time", None) or ""
+                )
+                if en is not None:
+                    last_end = en if last_end is None else max(last_end, en)
+            except Exception:
+                pass
+            meals_fixed.append(it)
+        work = meals_fixed
+
+        # Missing dinner: if day runs past 17:00 and no dinner, attach one.
+        try:
+            day_end = time_to_minutes(str(ctx.get("day_end") or "20:00"))
+        except Exception:
+            day_end = 20 * 60
+        if (
+            not has_dinner
+            and last_end is not None
+            and last_end >= 17 * 60
+            and day_end >= 18 * 60
+        ):
+            dinner_st = min(max(18 * 60, last_end + 5), day_end - 45)
+            if dinner_st + 40 <= day_end:
+                try:
+                    work.append(DinnerBreakItem(
+                        type=ItemType.DINNER_BREAK,
+                        start_time=minutes_to_time(dinner_st),
+                        end_time=minutes_to_time(dinner_st + 45),
+                        duration_min=45,
+                        label="Kolacja",
+                    ))
+                    print(
+                        f"[FIX #367] Day {day_num}: attach missing dinner "
+                        f"@ {minutes_to_time(dinner_st)}"
+                    )
+                    work = self._sort_items_by_time(work)
+                except Exception:
+                    pass
+
+        # Cover large anonymous gaps with a single <=60 min free_time.
+        covered: List[Any] = []
+        cursor_m = None
+        for it in work:
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                covered.append(it)
+                if tv == ItemType.DAY_START.value:
+                    try:
+                        cursor_m = time_to_minutes(getattr(it, "time", None) or "09:00")
+                    except Exception:
+                        cursor_m = 9 * 60
+                continue
+            try:
+                st = time_to_minutes(
+                    getattr(it, "start_time", None) or getattr(it, "time", None) or ""
+                )
+                en = time_to_minutes(
+                    getattr(it, "end_time", None) or getattr(it, "time", None) or ""
+                )
+            except Exception:
+                covered.append(it)
+                continue
+            if (
+                cursor_m is not None
+                and st - cursor_m >= 60
+                and tv != ItemType.FREE_TIME.value
+            ):
+                gap = st - cursor_m
+                block = min(60, gap - 5)
+                if block >= 20:
+                    covered.append(FreeTimeItem(
+                        start_time=minutes_to_time(cursor_m),
+                        end_time=minutes_to_time(cursor_m + block),
+                        duration_min=block,
+                        label="Czas dla siebie",
+                    ))
+            covered.append(it)
+            if en is not None:
+                cursor_m = max(cursor_m or 0, en)
+        work = self._sort_items_by_time(covered)
+
+        del cm
+        return work
+
 
     def _seal_open_mail_day(
         self,
