@@ -1,4 +1,4 @@
-﻿"""FIX #366: automated plan quality validator for client-mail defects.
+"""FIX #366: automated plan quality validator for client-mail defects.
 
 Checks idle gaps, stacked free_time, A→B→A hops, restaurant-without-meal,
 visit-without-arrival, opening-hours (best-effort), overlaps, duplicate POI
@@ -260,20 +260,90 @@ def validate_day(
                 )
                 break
 
-    # FIX #367 hard-fail codes (Tricity / Karkonosze UAT)
+    # FIX #367/#368 P0 hard-fail codes (location cursor, hubs, ABA meals)
+    def _meal_place(it: Any) -> str:
+        sugs = getattr(it, "suggestions", None) or []
+        for s in sugs[:1]:
+            if isinstance(s, dict):
+                nm = (s.get("name") or "").strip()
+            else:
+                nm = (getattr(s, "name", None) or "").strip()
+            if nm:
+                return _fold(nm)
+        for attr in ("location_context", "location", "name", "label"):
+            v = (getattr(it, attr, None) or "").strip()
+            if not v:
+                continue
+            f = _fold(v)
+            if not f or f in ("centrum", "przy szlaku", "przy_szlaku"):
+                continue
+            if any(k in f for k in ("przerwa", "bufor", "regeneracyj")):
+                continue
+            if f in ("lunch", "dinner", "obiad", "kolacja"):
+                continue
+            return f
+        return ""
+
     user_at = None
     car_at = None
+    left_places = []
     hub_names = {
         "gdansk", "gdynia", "sopot", "karpacz", "jelenia gora",
         "szklarska poreba", "krakow", "katowice", "poznan", "warszawa",
     }
     n_transits = sum(1 for it in items if _tv(it) == ItemType.TRANSIT.value)
     t_idx = 0
+
+    def _names_overlap(a: str, b: str) -> bool:
+        if not a or not b:
+            return False
+        if a == b or a in b or b in a:
+            return True
+        tokens = set(a.split()) & set(b.split())
+        return len(tokens) >= 1 and min(len(a), len(b)) >= 5
+
+    def _mark_left(place: str) -> None:
+        if not place or place in hub_names:
+            return
+        if any(_names_overlap(place, p) for p in left_places):
+            return
+        left_places.append(place)
+
+    def _clear_left(place: str) -> None:
+        if not place:
+            return
+        left_places[:] = [p for p in left_places if not _names_overlap(p, place)]
+
+    def _was_left(place: str) -> bool:
+        return bool(place) and any(_names_overlap(place, p) for p in left_places)
+
     for it in items:
         tv = _tv(it)
         if tv != ItemType.TRANSIT.value:
             if tv == ItemType.ATTRACTION.value:
-                user_at = _fold(_nm(it))
+                nm = _fold(_nm(it))
+                if nm and user_at and not _names_overlap(nm, user_at) and _was_left(nm):
+                    report.add(
+                        city, num, day_num, "aba_visit_after_leave",
+                        f"visit={_nm(it)} user_at={user_at}",
+                    )
+                if nm:
+                    if user_at and not _names_overlap(nm, user_at):
+                        _mark_left(user_at)
+                    user_at = nm
+                    _clear_left(nm)
+            elif tv in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                mp = _meal_place(it)
+                if mp and user_at and not _names_overlap(mp, user_at) and _was_left(mp):
+                    report.add(
+                        city, num, day_num, "aba_visit_after_leave",
+                        f"meal={mp} user_at={user_at}",
+                    )
+                if mp:
+                    if user_at and not _names_overlap(mp, user_at):
+                        _mark_left(user_at)
+                    user_at = mp
+                    _clear_left(mp)
             continue
         t_idx += 1
         frm = _fold(getattr(it, "from_location", "") or "")
@@ -291,25 +361,66 @@ def validate_day(
         if is_hub and mid and 0 < km <= 0.6:
             report.add(city, num, day_num, "generic_hub", f"{frm}->{to} {km}km")
         if ("walk" in mode or "foot" in mode) and user_at and frm:
-            if user_at not in frm and frm not in user_at:
+            if user_at not in frm and frm not in user_at and not _names_overlap(user_at, frm):
                 report.add(
                     city, num, day_num, "stale_walk_start",
                     f"walk from {frm} but user_at={user_at}",
                 )
-        if "return" in src and user_at and car_at and user_at == car_at:
+        if "return" in src and user_at and car_at and _names_overlap(user_at, car_at):
             report.add(
                 city, num, day_num, "aba_return_loop",
                 f"return_to_car while already at car ({car_at})",
             )
+        # return_to_car must be immediately before a drive (not a walk continuation)
+        if "return" in src and ("walk" in mode or "foot" in mode):
+            follows_drive = False
+            # peek next non-free_time item in remaining list — approximate via index
+            # (validated structurally in seal; here flag obvious misuse when next
+            # transit after this is still a walk with no car).
+            pass
         if "walk" in mode or "foot" in mode:
+            if frm and to and not _names_overlap(frm, to):
+                _mark_left(user_at or frm)
             if to:
                 user_at = to
+                _clear_left(to)
             if "return" in src and car_at:
                 user_at = car_at
+                _clear_left(car_at)
         elif "car" in mode:
+            if frm and to and user_at and not _names_overlap(user_at, to):
+                _mark_left(user_at)
             if to:
                 user_at = to
                 car_at = to
+                _clear_left(to)
+
+    # return_to_car must be immediately followed by a drive (not a walk-on).
+    for i, it in enumerate(items):
+        if _tv(it) != ItemType.TRANSIT.value:
+            continue
+        src = str(getattr(it, "routing_source", "") or "").lower()
+        if "return" not in src:
+            continue
+        follows_drive = False
+        for later in items[i + 1 : i + 5]:
+            ltv = _tv(later)
+            if ltv == ItemType.FREE_TIME.value:
+                continue
+            if ltv != ItemType.TRANSIT.value:
+                break
+            mode = str(
+                getattr(getattr(later, "mode", None), "value", getattr(later, "mode", ""))
+                or ""
+            ).lower()
+            if "car" in mode:
+                follows_drive = True
+            break
+        if not follows_drive:
+            report.add(
+                city, num, day_num, "aba_return_loop",
+                "return_to_car without following drive",
+            )
 
     has_dinner = any(_tv(it) == ItemType.DINNER_BREAK.value for it in items)
     last_en = None

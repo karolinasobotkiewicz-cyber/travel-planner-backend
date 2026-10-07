@@ -262,6 +262,51 @@ def _is_fix367_city(context: Optional[Dict[str, Any]] = None) -> bool:
     return _is_trojmiasto_context(context) or _is_karkonosze_context(context)
 
 
+
+def _is_fix368_p0_city(context: Optional[Dict[str, Any]] = None) -> bool:
+    """FIX #368 P0: location-cursor cities (open-mail + Tricity/Karkonosze).
+
+    Wroclaw/Zakopane stay frozen via the locked-city gate inside the helpers.
+    """
+    if _is_locked_city_context(context):
+        return False
+    return _is_fix367_city(context) or _is_open_mail_city(context)
+
+
+def _timeline_meal_place_label(it: Any) -> Optional[str]:
+    """Concrete restaurant/place on a lunch/dinner card (not generic Przerwa)."""
+    sugs = getattr(it, "suggestions", None) or []
+    for s in sugs[:1]:
+        if isinstance(s, dict):
+            nm = (s.get("name") or "").strip()
+        else:
+            nm = (getattr(s, "name", None) or "").strip()
+        if nm and not _is_hub_place_label(nm):
+            return nm
+    for attr in ("location_context", "location", "name", "label"):
+        v = (getattr(it, attr, None) or "").strip()
+        if not v:
+            continue
+        folded = _fold_place_label(v)
+        if not folded:
+            continue
+        if folded in ("centrum", "przy szlaku", "przy_szlaku"):
+            continue
+        if any(
+            k in folded
+            for k in (
+                "przerwa", "bufor", "regeneracyj", "czas wolny", "czas dla siebie",
+            )
+        ):
+            continue
+        if folded in ("lunch", "dinner", "obiad", "kolacja"):
+            continue
+        if _is_hub_place_label(v):
+            continue
+        return v
+    return None
+
+
 # Subregion anchors for day clustering (lat, lng, radius_km).
 _FIX367_SUBREGIONS: Dict[str, Tuple[float, float, float]] = {
     "gdansk": (54.3520, 18.6466, 12.0),
@@ -37032,13 +37077,15 @@ class PlanService:
         day_num: int = 0,
         coord_map: Optional[Dict[str, Any]] = None,
     ) -> List[Any]:
-        """FIX #367 core: location cursor + hub ban (Tricity/Karkonosze).
+        """FIX #367/#368 P0: location cursor + hub ban + meal anchors.
 
-        user_at/car_at, return_to_car only before a drive, ban mid-day hubs,
-        fix implausible walks, drop 23:59 zero clips. Clustering/cross-city/meals deferred.
-        Does not reopen Wroclaw or Zakopane.
+        user_at/car_at across visits AND meals, return_to_car only before a
+        drive, ban mid-day generic city hubs, drop ABA visit/meal after leave,
+        fix implausible walks, drop 23:59 zero clips.
+        Applies to Tricity/Karkonosze and open-mail (Krakow/Katowice/Poznan).
+        Does not reopen Wroclaw or Zakopane. Clustering/cross-city deferred.
         """
-        if not items or not _is_fix367_city(context):
+        if not items or not _is_fix368_p0_city(context):
             return items
         from app.domain.models.plan import (
             TransitItem, TransitMode, FreeTimeItem, DinnerBreakItem, LunchBreakItem,
@@ -37129,10 +37176,35 @@ class PlanService:
         work = no_hub
 
         # --- A: location cursor (user_at / car_at) ---
+        # FIX #368 P0: meals are location anchors; drop ABA visit/meal after leave.
         user_at: Optional[str] = None
         car_at: Optional[str] = None
+        left_places: List[str] = []
         has_car = bool(ctx.get("has_car", True))
         cursor_out: List[Any] = []
+
+        def _mark_left(place: Optional[str]) -> None:
+            if not place or _is_hub_place_label(place):
+                return
+            for prev in left_places:
+                if _place_names_match(prev, place):
+                    return
+            left_places.append(place)
+
+        def _clear_left(place: Optional[str]) -> None:
+            if not place:
+                return
+            keep: List[str] = []
+            for prev in left_places:
+                if not _place_names_match(prev, place):
+                    keep.append(prev)
+            left_places[:] = keep
+
+        def _was_left(place: Optional[str]) -> bool:
+            if not place:
+                return False
+            return any(_place_names_match(place, prev) for prev in left_places)
+
         for it in work:
             tv = _item_type_value(it)
             mode = str(
@@ -37152,14 +37224,12 @@ class PlanService:
                     if user_at and frm and not _place_names_match(frm, user_at):
                         updates["from_location"] = user_at
                         print(
-                            f"[FIX #367] Day {day_num}: stale walk start "
+                            f"[FIX #368] Day {day_num}: stale walk start "
                             f"{frm!r} -> {user_at!r}"
                         )
+                        frm = user_at
                     # return_to_car only when car != user and a drive follows.
                     if is_return:
-                        drive_follows = False
-                        # peek remaining items in work after current — approximate
-                        # via later processing; here: keep only if car differs.
                         if (
                             not has_car
                             or not car_at
@@ -37167,21 +37237,26 @@ class PlanService:
                             or _place_names_match(user_at, car_at)
                         ):
                             print(
-                                f"[FIX #367] Day {day_num}: drop noop/stale "
+                                f"[FIX #368] Day {day_num}: drop noop/stale "
                                 f"return_to_car {frm!r}->{to!r}"
                             )
                             continue
                         if to and car_at and not _place_names_match(to, car_at):
                             updates["to_location"] = car_at
+                            to = car_at
                     if updates:
                         try:
                             it = it.model_copy(update=updates)
                         except Exception:
                             pass
+                    if frm and to and not _place_names_match(frm, to):
+                        _mark_left(frm if not user_at else user_at)
                     if to:
                         user_at = to
+                        _clear_left(to)
                         if is_return and car_at:
                             user_at = car_at
+                            _clear_left(car_at)
                     cursor_out.append(it)
                     continue
                 if is_car and has_car:
@@ -37222,19 +37297,21 @@ class PlanService:
                                 routing_source="return_to_car",
                             )
                             cursor_out.append(ret)
+                            _mark_left(user_at)
                             it = it.model_copy(update={
                                 "from_location": car_at,
                                 "start_time": minutes_to_time(car_st + walk_min),
                                 "end_time": minutes_to_time(car_st + walk_min + car_dur),
                             })
                             user_at = car_at
+                            _clear_left(car_at)
                             print(
-                                f"[FIX #367] Day {day_num}: insert return_to_car "
+                                f"[FIX #368] Day {day_num}: insert return_to_car "
                                 f"before drive to {to!r}"
                             )
                         except Exception as exc:
                             print(
-                                f"[FIX #367] Day {day_num}: return insert failed "
+                                f"[FIX #368] Day {day_num}: return insert failed "
                                 f"{type(exc).__name__}"
                             )
                     elif car_at and frm and not _place_names_match(frm, car_at):
@@ -37243,30 +37320,90 @@ class PlanService:
                         except Exception:
                             pass
                     if to:
+                        if user_at and not _place_names_match(user_at, to):
+                            _mark_left(user_at)
                         user_at = to
                         car_at = to
+                        _clear_left(to)
                     cursor_out.append(it)
                     continue
                 # other transit
+                if frm and to and not _place_names_match(frm, to):
+                    _mark_left(user_at or frm)
                 if to:
                     user_at = to
+                    _clear_left(to)
                 cursor_out.append(it)
                 continue
-            # attractions / meals update user_at (never free_time buffers)
-            if tv not in (
+            # free_time / day markers never move the person
+            if tv in (
                 ItemType.FREE_TIME.value,
                 ItemType.DAY_START.value,
                 ItemType.DAY_END.value,
             ):
-                nm = (
-                    getattr(it, "name", None)
-                    or getattr(it, "label", None)
-                    or getattr(it, "location", None)
-                )
-                if nm and not _is_hub_place_label(nm):
-                    folded_nm = _fold_place_label(nm)
-                    if "przerwa" not in folded_nm and "bufor" not in folded_nm:
-                        user_at = str(nm).strip()
+                cursor_out.append(it)
+                continue
+            # Meals: suggestions/location are the real place (not "Przerwa na lunch").
+            if tv in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                meal_place = _timeline_meal_place_label(it)
+                if meal_place and user_at and not _place_names_match(meal_place, user_at):
+                    if _was_left(meal_place):
+                        updates = {"suggestions": []}
+                        if hasattr(it, "location_context"):
+                            updates["location_context"] = user_at
+                        try:
+                            it = it.model_copy(update=updates)
+                            print(
+                                f"[FIX #368] Day {day_num}: scrub ABA meal at left "
+                                f"{meal_place!r} (user_at={user_at!r})"
+                            )
+                        except Exception as exc:
+                            print(
+                                f"[FIX #368] Day {day_num}: meal scrub failed "
+                                f"{type(exc).__name__}"
+                            )
+                        cursor_out.append(it)
+                        continue
+                    # Meal card names a different place without leaving-return:
+                    # keep the slot at the current standing place.
+                    updates = {"suggestions": []}
+                    if hasattr(it, "location_context"):
+                        updates["location_context"] = user_at
+                    try:
+                        it = it.model_copy(update=updates)
+                        print(
+                            f"[FIX #368] Day {day_num}: re-anchor meal "
+                            f"{meal_place!r} -> {user_at!r}"
+                        )
+                    except Exception:
+                        pass
+                    cursor_out.append(it)
+                    continue
+                if meal_place:
+                    user_at = meal_place
+                    _clear_left(meal_place)
+                cursor_out.append(it)
+                continue
+            # Attractions update user_at; drop ABA revisit after leave.
+            nm = (
+                getattr(it, "name", None)
+                or getattr(it, "label", None)
+                or getattr(it, "location", None)
+            )
+            if nm and not _is_hub_place_label(nm):
+                folded_nm = _fold_place_label(nm)
+                if "przerwa" not in folded_nm and "bufor" not in folded_nm:
+                    place = str(nm).strip()
+                    if user_at and not _place_names_match(place, user_at) and _was_left(place):
+                        print(
+                            f"[FIX #368] Day {day_num}: drop ABA visit after leave "
+                            f"{place!r} (user_at={user_at!r})"
+                        )
+                        continue
+                    # First visit at a new place without inbound hop: accept and
+                    # move the cursor (arrival may have been a dropped hub hop).
+                    user_at = place
+                    _clear_left(place)
             cursor_out.append(it)
         work = cursor_out
 
