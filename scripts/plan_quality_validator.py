@@ -35,6 +35,9 @@ BIG_VENUE_MIN = {
     "guido": 90,
     "pixel xl": 45,
     "browar mariacki": 45,
+    "mocak": 60,
+    "galicja": 60,
+    "wieza ratuszowa": 40,
 }
 
 SENIOR_BAN = ("pixel xl", "legendia", "cybermag", "park linow", "gokart", "jumpcity")
@@ -108,8 +111,14 @@ def validate_day(
     items: Sequence[Any],
     group_type: str = "",
     report: Report,
+    trip_date: Any = None,
 ) -> None:
     items = list(items or [])
+    if trip_date is not None:
+        try:
+            report.trip_date = trip_date
+        except Exception:
+            pass
     # consecutive free_time (and micro-gapped stacks: 44+6+44)
     run = 0
     max_run = 0
@@ -204,6 +213,72 @@ def validate_day(
             if cur and d != cur and cur not in left:
                 left.append(cur)
             cur = d
+
+    # FIX #368 P3: hours / season / min visit / day_end
+    try:
+        from app.application.services.plan_service import (
+            _fix368_known_hours_for,
+            _fold_place_label as _fold_ps,
+        )
+    except Exception:
+        _fix368_known_hours_for = None  # type: ignore
+    day_end_m = None
+    for it in items:
+        if _tv(it) == ItemType.DAY_END.value:
+            st, _ = _clock(it)
+            if st is not None:
+                day_end_m = st
+    for it in items:
+        if _tv(it) != ItemType.ATTRACTION.value:
+            continue
+        nm = _nm(it)
+        st, en = _clock(it)
+        if st is None or en is None:
+            continue
+        dur = en - st
+        known = _fix368_known_hours_for(nm) if _fix368_known_hours_for else None
+        if known:
+            open_m = int(known.get("open_min") or 0)
+            close_m = int(known.get("close_min") or 24 * 60)
+            if close_m - open_m > 45:
+                close_m -= 15
+            if st < open_m or en > close_m:
+                report.add(
+                    city, num, day_num, "outside_opening_hours",
+                    f"{nm} {st}-{en} not in {open_m}-{close_m}",
+                )
+            floor = int(known.get("time_min") or 0)
+            ticket = int(known.get("ticket") or 0)
+            if ticket >= 20 and floor and dur < floor:
+                report.add(
+                    city, num, day_num, "min_visit_duration",
+                    f"{nm} {dur}m < {floor} (paid)",
+                )
+            season_from = known.get("season_from")
+            # Season check needs trip date ? best-effort via optional report context
+            # (validate_day has no date arg; flag only when start before season month
+            # cannot be known here without date). Skip unless attached on report.
+            trip_date = getattr(report, "trip_date", None)
+            if season_from and trip_date is not None:
+                try:
+                    from datetime import datetime as _dt
+                    d = (
+                        trip_date if hasattr(trip_date, "month")
+                        else _dt.fromisoformat(str(trip_date)[:10])
+                    )
+                    sm, sd = season_from
+                    if (d.month, d.day) < (sm, sd):
+                        report.add(
+                            city, num, day_num, "before_season",
+                            f"{nm} before {sm:02d}-{sd:02d}",
+                        )
+                except Exception:
+                    pass
+        if day_end_m is not None and en > day_end_m:
+            report.add(
+                city, num, day_num, "day_end_before_visit_end",
+                f"{nm} ends {en} > day_end {day_end_m}",
+            )
 
     # overlaps
     timed = []

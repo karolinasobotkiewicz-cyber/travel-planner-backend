@@ -308,6 +308,53 @@ def _timeline_meal_place_label(it: Any) -> Optional[str]:
 
 
 
+
+# FIX #368 P3: known hours/season overlays when Excel is missing or stale.
+# Keys are folded name stems; values are open/close minutes and optional season.
+_FIX368_KNOWN_HOURS: Dict[str, Dict[str, Any]] = {
+    "mocak": {
+        "open_min": 11 * 60,
+        "close_min": 19 * 60,
+        "closed_weekdays": (0,),  # Monday
+        "time_min": 60,
+        "ticket": 30,
+    },
+    "galicja": {
+        "open_min": 10 * 60,
+        "close_min": 18 * 60,
+        "time_min": 60,
+        "ticket": 30,
+    },
+    "muzeum historii zydow galicji": {
+        "open_min": 10 * 60,
+        "close_min": 18 * 60,
+        "time_min": 60,
+        "ticket": 30,
+    },
+    "wieza ratuszowa": {
+        "open_min": 10 * 60,
+        "close_min": 18 * 60,
+        "time_min": 40,
+        "ticket": 22,
+        # UAT: tower season not yet open before 2026-03-08
+        "season_from": (3, 8),
+    },
+}
+
+
+def _fix368_known_hours_for(name: Any) -> Optional[Dict[str, Any]]:
+    folded = _fold_place_label(name)
+    if not folded:
+        return None
+    best = None
+    best_len = 0
+    for stem, meta in _FIX368_KNOWN_HOURS.items():
+        if stem in folded and len(stem) > best_len:
+            best = meta
+            best_len = len(stem)
+    return best
+
+
 # --- FIX #368 P2: district / neighborhood anchors (open-mail + Tricity) ---
 _FIX368_DISTRICT_MARKERS: Dict[str, Tuple[str, ...]] = {
     "schindler": (
@@ -37151,6 +37198,287 @@ class PlanService:
 
 
 
+
+    def _seal_fix368_p3_hours_and_duration(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #368 P3: opening hours, season, min visit, day_end consistency.
+
+        Prefer Excel/pool hours via `_poi_open_window`; fall back to known UAT
+        overlays (MOCAK / Galicja / Wieza Ratuszowa). Hard-drop visits that
+        cannot fit; do not invent calendars for every POI.
+        """
+        if not items:
+            return items
+        from datetime import datetime as _dt
+
+        ctx = context or {}
+        try:
+            work = self._sort_items_by_time(list(items))
+        except Exception:
+            work = list(items)
+
+        trip_date = ctx.get("date") or ctx.get("trip_date") or ctx.get("start_date")
+        d = None
+        if trip_date:
+            try:
+                d = (
+                    trip_date if hasattr(trip_date, "weekday")
+                    else _dt.fromisoformat(str(trip_date)[:10])
+                )
+            except Exception:
+                d = None
+
+        day_end_raw = ctx.get("day_end") or ctx.get("end_time") or "20:00"
+        try:
+            day_end_m = time_to_minutes(str(day_end_raw))
+        except Exception:
+            day_end_m = 20 * 60
+
+        # Build name->poi index from pool/meta when present.
+        pool = ctx.get("poi_pool") or []
+        if isinstance(pool, dict):
+            pool = list(pool.values())
+        meta = ctx.get("poi_meta") or {}
+        by_name: Dict[str, Dict[str, Any]] = {}
+        for p in list(pool) + [
+            {"name": k, **v} for k, v in meta.items() if isinstance(v, dict)
+        ]:
+            nm = _fold_place_label(p.get("name") or p.get("Name") or "")
+            if nm and nm not in by_name:
+                by_name[nm] = p
+
+        out: List[Any] = []
+        for it in work:
+            if not _is_timeline_attraction(it):
+                out.append(it)
+                continue
+            nm = (getattr(it, "name", None) or "").strip()
+            folded = _fold_place_label(nm)
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                out.append(it)
+                continue
+            if st is None or en is None:
+                out.append(it)
+                continue
+            dur = max(0, en - st)
+            known = _fix368_known_hours_for(nm)
+            poi = by_name.get(folded)
+            if not poi:
+                poi = next(
+                    (
+                        p for k, p in by_name.items()
+                        if k and folded and (k in folded or folded in k)
+                    ),
+                    None,
+                )
+
+            # --- season gate (known overlay) ---
+            if known and d is not None and known.get("season_from"):
+                sm, sd = known["season_from"]
+                if (d.month, d.day) < (sm, sd):
+                    print(
+                        f"[FIX #368 P3] Day {day_num}: drop before_season "
+                        f"{nm!r} (opens {sm:02d}-{sd:02d})"
+                    )
+                    continue
+
+            # --- opening window ---
+            open_min = close_min = None
+            if poi and d is not None:
+                try:
+                    win = self._poi_open_window(poi, d)
+                except Exception:
+                    win = None
+                if win is not None:
+                    open_min, close_min = win
+                    # win (0,0) means closed that day
+                    if close_min <= open_min:
+                        print(
+                            f"[FIX #368 P3] Day {day_num}: drop closed "
+                            f"{nm!r}"
+                        )
+                        continue
+            if open_min is None and known and d is not None:
+                closed_days = set(known.get("closed_weekdays") or ())
+                if int(d.weekday()) in closed_days:
+                    print(
+                        f"[FIX #368 P3] Day {day_num}: drop closed weekday "
+                        f"{nm!r}"
+                    )
+                    continue
+                open_min = int(known["open_min"])
+                close_min = int(known["close_min"])
+                # Match _poi_open_window 15-min pre-close margin for long windows.
+                if close_min - open_min > 45:
+                    close_min -= 15
+
+            # --- min visit floor ---
+            floor = 20
+            ticket = 0
+            if poi:
+                try:
+                    floor = max(floor, int(poi.get("time_min") or 0))
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    ticket = int(
+                        poi.get("ticket_normal")
+                        or poi.get("Ticket_normal")
+                        or poi.get("avg_cost")
+                        or 0
+                    )
+                except (TypeError, ValueError):
+                    ticket = 0
+            if known:
+                floor = max(floor, int(known.get("time_min") or 0))
+                ticket = max(ticket, int(known.get("ticket") or 0))
+            # Paid micro-visits (UAT: MOCAK 5 min / paid) are dishonest.
+            paid_floor = max(floor, 45) if ticket >= 20 else floor
+
+            # day_end consistency
+            if en > day_end_m:
+                if st + paid_floor <= day_end_m and (
+                    open_min is None or st >= open_min
+                ):
+                    try:
+                        it = it.model_copy(update={
+                            "end_time": minutes_to_time(day_end_m),
+                            "duration_min": day_end_m - st,
+                        })
+                        en = day_end_m
+                        dur = en - st
+                        print(
+                            f"[FIX #368 P3] Day {day_num}: clip to day_end "
+                            f"{nm!r} -> {minutes_to_time(day_end_m)}"
+                        )
+                    except Exception:
+                        print(
+                            f"[FIX #368 P3] Day {day_num}: drop "
+                            f"day_end_before_visit_end {nm!r}"
+                        )
+                        continue
+                else:
+                    print(
+                        f"[FIX #368 P3] Day {day_num}: drop "
+                        f"day_end_before_visit_end {nm!r}"
+                    )
+                    continue
+
+            if open_min is not None and close_min is not None:
+                if st >= open_min and en <= close_min and dur >= paid_floor:
+                    out.append(it)
+                    continue
+                # Try to fit a legal slot inside the open window and day_end.
+                latest_end = min(close_min, day_end_m)
+                earliest = open_min
+                # Prefer full intended duration when it fits; else the paid floor.
+                if earliest + max(paid_floor, dur) <= latest_end:
+                    need = max(paid_floor, dur)
+                else:
+                    need = paid_floor
+                if earliest + need > latest_end:
+                    print(
+                        f"[FIX #368 P3] Day {day_num}: drop outside_opening_hours "
+                        f"{nm!r} (need {need}m, window "
+                        f"{minutes_to_time(open_min)}-{minutes_to_time(close_min)})"
+                    )
+                    continue
+                new_st = min(max(st, earliest), latest_end - need)
+                new_en = new_st + need
+                if new_en > close_min or new_st < open_min:
+                    print(
+                        f"[FIX #368 P3] Day {day_num}: drop outside_opening_hours "
+                        f"{nm!r}"
+                    )
+                    continue
+                try:
+                    it = it.model_copy(update={
+                        "start_time": minutes_to_time(new_st),
+                        "end_time": minutes_to_time(new_en),
+                        "duration_min": need,
+                    })
+                    print(
+                        f"[FIX #368 P3] Day {day_num}: reschedule {nm!r} "
+                        f"-> {minutes_to_time(new_st)}-{minutes_to_time(new_en)}"
+                    )
+                except Exception:
+                    print(
+                        f"[FIX #368 P3] Day {day_num}: drop outside_opening_hours "
+                        f"{nm!r}"
+                    )
+                    continue
+                out.append(it)
+                continue
+
+            # No hours known: still enforce paid min duration.
+            if ticket >= 20 and dur < paid_floor:
+                # Grow into free room before day_end if possible.
+                if st + paid_floor <= day_end_m:
+                    try:
+                        it = it.model_copy(update={
+                            "end_time": minutes_to_time(st + paid_floor),
+                            "duration_min": paid_floor,
+                        })
+                        print(
+                            f"[FIX #368 P3] Day {day_num}: extend min visit "
+                            f"{nm!r} {dur}->{paid_floor}m"
+                        )
+                        out.append(it)
+                        continue
+                    except Exception:
+                        pass
+                print(
+                    f"[FIX #368 P3] Day {day_num}: drop min_visit_duration "
+                    f"{nm!r} ({dur}m paid)"
+                )
+                continue
+            out.append(it)
+
+        # Drop orphan transits into removed attractions.
+        kept_names = {
+            (getattr(it, "name", "") or "").strip()
+            for it in out if _is_timeline_attraction(it)
+        }
+        final: List[Any] = []
+        for it in out:
+            if _item_type_value(it) == ItemType.TRANSIT.value:
+                to = (getattr(it, "to_location", "") or "").strip()
+                if to and kept_names and not any(
+                    _place_names_match(to, kn) for kn in kept_names if kn
+                ):
+                    # Only drop if it targeted a removed attraction name we saw.
+                    # Keep hops to meals/hubs/parking.
+                    continue_drop = False
+                    # Heuristic: if 'to' looks like a museum/gallery name and not kept
+                    folded_to = _fold_place_label(to)
+                    if any(
+                        k in folded_to
+                        for k in ("mocak", "galicja", "ratuszowa", "muzeum", "wieza")
+                    ) and not any(
+                        _place_names_match(to, kn) for kn in kept_names if kn
+                    ):
+                        continue_drop = True
+                    if continue_drop:
+                        print(
+                            f"[FIX #368 P3] Day {day_num}: drop orphan hop to "
+                            f"{to!r}"
+                        )
+                        continue
+            final.append(it)
+        try:
+            return self._sort_items_by_time(final)
+        except Exception:
+            return final
+
+
     def _seal_fix368_p2_anti_ping_pong(
         self,
         items: List[Any],
@@ -37500,6 +37828,7 @@ class PlanService:
         Applies to Tricity/Karkonosze and open-mail (Krakow/Katowice/Poznan).
         FIX #368 P1 also collapses stacked free_time and caps idle gaps.
         FIX #368 P2 drops district ping-pong revisits and unjustified cross-district hops.
+        FIX #368 P3 enforces opening hours, season, min visit, and day_end.
         Does not reopen Wroclaw or Zakopane. Cross-city deferred.
         """
         if not items or not _is_fix368_p0_city(context):
@@ -37531,6 +37860,17 @@ class PlanService:
         except Exception as exc:
             print(
                 f"[FIX #368 P2] Day {day_num}: anti-ping-pong failed "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        # --- FIX #368 P3: hours / season / min visit / day_end ---
+        try:
+            work = self._seal_fix368_p3_hours_and_duration(
+                work, ctx, day_num=day_num,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368 P3] Day {day_num}: hours seal failed "
                 f"{type(exc).__name__}: {exc}"
             )
         # --- B: ban generic hubs mid-day ---
