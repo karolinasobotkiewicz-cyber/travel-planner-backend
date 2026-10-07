@@ -37069,6 +37069,191 @@ class PlanService:
         del coord_map
         return work
 
+
+    def _seal_fix368_p1_idle_gaps(
+        self,
+        items: List[Any],
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #368 P1: max one free_time between real stops; cap idle padding.
+
+        Collapses consecutive free_time (including 44+6+44 micro-gap stacks
+        from earlier gap fillers), caps a single block at 60 min, and pulls a
+        following meal earlier when empty blocks delayed it.
+        Does not invent new POIs.
+        """
+        if not items:
+            return items
+        from app.domain.models.plan import FreeTimeItem
+
+        MAX_FT = 60
+        MICRO_GAP = 12  # minutes between FT still count as one stack
+
+        try:
+            work = self._sort_items_by_time(list(items))
+        except Exception:
+            work = list(items)
+
+        def _ft_span(it: Any):
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                return None, None
+            return st, en
+
+        # Pass 1: collapse free_time runs (adjacent or micro-gapped).
+        collapsed: List[Any] = []
+        i = 0
+        merges = 0
+        while i < len(work):
+            it = work[i]
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                collapsed.append(it)
+                i += 1
+                continue
+            st, en = _ft_span(it)
+            if st is None or en is None or en <= st:
+                collapsed.append(it)
+                i += 1
+                continue
+            j = i + 1
+            label = getattr(it, "label", None) or "Czas dla siebie"
+            while j < len(work):
+                nxt = work[j]
+                if _item_type_value(nxt) != ItemType.FREE_TIME.value:
+                    break
+                ns, ne = _ft_span(nxt)
+                if ns is None or ne is None:
+                    break
+                if ns > en + MICRO_GAP:
+                    break
+                en = max(en, ne)
+                j += 1
+            if j > i + 1:
+                merges += 1
+                try:
+                    it = FreeTimeItem(
+                        start_time=minutes_to_time(st),
+                        end_time=minutes_to_time(en),
+                        duration_min=max(1, en - st),
+                        label=str(label),
+                    )
+                except Exception:
+                    try:
+                        it = it.model_copy(update={
+                            "end_time": minutes_to_time(en),
+                            "duration_min": max(1, en - st),
+                        })
+                    except Exception:
+                        pass
+                print(
+                    f"[FIX #368 P1] Day {day_num}: collapsed stacked free_time "
+                    f"-> {max(1, en - st)} min"
+                )
+            collapsed.append(it)
+            i = j
+        work = collapsed
+
+        # Pass 2: cap each free_time at MAX_FT; pull following meal earlier.
+        out: List[Any] = []
+        i = 0
+        while i < len(work):
+            it = work[i]
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                out.append(it)
+                i += 1
+                continue
+            st, en = _ft_span(it)
+            if st is None or en is None:
+                out.append(it)
+                i += 1
+                continue
+            dur = en - st
+            if dur <= MAX_FT:
+                out.append(it)
+                i += 1
+                continue
+            new_en = st + MAX_FT
+            shift = dur - MAX_FT
+            try:
+                it = it.model_copy(update={
+                    "end_time": minutes_to_time(new_en),
+                    "duration_min": MAX_FT,
+                })
+            except Exception:
+                try:
+                    it = FreeTimeItem(
+                        start_time=minutes_to_time(st),
+                        end_time=minutes_to_time(new_en),
+                        duration_min=MAX_FT,
+                        label=getattr(it, "label", None) or "Czas dla siebie",
+                    )
+                except Exception:
+                    pass
+            print(
+                f"[FIX #368 P1] Day {day_num}: capped free_time "
+                f"{dur} -> {MAX_FT} min"
+            )
+            out.append(it)
+            # Pull following lunch/dinner earlier into the trimmed idle.
+            if i + 1 < len(work):
+                nxt = work[i + 1]
+                ntv = _item_type_value(nxt)
+                if ntv in (
+                    ItemType.LUNCH_BREAK.value,
+                    ItemType.DINNER_BREAK.value,
+                ):
+                    try:
+                        ns = time_to_minutes(
+                            getattr(nxt, "start_time", None) or ""
+                        )
+                        ne = time_to_minutes(
+                            getattr(nxt, "end_time", None) or ""
+                        )
+                        nd = int(getattr(nxt, "duration_min", 0) or (ne - ns))
+                        new_ns = new_en
+                        new_ne = new_ns + max(nd, 30)
+                        nxt = nxt.model_copy(update={
+                            "start_time": minutes_to_time(new_ns),
+                            "end_time": minutes_to_time(new_ne),
+                            "duration_min": max(nd, 30),
+                        })
+                        work[i + 1] = nxt
+                        print(
+                            f"[FIX #368 P1] Day {day_num}: pulled meal earlier "
+                            f"by ~{shift} min -> {minutes_to_time(new_ns)}"
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[FIX #368 P1] Day {day_num}: meal pull failed "
+                            f"{type(exc).__name__}"
+                        )
+            i += 1
+
+        # Pass 3: drop residual free_time that is zero/negative after shifts.
+        final: List[Any] = []
+        for it in out:
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                final.append(it)
+                continue
+            st, en = _ft_span(it)
+            if st is None or en is None or en <= st:
+                continue
+            if (en - st) < 10:
+                print(
+                    f"[FIX #368 P1] Day {day_num}: drop tiny free_time "
+                    f"{en - st} min"
+                )
+                continue
+            final.append(it)
+        try:
+            return self._sort_items_by_time(final)
+        except Exception:
+            return final
+
+
     def _seal_fix367_uat_day(
         self,
         items: List[Any],
@@ -37083,6 +37268,7 @@ class PlanService:
         drive, ban mid-day generic city hubs, drop ABA visit/meal after leave,
         fix implausible walks, drop 23:59 zero clips.
         Applies to Tricity/Karkonosze and open-mail (Krakow/Katowice/Poznan).
+        FIX #368 P1 also collapses stacked free_time and caps idle gaps.
         Does not reopen Wroclaw or Zakopane. Clustering/cross-city deferred.
         """
         if not items or not _is_fix368_p0_city(context):
@@ -37566,6 +37752,15 @@ class PlanService:
             if en is not None:
                 cursor_m = max(cursor_m or 0, en)
         work = self._sort_items_by_time(covered)
+
+        # FIX #368 P1: collapse stacked free_time / cap idle / pull delayed meals.
+        try:
+            work = self._seal_fix368_p1_idle_gaps(work, day_num=day_num)
+        except Exception as exc:
+            print(
+                f"[FIX #368 P1] Day {day_num}: idle-gap seal failed "
+                f"{type(exc).__name__}: {exc}"
+            )
 
         del cm
         return work

@@ -110,17 +110,49 @@ def validate_day(
     report: Report,
 ) -> None:
     items = list(items or [])
-    # consecutive free_time
+    # consecutive free_time (and micro-gapped stacks: 44+6+44)
     run = 0
     max_run = 0
+    prev_ft_en = None
+    micro_stack = 0
+    max_micro = 0
     for it in items:
         if _tv(it) == ItemType.FREE_TIME.value:
             run += 1
             max_run = max(max_run, run)
+            st, en = _clock(it)
+            if st is not None and prev_ft_en is not None and st <= prev_ft_en + 12:
+                micro_stack = max(micro_stack, 1) + 1
+            else:
+                micro_stack = 1
+            max_micro = max(max_micro, micro_stack)
+            if en is not None:
+                prev_ft_en = en if prev_ft_en is None else max(prev_ft_en, en)
         else:
             run = 0
-    if max_run > 1:
-        report.add(city, num, day_num, "stacked_free_time", f"run={max_run}")
+            # non-FT real stop breaks micro stack; tiny technical items still break
+            if _tv(it) not in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                prev_ft_en = None
+                micro_stack = 0
+    if max_run > 1 or max_micro > 1:
+        report.add(
+            city, num, day_num, "stacked_free_time",
+            f"run={max(max_run, max_micro)}",
+        )
+
+    # single free_time block longer than 60 min (artificial idle padding)
+    for it in items:
+        if _tv(it) != ItemType.FREE_TIME.value:
+            continue
+        st, en = _clock(it)
+        if st is None or en is None:
+            continue
+        dur = en - st
+        if dur > 60:
+            report.add(
+                city, num, day_num, "idle_gap_minutes",
+                f"free_time={dur}m > 60",
+            )
 
     # idle gaps > 60 excluding free_time coverage
     prev_en = None
@@ -131,6 +163,10 @@ def validate_day(
         if prev_en is not None and st - prev_en > 60 and _tv(it) != ItemType.FREE_TIME.value:
             # only flag if no free_time filling - check previous was not free_time spanning
             report.add(city, num, day_num, "idle_gap", f"{prev_en}->{st} ({st-prev_en}m)")
+            report.add(
+                city, num, day_num, "idle_gap_minutes",
+                f"anonymous={st - prev_en}m",
+            )
         if en is not None:
             prev_en = en if prev_en is None else max(prev_en, en)
 
