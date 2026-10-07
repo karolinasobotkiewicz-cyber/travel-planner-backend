@@ -307,6 +307,86 @@ def _timeline_meal_place_label(it: Any) -> Optional[str]:
     return None
 
 
+
+# --- FIX #368 P2: district / neighborhood anchors (open-mail + Tricity) ---
+_FIX368_DISTRICT_MARKERS: Dict[str, Tuple[str, ...]] = {
+    "schindler": (
+        "schindler", "fabryka schindlera", "lipowa 4", "zablocie", "zab?ocie",
+        "muzeum schindlera", "muzeum fabryka",
+    ),
+    "old_town": (
+        "rynek glowny", "rynek g??wny", "stare miasto", "sukiennice",
+        "mariacka", "floriansk", "barbakan", "planty", "wojciecha",
+        "brama florianska", "brama floria?ska",
+    ),
+    "kazimierz": (
+        "kazimierz", "synagoga", "remuh", "szeroka", "boznanska", "bozna?ska",
+        "ulica szeroka",
+    ),
+    "wawel": (
+        "wawel", "smok wawelsk", "katedra wawel",
+    ),
+    "podgorze": (
+        "podgorze", "podg?rze", "kopiec krakus", "krakusa", "getta",
+        "ghetto", "tallin", "liban",
+    ),
+    "ojcow": (
+        "ojcow", "ojc?w", "maczuga", "pieskowa", "lokietka", "?okietka",
+        "jaskinia ciemna",
+    ),
+    "wieliczka": (
+        "wieliczk", "teznia", "t??nia",
+    ),
+    "pixel": (
+        "pixel xl", "pixel",
+    ),
+    "rynek_poznan": (
+        "stary rynek", "ratuszova", "ratusz poznan", "ratusz pozna?",
+    ),
+    "nikiszowiec": (
+        "nikiszowiec",
+    ),
+    "spodek": (
+        "spodek", "strefa kultury",
+    ),
+}
+
+
+def _fix368_district_of(
+    name: Any,
+    *,
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+    city: Optional[str] = None,
+) -> Optional[str]:
+    """Map a stop to a coarse district/neighborhood for ping-pong detection."""
+    folded = _fold_place_label(name)
+    if not folded:
+        return None
+    if _is_ojcow_stop_name(str(name or "")):
+        return "ojcow"
+    if _is_wieliczka_stop_name(str(name or "")):
+        return "wieliczka"
+    for district, markers in _FIX368_DISTRICT_MARKERS.items():
+        for m in markers:
+            if _fold_place_label(m) in folded or folded in _fold_place_label(m):
+                return district
+    # Tricity / Karkonosze: fall back to subregion from coordinates.
+    if lat is not None and lng is not None:
+        try:
+            prefer = _fold_place_label(city or "")
+            sub = _fix367_subregion_of(float(lat), float(lng), prefer=prefer or None)
+            if sub:
+                return f"sub:{sub}"
+        except Exception:
+            pass
+    city_f = _fold_place_label(city or "")
+    if city_f in ("gdansk", "gdynia", "sopot", "karpacz", "jelenia gora", "szklarska poreba"):
+        return f"sub:{city_f.split()[0]}"
+    return None
+
+
+
 # Subregion anchors for day clustering (lat, lng, radius_km).
 _FIX367_SUBREGIONS: Dict[str, Tuple[float, float, float]] = {
     "gdansk": (54.3520, 18.6466, 12.0),
@@ -37070,6 +37150,156 @@ class PlanService:
         return work
 
 
+
+    def _seal_fix368_p2_anti_ping_pong(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        coord_map: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #368 P2: drop ABA district revisits and unjustified cross-district hops.
+
+        - A -> B -> A neighborhood return without new contiguous block: drop later A
+        - Short declared walk/drive to another district while haversine is far: drop dest
+        Does not reopen Wroclaw/Zakopane (caller gates on _is_fix368_p0_city).
+        """
+        if not items:
+            return items
+        from app.infrastructure.routing.haversine import haversine_km as _hk
+
+        cm = coord_map or {}
+        try:
+            work = self._sort_items_by_time(list(items))
+        except Exception:
+            work = list(items)
+
+        def _attr_meta(it: Any) -> Tuple[Optional[str], Optional[Tuple[float, float]], str]:
+            nm = (getattr(it, "name", None) or "").strip()
+            try:
+                lat = float(getattr(it, "lat"))
+                lng = float(getattr(it, "lng"))
+            except (TypeError, ValueError):
+                lat = lng = None
+                entry = cm.get(nm) if isinstance(cm, dict) else None
+                if isinstance(entry, dict):
+                    try:
+                        lat = float(entry.get("lat"))
+                        lng = float(entry.get("lng"))
+                    except (TypeError, ValueError):
+                        lat = lng = None
+            city = (getattr(it, "city", None) or
+                    str((context or {}).get("requested_city") or "")).strip()
+            dist = _fix368_district_of(nm, lat=lat, lng=lng, city=city)
+            ll = (lat, lng) if lat is not None and lng is not None else None
+            return dist, ll, nm
+
+        # Mark attraction indices to drop.
+        drop_ids: set = set()
+        left_districts: List[str] = []
+        cur_district: Optional[str] = None
+        prev_attr_idx: Optional[int] = None
+        prev_ll: Optional[Tuple[float, float]] = None
+        prev_district: Optional[str] = None
+
+        def _mark_left(d: Optional[str]) -> None:
+            if not d:
+                return
+            if d not in left_districts:
+                left_districts.append(d)
+
+        for i, it in enumerate(work):
+            if not _is_timeline_attraction(it):
+                continue
+            dist, ll, nm = _attr_meta(it)
+            if not dist:
+                prev_attr_idx = i
+                prev_ll = ll
+                prev_district = dist
+                continue
+            # ABA: returned to a district we already left.
+            if dist in left_districts and (cur_district is None or cur_district != dist):
+                drop_ids.add(id(it))
+                print(
+                    f"[FIX #368 P2] Day {day_num}: drop district ping-pong "
+                    f"revisit {nm!r} ({dist})"
+                )
+                continue
+            # Unjustified cross-district hop: tiny declared leg, large real gap.
+            if prev_attr_idx is not None and prev_district and dist != prev_district:
+                # Find transit between prev_attr and this attraction.
+                hop_km = None
+                hop_walk = False
+                for mid in work[prev_attr_idx + 1 : i]:
+                    if _item_type_value(mid) != ItemType.TRANSIT.value:
+                        continue
+                    try:
+                        hop_km = float(getattr(mid, "distance_km", None) or 0)
+                    except (TypeError, ValueError):
+                        hop_km = 0.0
+                    mode = str(
+                        getattr(getattr(mid, "mode", None), "value", getattr(mid, "mode", ""))
+                        or ""
+                    ).lower()
+                    hop_walk = "walk" in mode or "foot" in mode
+                real_km = None
+                if prev_ll and ll:
+                    try:
+                        real_km = _hk(prev_ll[0], prev_ll[1], ll[0], ll[1])
+                    except Exception:
+                        real_km = None
+                unjustified = False
+                if real_km is not None and real_km >= 5.0:
+                    if hop_km is not None and hop_km <= 1.5:
+                        unjustified = True
+                    elif hop_walk and (hop_km is None or hop_km < 3.0):
+                        unjustified = True
+                if unjustified:
+                    drop_ids.add(id(it))
+                    print(
+                        f"[FIX #368 P2] Day {day_num}: drop unjustified "
+                        f"cross-district hop -> {nm!r} "
+                        f"({prev_district}->{dist}, real={real_km:.1f}km)"
+                    )
+                    continue
+            if cur_district and dist != cur_district:
+                _mark_left(cur_district)
+            cur_district = dist
+            if dist in left_districts:
+                # Re-entering after we decided to keep (first contiguous stay):
+                # clear from left only when we did NOT drop ? kept visit returns.
+                left_districts = [d for d in left_districts if d != dist]
+            prev_attr_idx = i
+            prev_ll = ll
+            prev_district = dist
+
+        if not drop_ids:
+            return work
+
+        # Drop marked attractions and inbound transit targeting them.
+        dropped_names = []
+        for it in work:
+            if id(it) in drop_ids:
+                dropped_names.append((getattr(it, "name", "") or "").strip())
+
+        out: List[Any] = []
+        for i, it in enumerate(work):
+            if id(it) in drop_ids:
+                continue
+            if _item_type_value(it) == ItemType.TRANSIT.value:
+                to = (getattr(it, "to_location", "") or "").strip()
+                if to and any(_place_names_match(to, dn) for dn in dropped_names if dn):
+                    # Only drop if next kept item is not that destination.
+                    print(
+                        f"[FIX #368 P2] Day {day_num}: drop inbound hop to "
+                        f"removed stop {to!r}"
+                    )
+                    continue
+            out.append(it)
+        return out
+
+
     def _seal_fix368_p1_idle_gaps(
         self,
         items: List[Any],
@@ -37269,7 +37499,8 @@ class PlanService:
         fix implausible walks, drop 23:59 zero clips.
         Applies to Tricity/Karkonosze and open-mail (Krakow/Katowice/Poznan).
         FIX #368 P1 also collapses stacked free_time and caps idle gaps.
-        Does not reopen Wroclaw or Zakopane. Clustering/cross-city deferred.
+        FIX #368 P2 drops district ping-pong revisits and unjustified cross-district hops.
+        Does not reopen Wroclaw or Zakopane. Cross-city deferred.
         """
         if not items or not _is_fix368_p0_city(context):
             return items
@@ -37292,9 +37523,16 @@ class PlanService:
         # --- E: merge duplicate-coord attractions ---
         # FIX #367 core: duplicates deferred.
         pass
-        # --- D: day cluster (one subregion anchor) ---
-        # FIX #367 core: day-cluster deferred.
-        pass
+        # --- D: day cluster / anti ping-pong (FIX #368 P2) ---
+        try:
+            work = self._seal_fix368_p2_anti_ping_pong(
+                work, ctx, day_num=day_num, coord_map=cm,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368 P2] Day {day_num}: anti-ping-pong failed "
+                f"{type(exc).__name__}: {exc}"
+            )
         # --- B: ban generic hubs mid-day ---
         # Count real stops to know start/end.
         real_idxs = [

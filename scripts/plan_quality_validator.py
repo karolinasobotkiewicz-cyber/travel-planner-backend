@@ -170,6 +170,41 @@ def validate_day(
         if en is not None:
             prev_en = en if prev_en is None else max(prev_en, en)
 
+    # FIX #368 P2: district ping-pong (A -> B -> A neighborhood revisit)
+    try:
+        from app.application.services.plan_service import _fix368_district_of
+    except Exception:
+        _fix368_district_of = None  # type: ignore
+    if _fix368_district_of is not None:
+        seq = []
+        for it in items:
+            if _tv(it) != ItemType.ATTRACTION.value:
+                continue
+            try:
+                lat = float(getattr(it, "lat"))
+                lng = float(getattr(it, "lng"))
+            except (TypeError, ValueError):
+                lat = lng = None
+            d = _fix368_district_of(
+                _nm(it),
+                lat=lat,
+                lng=lng,
+                city=city,
+            )
+            if d:
+                seq.append((d, _nm(it)))
+        left = []
+        cur = None
+        for d, nm in seq:
+            if d in left and d != cur:
+                report.add(
+                    city, num, day_num, "district_ping_pong",
+                    f"revisit {nm} ({d}) after leaving",
+                )
+            if cur and d != cur and cur not in left:
+                left.append(cur)
+            cur = d
+
     # overlaps
     timed = []
     for it in items:
