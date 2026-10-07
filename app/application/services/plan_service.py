@@ -38389,6 +38389,157 @@ class PlanService:
             return work
 
 
+    def _seal_fix368_final_from_anchor(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #368 Poznan/Katowice: last people-cursor pass (gate from_mismatch).
+
+        Drops a there-and-back ghost transit (A->X while the next stop is A)
+        and re-anchors walk origins to where people actually are. Car legs
+        keep their origin (car_at physics) to avoid car_teleport.
+        """
+        if not items or not (
+            _is_poznan_context(context) or _is_katowice_context(context)
+        ):
+            return items
+        try:
+            work = self._sort_items_by_time(list(items))
+        except Exception:
+            work = list(items)
+        generic = {
+            "restauracja", "restauracja (obiad)", "restauracja (kolacja)",
+            "lunch", "kolacja", "obiad", "posilek",
+        }
+
+        def _meal_place(it: Any) -> Optional[str]:
+            # Same precedence as the client validator (_meal_name):
+            # suggestion[0] -> concrete label/name -> card location.
+            for s in (getattr(it, "suggestions", None) or [])[:1]:
+                if isinstance(s, dict):
+                    nm = (s.get("name") or "").strip()
+                else:
+                    nm = (getattr(s, "name", None) or "").strip()
+                if nm:
+                    return nm
+            lab = (
+                getattr(it, "label", None) or getattr(it, "name", None) or ""
+            ).strip()
+            if lab and _fold_place_label(lab) not in generic and not any(
+                k in _fold_place_label(lab)
+                for k in ("przerwa", "regeneracyj", "bufor")
+            ):
+                return lab
+            nm = _timeline_meal_place_label(it)
+            if nm and _fold_place_label(nm) not in generic:
+                return nm
+            return None
+
+        def _place(it: Any) -> Optional[str]:
+            if _is_timeline_attraction(it):
+                return (getattr(it, "name", "") or "").strip() or None
+            if _item_type_value(it) in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            ):
+                return _meal_place(it)
+            return None
+
+        def _next_stop(idx: int) -> Optional[str]:
+            for x in work[idx + 1:]:
+                tv = _item_type_value(x)
+                if tv == ItemType.TRANSIT.value:
+                    return None
+                pl = _place(x)
+                if pl:
+                    return pl
+            return None
+
+        out: List[Any] = []
+        people: Optional[str] = None
+        changed = 0
+        for i, it in enumerate(work):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                pl = _place(it)
+                if pl:
+                    people = pl
+                    # Meal card: the area tag must not name another place
+                    # than the restaurant people actually eat at (J10 D2).
+                    if _item_type_value(it) in (
+                        ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                    ):
+                        lc = (getattr(it, "location_context", None) or "").strip()
+                        if (
+                            lc
+                            and _fold_place_label(lc)
+                            not in ("centrum", "przy szlaku", "przy_szlaku")
+                            and not _is_hub_place_label(lc)
+                            and not _place_names_match(lc, pl)
+                        ):
+                            try:
+                                it = it.model_copy(update={"location_context": pl})
+                                print(
+                                    f"[FIX #368] Day {day_num}: meal anchor "
+                                    f"{lc!r}->{pl!r}"
+                                )
+                                changed += 1
+                            except Exception:
+                                pass
+                out.append(it)
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            to = (getattr(it, "to_location", "") or "").strip()
+            nxt = _next_stop(i)
+            if (
+                frm and to and nxt
+                and _place_names_match(nxt, frm)
+                and not _place_names_match(nxt, to)
+            ):
+                print(
+                    f"[FIX #368] Day {day_num}: drop ghost hop {frm!r}->{to!r} "
+                    f"(next stop is {nxt!r})"
+                )
+                changed += 1
+                continue
+            mode = str(
+                getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
+                or ""
+            ).lower()
+            if (
+                people and frm and ("walk" in mode or "foot" in mode)
+                and not _place_names_match(frm, people)
+                and not (to and _place_names_match(to, people))
+            ):
+                try:
+                    it = it.model_copy(update={"from_location": people})
+                    print(
+                        f"[FIX #368] Day {day_num}: final walk from "
+                        f"{frm!r}->{people!r}"
+                    )
+                    changed += 1
+                except Exception:
+                    pass
+            if to:
+                people = to
+            out.append(it)
+        if not changed:
+            return items
+        # Re-anchored legs need honest km/minutes from the new origin.
+        try:
+            cm = self._merge_coord_map({}, out)
+            out = self._seal_fix368_p4_recompute_legs(
+                out, context, day_num=day_num, coord_map=cm,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368] Day {day_num}: final from-anchor recompute failed "
+                f"{type(exc).__name__}: {exc}"
+            )
+        return out
+
+
     def _seal_fix368_drop_idle_start(
         self,
         items: List[Any],
@@ -40542,6 +40693,15 @@ class PlanService:
         except Exception as exc:
             print(
                 f"[FIX #368] Day {day_num}: katowice tail gaps failed "
+                f"{type(exc).__name__}: {exc}"
+            )
+        try:
+            work = self._seal_fix368_final_from_anchor(
+                work, ctx, day_num=day_num,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368] Day {day_num}: final from-anchor failed "
                 f"{type(exc).__name__}: {exc}"
             )
         try:

@@ -296,3 +296,130 @@ def test_tail_gap_seal_is_katowice_only():
     items = [DayStartItem(time="09:00"), _ft("10:00", "11:00"), DayEndItem(time="19:00")]
     ctx = {"requested_city": "Krakow", "day_start": "09:00", "day_end": "19:00"}
     assert svc._seal_fix368_katowice_tail_gaps(items, ctx, day_num=1) is items
+
+
+def test_poznan_final_from_anchor_drops_ghost_and_reanchors_walk():
+    from app.domain.models.plan import (
+        AttractionItem, DayEndItem, DayStartItem, ItemType, LunchBreakItem,
+        RestaurantSuggestion, TransitItem, TransitMode,
+    )
+
+    svc = _svc()
+    items = [
+        DayStartItem(time="10:00"),
+        TransitItem.model_construct(
+            type=ItemType.TRANSIT, start_time="13:52", end_time="14:01",
+            duration_min=9, from_location="Pomnik Ofiar Czerwca 1956",
+            to_location="La Farina Italiana", mode=TransitMode.CAR, distance_km=3.3,
+        ),
+        TransitItem.model_construct(
+            type=ItemType.TRANSIT, start_time="14:01", end_time="14:21",
+            duration_min=20, from_location="La Farina Italiana",
+            to_location="Park Cytadela", mode=TransitMode.WALK, distance_km=0.8,
+        ),
+        LunchBreakItem.model_construct(
+            type=ItemType.LUNCH_BREAK, start_time="14:21", end_time="15:04",
+            duration_min=43, label="La Farina Italiana",
+            suggestions=[RestaurantSuggestion.model_construct(
+                name="La Farina Italiana", lat=52.41, lng=16.93,
+            )],
+        ),
+        TransitItem.model_construct(
+            type=ItemType.TRANSIT, start_time="15:32", end_time="15:59",
+            duration_min=27, from_location="Park Cytadela",
+            to_location="Wartostrada", mode=TransitMode.WALK, distance_km=1.9,
+        ),
+        AttractionItem.model_construct(
+            type=ItemType.ATTRACTION, poi_id="w", name="Wartostrada",
+            description_short="x", why_selected=["x"],
+            start_time="15:59", end_time="16:44", duration_min=45,
+            lat=52.40, lng=16.94, city="Poznan", cost_estimate=0,
+        ),
+        DayEndItem(time="18:00"),
+    ]
+    ctx = {"requested_city": "Poznań", "day_start": "10:00", "day_end": "18:00"}
+    out = svc._seal_fix368_final_from_anchor(items, ctx, day_num=2)
+    hops = [
+        (getattr(it, "from_location", ""), getattr(it, "to_location", ""))
+        for it in out if _tv(it) == "transit"
+    ]
+    assert ("La Farina Italiana", "Park Cytadela") not in hops, hops
+    assert ("La Farina Italiana", "Wartostrada") in hops, hops
+
+
+def test_final_from_anchor_not_applied_to_krakow():
+    from app.domain.models.plan import DayEndItem, DayStartItem
+
+    svc = _svc()
+    items = [DayStartItem(time="09:00"), DayEndItem(time="19:00")]
+    ctx = {"requested_city": "Krakow"}
+    assert svc._seal_fix368_final_from_anchor(items, ctx, day_num=1) is items
+
+
+def test_poznan_meal_anchor_follows_label_not_area_tag():
+    """J10 D2: lunch labelled 'La Farina Italiana' but tagged 'Park Cytadela'."""
+    from app.domain.models.plan import (
+        AttractionItem, DayEndItem, DayStartItem, ItemType, LunchBreakItem,
+        TransitItem, TransitMode,
+    )
+
+    svc = _svc()
+    items = [
+        DayStartItem(time="09:45"),
+        AttractionItem.model_construct(
+            type=ItemType.ATTRACTION, poi_id="s", name="Park Szelągowski",
+            description_short="x", why_selected=["x"],
+            start_time="12:30", end_time="13:10", duration_min=40,
+            lat=52.425, lng=16.955, city="Poznan", cost_estimate=0,
+        ),
+        TransitItem.model_construct(
+            type=ItemType.TRANSIT, start_time="13:42", end_time="14:01",
+            duration_min=19, from_location="Park Szelągowski",
+            to_location="La Farina Italiana", mode=TransitMode.CAR, distance_km=3.0,
+        ),
+        TransitItem.model_construct(
+            type=ItemType.TRANSIT, start_time="14:01", end_time="14:21",
+            duration_min=20, from_location="La Farina Italiana",
+            to_location="Park Cytadela", mode=TransitMode.WALK, distance_km=0.8,
+        ),
+        LunchBreakItem.model_construct(
+            type=ItemType.LUNCH_BREAK, start_time="14:21", end_time="15:04",
+            duration_min=43, label="La Farina Italiana", suggestions=[],
+            location_context="Park Cytadela",
+        ),
+        TransitItem.model_construct(
+            type=ItemType.TRANSIT, start_time="15:32", end_time="15:59",
+            duration_min=27, from_location="Park Cytadela",
+            to_location="Wartostrada", mode=TransitMode.WALK, distance_km=1.9,
+        ),
+        AttractionItem.model_construct(
+            type=ItemType.ATTRACTION, poi_id="w", name="Wartostrada",
+            description_short="x", why_selected=["x"],
+            start_time="15:59", end_time="16:44", duration_min=45,
+            lat=52.40, lng=16.94, city="Poznan", cost_estimate=0,
+        ),
+        DayEndItem(time="18:00"),
+    ]
+    ctx = {"requested_city": "Poznań", "day_start": "09:45", "day_end": "18:00"}
+    out = svc._seal_fix368_final_from_anchor(items, ctx, day_num=2)
+    hops = [
+        (getattr(it, "from_location", ""), getattr(it, "to_location", ""))
+        for it in out if _tv(it) == "transit"
+    ]
+    assert ("La Farina Italiana", "Park Cytadela") not in hops, hops
+    assert ("La Farina Italiana", "Wartostrada") in hops, hops
+    assert all(f != "Park Cytadela" for f, _ in hops), hops
+    lunch = [it for it in out if _tv(it) == "lunch_break"][0]
+    assert lunch.location_context == "La Farina Italiana"
+    # Validator view: every transit starts where people last stopped.
+    from app.domain.validators import client_invariants as ci
+    prev = None
+    for it in sorted(
+        (x for x in out if getattr(x, "start_time", None)),
+        key=lambda x: x.start_time,
+    ):
+        if _tv(it) == "transit":
+            if prev:
+                assert ci._names_match(it.from_location, prev), (it.from_location, prev)
+        elif ci._stop_name(it):
+            prev = ci._stop_name(it)
