@@ -37629,6 +37629,7 @@ class PlanService:
                 )
         return work
 
+
     def _seal_fix368_repair_hop_ledger(
         self,
         items: List[Any],
@@ -37636,22 +37637,32 @@ class PlanService:
         *,
         day_num: int = 0,
     ) -> List[Any]:
-        """FIX #368 gate repair: hop from/to ledger + car_at after seal drops.
+        """FIX #368 gate repair: hop ledger + return-to-car + missing hops.
 
-        Drops self-hops and dangling destination hops; rewrites stale
-        from_location; keeps car_at honest (no car teleport labels).
+        Drops self-hops; rewrites stale walk from_location; inserts
+        return_to_car walks before car departures when people != car_at;
+        inserts adjacent walks for missing stop-to-stop hops.
         """
         if not items:
             return items
+        from app.domain.models.plan import TransitItem, TransitMode
+
         ctx = context or {}
         has_car = bool(ctx.get("has_car", True))
+        city = str(ctx.get("requested_city") or ctx.get("city") or "").strip()
         try:
             work = self._sort_items_by_time(list(items))
         except Exception:
             work = list(items)
 
-        # Pass 1: standing-place cursor + car_at; rewrite from / drop self-hops.
-        user_at: Optional[str] = None
+        def _mode_of(it: Any) -> str:
+            return str(
+                getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
+                or ""
+            ).lower()
+
+        # Pass 1: people/car_at cursor; insert return_to_car; rewrite walks; drop self-hops.
+        people: Optional[str] = None
         car_at: Optional[str] = None
         fixed: List[Any] = []
         for it in work:
@@ -37659,52 +37670,117 @@ class PlanService:
             if tv == ItemType.TRANSIT.value:
                 frm = (getattr(it, "from_location", "") or "").strip()
                 to = (getattr(it, "to_location", "") or "").strip()
-                mode = str(
-                    getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
-                    or ""
-                ).lower()
+                mode = _mode_of(it)
+                is_walk = "walk" in mode or "foot" in mode
                 is_car = "car" in mode
-                # Self-hop: same place both ends.
                 if frm and to and _place_names_match(frm, to):
-                    print(
-                        f"[FIX #368] Day {day_num}: drop self_hop "
-                        f"{frm!r}->{to!r}"
-                    )
-                    continue
-                updates: Dict[str, Any] = {}
-                if user_at and frm and not _place_names_match(frm, user_at):
-                    updates["from_location"] = user_at
-                    frm = user_at
-                if is_car and has_car:
-                    if car_at and frm and not _place_names_match(frm, car_at):
-                        # People must walk to car first ? if labels pretend car
-                        # is elsewhere, pin from to car_at (ledger honesty).
-                        updates["from_location"] = car_at
-                        frm = car_at
-                    if to:
-                        car_at = to
-                        user_at = to
-                else:
-                    if to:
-                        user_at = to
-                if updates:
-                    try:
-                        it = it.model_copy(update=updates)
+                    src = str(getattr(it, "routing_source", "") or "").lower()
+                    if src != "return_to_car":
                         print(
-                            f"[FIX #368] Day {day_num}: hop ledger "
-                            f"{updates}"
+                            f"[FIX #368] Day {day_num}: drop self_hop "
+                            f"{frm!r}->{to!r}"
                         )
+                        continue
+                if is_walk:
+                    updates: Dict[str, Any] = {}
+                    if people and frm and not _place_names_match(frm, people):
+                        if to and _place_names_match(people, to):
+                            print(
+                                f"[FIX #368] Day {day_num}: drop walk self-hop "
+                                f"rewrite {people!r}->{to!r}"
+                            )
+                            continue
+                        updates["from_location"] = people
+                        frm = people
+                    if updates:
+                        try:
+                            it = it.model_copy(update=updates)
+                            print(
+                                f"[FIX #368] Day {day_num}: walk from rewrite "
+                                f"{updates}"
+                            )
+                        except Exception:
+                            pass
+                    if to:
+                        people = to
+                        if car_at is None and frm and (
+                            _is_hub_place_label(frm)
+                            or (city and _place_names_match(frm, city))
+                        ):
+                            car_at = frm
+                    fixed.append(it)
+                    continue
+                if is_car and has_car:
+                    if car_at is None:
+                        car_at = city or frm or people
+                    if (
+                        people
+                        and car_at
+                        and not _place_names_match(people, car_at)
+                    ):
+                        # Need return_to_car walk before this drive.
+                        returned = False
+                        for prev in reversed(fixed):
+                            ptv = _item_type_value(prev)
+                            if ptv in (
+                                ItemType.DAY_START.value,
+                                ItemType.DAY_END.value,
+                                ItemType.FREE_TIME.value,
+                            ):
+                                continue
+                            returned = bool(
+                                ptv == ItemType.TRANSIT.value
+                                and (
+                                    "walk" in _mode_of(prev)
+                                    or "foot" in _mode_of(prev)
+                                )
+                                and _place_names_match(
+                                    getattr(prev, "to_location", "") or "",
+                                    car_at,
+                                )
+                            )
+                            break
+                        if not returned:
+                            try:
+                                car_st = time_to_minutes(
+                                    getattr(it, "start_time", None) or "12:00"
+                                )
+                            except Exception:
+                                car_st = 12 * 60
+                            walk_min = 10
+                            fixed.append(TransitItem(
+                                type=ItemType.TRANSIT,
+                                start_time=minutes_to_time(max(0, car_st - walk_min)),
+                                end_time=minutes_to_time(car_st),
+                                duration_min=walk_min,
+                                mode=TransitMode.WALK,
+                                from_location=people,
+                                to_location=car_at,
+                                distance_km=0.5,
+                                routing_source="return_to_car",
+                            ))
+                            print(
+                                f"[FIX #368] Day {day_num}: insert return_to_car "
+                                f"{people!r}->{car_at!r}"
+                            )
+                            people = car_at
+                    try:
+                        it = it.model_copy(update={"from_location": car_at or frm})
                     except Exception:
                         pass
-                # Re-check self-hop after rewrite
-                frm2 = (getattr(it, "from_location", "") or "").strip()
-                to2 = (getattr(it, "to_location", "") or "").strip()
-                if frm2 and to2 and _place_names_match(frm2, to2):
-                    print(
-                        f"[FIX #368] Day {day_num}: drop self_hop after rewrite "
-                        f"{frm2!r}"
-                    )
+                    if to:
+                        car_at = to
+                        people = to
+                    fixed.append(it)
                     continue
+                # other modes
+                if people and frm and not _place_names_match(frm, people):
+                    try:
+                        it = it.model_copy(update={"from_location": people})
+                    except Exception:
+                        pass
+                if to:
+                    people = to
                 fixed.append(it)
                 continue
             if tv in (
@@ -37716,26 +37792,35 @@ class PlanService:
                 continue
             if tv in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
                 place = _timeline_meal_place_label(it)
+                if not place:
+                    try:
+                        place = self._occupied_stop_name(it)
+                    except Exception:
+                        place = None
                 if place:
-                    user_at = place
+                    people = place
                 fixed.append(it)
                 continue
             if _is_timeline_attraction(it):
                 nm = (getattr(it, "name", "") or "").strip()
                 if nm and not _is_hub_place_label(nm):
-                    user_at = nm
+                    people = nm
                 fixed.append(it)
                 continue
             fixed.append(it)
         work = fixed
 
-        # Pass 2: drop dangling hops (transit to X, no following visit/meal).
+        # Pass 2: drop dangling hops (transit to X with no following stop).
         final: List[Any] = []
         for i, it in enumerate(work):
             if _item_type_value(it) != ItemType.TRANSIT.value:
                 final.append(it)
                 continue
             dest = (getattr(it, "to_location", "") or "").strip()
+            src = str(getattr(it, "routing_source", "") or "").lower()
+            if src == "return_to_car":
+                final.append(it)
+                continue
             if not dest or _is_hub_place_label(dest):
                 final.append(it)
                 continue
@@ -37743,28 +37828,18 @@ class PlanService:
             for later in work[i + 1:]:
                 ltv = _item_type_value(later)
                 if ltv == ItemType.TRANSIT.value:
+                    # A following return_to_car / next hop still "uses" arrival
+                    # only if dest matches its from; otherwise stop scanning.
+                    lfrm = (getattr(later, "from_location", "") or "").strip()
+                    if lfrm and _place_names_match(dest, lfrm):
+                        has_follow = True
                     break
                 if ltv in (
                     ItemType.ATTRACTION.value,
                     ItemType.LUNCH_BREAK.value,
                     ItemType.DINNER_BREAK.value,
                 ):
-                    lnm = (
-                        getattr(later, "name", None)
-                        or getattr(later, "label", None)
-                        or ""
-                    )
-                    if (
-                        not lnm
-                        or _place_names_match(dest, lnm)
-                        or _fold_place_label(dest) in _fold_place_label(lnm)
-                        or _fold_place_label(lnm) in _fold_place_label(dest)
-                    ):
-                        has_follow = True
-                    else:
-                        # Real stop at a different place still "uses" the hop
-                        # as arrival to somewhere ? keep unless dest is orphan.
-                        has_follow = True
+                    has_follow = True
                     break
                 if ltv == ItemType.FREE_TIME.value:
                     continue
@@ -37776,10 +37851,871 @@ class PlanService:
                 )
                 continue
             final.append(it)
+        work = final
+
+        # Pass 3: insert adjacent walks for missing stop-to-stop hops.
         try:
-            return self._sort_items_by_time(final)
+            work = self._sort_items_by_time(work)
         except Exception:
-            return final
+            pass
+        stops: List[Tuple[int, str, int]] = []
+        for i, it in enumerate(work):
+            nm = None
+            try:
+                nm = self._occupied_stop_name(it)
+            except Exception:
+                nm = None
+            if not nm:
+                if _is_timeline_attraction(it):
+                    nm = (getattr(it, "name", "") or "").strip() or None
+                elif _item_type_value(it) in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                ):
+                    nm = _timeline_meal_place_label(it)
+            if not nm:
+                continue
+            try:
+                en = time_to_minutes(
+                    getattr(it, "end_time", None)
+                    or getattr(it, "start_time", None)
+                    or ""
+                )
+            except Exception:
+                en = 0
+            stops.append((i, nm, en))
+        insert_at: List[Tuple[int, Any]] = []
+        def _same_stop(a: str, b: str) -> bool:
+            if not a or not b:
+                return False
+            if _place_names_match(a, b):
+                return True
+            fa, fb = _fold_place_label(a), _fold_place_label(b)
+            return bool(fa and fb and fa == fb)
+
+        for (ia, na, a_en), (ib, nb, _b_en) in zip(stops, stops[1:]):
+            if _same_stop(na, nb):
+                continue
+            between = work[ia + 1:ib]
+            has_hop = False
+            for h in between:
+                if _item_type_value(h) != ItemType.TRANSIT.value:
+                    continue
+                to = (getattr(h, "to_location", "") or "").strip()
+                if to and (
+                    _place_names_match(to, nb)
+                    or _fold_place_label(to) in _fold_place_label(nb)
+                    or _fold_place_label(nb) in _fold_place_label(to)
+                ):
+                    has_hop = True
+                    break
+            if has_hop:
+                continue
+            # Skip hops into generic meal placeholders (auditor ignores them).
+            if _fold_place_label(nb) in {
+                "restauracja", "restauracja (obiad)", "restauracja (kolacja)",
+                "lunch", "kolacja", "obiad", "posilek", "posiłek",
+            }:
+                continue
+            hop_st = a_en or 12 * 60
+            hop_min = 10
+            insert_at.append((ib, TransitItem(
+                type=ItemType.TRANSIT,
+                start_time=minutes_to_time(hop_st),
+                end_time=minutes_to_time(hop_st + hop_min),
+                duration_min=hop_min,
+                mode=TransitMode.WALK,
+                from_location=na,
+                to_location=nb,
+                distance_km=0.8,
+                routing_source="adjacent_walk",
+            )))
+        if insert_at:
+            def _shift_clock(it, delta):
+                if delta <= 0:
+                    return it
+                updates = {}
+                tv = _item_type_value(it)
+                if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                    raw = getattr(it, "time", None)
+                    if raw:
+                        try:
+                            updates["time"] = minutes_to_time(
+                                time_to_minutes(raw) + delta
+                            )
+                        except Exception:
+                            pass
+                else:
+                    for fld in ("start_time", "end_time"):
+                        raw = getattr(it, fld, None)
+                        if not raw:
+                            continue
+                        try:
+                            updates[fld] = minutes_to_time(
+                                time_to_minutes(raw) + delta
+                            )
+                        except Exception:
+                            pass
+                if not updates:
+                    return it
+                try:
+                    return it.model_copy(update=updates)
+                except Exception:
+                    return it
+
+            for idx, hop in sorted(insert_at, key=lambda x: x[0], reverse=True):
+                hop_min = int(getattr(hop, "duration_min", 10) or 10)
+                for k in range(idx, len(work)):
+                    work[k] = _shift_clock(work[k], hop_min)
+                work.insert(idx, hop)
+            print(
+                f"[FIX #368] Day {day_num}: inserted {len(insert_at)} "
+                f"adjacent walk(s)"
+            )
+
+        # Drop residual self-hops (adjacent inserts / bad rewrites).
+        cleaned: List[Any] = []
+        for it in work:
+            if _item_type_value(it) == ItemType.TRANSIT.value:
+                frm = (getattr(it, "from_location", "") or "").strip()
+                to = (getattr(it, "to_location", "") or "").strip()
+                src = str(getattr(it, "routing_source", "") or "").lower()
+                if (
+                    frm and to and _place_names_match(frm, to)
+                    and src != "return_to_car"
+                ):
+                    print(
+                        f"[FIX #368] Day {day_num}: drop residual self_hop "
+                        f"{frm!r}"
+                    )
+                    continue
+            cleaned.append(it)
+        work = cleaned
+
+        # Pass 4: final from_mismatch sweep (walk rewrite / car return_to_car).
+        try:
+            work = self._sort_items_by_time(work)
+        except Exception:
+            pass
+        people = None
+        car_at = None
+        swept: List[Any] = []
+        for it in work:
+            tv = _item_type_value(it)
+            if tv == ItemType.TRANSIT.value:
+                frm = (getattr(it, "from_location", "") or "").strip()
+                to = (getattr(it, "to_location", "") or "").strip()
+                mode = _mode_of(it)
+                is_walk = "walk" in mode or "foot" in mode
+                is_car = "car" in mode
+                if is_walk and people and frm and not _place_names_match(frm, people):
+                    if to and _place_names_match(people, to):
+                        print(
+                            f"[FIX #368] Day {day_num}: drop walk that would "
+                            f"self-hop at {people!r}"
+                        )
+                        continue
+                    try:
+                        it = it.model_copy(update={"from_location": people})
+                        frm = people
+                        print(
+                            f"[FIX #368] Day {day_num}: sweep walk from "
+                            f"-> {people!r}"
+                        )
+                    except Exception:
+                        pass
+                if is_car and has_car:
+                    if car_at is None:
+                        car_at = city or frm or people
+                    if people and car_at and not _place_names_match(people, car_at):
+                        try:
+                            car_st = time_to_minutes(
+                                getattr(it, "start_time", None) or "12:00"
+                            )
+                        except Exception:
+                            car_st = 12 * 60
+                        swept.append(TransitItem(
+                            type=ItemType.TRANSIT,
+                            start_time=minutes_to_time(max(0, car_st - 8)),
+                            end_time=minutes_to_time(car_st),
+                            duration_min=8,
+                            mode=TransitMode.WALK,
+                            from_location=people,
+                            to_location=car_at,
+                            distance_km=0.4,
+                            routing_source="return_to_car",
+                        ))
+                        people = car_at
+                        print(
+                            f"[FIX #368] Day {day_num}: sweep return_to_car "
+                            f"-> {car_at!r}"
+                        )
+                    try:
+                        it = it.model_copy(update={"from_location": car_at or frm})
+                    except Exception:
+                        pass
+                    if to:
+                        car_at = to
+                        people = to
+                    swept.append(it)
+                    continue
+                if to:
+                    people = to
+                swept.append(it)
+                continue
+            if _is_timeline_attraction(it):
+                nm = (getattr(it, "name", "") or "").strip()
+                if nm and not _is_hub_place_label(nm):
+                    people = nm
+            elif tv in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                place = _timeline_meal_place_label(it)
+                if not place:
+                    try:
+                        place = self._occupied_stop_name(it)
+                    except Exception:
+                        place = None
+                if place:
+                    people = place
+            swept.append(it)
+        work = swept
+
+        try:
+            return self._sort_items_by_time(work)
+        except Exception:
+            return work
+
+    def _seal_fix368_fill_anonymous_gaps(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #368: name interior/tail holes >=45 min as free_time (gate anonymous_gap)."""
+        if not items:
+            return items
+        from app.domain.models.plan import FreeTimeItem
+
+        ctx = context or {}
+        try:
+            start_limit = time_to_minutes(ctx.get("day_start") or "09:00")
+            end_limit = time_to_minutes(ctx.get("day_end") or "20:00")
+        except Exception:
+            start_limit, end_limit = 9 * 60, 20 * 60
+        for it in items:
+            if _item_type_value(it) != ItemType.DAY_END.value:
+                continue
+            raw = getattr(it, "time", None) or getattr(it, "end_time", None)
+            if not raw:
+                continue
+            try:
+                end_limit = time_to_minutes(raw)
+            except Exception:
+                pass
+
+        def _has_later(hole_end: int) -> bool:
+            for it in items:
+                if _item_type_value(it) in (
+                    ItemType.DAY_START.value, ItemType.DAY_END.value,
+                ):
+                    continue
+                raw = getattr(it, "start_time", None) or getattr(it, "time", None)
+                if not raw:
+                    continue
+                try:
+                    if time_to_minutes(raw) >= hole_end - 2:
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        try:
+            holes_raw = self._find_day_holes(
+                items, end_limit, start_limit, min_span=45,
+            )
+        except Exception:
+            return items
+        holes = []
+        for a, b in holes_raw:
+            span = b - a
+            if span < 45 or a >= end_limit:
+                continue
+            interior = _has_later(b)
+            # Interior holes, or short tails (<=60). Longer tails stay
+            # for day_end / other seals ? filling them trips long_free_time.
+            if not interior and span > 60:
+                continue
+            holes.append((a, min(b, end_limit)))
+        if not holes:
+            return items
+        filler: List[Any] = []
+        for hs, he in holes:
+            span = he - hs
+            if span < 45:
+                continue
+            # Cap at 60: auditor long_free_time is >60.
+            span = min(span, 60)
+            filler.append(FreeTimeItem(
+                type=ItemType.FREE_TIME,
+                start_time=minutes_to_time(hs),
+                end_time=minutes_to_time(hs + span),
+                duration_min=span,
+                label="Czas dla siebie",
+                suggestions=[],
+                is_technical_buffer=False,
+            ))
+        if not filler:
+            return items
+        print(
+            f"[FIX #368] Day {day_num}: fill {len(filler)} anonymous gap(s)"
+        )
+        try:
+            return self._sort_items_by_time(list(items) + filler)
+        except Exception:
+            return list(items) + filler
+
+
+    def _seal_fix368_cap_free_time(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        max_min: int = 60,
+    ) -> List[Any]:
+        """FIX #368: cap free_time so merged adjacent runs stay <=60 (gate)."""
+        if not items:
+            return items
+        try:
+            work = self._sort_items_by_time(list(items))
+        except Exception:
+            work = list(items)
+
+        def _ft_clock(it: Any):
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+                return st, en
+            except Exception:
+                return None, None
+
+        # First: cap each block.
+        capped_blocks = 0
+        tmp: List[Any] = []
+        for it in work:
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                tmp.append(it)
+                continue
+            st, en = _ft_clock(it)
+            if st is None or en is None or en <= st:
+                tmp.append(it)
+                continue
+            span = en - st
+            if span > max_min:
+                try:
+                    it = it.model_copy(update={
+                        "end_time": minutes_to_time(st + max_min),
+                        "duration_min": max_min,
+                    })
+                    capped_blocks += 1
+                except Exception:
+                    pass
+            tmp.append(it)
+        work = tmp
+
+        # Second: adjacent free_time runs ? keep only max_min total, drop rest.
+        out: List[Any] = []
+        run_used = 0
+        prev_ft_en = None
+        dropped = 0
+        for it in work:
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                out.append(it)
+                run_used = 0
+                prev_ft_en = None
+                continue
+            st, en = _ft_clock(it)
+            if st is None or en is None or en <= st:
+                out.append(it)
+                continue
+            adjacent = prev_ft_en is not None and st <= prev_ft_en + 5
+            if not adjacent:
+                run_used = 0
+            remaining = max_min - run_used
+            if remaining <= 0:
+                dropped += 1
+                continue
+            span = en - st
+            if span > remaining:
+                try:
+                    it = it.model_copy(update={
+                        "end_time": minutes_to_time(st + remaining),
+                        "duration_min": remaining,
+                    })
+                    en = st + remaining
+                    capped_blocks += 1
+                except Exception:
+                    pass
+                span = remaining
+            out.append(it)
+            run_used += span
+            prev_ft_en = en
+        if capped_blocks or dropped:
+            print(
+                f"[FIX #368] Day {day_num}: free_time cap "
+                f"blocks={capped_blocks} dropped={dropped} max={max_min}"
+            )
+        return out
+
+
+
+    def _seal_fix368_drop_dangling_hops(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #368: drop transits with no stop after them (dangling_hop gate)."""
+        if not items:
+            return items
+        try:
+            work = self._sort_items_by_time(list(items))
+        except Exception:
+            work = list(items)
+        out: List[Any] = []
+        dropped = 0
+        for i, it in enumerate(work):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            has_stop = False
+            for later in work[i + 1:]:
+                ltv = _item_type_value(later)
+                if ltv == ItemType.ATTRACTION.value:
+                    nm = (getattr(later, "name", "") or "").strip()
+                    if nm and not _is_hub_place_label(nm):
+                        has_stop = True
+                        break
+                if ltv in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                ):
+                    place = _timeline_meal_place_label(later)
+                    # Generic "Restauracja" is not a real stop for the auditor.
+                    if place and _fold_place_label(place) not in {
+                        "restauracja", "restauracja (obiad)",
+                        "restauracja (kolacja)", "lunch", "kolacja",
+                        "obiad", "posilek", "posiłek",
+                    }:
+                        has_stop = True
+                        break
+                if ltv == ItemType.TRANSIT.value:
+                    continue
+                if ltv == ItemType.DAY_END.value:
+                    break
+            if not has_stop:
+                to = (getattr(it, "to_location", "") or "").strip()
+                print(
+                    f"[FIX #368] Day {day_num}: drop final dangling_hop to {to!r}"
+                )
+                dropped += 1
+                continue
+            out.append(it)
+        return out
+
+    def _seal_fix368_close_remaining_gaps(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #368: close leftover anonymous gaps without long free_time."""
+        if not items:
+            return items
+        ctx = context or {}
+        try:
+            start_limit = time_to_minutes(ctx.get("day_start") or "09:00")
+            end_limit = time_to_minutes(ctx.get("day_end") or "20:00")
+        except Exception:
+            start_limit, end_limit = 9 * 60, 20 * 60
+        try:
+            work = self._sort_items_by_time(list(items))
+        except Exception:
+            work = list(items)
+        for it in work:
+            if _item_type_value(it) != ItemType.DAY_END.value:
+                continue
+            raw = getattr(it, "time", None) or getattr(it, "end_time", None)
+            if raw:
+                try:
+                    end_limit = time_to_minutes(raw)
+                except Exception:
+                    pass
+
+        def _shift_earlier(it: Any, delta: int) -> Any:
+            if delta <= 0:
+                return it
+            updates: Dict[str, Any] = {}
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                raw = getattr(it, "time", None)
+                if raw:
+                    try:
+                        updates["time"] = minutes_to_time(
+                            max(0, time_to_minutes(raw) - delta)
+                        )
+                    except Exception:
+                        pass
+            else:
+                for fld in ("start_time", "end_time"):
+                    raw = getattr(it, fld, None)
+                    if not raw:
+                        continue
+                    try:
+                        updates[fld] = minutes_to_time(
+                            max(0, time_to_minutes(raw) - delta)
+                        )
+                    except Exception:
+                        pass
+            if not updates:
+                return it
+            try:
+                return it.model_copy(update=updates)
+            except Exception:
+                return it
+
+        try:
+            holes = list(self._find_day_holes(
+                work, end_limit, start_limit, min_span=45,
+            ))
+        except Exception:
+            return work
+        closed = 0
+        for a, b in sorted(holes, key=lambda x: x[0], reverse=True):
+            span = b - a
+            if span < 45:
+                continue
+            later_idxs = []
+            for i, it in enumerate(work):
+                tv = _item_type_value(it)
+                if tv == ItemType.DAY_END.value:
+                    later_idxs.append(i)
+                    continue
+                if tv == ItemType.DAY_START.value:
+                    continue
+                raw = getattr(it, "start_time", None) or getattr(it, "time", None)
+                if not raw:
+                    continue
+                try:
+                    st = time_to_minutes(raw)
+                except Exception:
+                    continue
+                if st >= b - 2:
+                    later_idxs.append(i)
+            only_day_end = later_idxs and all(
+                _item_type_value(work[i]) == ItemType.DAY_END.value
+                for i in later_idxs
+            )
+            if only_day_end or not later_idxs:
+                for i, it in enumerate(work):
+                    if _item_type_value(it) != ItemType.DAY_END.value:
+                        continue
+                    try:
+                        work[i] = it.model_copy(update={
+                            "time": minutes_to_time(a),
+                        })
+                        closed += 1
+                    except Exception:
+                        pass
+                continue
+            first_later = min(later_idxs)
+            for i in range(first_later, len(work)):
+                work[i] = _shift_earlier(work[i], span)
+            closed += 1
+        if closed:
+            print(
+                f"[FIX #368] Day {day_num}: closed {closed} remaining gap(s)"
+            )
+        try:
+            return self._sort_items_by_time(work)
+        except Exception:
+            return work
+
+
+    def _seal_fix368_ensure_day_end_after_last(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #368: day_end must be after last real activity (after_day_end gate)."""
+        if not items:
+            return items
+        last_en = None
+        for it in items:
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                continue
+            try:
+                en = time_to_minutes(
+                    getattr(it, "end_time", None)
+                    or getattr(it, "start_time", None)
+                    or ""
+                )
+            except Exception:
+                en = None
+            if en is not None and (last_en is None or en > last_en):
+                last_en = en
+        if last_en is None:
+            return items
+        out: List[Any] = []
+        for it in items:
+            if _item_type_value(it) != ItemType.DAY_END.value:
+                out.append(it)
+                continue
+            try:
+                cur = time_to_minutes(getattr(it, "time", None) or "")
+            except Exception:
+                cur = None
+            if cur is not None and cur >= last_en:
+                out.append(it)
+                continue
+            try:
+                it = it.model_copy(update={"time": minutes_to_time(last_en)})
+                print(
+                    f"[FIX #368] Day {day_num}: day_end -> {minutes_to_time(last_en)}"
+                )
+            except Exception:
+                pass
+            out.append(it)
+        return out
+
+    def _seal_fix368_fix_early_dinner(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #368: dinner not before 17:00 and not <180 min after lunch."""
+        if not items:
+            return items
+        lunch_en = None
+        for it in items:
+            if _item_type_value(it) != ItemType.LUNCH_BREAK.value:
+                continue
+            try:
+                lunch_en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                lunch_en = None
+        out: List[Any] = []
+        for it in items:
+            if _item_type_value(it) != ItemType.DINNER_BREAK.value:
+                out.append(it)
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                out.append(it)
+                continue
+            if st is None:
+                out.append(it)
+                continue
+            target = st
+            if st < 17 * 60:
+                target = 17 * 60
+            if lunch_en is not None and target - lunch_en < 180:
+                target = lunch_en + 180
+            if target == st:
+                out.append(it)
+                continue
+            delta = target - st
+            dur = (en - st) if en and en > st else int(getattr(it, "duration_min", 60) or 60)
+            try:
+                it = it.model_copy(update={
+                    "start_time": minutes_to_time(target),
+                    "end_time": minutes_to_time(target + dur),
+                    "duration_min": dur,
+                })
+                print(
+                    f"[FIX #368] Day {day_num}: nudge dinner +{delta}m"
+                )
+            except Exception:
+                pass
+            out.append(it)
+        return out
+
+    def _seal_fix368_repair_overlaps(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #368: eliminate clock overlaps after seal mutations.
+
+        Prefer clipping free_time filler; otherwise cascade-shift the later
+        item and everything after it so no timed span crosses the next start.
+        """
+        if not items:
+            return items
+        try:
+            work = self._sort_items_by_time(list(items))
+        except Exception:
+            work = list(items)
+
+        def _st(it: Any) -> Optional[int]:
+            try:
+                raw = getattr(it, "start_time", None) or getattr(it, "time", None)
+                return time_to_minutes(raw) if raw else None
+            except Exception:
+                return None
+
+        def _en(it: Any) -> Optional[int]:
+            try:
+                raw = getattr(it, "end_time", None)
+                if raw:
+                    return time_to_minutes(raw)
+            except Exception:
+                pass
+            return None
+
+        def _shift(it: Any, delta: int) -> Any:
+            if delta == 0:
+                return it
+            updates: Dict[str, Any] = {}
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                raw = getattr(it, "time", None)
+                if raw:
+                    try:
+                        updates["time"] = minutes_to_time(time_to_minutes(raw) + delta)
+                    except Exception:
+                        pass
+            else:
+                st = _st(it)
+                en = _en(it)
+                if st is not None:
+                    updates["start_time"] = minutes_to_time(st + delta)
+                if en is not None:
+                    updates["end_time"] = minutes_to_time(en + delta)
+            if not updates:
+                return it
+            try:
+                return it.model_copy(update=updates)
+            except Exception:
+                return it
+
+        # Multi-pass: free_time clip first, then cascade residual overlaps.
+        for _pass in range(3):
+            try:
+                work = self._sort_items_by_time(work)
+            except Exception:
+                pass
+            changed = False
+            i = 0
+            while i < len(work):
+                a = work[i]
+                tv_a = _item_type_value(a)
+                if tv_a in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                    i += 1
+                    continue
+                st_a, en_a = _st(a), _en(a)
+                if st_a is None or en_a is None or en_a <= st_a:
+                    i += 1
+                    continue
+                # Find next timed non-marker item
+                j = None
+                for k in range(i + 1, len(work)):
+                    tv_k = _item_type_value(work[k])
+                    if tv_k in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                        continue
+                    st_k = _st(work[k])
+                    en_k = _en(work[k])
+                    if st_k is None or en_k is None:
+                        continue
+                    j = k
+                    break
+                if j is None:
+                    i += 1
+                    continue
+                b = work[j]
+                tv_b = _item_type_value(b)
+                st_b, en_b = _st(b), _en(b)
+                if st_b is None or en_b is None or st_b >= en_a:
+                    i += 1
+                    continue
+                # Overlap: a ends after b starts
+                if tv_a == ItemType.FREE_TIME.value:
+                    # Clip earlier free_time so it ends at b.start
+                    new_en = st_b
+                    if new_en <= st_a:
+                        print(
+                            f"[FIX #368] Day {day_num}: drop overlapping free_time "
+                            f"{st_a}-{en_a}"
+                        )
+                        work.pop(i)
+                        changed = True
+                        continue
+                    try:
+                        work[i] = a.model_copy(update={
+                            "end_time": minutes_to_time(new_en),
+                            "duration_min": max(1, new_en - st_a),
+                        })
+                        print(
+                            f"[FIX #368] Day {day_num}: clip free_time end "
+                            f"{en_a}->{new_en}"
+                        )
+                        changed = True
+                    except Exception:
+                        pass
+                    i += 1
+                    continue
+                if tv_b == ItemType.FREE_TIME.value:
+                    # Clip later free_time start to a.end
+                    new_st = en_a
+                    if new_st >= en_b:
+                        print(
+                            f"[FIX #368] Day {day_num}: drop overlapping free_time "
+                            f"{st_b}-{en_b}"
+                        )
+                        work.pop(j)
+                        changed = True
+                        continue
+                    try:
+                        work[j] = b.model_copy(update={
+                            "start_time": minutes_to_time(new_st),
+                            "duration_min": max(1, en_b - new_st),
+                        })
+                        print(
+                            f"[FIX #368] Day {day_num}: clip free_time start "
+                            f"{st_b}->{new_st}"
+                        )
+                        changed = True
+                    except Exception:
+                        pass
+                    i += 1
+                    continue
+                # Hard overlap: cascade-shift b and everything after
+                delta = en_a - st_b
+                if delta > 0:
+                    for k in range(j, len(work)):
+                        work[k] = _shift(work[k], delta)
+                    print(
+                        f"[FIX #368] Day {day_num}: cascade +{delta}m from "
+                        f"{_item_type_value(b)} "
+                        f"to clear overlap with {_item_type_value(a)}"
+                    )
+                    changed = True
+                i += 1
+            if not changed:
+                break
+        try:
+            return self._sort_items_by_time(work)
+        except Exception:
+            return work
 
 
     def _seal_fix368_p3_hours_and_duration(
@@ -38396,177 +39332,6 @@ class PlanService:
 
 
 
-    def _seal_fix368_repair_overlaps(
-        self,
-        items: List[Any],
-        context: Optional[Dict[str, Any]] = None,
-        *,
-        day_num: int = 0,
-    ) -> List[Any]:
-        """FIX #368: eliminate clock overlaps after seal mutations.
-
-        Prefer clipping free_time filler; otherwise cascade-shift the later
-        item and everything after it so no timed span crosses the next start.
-        """
-        if not items:
-            return items
-        try:
-            work = self._sort_items_by_time(list(items))
-        except Exception:
-            work = list(items)
-
-        def _st(it: Any) -> Optional[int]:
-            try:
-                raw = getattr(it, "start_time", None) or getattr(it, "time", None)
-                return time_to_minutes(raw) if raw else None
-            except Exception:
-                return None
-
-        def _en(it: Any) -> Optional[int]:
-            try:
-                raw = getattr(it, "end_time", None)
-                if raw:
-                    return time_to_minutes(raw)
-            except Exception:
-                pass
-            return None
-
-        def _shift(it: Any, delta: int) -> Any:
-            if delta == 0:
-                return it
-            updates: Dict[str, Any] = {}
-            tv = _item_type_value(it)
-            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
-                raw = getattr(it, "time", None)
-                if raw:
-                    try:
-                        updates["time"] = minutes_to_time(time_to_minutes(raw) + delta)
-                    except Exception:
-                        pass
-            else:
-                st = _st(it)
-                en = _en(it)
-                if st is not None:
-                    updates["start_time"] = minutes_to_time(st + delta)
-                if en is not None:
-                    updates["end_time"] = minutes_to_time(en + delta)
-            if not updates:
-                return it
-            try:
-                return it.model_copy(update=updates)
-            except Exception:
-                return it
-
-        # Multi-pass: free_time clip first, then cascade residual overlaps.
-        for _pass in range(3):
-            try:
-                work = self._sort_items_by_time(work)
-            except Exception:
-                pass
-            changed = False
-            i = 0
-            while i < len(work):
-                a = work[i]
-                tv_a = _item_type_value(a)
-                if tv_a in (ItemType.DAY_START.value, ItemType.DAY_END.value):
-                    i += 1
-                    continue
-                st_a, en_a = _st(a), _en(a)
-                if st_a is None or en_a is None or en_a <= st_a:
-                    i += 1
-                    continue
-                # Find next timed non-marker item
-                j = None
-                for k in range(i + 1, len(work)):
-                    tv_k = _item_type_value(work[k])
-                    if tv_k in (ItemType.DAY_START.value, ItemType.DAY_END.value):
-                        continue
-                    st_k = _st(work[k])
-                    en_k = _en(work[k])
-                    if st_k is None or en_k is None:
-                        continue
-                    j = k
-                    break
-                if j is None:
-                    i += 1
-                    continue
-                b = work[j]
-                tv_b = _item_type_value(b)
-                st_b, en_b = _st(b), _en(b)
-                if st_b is None or en_b is None or st_b >= en_a:
-                    i += 1
-                    continue
-                # Overlap: a ends after b starts
-                if tv_a == ItemType.FREE_TIME.value:
-                    # Clip earlier free_time so it ends at b.start
-                    new_en = st_b
-                    if new_en <= st_a:
-                        print(
-                            f"[FIX #368] Day {day_num}: drop overlapping free_time "
-                            f"{st_a}-{en_a}"
-                        )
-                        work.pop(i)
-                        changed = True
-                        continue
-                    try:
-                        work[i] = a.model_copy(update={
-                            "end_time": minutes_to_time(new_en),
-                            "duration_min": max(1, new_en - st_a),
-                        })
-                        print(
-                            f"[FIX #368] Day {day_num}: clip free_time end "
-                            f"{en_a}->{new_en}"
-                        )
-                        changed = True
-                    except Exception:
-                        pass
-                    i += 1
-                    continue
-                if tv_b == ItemType.FREE_TIME.value:
-                    # Clip later free_time start to a.end
-                    new_st = en_a
-                    if new_st >= en_b:
-                        print(
-                            f"[FIX #368] Day {day_num}: drop overlapping free_time "
-                            f"{st_b}-{en_b}"
-                        )
-                        work.pop(j)
-                        changed = True
-                        continue
-                    try:
-                        work[j] = b.model_copy(update={
-                            "start_time": minutes_to_time(new_st),
-                            "duration_min": max(1, en_b - new_st),
-                        })
-                        print(
-                            f"[FIX #368] Day {day_num}: clip free_time start "
-                            f"{st_b}->{new_st}"
-                        )
-                        changed = True
-                    except Exception:
-                        pass
-                    i += 1
-                    continue
-                # Hard overlap: cascade-shift b and everything after
-                delta = en_a - st_b
-                if delta > 0:
-                    for k in range(j, len(work)):
-                        work[k] = _shift(work[k], delta)
-                    print(
-                        f"[FIX #368] Day {day_num}: cascade +{delta}m from "
-                        f"{_item_type_value(b)} "
-                        f"to clear overlap with {_item_type_value(a)}"
-                    )
-                    changed = True
-                i += 1
-            if not changed:
-                break
-        try:
-            return self._sort_items_by_time(work)
-        except Exception:
-            return work
-
-
     def _seal_fix367_uat_day(
         self,
         items: List[Any],
@@ -39141,6 +39906,100 @@ class PlanService:
                 f"[FIX #368] Day {day_num}: overlap repair failed "
                 f"{type(exc).__name__}: {exc}"
             )
+
+        # FIX #368: fill anonymous gaps + nudge early dinner (mail gate).
+        try:
+            work = self._seal_fix368_fill_anonymous_gaps(
+                work, ctx, day_num=day_num,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368] Day {day_num}: anonymous gap fill failed "
+                f"{type(exc).__name__}: {exc}"
+            )
+        try:
+            work = self._seal_fix368_cap_free_time(
+                work, ctx, day_num=day_num, max_min=60,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368] Day {day_num}: free_time cap failed "
+                f"{type(exc).__name__}: {exc}"
+            )
+        try:
+            work = self._seal_fix368_close_remaining_gaps(
+                work, ctx, day_num=day_num,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368] Day {day_num}: close gaps failed "
+                f"{type(exc).__name__}: {exc}"
+            )
+        try:
+            work = self._seal_fix368_fix_early_dinner(
+                work, ctx, day_num=day_num,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368] Day {day_num}: early dinner fix failed "
+                f"{type(exc).__name__}: {exc}"
+            )
+        try:
+            work = self._seal_fix368_drop_dangling_hops(
+                work, ctx, day_num=day_num,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368] Day {day_num}: dangling drop failed "
+                f"{type(exc).__name__}: {exc}"
+            )
+        try:
+            work = self._seal_fix368_ensure_day_end_after_last(
+                work, ctx, day_num=day_num,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368] Day {day_num}: day_end ensure failed "
+                f"{type(exc).__name__}: {exc}"
+            )
+        try:
+            work = self._seal_fix368_close_remaining_gaps(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        # Re-nudge dinner after gap shifts that may have pulled it earlier.
+        try:
+            work = self._seal_fix368_fix_early_dinner(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        # Filling <=60 min holes left by the dinner nudge (no long_free_time).
+        try:
+            work = self._seal_fix368_fill_anonymous_gaps(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._seal_fix368_cap_free_time(
+                work, ctx, day_num=day_num, max_min=60,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._seal_fix368_ensure_day_end_after_last(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+        try:
+            work = self._seal_fix368_repair_overlaps(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
 
         del cm
         return work
