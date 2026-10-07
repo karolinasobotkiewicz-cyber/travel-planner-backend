@@ -46,6 +46,5 @@ if [ -f tests/test_gate_katowice.py ]; then
         exit 1
     fi
 fi
-fi
 echo "[gate] OK"
 exit 0
