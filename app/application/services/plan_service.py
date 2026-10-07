@@ -38268,6 +38268,128 @@ class PlanService:
 
 
 
+
+    def _seal_fix368_insert_missing_hops(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #368: final adjacent walks between consecutive real stops."""
+        if not items:
+            return items
+        from app.domain.models.plan import TransitItem, TransitMode
+
+        try:
+            work = self._sort_items_by_time(list(items))
+        except Exception:
+            work = list(items)
+        stops: List[Tuple[int, str, int]] = []
+        for i, it in enumerate(work):
+            nm = None
+            if _is_timeline_attraction(it):
+                nm = (getattr(it, "name", "") or "").strip() or None
+            elif _item_type_value(it) in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            ):
+                nm = _timeline_meal_place_label(it)
+                if nm and _fold_place_label(nm) in {
+                    "restauracja", "restauracja (obiad)",
+                    "restauracja (kolacja)", "lunch", "kolacja", "obiad",
+                }:
+                    nm = None
+            if not nm or _is_hub_place_label(nm):
+                continue
+            try:
+                en = time_to_minutes(
+                    getattr(it, "end_time", None)
+                    or getattr(it, "start_time", None)
+                    or ""
+                )
+            except Exception:
+                en = 0
+            stops.append((i, nm, en))
+
+        def _shift(it: Any, delta: int) -> Any:
+            if delta <= 0:
+                return it
+            updates: Dict[str, Any] = {}
+            tv = _item_type_value(it)
+            if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                raw = getattr(it, "time", None)
+                if raw:
+                    try:
+                        updates["time"] = minutes_to_time(
+                            time_to_minutes(raw) + delta
+                        )
+                    except Exception:
+                        pass
+            else:
+                for fld in ("start_time", "end_time"):
+                    raw = getattr(it, fld, None)
+                    if not raw:
+                        continue
+                    try:
+                        updates[fld] = minutes_to_time(
+                            time_to_minutes(raw) + delta
+                        )
+                    except Exception:
+                        pass
+            if not updates:
+                return it
+            try:
+                return it.model_copy(update=updates)
+            except Exception:
+                return it
+
+        insert_at: List[Tuple[int, Any]] = []
+        for (ia, na, a_en), (ib, nb, _b_en) in zip(stops, stops[1:]):
+            if _place_names_match(na, nb):
+                continue
+            between = work[ia + 1:ib]
+            has_hop = False
+            for h in between:
+                if _item_type_value(h) != ItemType.TRANSIT.value:
+                    continue
+                to = (getattr(h, "to_location", "") or "").strip()
+                if to and (
+                    _place_names_match(to, nb)
+                    or _fold_place_label(nb) in _fold_place_label(to)
+                    or _fold_place_label(to) in _fold_place_label(nb)
+                ):
+                    has_hop = True
+                    break
+            if has_hop:
+                continue
+            hop_min = 10
+            insert_at.append((ib, TransitItem(
+                type=ItemType.TRANSIT,
+                start_time=minutes_to_time(a_en or 12 * 60),
+                end_time=minutes_to_time((a_en or 12 * 60) + hop_min),
+                duration_min=hop_min,
+                mode=TransitMode.WALK,
+                from_location=na,
+                to_location=nb,
+                distance_km=0.8,
+                routing_source="adjacent_walk",
+            )))
+        if not insert_at:
+            return work
+        for idx, hop in sorted(insert_at, key=lambda x: x[0], reverse=True):
+            hop_min = int(getattr(hop, "duration_min", 10) or 10)
+            for k in range(idx, len(work)):
+                work[k] = _shift(work[k], hop_min)
+            work.insert(idx, hop)
+        print(
+            f"[FIX #368] Day {day_num}: final missing-hop inserts "
+            f"{len(insert_at)}"
+        )
+        try:
+            return self._sort_items_by_time(work)
+        except Exception:
+            return work
+
     def _seal_fix368_drop_dangling_hops(
         self,
         items: List[Any],
@@ -39942,6 +40064,15 @@ class PlanService:
         except Exception as exc:
             print(
                 f"[FIX #368] Day {day_num}: early dinner fix failed "
+                f"{type(exc).__name__}: {exc}"
+            )
+        try:
+            work = self._seal_fix368_insert_missing_hops(
+                work, ctx, day_num=day_num,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368] Day {day_num}: missing-hop insert failed "
                 f"{type(exc).__name__}: {exc}"
             )
         try:
