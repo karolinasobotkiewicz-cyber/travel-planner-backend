@@ -219,6 +219,10 @@ def _is_poznan_context(context: Optional[Dict[str, Any]] = None) -> bool:
     return "poznań" in city or "poznan" in city
 
 
+# FIX #368: Katowice gate inbound_gap / anonymous_gap threshold.
+GAP_MIN_INBOUND = 45
+
+
 def _is_katowice_context(context: Optional[Dict[str, Any]] = None) -> bool:
     city = str((context or {}).get("requested_city") or (context or {}).get("city") or "").lower()
     return "katowic" in city
@@ -37261,6 +37265,7 @@ class PlanService:
 
         # Pass 1: profile bans + within-day dedupe + cost fill
         seen: set = set()
+        dropped_folds: set = set()
         cleaned: List[Any] = []
         for it in work:
             if not _is_timeline_attraction(it):
@@ -37276,18 +37281,24 @@ class PlanService:
                     f"[FIX #368 P5] Day {day_num}: drop profile mismatch "
                     f"{nm!r} (seniors/relax)"
                 )
+                if folded:
+                    dropped_folds.add(folded)
                 continue
             if kids and any(g in folded for g in generic_walk):
                 print(
                     f"[FIX #368 P5] Day {day_num}: drop generic walk for kids "
                     f"{nm!r}"
                 )
+                if folded:
+                    dropped_folds.add(folded)
                 continue
             if kids and "preference_fill" in why and not desc:
                 print(
                     f"[FIX #368 P5] Day {day_num}: drop empty preference_fill "
                     f"for kids {nm!r}"
                 )
+                if folded:
+                    dropped_folds.add(folded)
                 continue
 
             poi_dict = {
@@ -37303,6 +37314,8 @@ class PlanService:
                         f"[FIX #368 P5] Day {day_num}: drop target_group ban "
                         f"{nm!r}"
                     )
+                    if folded:
+                        dropped_folds.add(folded)
                     continue
                 if should_deny_poi_for_profile and should_deny_poi_for_profile(
                     poi_dict, user
@@ -37311,6 +37324,8 @@ class PlanService:
                         f"[FIX #368 P5] Day {day_num}: drop profile_poi ban "
                         f"{nm!r}"
                     )
+                    if folded:
+                        dropped_folds.add(folded)
                     continue
             except Exception:
                 pass
@@ -37320,6 +37335,7 @@ class PlanService:
                     f"[FIX #368 P5] Day {day_num}: drop duplicate attraction "
                     f"{nm!r}"
                 )
+                dropped_folds.add(folded)
                 continue
             if folded:
                 seen.add(folded)
@@ -37353,10 +37369,44 @@ class PlanService:
             cleaned.append(it)
         work = cleaned
 
+
+        # Scrub hops that still point at attractions we just banned/dropped
+        # (otherwise P4 recomputes orphan Wedel legs to 350 km and collapses
+        # the day into 23:59 / dishonest_leg).
+        if dropped_folds:
+            scrubbed: List[Any] = []
+            for it in work:
+                if _item_type_value(it) != ItemType.TRANSIT.value:
+                    scrubbed.append(it)
+                    continue
+                frm = (getattr(it, "from_location", "") or "").strip()
+                to = (getattr(it, "to_location", "") or "").strip()
+                ff = _fold_place_label(frm) if frm else ""
+                tf = _fold_place_label(to) if to else ""
+                hit = None
+                for df in dropped_folds:
+                    # Exact, or dropped name inside the hop label. Never the
+                    # reverse: 'katowice' sits inside 'pixel xl katowice'.
+                    if ff and (ff == df or (len(df) >= 6 and df in ff)):
+                        hit = frm
+                        break
+                    if tf and (tf == df or (len(df) >= 6 and df in tf)):
+                        hit = to
+                        break
+                if hit is not None:
+                    print(
+                        f"[FIX #368 P5] Day {day_num}: scrub hop after drop "
+                        f"{frm!r}->{to!r} (dropped {hit!r})"
+                    )
+                    continue
+                scrubbed.append(it)
+            work = scrubbed
+
         # Pass 2: transit without following visit/meal at destination.
         must_visit_stems = (
             "zoo", "dolina", "ojcow", "ojc?w", "kopalnia", "mocak",
             "schindler", "wieliczk", "pixel", "term", "aquarium",
+            "wedel", "pijalnia", "czekolad",
         )
         final: List[Any] = []
         for i, it in enumerate(work):
@@ -37504,10 +37554,14 @@ class PlanService:
             if delta <= 0:
                 return
             for j in range(idx + 1, len(work)):
+                if work[j] is None:
+                    continue
                 work[j] = _shift_item(work[j], delta)
 
         for i in range(len(work)):
             it = work[i]
+            if it is None:
+                continue
             if _item_type_value(it) != ItemType.TRANSIT.value:
                 continue
             frm = (getattr(it, "from_location", "") or "").strip()
@@ -37521,6 +37575,15 @@ class PlanService:
             except Exception:
                 continue
             if honest <= 0.01:
+                continue
+            # City-day sanity: orphan/wrong-city pins (Warsaw Wedel in Katowice)
+            # must not cascade 350 km / 10 h into after_day_end + dishonest_leg.
+            if honest > 80.0:
+                print(
+                    f"[FIX #368 P4] Day {day_num}: drop insane leg "
+                    f"{frm!r}->{to!r} ({honest:.1f} km)"
+                )
+                work[i] = None  # type: ignore
                 continue
             mode = str(
                 getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
@@ -37538,6 +37601,8 @@ class PlanService:
             next_st = None
             next_idx = None
             for j in range(i + 1, len(work)):
+                if work[j] is None:
+                    continue
                 ns = _get_st(work[j])
                 if ns is None and _item_type_value(work[j]) == ItemType.DAY_END.value:
                     try:
@@ -37627,7 +37692,11 @@ class PlanService:
                     f"[FIX #368 P4] Day {day_num}: recompute failed "
                     f"{type(exc).__name__}"
                 )
-        return work
+        work = [x for x in work if x is not None]
+        try:
+            return self._sort_items_by_time(work)
+        except Exception:
+            return work
 
 
     def _seal_fix368_repair_hop_ledger(
@@ -38083,6 +38152,299 @@ class PlanService:
         except Exception:
             return work
 
+    def _seal_fix368_katowice_tail_gaps(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #368 Katowice: close holes free_time cannot fill.
+
+        - inbound glue: transit -> (free_time only) -> its stop with >=45 min
+          wait leaves at most 15 min before arrival (gate inbound_gap).
+        - interior hole >=45 after a free_time run (filler would exceed 60):
+          slide the following transit chain up, pull the meal anchor earlier
+          within dinner rules (>=17:00, >=180 min after lunch), and fill the
+          rest with free_time only when that keeps the run <=60.
+        - final dinner shorter than 30 min (only day_end after) gets 40.
+        """
+        if not items or not _is_katowice_context(context):
+            return items
+        from app.domain.models.plan import FreeTimeItem
+
+        ctx = context or {}
+        try:
+            declared = time_to_minutes(ctx.get("day_start") or "09:00")
+        except Exception:
+            declared = 9 * 60
+        try:
+            work = self._sort_items_by_time(list(items))
+        except Exception:
+            work = list(items)
+
+        def _clk(it: Any):
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+                return st, en
+            except Exception:
+                return None, None
+
+        def _marker(it: Any) -> bool:
+            return _item_type_value(it) in (
+                ItemType.DAY_START.value, ItemType.DAY_END.value,
+            )
+
+        def _move(it: Any, st: int, en: int) -> Any:
+            try:
+                return it.model_copy(update={
+                    "start_time": minutes_to_time(st),
+                    "end_time": minutes_to_time(en),
+                    "duration_min": max(1, en - st),
+                })
+            except Exception:
+                return it
+
+        def _shift(it: Any, delta: int) -> Any:
+            if delta == 0:
+                return it
+            if _marker(it):
+                raw = getattr(it, "time", None)
+                if not raw:
+                    return it
+                try:
+                    return it.model_copy(update={
+                        "time": minutes_to_time(time_to_minutes(raw) + delta),
+                    })
+                except Exception:
+                    return it
+            st, en = _clk(it)
+            if st is None or en is None:
+                return it
+            return _move(it, st + delta, en + delta)
+
+        changed = False
+        # --- A: inbound glue ---
+        i = 0
+        while i < len(work):
+            it = work[i]
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                i += 1
+                continue
+            to = (getattr(it, "to_location", "") or "").strip()
+            st, en = _clk(it)
+            j = i + 1
+            while j < len(work) and _item_type_value(work[j]) == ItemType.FREE_TIME.value:
+                j += 1
+            if (
+                not to or st is None or j >= len(work) or j == i + 1
+                or not _is_timeline_attraction(work[j])
+                or not _place_names_match(to, getattr(work[j], "name", "") or "")
+            ):
+                i += 1
+                continue
+            ds, _ = _clk(work[j])
+            if ds is None or ds - en < GAP_MIN_INBOUND:
+                i += 1
+                continue
+            at_start = not any(
+                _is_timeline_attraction(x)
+                or _item_type_value(x) in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                )
+                for x in work[:i]
+            )
+            shift = (ds - en) - 15
+            if at_start:
+                shift = min(shift, declared + 35 - st)
+            if shift <= 0:
+                i += 1
+                continue
+            new_st, new_en = st + shift, en + shift
+            between = work[i + 1:j]
+            keep: List[Any] = []
+            if not at_start and new_st - st >= 10:
+                keep.append(_move(between[0], st, new_st))
+            work[i:j] = keep + [_move(it, new_st, new_en)]
+            print(
+                f"[FIX #368] Day {day_num}: inbound glue {to!r} "
+                f"+{shift}m (wait {ds - en}->{ds - new_en})"
+            )
+            changed = True
+            i += len(keep) + 1
+
+        # --- B: unfillable interior holes ---
+        lunch_en = None
+        for it in work:
+            if _item_type_value(it) == ItemType.LUNCH_BREAK.value:
+                _s, lunch_en = _clk(it)
+        skip: set = set()
+        for _pass in range(6):
+            spans = []
+            for k, it in enumerate(work):
+                if _marker(it):
+                    continue
+                st, en = _clk(it)
+                if st is not None and en is not None and en > st:
+                    spans.append((k, st, en))
+            hole = None
+            cursor = None
+            prev_k = None
+            for k, st, en in spans:
+                if (
+                    cursor is not None
+                    and st - cursor >= GAP_MIN_INBOUND
+                    and (cursor, st) not in skip
+                    and _item_type_value(work[prev_k]) == ItemType.FREE_TIME.value
+                ):
+                    hole = (prev_k, k, cursor, st)
+                    break
+                if cursor is None or en >= cursor:
+                    cursor, prev_k = en, k
+            if hole is None:
+                break
+            pk, nk, a, b = hole
+            # anchor = first non-transit after the hole; must be a meal
+            k = nk
+            while k < len(work) and _item_type_value(work[k]) == ItemType.TRANSIT.value:
+                k += 1
+            if k >= len(work) or _item_type_value(work[k]) not in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            ):
+                skip.add((a, b))
+                continue
+            # slide contiguous transit chain up to the hole start
+            cur = a
+            for m in range(nk, k):
+                st, en = _clk(work[m])
+                if st is None or en is None:
+                    continue
+                work[m] = _move(work[m], cur, cur + (en - st))
+                cur += en - st
+            ms, _me = _clk(work[k])
+            if ms is None:
+                break
+            gap = ms - cur
+            room = gap
+            if _item_type_value(work[k]) == ItemType.DINNER_BREAK.value:
+                floor = 17 * 60
+                if lunch_en is not None:
+                    floor = max(floor, lunch_en + 180)
+                room = min(room, max(0, ms - floor))
+            if room > 0:
+                for m in range(k, len(work)):
+                    work[m] = _shift(work[m], -room)
+            rest = gap - room
+            if rest >= 10:
+                # free_time run before cur? (transit chain separates runs)
+                slid = k > nk
+                if rest <= 60 and slid:
+                    work.insert(k, FreeTimeItem(
+                        type=ItemType.FREE_TIME,
+                        start_time=minutes_to_time(cur),
+                        end_time=minutes_to_time(cur + rest),
+                        duration_min=rest,
+                        label="Czas dla siebie",
+                        suggestions=[],
+                        is_technical_buffer=False,
+                    ))
+            print(
+                f"[FIX #368] Day {day_num}: tail gap {a}-{b} pull meal "
+                f"-{room}m, rest {rest}"
+            )
+            changed = True
+            try:
+                work = self._sort_items_by_time(work)
+            except Exception:
+                pass
+
+        # --- C: short final dinner ---
+        for k in range(len(work) - 1, -1, -1):
+            it = work[k]
+            if _marker(it):
+                continue
+            if _item_type_value(it) == ItemType.DINNER_BREAK.value:
+                st, en = _clk(it)
+                if st is not None and en is not None and en - st < 30:
+                    work[k] = _move(it, st, st + 40)
+                    for m in range(k + 1, len(work)):
+                        if _item_type_value(work[m]) == ItemType.DAY_END.value:
+                            try:
+                                cur_end = time_to_minutes(getattr(work[m], "time", None) or "")
+                            except Exception:
+                                cur_end = 0
+                            if cur_end < st + 40:
+                                work[m] = work[m].model_copy(
+                                    update={"time": minutes_to_time(st + 40)}
+                                )
+                    print(f"[FIX #368] Day {day_num}: extend short dinner -> 40m")
+                    changed = True
+            break
+        if not changed:
+            return items
+        try:
+            return self._sort_items_by_time(work)
+        except Exception:
+            return work
+
+
+    def _seal_fix368_drop_idle_start(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #368: drop morning free_time that blocks an honest city start."""
+        if not items:
+            return items
+        ctx = context or {}
+        try:
+            day_start = time_to_minutes(ctx.get("day_start") or "09:00")
+        except Exception:
+            day_start = 9 * 60
+        try:
+            work = self._sort_items_by_time(list(items))
+        except Exception:
+            work = list(items)
+        first_stop_i = None
+        for i, it in enumerate(work):
+            if _is_timeline_attraction(it) or _item_type_value(it) in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            ):
+                first_stop_i = i
+                break
+        if first_stop_i is None:
+            return work
+        out: List[Any] = []
+        dropped = 0
+        for i, it in enumerate(work):
+            if i >= first_stop_i:
+                out.extend(work[i:])
+                break
+            if _item_type_value(it) != ItemType.FREE_TIME.value:
+                out.append(it)
+                continue
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+                en = time_to_minutes(getattr(it, "end_time", None) or "")
+            except Exception:
+                out.append(it)
+                continue
+            # Validator idle_start fires at >=15 min (IDLE_START_MIN); an
+            # overlap clip can leave exactly 15, so drop from 10.
+            if st <= day_start + 15 and (en - st) >= 10:
+                print(
+                    f"[FIX #368] Day {day_num}: drop idle_start free_time "
+                    f"{st}-{en}"
+                )
+                dropped += 1
+                continue
+            out.append(it)
+        return out if dropped else work
+
+
     def _seal_fix368_fill_anonymous_gaps(
         self,
         items: List[Any],
@@ -38344,6 +38706,47 @@ class PlanService:
                 return it
 
         insert_at: List[Tuple[int, Any]] = []
+        # Leading hop: city/day_start → first real stop (gate missing_hop
+        # "startuje o … bez dojazdu z punktu startu").
+        ctx = context or {}
+        city = str(ctx.get("requested_city") or ctx.get("city") or "").strip() or "centrum"
+        # Katowice only: Krakow/Tricity get their lead upstream and ban
+        # city-hub hops (P0 / #367), so a hub lead there is a regression.
+        if stops and _is_katowice_context(ctx):
+            i0, n0, _en0 = stops[0]
+            try:
+                st0 = time_to_minutes(getattr(work[i0], "start_time", None) or "")
+            except Exception:
+                st0 = 9 * 60
+            lead_hop = False
+            for h in work[:i0]:
+                if _item_type_value(h) != ItemType.TRANSIT.value:
+                    continue
+                to = (getattr(h, "to_location", "") or "").strip()
+                if to and (
+                    _place_names_match(to, n0)
+                    or _fold_place_label(n0) in _fold_place_label(to)
+                    or _fold_place_label(to) in _fold_place_label(n0)
+                ):
+                    lead_hop = True
+                    break
+            if not lead_hop:
+                hop_min = 10
+                insert_at.append((i0, TransitItem(
+                    type=ItemType.TRANSIT,
+                    start_time=minutes_to_time(max(0, st0 - hop_min)),
+                    end_time=minutes_to_time(st0),
+                    duration_min=hop_min,
+                    mode=TransitMode.WALK,
+                    from_location=city,
+                    to_location=n0,
+                    distance_km=0.8,
+                    routing_source="adjacent_walk",
+                )))
+                print(
+                    f"[FIX #368] Day {day_num}: leading hub hop "
+                    f"{city!r}->{n0!r}"
+                )
         for (ia, na, a_en), (ib, nb, _b_en) in zip(stops, stops[1:]):
             if _place_names_match(na, nb):
                 continue
@@ -40127,6 +40530,34 @@ class PlanService:
             pass
         try:
             work = self._seal_fix368_repair_overlaps(
+                work, ctx, day_num=day_num,
+            )
+        except Exception:
+            pass
+
+        try:
+            work = self._seal_fix368_katowice_tail_gaps(
+                work, ctx, day_num=day_num,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368] Day {day_num}: katowice tail gaps failed "
+                f"{type(exc).__name__}: {exc}"
+            )
+        try:
+            work = self._seal_fix368_drop_idle_start(
+                work, ctx, day_num=day_num,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368] Day {day_num}: idle_start drop failed "
+                f"{type(exc).__name__}: {exc}"
+            )
+        try:
+            work = self._seal_fix368_fill_anonymous_gaps(
+                work, ctx, day_num=day_num,
+            )
+            work = self._seal_fix368_cap_free_time(
                 work, ctx, day_num=day_num,
             )
         except Exception:
