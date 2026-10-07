@@ -112,6 +112,8 @@ def validate_day(
     group_type: str = "",
     report: Report,
     trip_date: Any = None,
+    preferences: Optional[Sequence[str]] = None,
+    travel_style: str = "",
 ) -> None:
     items = list(items or [])
     if trip_date is not None:
@@ -119,6 +121,8 @@ def validate_day(
             report.trip_date = trip_date
         except Exception:
             pass
+    prefs = {str(p).lower() for p in (preferences or [])}
+    style = (travel_style or "").lower()
     # consecutive free_time (and micro-gapped stacks: 44+6+44)
     run = 0
     max_run = 0
@@ -680,14 +684,88 @@ def validate_day(
             coords_seen[key] = nm
 
 
-    # seniors mismatch
-    if "senior" in (group_type or "").lower():
+    # seniors / relax / kids profile mismatches (FIX #368 P5)
+    tg = (group_type or "").lower()
+    if "senior" in tg or style in ("relax", "relaxation") or "relaxation" in prefs:
         for it in items:
             if _tv(it) != ItemType.ATTRACTION.value:
                 continue
             nm = _fold(_nm(it))
             if any(b in nm for b in SENIOR_BAN):
+                report.add(
+                    city, num, day_num, "profile_mismatch",
+                    f"{group_type or style}+{_nm(it)}",
+                )
                 report.add(city, num, day_num, "target_group", f"seniors+{_nm(it)}")
+    if any(k in tg for k in ("family_kids", "kids", "dzieci")):
+        for it in items:
+            if _tv(it) != ItemType.ATTRACTION.value:
+                continue
+            nm = _fold(_nm(it))
+            if any(
+                g in nm
+                for g in ("spacer po miescie", "spacer miejski", "generic walk", "free walk")
+            ):
+                report.add(
+                    city, num, day_num, "profile_mismatch",
+                    f"kids+generic_walk:{_nm(it)}",
+                )
+
+    # missing cost_estimate on attractions
+    for it in items:
+        if _tv(it) != ItemType.ATTRACTION.value:
+            continue
+        if getattr(it, "cost_estimate", None) is None:
+            report.add(
+                city, num, day_num, "missing_cost_estimate",
+                _nm(it),
+            )
+
+    # transit without following visit at destination (zoo / dolina / ?)
+    stems = ("zoo", "dolina", "ojcow", "kopalnia", "mocak", "schindler", "pixel", "wieliczk")
+    for i, it in enumerate(items):
+        if _tv(it) != ItemType.TRANSIT.value:
+            continue
+        dest = _fold(getattr(it, "to_location", "") or "")
+        if not dest or not any(s in dest for s in stems):
+            continue
+        has_follow = False
+        for later in items[i + 1:]:
+            ltv = _tv(later)
+            if ltv == ItemType.TRANSIT.value:
+                break
+            if ltv in (
+                ItemType.ATTRACTION.value,
+                ItemType.LUNCH_BREAK.value,
+                ItemType.DINNER_BREAK.value,
+            ):
+                lnm = _fold(_nm(later) or str(getattr(later, "label", "") or ""))
+                if dest in lnm or lnm in dest or (set(dest.split()) & set(lnm.split())):
+                    has_follow = True
+                break
+            if ltv == ItemType.FREE_TIME.value:
+                continue
+        if not has_follow:
+            report.add(
+                city, num, day_num, "transit_without_visit",
+                getattr(it, "to_location", None),
+            )
+
+    # preference coverage hints when prefs provided (FIX #368 P5)
+    if prefs:
+        names = " ".join(
+            _fold(_nm(it)) for it in items if _tv(it) == ItemType.ATTRACTION.value
+        )
+        checks = [
+            ("active_sport", ("sport", "basen", "pixel", "kayak", "rower", "linow", "gokart")),
+            ("underground", ("kopalnia", "podziem", "krypt", "schron", "guido")),
+            ("nature_landscape", ("park", "las", "dolina", "ogrod", "botanic", "bulwar", "jezioro")),
+        ]
+        for pref, markers in checks:
+            if pref not in prefs:
+                continue
+            if not any(m in names for m in markers):
+                report.add(city, num, day_num, "preference_uncovered", pref)
 
 
 def validate_plan(

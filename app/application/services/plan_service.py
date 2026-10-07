@@ -37200,6 +37200,209 @@ class PlanService:
 
 
 
+
+    def _seal_fix368_p5_profile_dedupe_cost(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+    ) -> List[Any]:
+        """FIX #368 P5: profile bans, within-day dedupe, cost_estimate, dangling hops.
+
+        - Drop Pixel XL / thrill parks for seniors or relax
+        - Drop generic walk fillers for family_kids
+        - Drop second same-name attraction in one day
+        - Fill missing cost_estimate from ticket_info / defaults
+        - Drop transit-to-X with no following visit/meal at X (zoo, dolina, ?)
+        """
+        if not items:
+            return items
+        ctx = context or {}
+        user = dict(ctx.get("user") or {})
+        if not user.get("target_group"):
+            user["target_group"] = str(
+                ctx.get("group_type") or ctx.get("target_group") or ""
+            )
+        if not user.get("preferences"):
+            user["preferences"] = list(ctx.get("preferences") or [])
+        if not user.get("travel_style"):
+            user["travel_style"] = str(ctx.get("travel_style") or "")
+        tg = str(user.get("target_group") or "").lower()
+        style = str(user.get("travel_style") or "").lower()
+        prefs = {str(p).lower() for p in (user.get("preferences") or [])}
+        seniors_or_relax = (
+            "senior" in tg
+            or style in ("relax", "relaxation")
+            or "relaxation" in prefs
+        )
+        kids = any(k in tg for k in ("family_kids", "kids", "dzieci", "rodzina"))
+
+        try:
+            from app.domain.scoring.family_fit import should_exclude_by_target_group
+            from app.domain.scoring.profile_poi_rules import should_deny_poi_for_profile
+        except Exception:
+            should_exclude_by_target_group = None  # type: ignore
+            should_deny_poi_for_profile = None  # type: ignore
+
+        try:
+            work = self._sort_items_by_time(list(items))
+        except Exception:
+            work = list(items)
+
+        thrill = (
+            "pixel xl", "pixel", "legendia", "jumpcity", "jump city",
+            "park linow", "gokart", "cybermag", "loopy",
+        )
+        generic_walk = (
+            "spacer po miescie", "spacer po mie?cie", "generic walk",
+            "free walk", "spacer miejski", "spacer po centrum",
+        )
+
+        # Pass 1: profile bans + within-day dedupe + cost fill
+        seen: set = set()
+        cleaned: List[Any] = []
+        for it in work:
+            if not _is_timeline_attraction(it):
+                cleaned.append(it)
+                continue
+            nm = (getattr(it, "name", "") or "").strip()
+            folded = _fold_place_label(nm)
+            why = [str(x).lower() for x in (getattr(it, "why_selected", None) or [])]
+            desc = (getattr(it, "description_short", None) or "").strip()
+
+            if seniors_or_relax and any(t in folded for t in thrill):
+                print(
+                    f"[FIX #368 P5] Day {day_num}: drop profile mismatch "
+                    f"{nm!r} (seniors/relax)"
+                )
+                continue
+            if kids and any(g in folded for g in generic_walk):
+                print(
+                    f"[FIX #368 P5] Day {day_num}: drop generic walk for kids "
+                    f"{nm!r}"
+                )
+                continue
+            if kids and "preference_fill" in why and not desc:
+                print(
+                    f"[FIX #368 P5] Day {day_num}: drop empty preference_fill "
+                    f"for kids {nm!r}"
+                )
+                continue
+
+            poi_dict = {
+                "name": nm,
+                "tags": list(getattr(it, "tags", None) or []),
+                "target_groups": list(getattr(it, "target_groups", None) or []),
+            }
+            try:
+                if should_exclude_by_target_group and should_exclude_by_target_group(
+                    poi_dict, user
+                ):
+                    print(
+                        f"[FIX #368 P5] Day {day_num}: drop target_group ban "
+                        f"{nm!r}"
+                    )
+                    continue
+                if should_deny_poi_for_profile and should_deny_poi_for_profile(
+                    poi_dict, user
+                ):
+                    print(
+                        f"[FIX #368 P5] Day {day_num}: drop profile_poi ban "
+                        f"{nm!r}"
+                    )
+                    continue
+            except Exception:
+                pass
+
+            if folded and folded in seen:
+                print(
+                    f"[FIX #368 P5] Day {day_num}: drop duplicate attraction "
+                    f"{nm!r}"
+                )
+                continue
+            if folded:
+                seen.add(folded)
+
+            # cost_estimate fill
+            cost = getattr(it, "cost_estimate", None)
+            if cost is None:
+                ticket = getattr(it, "ticket_info", None)
+                filled = 0
+                if ticket is not None:
+                    try:
+                        filled = int(
+                            getattr(ticket, "normal", None)
+                            or getattr(ticket, "ticket_normal", None)
+                            or 0
+                        )
+                    except (TypeError, ValueError):
+                        filled = 0
+                if not filled:
+                    # Cheap known defaults for paid museums when ticket missing.
+                    if any(k in folded for k in ("mocak", "galicja", "zoo", "pixel")):
+                        filled = 40
+                try:
+                    it = it.model_copy(update={"cost_estimate": int(filled)})
+                    print(
+                        f"[FIX #368 P5] Day {day_num}: fill cost_estimate "
+                        f"{nm!r}={filled}"
+                    )
+                except Exception:
+                    pass
+            cleaned.append(it)
+        work = cleaned
+
+        # Pass 2: transit without following visit/meal at destination.
+        must_visit_stems = (
+            "zoo", "dolina", "ojcow", "ojc?w", "kopalnia", "mocak",
+            "schindler", "wieliczk", "pixel", "term", "aquarium",
+        )
+        final: List[Any] = []
+        for i, it in enumerate(work):
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                final.append(it)
+                continue
+            dest = (getattr(it, "to_location", "") or "").strip()
+            if not dest:
+                final.append(it)
+                continue
+            dest_f = _fold_place_label(dest)
+            interesting = any(s in dest_f for s in must_visit_stems)
+            has_follow = False
+            for later in work[i + 1:]:
+                ltv = _item_type_value(later)
+                if ltv == ItemType.TRANSIT.value:
+                    break
+                if ltv in (
+                    ItemType.ATTRACTION.value,
+                    ItemType.LUNCH_BREAK.value,
+                    ItemType.DINNER_BREAK.value,
+                ):
+                    lnm = (
+                        getattr(later, "name", None)
+                        or getattr(later, "label", None)
+                        or ""
+                    )
+                    if _place_names_match(dest, lnm) or (
+                        dest_f and _fold_place_label(lnm)
+                        and (dest_f in _fold_place_label(lnm)
+                             or _fold_place_label(lnm) in dest_f)
+                    ):
+                        has_follow = True
+                    break
+                if ltv == ItemType.FREE_TIME.value:
+                    continue
+            if interesting and not has_follow:
+                print(
+                    f"[FIX #368 P5] Day {day_num}: drop transit_without_visit "
+                    f"to {dest!r}"
+                )
+                continue
+            final.append(it)
+        return final
+
+
     def _seal_fix368_p4_recompute_legs(
         self,
         items: List[Any],
@@ -37965,6 +38168,7 @@ class PlanService:
         FIX #368 P2 drops district ping-pong revisits and unjustified cross-district hops.
         FIX #368 P3 enforces opening hours, season, min visit, and day_end.
         FIX #368 P4 recomputes walk/drive distance+duration from coords.
+        FIX #368 P5 enforces profile bans, dedupe, cost_estimate, dangling hops.
         Does not reopen Wroclaw or Zakopane. Cross-city deferred.
         """
         if not items or not _is_fix368_p0_city(context):
@@ -38473,6 +38677,17 @@ class PlanService:
         except Exception as exc:
             print(
                 f"[FIX #368 P1] Day {day_num}: idle-gap seal failed "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        # FIX #368 P5: profile bans, dedupe, cost_estimate, transit-without-visit.
+        try:
+            work = self._seal_fix368_p5_profile_dedupe_cost(
+                work, ctx, day_num=day_num,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368 P5] Day {day_num}: profile/dedupe seal failed "
                 f"{type(exc).__name__}: {exc}"
             )
 
