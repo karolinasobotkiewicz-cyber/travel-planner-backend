@@ -280,6 +280,69 @@ def validate_day(
                 f"{nm} ends {en} > day_end {day_end_m}",
             )
 
+    # FIX #368 P4: declared leg distance vs haversine of endpoints
+    try:
+        from app.infrastructure.routing.haversine import haversine_km as _hk
+    except Exception:
+        _hk = None
+    if _hk is not None:
+        coords: Dict[str, Tuple[float, float]] = {}
+        for it in items:
+            if _tv(it) == ItemType.ATTRACTION.value:
+                nm = (_nm(it) or "").strip()
+                try:
+                    coords[nm] = (float(getattr(it, "lat")), float(getattr(it, "lng")))
+                except (TypeError, ValueError):
+                    pass
+            if _tv(it) in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                for s in (getattr(it, "suggestions", None) or [])[:1]:
+                    if isinstance(s, dict):
+                        rn = (s.get("name") or "").strip()
+                        try:
+                            coords[rn] = (float(s["lat"]), float(s["lng"]))
+                        except (TypeError, ValueError, KeyError):
+                            pass
+                    else:
+                        rn = (getattr(s, "name", None) or "").strip()
+                        try:
+                            coords[rn] = (float(s.lat), float(s.lng))
+                        except (TypeError, ValueError, AttributeError):
+                            pass
+
+        def _find_ll(label: str):
+            lab = (label or "").strip()
+            if lab in coords:
+                return coords[lab]
+            fl = _fold(lab)
+            for k, v in coords.items():
+                kf = _fold(k)
+                if kf == fl or (min(len(kf), len(fl)) >= 8 and (kf in fl or fl in kf)):
+                    return v
+            return None
+
+        for it in items:
+            if _tv(it) != ItemType.TRANSIT.value:
+                continue
+            frm = getattr(it, "from_location", "") or ""
+            to = getattr(it, "to_location", "") or ""
+            a, b = _find_ll(frm), _find_ll(to)
+            if not a or not b:
+                continue
+            try:
+                honest = float(_hk(a[0], a[1], b[0], b[1]))
+                declared = float(getattr(it, "distance_km", None) or 0)
+            except (TypeError, ValueError):
+                continue
+            if honest < 0.3:
+                continue
+            if declared <= 0 or honest / max(declared, 0.05) >= 2.5 or (
+                honest - declared >= 1.0 and honest / max(declared, 0.05) >= 2.0
+            ):
+                report.add(
+                    city, num, day_num, "stale_leg_distance",
+                    f"{frm}->{to} declared={declared:.3f} haversine={honest:.3f}",
+                )
+
     # overlaps
     timed = []
     for it in items:

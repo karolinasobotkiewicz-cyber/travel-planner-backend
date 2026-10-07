@@ -37199,6 +37199,141 @@ class PlanService:
 
 
 
+
+    def _seal_fix368_p4_recompute_legs(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        coord_map: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #368 P4: recompute distance/duration from endpoint coords.
+
+        After rename/reorder/seal drops, never keep stale leg metrics
+        (UAT: Bulwary->Obwarzanek 0.275km vs ~2km; Rogalinek->NOOKS 0.4 vs ~16).
+        """
+        if not items:
+            return items
+        from app.domain.models.plan import TransitMode
+        from app.infrastructure.routing.haversine import haversine_km as _hk
+
+        ctx = context or {}
+        has_car = bool(ctx.get("has_car", True))
+        cm = self._merge_coord_map(coord_map or {}, items)
+
+        def _ll(label: str):
+            hit = self._lookup_coords(cm, label)
+            if hit:
+                return hit
+            # Fallback: scan timeline attractions/meals for a matching name.
+            for it in items:
+                if _is_timeline_attraction(it):
+                    nm = (getattr(it, "name", "") or "").strip()
+                    if nm and _place_names_match(nm, label):
+                        try:
+                            return float(it.lat), float(it.lng)
+                        except (TypeError, ValueError, AttributeError):
+                            pass
+                if _item_type_value(it) in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                ):
+                    for sug in (getattr(it, "suggestions", None) or [])[:1]:
+                        rn = (getattr(sug, "name", None) or "").strip()
+                        if rn and _place_names_match(rn, label):
+                            try:
+                                return float(sug.lat), float(sug.lng)
+                            except (TypeError, ValueError, AttributeError):
+                                pass
+            return None
+
+        out: List[Any] = []
+        for it in items:
+            if _item_type_value(it) != ItemType.TRANSIT.value:
+                out.append(it)
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            to = (getattr(it, "to_location", "") or "").strip()
+            a = _ll(frm)
+            b = _ll(to)
+            if not a or not b:
+                out.append(it)
+                continue
+            try:
+                honest = float(_hk(a[0], a[1], b[0], b[1]))
+            except Exception:
+                out.append(it)
+                continue
+            if honest <= 0.01:
+                out.append(it)
+                continue
+            mode = str(
+                getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
+                or ""
+            ).lower()
+            is_walk = "walk" in mode or "foot" in mode
+            try:
+                declared = float(getattr(it, "distance_km", None) or 0)
+            except (TypeError, ValueError):
+                declared = 0.0
+            cur_dur = int(getattr(it, "duration_min", 0) or 0)
+            try:
+                st = time_to_minutes(getattr(it, "start_time", None) or "")
+            except Exception:
+                st = None
+
+            # Long "walk" that is really a drive.
+            force_car = bool(has_car and is_walk and honest >= 2.5)
+            if force_car or (not is_walk and "car" in mode):
+                expected_km = max(honest * 1.35, honest)
+                expected_dur = max(5, int(round(expected_km / 35.0 * 60)) + 3)
+                new_mode = TransitMode.CAR
+                src = "estimated_road"
+            else:
+                expected_km = honest
+                expected_dur = max(3, int(round(honest / 4.5 * 60)) + 2)
+                new_mode = TransitMode.WALK
+                src = "estimated_walk"
+
+            ratio = expected_km / max(declared, 0.05)
+            understated = declared > 0 and (
+                ratio >= 2.5 or (expected_km - declared) >= 1.0 and ratio >= 2.0
+            )
+            missing = declared <= 0
+            dur_stale = cur_dur > 0 and (
+                expected_dur >= cur_dur * 2 + 5 or cur_dur >= expected_dur * 2 + 5
+            )
+            if not (understated or missing or force_car or dur_stale):
+                # Still refresh tiny drift when off by >= 0.5 km absolute.
+                if declared > 0 and abs(expected_km - declared) < 0.5:
+                    out.append(it)
+                    continue
+
+            updates: Dict[str, Any] = {
+                "distance_km": round(expected_km, 3),
+                "duration_min": int(expected_dur),
+                "mode": new_mode,
+                "routing_source": src,
+            }
+            if st is not None:
+                updates["end_time"] = minutes_to_time(st + int(expected_dur))
+            try:
+                it = it.model_copy(update=updates)
+                print(
+                    f"[FIX #368 P4] Day {day_num}: recompute {frm!r}->{to!r} "
+                    f"{declared:.3f}km/{cur_dur}m -> "
+                    f"{expected_km:.3f}km/{expected_dur}m "
+                    f"({new_mode.value if hasattr(new_mode, 'value') else new_mode})"
+                )
+            except Exception as exc:
+                print(
+                    f"[FIX #368 P4] Day {day_num}: recompute failed "
+                    f"{type(exc).__name__}"
+                )
+            out.append(it)
+        return out
+
+
     def _seal_fix368_p3_hours_and_duration(
         self,
         items: List[Any],
@@ -37829,6 +37964,7 @@ class PlanService:
         FIX #368 P1 also collapses stacked free_time and caps idle gaps.
         FIX #368 P2 drops district ping-pong revisits and unjustified cross-district hops.
         FIX #368 P3 enforces opening hours, season, min visit, and day_end.
+        FIX #368 P4 recomputes walk/drive distance+duration from coords.
         Does not reopen Wroclaw or Zakopane. Cross-city deferred.
         """
         if not items or not _is_fix368_p0_city(context):
@@ -38337,6 +38473,18 @@ class PlanService:
         except Exception as exc:
             print(
                 f"[FIX #368 P1] Day {day_num}: idle-gap seal failed "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        # FIX #368 P4: recompute legs from coords after all mutations.
+        try:
+            cm = self._merge_coord_map(cm, work)
+            work = self._seal_fix368_p4_recompute_legs(
+                work, ctx, day_num=day_num, coord_map=cm,
+            )
+        except Exception as exc:
+            print(
+                f"[FIX #368 P4] Day {day_num}: leg recompute failed "
                 f"{type(exc).__name__}: {exc}"
             )
 
