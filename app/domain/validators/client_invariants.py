@@ -743,7 +743,8 @@ def audit_day(
                 is_walk = "walk" in _mode(it) or "foot" in _mode(it)
                 is_car = "car" in _mode(it)
                 src = str(getattr(it, "routing_source", "") or "").lower()
-                if is_walk:
+                # FIX #369: a tram/bus ride moves people the same way a walk does.
+                if is_walk or "public" in _mode(it):
                     if to:
                         people = to
                     continue
@@ -760,7 +761,10 @@ def audit_day(
                             continue
                         returned = bool(
                             _is_transit(prev)
-                            and ("walk" in _mode(prev) or "foot" in _mode(prev))
+                            and (
+                                "walk" in _mode(prev) or "foot" in _mode(prev)
+                                or "public" in _mode(prev)
+                            )
                             and _names_match(
                                 getattr(prev, "to_location", "") or "",
                                 car_at,
@@ -1226,6 +1230,88 @@ def audit_day(
                     f"a współrzędne dają {real_km:.2f} km "
                     f"({getattr(x, 'from_location', '') or '?'} → {to or '?'})",
                     {"declared_km": declared, "real_km": real_km},
+                ))
+
+    # --- distance_vs_coords_mismatch (FIX #369 P1) ---
+    # UAT Kraków 2026-10-09: "Kopiec→Katedra 0,8 km/10 min mimo >3 km",
+    # "MOCAK→Schindler 0,5 km choć Lipowa 4, ~22 m", "powroty do auta zawsze
+    # 0,5 km". A leg must agree with the two pins it joins: not under 0.9x the
+    # straight line, not above the detour ceiling, and never a constant
+    # fallback (0.5/10, 0.8/10, 0.4/8). Opt-in (context audit_leg_distances)
+    # so the runtime referee (_accept_if_not_worse) keeps its old counts.
+    if (context or {}).get("audit_leg_distances"):
+        from app.domain.planner import leg_physics as _lp
+
+        _city369 = str((context or {}).get("requested_city") or "")
+        _pts369: Dict[str, Tuple[float, float]] = {}
+        for _k369, _v369 in ((context or {}).get("place_coords") or {}).items():
+            try:
+                _pts369[_fold(_k369)] = (float(_v369[0]), float(_v369[1]))
+            except (TypeError, ValueError, IndexError, KeyError):
+                continue
+        for _idx369, _it369, _nm369 in stops:
+            _p369 = _coords(_it369)
+            if _p369:
+                _pts369[_fold(_nm369)] = _p369
+        _hub369 = (context or {}).get("city_center")
+        if not _hub369 and _lp._is_krakow(_city369):
+            _hub369 = _lp.KRAKOW_HUB
+
+        def _leg_pt369(label: str) -> Optional[Tuple[float, float]]:
+            if not label:
+                return None
+            if _hub369 and _fold(label) == _fold(_city369):
+                return (float(_hub369[0]), float(_hub369[1]))
+            hit = _resolve_place(label, _pts369)
+            if hit:
+                return hit
+            if _hub369 and _is_hub_label(label, context):
+                return (float(_hub369[0]), float(_hub369[1]))
+            return None
+
+        for it in ordered:
+            if not _is_transit(it):
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            to = (getattr(it, "to_location", "") or "").strip()
+            try:
+                declared = float(getattr(it, "distance_km", None) or 0.0)
+            except (TypeError, ValueError):
+                declared = 0.0
+            dur = int(getattr(it, "duration_min", 0) or 0)
+            pa, pb = _leg_pt369(frm), _leg_pt369(to)
+            const = _lp.has_constant_signature(declared, dur)
+            mode369 = (
+                "walk" if ("walk" in _mode(it) or "foot" in _mode(it))
+                else "car" if "car" in _mode(it) else "public_transport"
+            )
+            if pa is None or pb is None:
+                if const:
+                    defects.append(Defect(
+                        "distance_vs_coords_mismatch", day,
+                        f"Dzień {day}: {frm} → {to} {declared:.3f} km/{dur} min "
+                        f"to stała bez współrzędnych końców odcinka",
+                        {"from": frm, "to": to, "declared_km": declared,
+                         "minutes": dur, "reason": "unresolved_constant"},
+                    ))
+                continue
+            straight = haversine_km(pa[0], pa[1], pb[0], pb[1])
+            lower, upper = _lp.expected_km_bounds(pa, pb, mode369, city=_city369)
+            reason = None
+            if const:
+                reason = "constant"
+            elif declared < lower - 0.01:
+                reason = "under"
+            elif declared > upper:
+                reason = "over"
+            if reason:
+                defects.append(Defect(
+                    "distance_vs_coords_mismatch", day,
+                    f"Dzień {day}: {frm} → {to} podaje {declared:.3f} km/{dur} min, "
+                    f"a współrzędne dają {straight:.2f} km w linii prostej "
+                    f"({reason})",
+                    {"from": frm, "to": to, "declared_km": declared,
+                     "minutes": dur, "straight_km": straight, "reason": reason},
                 ))
 
     # --- geom_from_mismatch / geom_to_mismatch ---

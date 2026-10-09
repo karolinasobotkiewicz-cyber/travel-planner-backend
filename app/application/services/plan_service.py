@@ -8702,6 +8702,45 @@ class PlanService:
                 coord_map=_final_coord_map,
                 user=user,
             )
+            # FIX #369 P1: last word on leg distances (Kraków) — every leg
+            # from its two pins, then the FIX #368 hole fill/cap re-heal.
+            if _is_krakow_context(_ctx_geom279) and not _is_locked_city_context(
+                _ctx_geom279
+            ):
+                _grp369 = getattr(trip_input, "group", None)
+                _ctx369 = {
+                    **_ctx_geom279,
+                    "travel_style": getattr(trip_input, "travel_style", None),
+                    "group_type": getattr(_grp369, "type", None)
+                    if _grp369 is not None else None,
+                }
+                _days369: List[DayPlan] = []
+                for _d369 in days:
+                    _src369 = list(_d369.items or [])
+                    try:
+                        _it369 = self._seal_fix369_real_legs(
+                            _src369,
+                            {**_ctx369, "date": getattr(_d369, "date", None)},
+                            day_num=_d369.day,
+                            coord_map=self._merge_coord_map(
+                                _final_coord_map, _src369,
+                            ),
+                        )
+                        if _it369 is not _src369:
+                            _it369 = self._seal_fix368_fill_anonymous_gaps(
+                                _it369, _ctx369, day_num=_d369.day,
+                            )
+                            _it369 = self._seal_fix368_cap_free_time(
+                                _it369, _ctx369, day_num=_d369.day,
+                            )
+                            _d369 = _d369.model_copy(update={"items": _it369})
+                    except Exception as _exc369:
+                        print(
+                            f"[FIX #369] Day {_d369.day}: real legs failed "
+                            f"{type(_exc369).__name__}: {_exc369}"
+                        )
+                    _days369.append(_d369)
+                days = _days369
             # FIX #313: coverage and density must describe the final timeline,
             # not the pre-polish one (client: "warnings zwraca pustą tablicę").
             try:
@@ -40725,6 +40764,310 @@ class PlanService:
 
         del cm
         return work
+
+
+    def _seal_fix369_real_legs(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        coord_map: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #369 P1: every Kraków leg is computed from the two pins it joins.
+
+        UAT 2026-10-09: Kopiec→Katedra and Katedra→Błonia "0,8 km/10 min"
+        although >3 km apart, returns to the car always "0,5 km", MOCAK→Schindler
+        (both Lipowa 4, ~22 m) "0,5 km/10 min", Po Krakosku→Schindler across the
+        Wisła "0,5 km". Those numbers were constants stamped by the hop ledger,
+        missing-hop inserts and earlier car/adjacent-walk repairs.
+
+        Here every transit gets km = haversine × detour (walk 1.3 / car 1.4 /
+        transit 1.35, via the cheapest bridge when it crosses the Wisła) and
+        minutes from speed. A walk above the profile threshold (2.0 km seniors /
+        relax, else 2.5 km) becomes public transport — never a car ride, the
+        car model is P2. ORS/cache legs that already agree with the pins stay.
+        A leg whose pins cannot be resolved is left untouched and logged; the
+        validator (distance_vs_coords_mismatch) flags it if it carries a
+        constant. Later clocks are pushed only as far as the longer leg needs.
+        """
+        if (
+            not items
+            or _is_locked_city_context(context)
+            or not _is_krakow_context(context)
+        ):
+            return items
+        from app.domain.models.plan import TransitMode
+        from app.domain.planner import leg_physics as lp
+
+        ctx = dict(context or {})
+        city = str(ctx.get("requested_city") or "Kraków")
+        try:
+            work: List[Any] = self._sort_items_by_time(list(items))
+        except Exception:
+            work = list(items)
+        cm = self._merge_coord_map(dict(coord_map or {}), work)
+        for r in ctx.get("restaurants_available") or []:
+            if not isinstance(r, dict):
+                continue
+            rn = str(r.get("name") or "").strip()
+            if rn and r.get("lat") is not None and r.get("lng") is not None:
+                try:
+                    cm.setdefault(rn, {
+                        "name": rn, "lat": float(r["lat"]), "lng": float(r["lng"]),
+                    })
+                except (TypeError, ValueError):
+                    pass
+        hub = _city_center_coords(city)
+        city_f = _fold_place_label(city)
+
+        def _pt(label: str) -> Optional[tuple]:
+            lab = (label or "").strip()
+            if not lab:
+                return None
+            f = _fold_place_label(lab)
+            if hub and (
+                f == city_f
+                or (city_f and city_f in f and ("centrum" in f or "center" in f))
+            ):
+                return hub
+            hit = self._lookup_coords(cm, lab)
+            if hit:
+                return hit
+            for x in work:
+                if x is None or _item_type_value(x) not in (
+                    ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                ):
+                    continue
+                if _place_names_match(_timeline_meal_place_label(x) or "", lab) or (
+                    _place_names_match(getattr(x, "label", "") or "", lab)
+                ):
+                    p = self._item_stop_latlng(x)
+                    if p:
+                        return p
+            if hub and ("centrum" in f or "center" in f):
+                return hub
+            return None
+
+        def _clock(x: Any, attr: str) -> Optional[int]:
+            raw = getattr(x, attr, None)
+            if not raw:
+                return None
+            try:
+                return time_to_minutes(raw)
+            except Exception:
+                return None
+
+        def _push_from(j0: int, t: int) -> None:
+            """Make every item from j0 start no earlier than t (free time absorbs)."""
+            for j in range(j0, len(work)):
+                x = work[j]
+                if x is None:
+                    continue
+                tv = _item_type_value(x)
+                if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                    if tv == ItemType.DAY_END.value:
+                        mt = _clock(x, "time")
+                        if mt is not None and mt < t:
+                            try:
+                                work[j] = x.model_copy(update={"time": minutes_to_time(t)})
+                            except Exception:
+                                pass
+                    continue
+                st, en = _clock(x, "start_time"), _clock(x, "end_time")
+                if st is None or st >= t:
+                    return
+                if tv == ItemType.FREE_TIME.value and en is not None:
+                    if en - t >= 5:
+                        try:
+                            work[j] = x.model_copy(update={
+                                "start_time": minutes_to_time(t),
+                                "duration_min": en - t,
+                            })
+                        except Exception:
+                            pass
+                        return
+                    work[j] = None
+                    continue
+                d = t - st
+                upd: Dict[str, Any] = {"start_time": minutes_to_time(st + d)}
+                if en is not None:
+                    upd["end_time"] = minutes_to_time(en + d)
+                try:
+                    work[j] = x.model_copy(update=upd)
+                except Exception:
+                    return
+                t = (en + d) if en is not None else st + d
+
+        mode_enum = {
+            "walk": TransitMode.WALK,
+            "car": TransitMode.CAR,
+            "public_transport": TransitMode.PUBLIC_TRANSPORT,
+        }
+        src_name = {
+            "walk": "estimated_walk",
+            "car": "estimated_road",
+            "public_transport": "estimated_transit",
+        }
+        changed = 0
+        unresolved: List[str] = []
+        for i in range(len(work)):
+            it = work[i]
+            if it is None or _item_type_value(it) != ItemType.TRANSIT.value:
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            to = (getattr(it, "to_location", "") or "").strip()
+            a, b = _pt(frm), _pt(to)
+            if not a or not b:
+                unresolved.append(f"{frm!r}->{to!r}")
+                continue
+            mode_s = str(
+                getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
+                or ""
+            ).lower()
+            req = (
+                "walk" if ("walk" in mode_s or "foot" in mode_s)
+                else "car" if "car" in mode_s
+                else "public_transport"
+            )
+            src = str(getattr(it, "routing_source", "") or "").lower()
+            try:
+                cur_km = float(getattr(it, "distance_km", None) or 0.0)
+            except (TypeError, ValueError):
+                cur_km = 0.0
+            cur_dur = int(getattr(it, "duration_min", 0) or 0)
+            if src in ("ors", "cache") and not lp.has_constant_signature(cur_km, cur_dur):
+                lo, hi = lp.expected_km_bounds(a, b, req, city=city)
+                if lo <= cur_km <= hi:
+                    continue
+            res = lp.honest_leg(
+                a, b, requested_mode=req, context=ctx,
+                car_here=False, force_walk_or_transit=(src == "return_to_car"),
+            )
+            new_mode, km, mins = res["mode"], float(res["km"]), int(res["minutes"])
+            if (
+                new_mode == req
+                and abs(cur_km - km) < 0.005
+                and cur_dur == mins
+            ):
+                continue
+            st = _clock(it, "start_time")
+            en = _clock(it, "end_time")
+            if st is None:
+                continue
+            path = res.get("path") or [a, b]
+            upd = {
+                "distance_km": round(km, 3),
+                "duration_min": mins,
+                "end_time": minutes_to_time(st + mins),
+                "mode": mode_enum[new_mode],
+                "routing_source": (
+                    "return_to_car" if src == "return_to_car" else src_name[new_mode]
+                ),
+                "geometry": [[float(p[1]), float(p[0])] for p in path],
+                "geometry_latlng": [[float(p[0]), float(p[1])] for p in path],
+            }
+            try:
+                work[i] = it.model_copy(update=upd)
+            except Exception:
+                continue
+            changed += 1
+            print(
+                f"[FIX #369] Day {day_num}: leg {frm!r}->{to!r} "
+                f"{req} {cur_km} km/{cur_dur} min -> {new_mode} {km} km/{mins} min "
+                f"(straight {res.get('straight_km')} km"
+                + (f", via {res['bridge']}" if res.get("bridge") else "")
+                + ")"
+            )
+            need = (st + mins) - (en if en is not None else st)
+            if need > 0:
+                # Borrow the slack right before the leg first (a buffer or an
+                # empty minute after the previous stop) so lunch/dinner keep
+                # their clocks; only the remainder pushes the day forward.
+                j = i - 1
+                while j >= 0 and work[j] is None:
+                    j -= 1
+                prev = work[j] if j >= 0 else None
+                borrow = 0
+                if prev is not None:
+                    pen = _clock(prev, "end_time")
+                    pst = _clock(prev, "start_time")
+                    if pen is not None and pen < st:
+                        borrow = min(need, st - pen)
+                    if (
+                        borrow < need
+                        and _item_type_value(prev) == ItemType.FREE_TIME.value
+                        and pst is not None and pen is not None and pen <= st
+                    ):
+                        take = min(need - borrow, pen - pst)
+                        if pen - take - pst < 5:
+                            take = pen - pst
+                            work[j] = None
+                        else:
+                            try:
+                                work[j] = prev.model_copy(update={
+                                    "end_time": minutes_to_time(pen - take),
+                                    "duration_min": pen - take - pst,
+                                })
+                            except Exception:
+                                take = 0
+                        borrow += take
+                if borrow > 0:
+                    st2 = st - borrow
+                    try:
+                        work[i] = work[i].model_copy(update={
+                            "start_time": minutes_to_time(st2),
+                            "end_time": minutes_to_time(st2 + mins),
+                        })
+                    except Exception:
+                        st2 = st
+                    st = st2
+                if st + mins > (en if en is not None else st):
+                    _push_from(i + 1, st + mins)
+        if changed:
+            # Longer honest legs before lunch must not squeeze dinner under the
+            # 180-min lunch→dinner rule: move dinner (with its approach hop).
+            lunch_en: Optional[int] = None
+            d_idx: Optional[int] = None
+            for j, x in enumerate(work):
+                if x is None:
+                    continue
+                tv = _item_type_value(x)
+                if tv == ItemType.LUNCH_BREAK.value:
+                    lunch_en = _clock(x, "end_time")
+                elif tv == ItemType.DINNER_BREAK.value and d_idx is None:
+                    d_idx = j
+            if lunch_en is not None and d_idx is not None:
+                dst = _clock(work[d_idx], "start_time")
+                if dst is not None and dst < lunch_en + 180:
+                    k = d_idx
+                    while k - 1 >= 0 and (
+                        work[k - 1] is None
+                        or _item_type_value(work[k - 1]) == ItemType.TRANSIT.value
+                    ):
+                        k -= 1
+                    while k < d_idx and work[k] is None:
+                        k += 1
+                    k_st = _clock(work[k], "start_time")
+                    if k_st is not None:
+                        delta = lunch_en + 180 - dst
+                        _push_from(k, k_st + delta)
+                        print(
+                            f"[FIX #369] Day {day_num}: dinner kept 180 min after "
+                            f"lunch (+{delta} min)"
+                        )
+        if unresolved:
+            print(
+                f"[FIX #369] Day {day_num}: UNRESOLVED leg pins "
+                f"(left as built, validator decides): {', '.join(unresolved)}"
+            )
+        if not changed:
+            return items
+        out = [x for x in work if x is not None]
+        try:
+            return self._sort_items_by_time(out)
+        except Exception:
+            return out
 
 
     def _seal_open_mail_day(
