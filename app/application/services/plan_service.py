@@ -8714,19 +8714,31 @@ class PlanService:
                     "group_type": getattr(_grp369, "type", None)
                     if _grp369 is not None else None,
                 }
+                # FIX #369 P2: the car's real parking for the whole day.
+                _ctx369["has_car"] = "car" in [
+                    str(getattr(m, "value", m)).lower()
+                    for m in (getattr(trip_input, "transport_modes", None) or [])
+                ]
                 _days369: List[DayPlan] = []
                 for _d369 in days:
                     _src369 = list(_d369.items or [])
                     try:
-                        _it369 = self._seal_fix369_real_legs(
+                        _cm369 = self._merge_coord_map(_final_coord_map, _src369)
+                        _pk369 = self._seal_fix369_car_parking(
                             _src369,
+                            {**_ctx369, "date": getattr(_d369, "date", None)},
+                            day_num=_d369.day,
+                            coord_map=_cm369,
+                        )
+                        _it369 = self._seal_fix369_real_legs(
+                            _pk369,
                             {**_ctx369, "date": getattr(_d369, "date", None)},
                             day_num=_d369.day,
                             coord_map=self._merge_coord_map(
                                 _final_coord_map, _src369,
                             ),
                         )
-                        if _it369 is not _src369:
+                        if _it369 is not _src369 or _pk369 is not _src369:
                             _it369 = self._seal_fix368_fill_anonymous_gaps(
                                 _it369, _ctx369, day_num=_d369.day,
                             )
@@ -40821,10 +40833,15 @@ class PlanService:
         hub = _city_center_coords(city)
         city_f = _fold_place_label(city)
 
+        from app.domain.planner.krakow_parking import parking_point as _pp369
+
         def _pt(label: str) -> Optional[tuple]:
             lab = (label or "").strip()
             if not lab:
                 return None
+            pk = _pp369(lab)  # FIX #369 P2: curated car parks
+            if pk:
+                return pk
             f = _fold_place_label(lab)
             if hub and (
                 f == city_f
@@ -41064,6 +41081,358 @@ class PlanService:
         if not changed:
             return items
         out = [x for x in work if x is not None]
+        try:
+            return self._sort_items_by_time(out)
+        except Exception:
+            return out
+
+
+    def _seal_fix369_car_parking(
+        self,
+        items: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        day_num: int = 0,
+        coord_map: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #369 P2: the car has a real position for the whole day.
+
+        UAT 2026-10-09: returns "do auta" into generic "Kraków" or a random POI
+        (plac Jana Matejki), car rides starting where the car never was, and
+        loops such as Kopiec → car → back to Kopiec just for free time.
+
+        The day's legs are rebuilt from its stops in order, with a ``car_at``
+        cursor that is always a curated, real car park (krakow_parking):
+          * next stop walkable (P1 threshold) → walk, the car stays put;
+          * otherwise, if the car is needed → walk (or tram when the car is too
+            far to walk) back to the car's parking, drive parking → the parking
+            nearest the next stop, walk to the stop;
+          * a day that needs the car at all starts by driving from the start
+            point to the parking nearest the first stop; a day that never needs
+            it is walked from the start and the car never moves.
+        Every leg uses P1 physics. Free time, meals and visits keep their order;
+        later clocks are pushed only as much as the honest chain needs.
+        """
+        if (
+            not items
+            or _is_locked_city_context(context)
+            or not _is_krakow_context(context)
+            or not bool((context or {}).get("has_car", False))
+        ):
+            return items
+        from app.domain.models.plan import TransitItem, TransitMode
+        from app.domain.planner import krakow_parking as kp
+        from app.domain.planner import leg_physics as lp
+        from app.domain.validators import client_invariants as _ci369
+
+        ctx = dict(context or {})
+        city = str(ctx.get("requested_city") or "Kraków")
+        try:
+            work: List[Any] = self._sort_items_by_time(list(items))
+        except Exception:
+            work = list(items)
+        cm = self._merge_coord_map(dict(coord_map or {}), work)
+        for r in ctx.get("restaurants_available") or []:
+            if isinstance(r, dict) and r.get("name") and r.get("lat") is not None:
+                try:
+                    cm.setdefault(str(r["name"]).strip(), {
+                        "name": str(r["name"]).strip(),
+                        "lat": float(r["lat"]), "lng": float(r["lng"]),
+                    })
+                except (TypeError, ValueError, KeyError):
+                    pass
+        hub = _city_center_coords(city)
+        if not hub:
+            return items
+
+        def _clock(x: Any, attr: str) -> Optional[int]:
+            raw = getattr(x, attr, None)
+            if not raw:
+                return None
+            try:
+                return time_to_minutes(raw)
+            except Exception:
+                return None
+
+        # --- stops (validator semantics: attraction name / meal suggestion) ---
+        stops: List[tuple] = []  # (index, label, (lat, lng))
+        for i, x in enumerate(work):
+            tv = _item_type_value(x)
+            if tv == ItemType.ATTRACTION.value:
+                lab = (getattr(x, "name", "") or "").strip()
+                pt = self._item_stop_latlng(x)
+                if not lab:
+                    continue
+                if not pt:
+                    print(f"[FIX #369 P2] Day {day_num}: no pin for {lab!r}; day left as built")
+                    return items
+                stops.append((i, lab, pt))
+            elif tv in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                lab = (_ci369._meal_name(x) or "").strip()
+                pt = self._item_stop_latlng(x) or (self._lookup_coords(cm, lab) if lab else None)
+                if lab and not pt:
+                    print(
+                        f"[FIX #369 P2] Day {day_num}: no pin for meal {lab!r}; "
+                        "day left as built"
+                    )
+                    return items
+                if lab and pt:
+                    stops.append((i, lab, pt))
+                # A meal without a concrete pinned place happens where you are.
+        if not stops:
+            return items
+
+        # Car and people both start the day at the start point (the city).
+        start_label = city
+        lead_start: Optional[int] = None
+        for x in work[: stops[0][0]]:
+            if _item_type_value(x) == ItemType.TRANSIT.value:
+                st = _clock(x, "start_time")
+                if st is not None and (lead_start is None or st < lead_start):
+                    lead_start = st
+                break
+        start_pt = hub
+        thr = lp.walk_threshold_km(ctx)
+
+        def _walk_km(a: tuple, b: tuple) -> float:
+            return lp.leg_km(a, b, "walk", city=city)[0]
+
+        seq = [(start_label, start_pt)] + [(lab, pt) for _i, lab, pt in stops]
+        # The car spends the night at the car park nearest the start point.
+        p0 = kp.start_parking(start_pt)
+        p0_lab, p0_pt = str(p0["name"]), (float(p0["lat"]), float(p0["lng"]))
+
+        def _leg(frm: str, a: tuple, to: str, b: tuple, mode: str, src: str) -> Dict[str, Any]:
+            res = lp.honest_leg(
+                a, b, requested_mode=mode, context=ctx,
+                car_here=False, force_walk_or_transit=(src == "return_to_car"),
+            )
+            return {
+                "from": frm, "to": to, "mode": res["mode"], "km": float(res["km"]),
+                "min": int(res["minutes"]), "path": res.get("path") or [a, b],
+                "src": src if src == "return_to_car" else {
+                    "walk": "estimated_walk", "car": "estimated_road",
+                    "public_transport": "estimated_transit",
+                }[res["mode"]],
+            }
+
+        def _build() -> tuple:
+            car_lab, car_pt = p0_lab, p0_pt
+            chains: List[List[Dict[str, Any]]] = []
+            kept = 0
+            for k in range(len(seq) - 1):
+                (na, pa), (nb, pb) = seq[k], seq[k + 1]
+                chain: List[Dict[str, Any]] = []
+                park, _d = kp.nearest_parking(pb)
+                plab = str(park["name"])
+                ppt = (float(park["lat"]), float(park["lng"]))
+                if _walk_km(pa, pb) <= thr:
+                    if lp.haversine_km(pa[0], pa[1], pb[0], pb[1]) >= 0.02:
+                        chain.append(_leg(na, pa, nb, pb, "walk", "estimated_walk"))
+                elif k == 0:
+                    # First stop out of walking range: drive from the start
+                    # and park next to it.
+                    chain.append(_leg(na, pa, plab, ppt, "car", "estimated_road"))
+                    chain.append(_leg(plab, ppt, nb, pb, "walk", "estimated_walk"))
+                    car_lab, car_pt = plab, ppt
+                else:
+                    direct = _leg(na, pa, nb, pb, "walk", "estimated_walk")
+                    if _place_names_match(plab, car_lab):
+                        # The car already stands by the next stop.
+                        chain.append(direct)
+                        kept += 1
+                    else:
+                        back = _leg(na, pa, car_lab, car_pt, "walk", "return_to_car")
+                        drive = _leg(car_lab, car_pt, plab, ppt, "car", "estimated_road")
+                        tail = _leg(plab, ppt, nb, pb, "walk", "estimated_walk")
+                        via_car = back["min"] + drive["min"] + tail["min"]
+                        if back["mode"] != "walk" or via_car > direct["min"] + 15:
+                            # Fetching the car is a detour: ride there directly,
+                            # the car stays where it is parked.
+                            chain.append(direct)
+                            kept += 1
+                        else:
+                            chain.extend([back, drive, tail])
+                            car_lab, car_pt = plab, ppt
+                chains.append(chain)
+            return chains, car_lab, kept
+
+        chains, car_lab, loops_cut = _build()
+        need_car = any(lg["mode"] == "car" for ch in chains for lg in ch)
+
+        # --- drop every old transit and lay the honest chains ---
+        stop_objs = [work[i] for i, _lab, _pt in stops]
+        old = [x for x in work if _item_type_value(x) == ItemType.TRANSIT.value]
+        work2: List[Any] = [
+            x for x in work if _item_type_value(x) != ItemType.TRANSIT.value
+        ]
+        pos = {id(x): n for n, x in enumerate(work2)}
+        idx_of = [pos.get(id(o)) for o in stop_objs]
+        if any(v is None for v in idx_of):
+            return items
+
+        def _push_from(j0: int, t: int) -> None:
+            for j in range(j0, len(work2)):
+                x = work2[j]
+                if x is None:
+                    continue
+                tv = _item_type_value(x)
+                if tv in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                    if tv == ItemType.DAY_END.value:
+                        mt = _clock(x, "time")
+                        if mt is not None and mt < t:
+                            try:
+                                work2[j] = x.model_copy(update={"time": minutes_to_time(t)})
+                            except Exception:
+                                pass
+                    continue
+                st, en = _clock(x, "start_time"), _clock(x, "end_time")
+                if st is None or st >= t:
+                    return
+                if tv == ItemType.FREE_TIME.value and en is not None:
+                    if en - t >= 5:
+                        try:
+                            work2[j] = x.model_copy(update={
+                                "start_time": minutes_to_time(t),
+                                "duration_min": en - t,
+                            })
+                        except Exception:
+                            pass
+                        return
+                    work2[j] = None
+                    continue
+                d = t - st
+                upd: Dict[str, Any] = {"start_time": minutes_to_time(st + d)}
+                if en is not None:
+                    upd["end_time"] = minutes_to_time(en + d)
+                try:
+                    work2[j] = x.model_copy(update=upd)
+                except Exception:
+                    return
+                t = (en + d) if en is not None else st + d
+
+        mode_enum = {
+            "walk": TransitMode.WALK, "car": TransitMode.CAR,
+            "public_transport": TransitMode.PUBLIC_TRANSPORT,
+        }
+        day_start_t: Optional[int] = None
+        for x in work2:
+            if _item_type_value(x) == ItemType.DAY_START.value:
+                day_start_t = _clock(x, "time")
+                break
+        new_legs: List[Any] = []
+
+        def _emit(chain: List[Dict[str, Any]], t0: int) -> int:
+            t = t0
+            for lg in chain:
+                path = lg["path"]
+                new_legs.append(TransitItem(
+                    start_time=minutes_to_time(t),
+                    end_time=minutes_to_time(t + lg["min"]),
+                    duration_min=lg["min"],
+                    mode=mode_enum[lg["mode"]],
+                    from_location=lg["from"],
+                    to_location=lg["to"],
+                    geometry=[[float(p[1]), float(p[0])] for p in path],
+                    geometry_latlng=[[float(p[0]), float(p[1])] for p in path],
+                    distance_km=round(lg["km"], 3),
+                    routing_source=lg["src"],
+                ))
+                t += lg["min"]
+            return t
+
+        def _lunch_end() -> Optional[int]:
+            for x in work2:
+                if x is not None and _item_type_value(x) == ItemType.LUNCH_BREAK.value:
+                    return _clock(x, "end_time")
+            return None
+
+        def _dinner_guard(jb: int) -> None:
+            """Dinner stays >= 180 min after lunch (pushes dinner and later)."""
+            x = work2[jb]
+            if x is None or _item_type_value(x) != ItemType.DINNER_BREAK.value:
+                return
+            le, ds = _lunch_end(), _clock(x, "start_time")
+            if le is not None and ds is not None and ds < le + 180:
+                _push_from(jb, le + 180)
+                print(
+                    f"[FIX #369 P2] Day {day_num}: dinner kept 180 min after "
+                    f"lunch (+{le + 180 - ds} min)"
+                )
+
+        for k, chain in enumerate(chains):
+            jb = idx_of[k]  # the stop this chain arrives at
+            _dinner_guard(jb)
+            if not chain:
+                continue
+            total = sum(lg["min"] for lg in chain)
+            b = work2[jb]
+            bs = _clock(b, "start_time") if b is not None else None
+            if bs is None:
+                return items
+            if k == 0:
+                t0 = lead_start if lead_start is not None else bs - total
+                if day_start_t is not None:
+                    t0 = max(t0, day_start_t)
+                j0 = 0
+                while j0 < len(work2) and (
+                    work2[j0] is None
+                    or _item_type_value(work2[j0]) == ItemType.DAY_START.value
+                ):
+                    j0 += 1
+            else:
+                ja = idx_of[k - 1]
+                a = work2[ja]
+                ae = _clock(a, "end_time") if a is not None else None
+                if ae is None:
+                    return items
+                t0 = ae
+                j0 = ja + 1
+                if bs - total > ae:
+                    # Leave just in time: free time is spent at A, then go.
+                    tl = bs - total
+                    between = [j for j in range(ja + 1, jb) if work2[j] is not None]
+                    if all(
+                        _item_type_value(work2[j]) == ItemType.FREE_TIME.value
+                        for j in between
+                    ):
+                        if between:
+                            # Stretch the last free time up to the departure.
+                            lx = work2[between[-1]]
+                            ls_, le_ = _clock(lx, "start_time"), _clock(lx, "end_time")
+                            if ls_ is not None and le_ is not None and ae <= le_ < tl:
+                                work2[between[-1]] = lx.model_copy(update={
+                                    "end_time": minutes_to_time(tl),
+                                    "duration_min": tl - ls_,
+                                })
+                        for j in between:
+                            x = work2[j]
+                            xs, xe = _clock(x, "start_time"), _clock(x, "end_time")
+                            if xs is None or xe is None or xe <= tl:
+                                continue
+                            if tl - xs < 5:
+                                work2[j] = None
+                            else:
+                                work2[j] = x.model_copy(update={
+                                    "end_time": minutes_to_time(tl),
+                                    "duration_min": tl - xs,
+                                })
+                        t0 = tl
+                        j0 = jb
+            t_end = _emit(chain, t0)
+            _push_from(j0, t_end)
+        for j, x in enumerate(work2):
+            if x is not None and _item_type_value(x) == ItemType.DINNER_BREAK.value:
+                _dinner_guard(j)  # also a dinner without a pinned place
+                break
+
+        out = [x for x in work2 if x is not None] + new_legs
+        n_car = sum(1 for lg in new_legs if "car" in str(getattr(lg.mode, "value", lg.mode)))
+        print(
+            f"[FIX #369 P2] Day {day_num}: {len(old)} old legs -> {len(new_legs)} "
+            f"(car {n_car}, need_car={need_car}, parked at {car_lab!r}, "
+            f"car not fetched {loops_cut}x)"
+        )
         try:
             return self._sort_items_by_time(out)
         except Exception:

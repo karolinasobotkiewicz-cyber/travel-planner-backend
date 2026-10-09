@@ -616,6 +616,12 @@ def audit_day(
             if hub is not None:
                 real_km = haversine_km(hub[0], hub[1], pt[0], pt[1])
                 for h in leading:
+                    if (context or {}).get("audit_car_model"):
+                        # FIX #369 P2: start → parking (car) → stop: the walk
+                        # from the parking is honestly short.
+                        from app.domain.planner.krakow_parking import is_parking_label
+                        if is_parking_label(getattr(h, "from_location", "") or ""):
+                            continue
                     try:
                         decl = float(getattr(h, "distance_km", None) or 0)
                     except (TypeError, ValueError):
@@ -790,6 +796,89 @@ def audit_day(
                 nm = _meal_name(it) or _stop_name(it)
                 if nm:
                     people = nm
+
+    # FIX #369 P2: the car stands at a real parking all day (opt-in, Kraków
+    # gate). generic_car_return: "back to the car" into the city / centre or
+    # to something that is not a car park. car_position_mismatch: a car ride
+    # that does not start where the car (and the people) are, or a walk back
+    # to a car that is parked elsewhere.
+    if (context or {}).get("audit_car_model") and not _locked_audit_city(context):
+        from app.domain.planner.krakow_parking import is_parking_label, start_parking
+        from app.domain.planner.leg_physics import KRAKOW_HUB
+
+        city = str((context or {}).get("requested_city") or "").strip()
+        _hub_p2 = (context or {}).get("city_center") or KRAKOW_HUB
+        # Overnight the car stands at the car park nearest the start point.
+        p0 = str(start_parking((float(_hub_p2[0]), float(_hub_p2[1])))["name"])
+
+        def _at_start(label: str) -> bool:
+            return _hubby(label) or _names_match(label, p0)
+
+        def _hubby(label: str) -> bool:
+            f = _fold(label)
+            return (
+                not f
+                or "centrum" in f
+                or "center" in f
+                or bool(city and _names_match(label, city))
+            )
+
+        car_pos: Optional[str] = None  # None: still at the day's start point
+        here: Optional[str] = None     # None: people at the start point
+        trans = [x for x in ordered if _is_transit(x)]
+        for i, it in enumerate(ordered):
+            if _is_attr(it) or _is_meal(it):
+                nm = _stop_name(it)
+                if nm:
+                    here = nm
+                continue
+            if not _is_transit(it):
+                continue
+            frm = (getattr(it, "from_location", "") or "").strip()
+            to = (getattr(it, "to_location", "") or "").strip()
+            src = str(getattr(it, "routing_source", "") or "").lower()
+            if "car" in _mode(it):
+                car_ok = _at_start(frm) if car_pos is None else _names_match(frm, car_pos)
+                ppl_ok = _at_start(frm) if here is None else _names_match(frm, here)
+                if not car_ok or not ppl_ok:
+                    defects.append(Defect(
+                        "car_position_mismatch", day,
+                        f"Dzień {day}: auto rusza z {frm!r}, a stoi przy "
+                        f"{car_pos or 'punkcie startu'!r} (ludzie: {here or 'start'!r})",
+                        {"from": frm, "car_at": car_pos, "people": here},
+                    ))
+                if to:
+                    car_pos = to
+                    here = to
+                continue
+            # walk / public transport moves only the people
+            k = trans.index(it)
+            nxt = trans[k + 1] if k + 1 < len(trans) else None
+            fetches = src == "return_to_car" or (
+                nxt is not None
+                and "car" in _mode(nxt)
+                and _names_match(getattr(nxt, "from_location", "") or "", to)
+            )
+            if fetches and to:
+                if _hubby(to) or not is_parking_label(to):
+                    defects.append(Defect(
+                        "generic_car_return", day,
+                        f"Dzień {day}: powrót do auta do {to!r} — to nie jest "
+                        f"konkretny parking",
+                        {"to": to, "from": frm},
+                    ))
+                elif src == "return_to_car" and not (
+                    _names_match(to, p0) if car_pos is None
+                    else _names_match(to, car_pos)
+                ):
+                    defects.append(Defect(
+                        "car_position_mismatch", day,
+                        f"Dzień {day}: powrót do auta na {to!r}, a auto stoi "
+                        f"przy {car_pos or 'punkcie startu'!r}",
+                        {"to": to, "car_at": car_pos},
+                    ))
+            if to:
+                here = to
 
     # --- meal identity (label vs suggestion) ---
     for it in ordered:
@@ -1214,6 +1303,12 @@ def audit_day(
             to = (getattr(x, "to_location", "") or "").strip()
             if to and not _names_match(to, nb):
                 continue
+            if (context or {}).get("audit_car_model"):
+                # FIX #369 P2: parking → stop is the tail of A → car → P → B;
+                # its km belongs to P → B, not A → B.
+                from app.domain.planner.krakow_parking import is_parking_label
+                if is_parking_label(getattr(x, "from_location", "") or ""):
+                    continue
             try:
                 declared = float(getattr(x, "distance_km", None) or 0)
             except (TypeError, ValueError):
@@ -1265,6 +1360,11 @@ def audit_day(
             hit = _resolve_place(label, _pts369)
             if hit:
                 return hit
+            if _lp._is_krakow(_city369):
+                from app.domain.planner.krakow_parking import parking_point as _pp369
+                hit = _pp369(label)
+                if hit:
+                    return hit
             if _hub369 and _is_hub_label(label, context):
                 return (float(_hub369[0]), float(_hub369[1]))
             return None

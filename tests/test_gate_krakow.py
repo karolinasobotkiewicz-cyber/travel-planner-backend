@@ -51,6 +51,8 @@ def test_krakow_client_mail_defects_are_gone():
             "preferences": payload.get("preferences") or [],
             # FIX #369 P1: legs must agree with their pins (no constants).
             "audit_leg_distances": True,
+            # FIX #369 P2: the car stands at a real parking all day.
+            "audit_car_model": True,
         }
         start = payload.get("trip_length") or {}
         if start.get("start_date"):
@@ -63,7 +65,11 @@ def test_krakow_client_mail_defects_are_gone():
                     continue
                 hits.append(f"J{num} D{d.day} [{d.code}] {d.message}")
                 continue
-            if d.code in WATCH or d.code == "distance_vs_coords_mismatch":
+            if d.code in WATCH or d.code in (
+                "distance_vs_coords_mismatch",
+                "generic_car_return",
+                "car_position_mismatch",
+            ):
                 hits.append(f"J{num} D{d.day} [{d.code}] {d.message}")
         for day in plan.days:
             hits.extend(collect_day_mail_hits(
