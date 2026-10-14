@@ -228,10 +228,33 @@ def honest_leg(
     ctx = context or {}
     city = str(ctx.get("requested_city") or ctx.get("city") or "")
     mode = requested_mode if requested_mode in ("walk", "car", "public_transport") else "walk"
+    # FIX #373: a Kraków guest who chose only the car does not also ride MPK.
+    # Other cities keep the previous walk/car/transit split.
+    modes_allowed = [
+        str(getattr(m, "value", m)).lower()
+        for m in (ctx.get("transport_modes") or [])
+    ]
+    if _is_krakow(city):
+        pt_allowed = (
+            "public_transport" in modes_allowed
+            if modes_allowed else not ctx.get("has_car", True)
+        )
+    else:
+        pt_allowed = True
+    if not pt_allowed and mode == "public_transport":
+        mode = "car" if (ctx.get("has_car", True) and not force_walk_or_transit) else "walk"
+
     if mode == "walk" or force_walk_or_transit:
         km, bridge = leg_km(a, b, "walk", city=city)
         if km > walk_threshold_km(ctx):
-            if car_here and not force_walk_or_transit and ctx.get("has_car", True):
+            if not pt_allowed:
+                if force_walk_or_transit:
+                    mode = "walk"
+                elif ctx.get("has_car", True):
+                    mode = "car"
+                else:
+                    mode = "walk"
+            elif car_here and not force_walk_or_transit and ctx.get("has_car", True):
                 mode = "car"
             else:
                 mode = "public_transport"

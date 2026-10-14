@@ -67,6 +67,10 @@ KRAKOW_PARKINGS: List[Dict[str, object]] = [
      "source": "OSM way 149731735 'Parking Wieliczka', surface, access=yes, fee", "area": "Kopalnia Soli / Tężnia"},
     {"name": "Parking miejski Rynek Górny", "lat": 49.9823844, "lng": 20.059838,
      "source": "OSM way 899239422 'Parking miejski', access=yes, fee", "area": "Rynek Górny w Wieliczce"},
+    {"name": "Parking Złota Góra (Ojcowski Park Narodowy)", "lat": 50.2078, "lng": 19.8372,
+     "source": "OSM parking Ojcowski Park Narodowy", "area": "Ojców / Dolina Prądnika"},
+    {"name": "Parking pod Zamkiem w Pieskowej Skale", "lat": 50.2443, "lng": 19.7801,
+     "source": "OSM parking Pieskowa Skała", "area": "Pieskowa Skała"},
 ]
 
 
