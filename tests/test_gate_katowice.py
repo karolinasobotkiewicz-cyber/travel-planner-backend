@@ -157,6 +157,12 @@ def test_katowice_client_mail_defects_are_gone():
                         sport_hit = True
                     if any(k in folded for k in UNDER):
                         under_hit = True
+                    why = [
+                        str(x).lower()
+                        for x in (getattr(it, "why_selected", None) or [])
+                    ]
+                    if any("excel_pool" in w for w in why):
+                        hits.append(f"J{num} D{day.day} [excel_pool] {nm}")
                     try:
                         st = time_to_minutes(getattr(it, "start_time", None) or "")
                     except Exception:
@@ -191,6 +197,14 @@ def test_katowice_client_mail_defects_are_gone():
                         km = float(getattr(it, "distance_km", 0) or 0)
                     except (TypeError, ValueError):
                         km = 0.0
+                    if "public" in mode and "car" in [
+                        str(m).lower() for m in (payload.get("transport_modes") or [])
+                    ] and "public_transport" not in [
+                        str(m).lower() for m in (payload.get("transport_modes") or [])
+                    ]:
+                        hits.append(
+                            f"J{num} D{day.day} [car_pt] {frm} → {dest}"
+                        )
                     if "car" in mode:
                         car_km += km
                         if km >= 80:
@@ -219,6 +233,27 @@ def test_katowice_client_mail_defects_are_gone():
                         hits.append(f"J{num} D{day.day} [ghost_from] {frm}")
                     if dest:
                         seen.add(_fold_place_label(dest))
+            seq = list(day.items or [])
+            for i, it in enumerate(seq[:-2]):
+                if _tv(it) != ItemType.TRANSIT.value:
+                    continue
+                mid, back = seq[i + 1], seq[i + 2]
+                if _tv(mid) != ItemType.ATTRACTION.value or _tv(back) != ItemType.TRANSIT.value:
+                    continue
+                a_from = (getattr(it, "from_location", "") or "").strip()
+                a_to = (getattr(it, "to_location", "") or "").strip()
+                b_from = (getattr(back, "from_location", "") or "").strip()
+                b_to = (getattr(back, "to_location", "") or "").strip()
+                visit = (getattr(mid, "name", "") or "").strip()
+                if (
+                    a_to and visit and b_from and b_to and a_from
+                    and _fold_place_label(a_to) == _fold_place_label(visit)
+                    and _fold_place_label(b_from) == _fold_place_label(visit)
+                    and _fold_place_label(b_to) == _fold_place_label(a_from)
+                ):
+                    hits.append(
+                        f"J{num} D{day.day} [backtrack] {a_from} → {visit}"
+                    )
             if n_attr == 0:
                 hits.append(f"J{num} D{day.day} [empty_day]")
             if (
