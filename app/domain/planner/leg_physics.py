@@ -174,6 +174,12 @@ def is_slow_profile(context: Optional[Dict[str, Any]]) -> bool:
 
 
 def walk_threshold_km(context: Optional[Dict[str, Any]]) -> float:
+    raw = (context or {}).get("walk_max_km")
+    if raw:
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            pass
     return WALK_MAX_KM_SLOW if is_slow_profile(context) else WALK_MAX_KM
 
 
