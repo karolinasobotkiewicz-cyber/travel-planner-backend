@@ -2485,6 +2485,31 @@ def _apply_day_dates(days: List["DayPlan"], start_date_str: Optional[str]) -> No
             continue
 
 
+def krakow_client_limits(context: Optional[Dict[str, Any]]) -> tuple:
+    """Hop cap, day walk budget, lunch deadline, max attractions before lunch.
+
+    A family with a child and a senior day cannot spend 8 km walking between
+    stops. The parking tail counts toward the same hop cap. Lunch for a
+    five-year-old is not 15:00.
+    """
+    ctx = context or {}
+    style = str(
+        getattr(ctx.get("travel_style"), "value", ctx.get("travel_style")) or ""
+    ).lower()
+    group = str(
+        getattr(ctx.get("group_type"), "value", ctx.get("group_type")) or ""
+    ).lower()
+    if not group and isinstance(ctx.get("group"), dict):
+        group = str(ctx["group"].get("type") or "").lower()
+    if "kid" in group or "family" in group or "senior" in group:
+        return (0.8, 4.5, 13 * 60 + 30, 2)
+    if style in ("relax", "relaxed", "slow"):
+        return (1.0, 5.5, 14 * 60, 3)
+    if style == "balanced":
+        return (1.2, 7.0, 14 * 60 + 30, 3)
+    return (1.6, 9.0, 14 * 60 + 45, 4)
+
+
 class PlanService:
     """
     Service dla generowania planów.
@@ -45435,7 +45460,7 @@ class PlanService:
                 ppt = (float(park["lat"]), float(park["lng"]))
                 # A walk that would leave the car farther than the guest can
                 # walk back becomes an hour of marching and a teleport later.
-                if _walk_km(pa, pb) <= thr and _walk_km(pb, car_pt) <= 2.5:
+                if _walk_km(pa, pb) <= thr and _walk_km(pb, car_pt) <= thr:
                     if lp.haversine_km(pa[0], pa[1], pb[0], pb[1]) >= 0.02:
                         chain.append(_leg(na, pa, nb, pb, "walk", "estimated_walk"))
                 elif k == 0:
@@ -45474,6 +45499,13 @@ class PlanService:
                         # back to Kopiec while the car sits at the rope park
                         # is the teleport the client reported.
                         stranded = float(back["km"]) > thr
+                        if stranded:
+                            # A walk back longer than the profile cap is the
+                            # Kopiec march. Leave this arrival for the ledger
+                            # to drop or to drive while the guest is still
+                            # beside the car.
+                            chains.append([])
+                            continue
                         if (
                             pt_allowed
                             and not stranded
@@ -45673,14 +45705,7 @@ class PlanService:
             return out
 
     def _krakow_walk_cap(self, context: Optional[Dict[str, Any]]) -> float:
-        ctx = context or {}
-        style = str(getattr(ctx.get("travel_style"), "value", ctx.get("travel_style")) or "").lower()
-        group = str(getattr(ctx.get("group_type"), "value", ctx.get("group_type")) or "").lower()
-        if "senior" in group or style in ("relax", "relaxed", "slow"):
-            return 1.25
-        if style == "balanced":
-            return 1.6
-        return 2.5
+        return float(krakow_client_limits(context)[0])
 
     def _krakow_fix375_shape(
         self, items: List[Any],
@@ -47054,8 +47079,813 @@ class PlanService:
                 f"[FIX #375] Kraków shape failed "
                 f"{type(_exc375).__name__}: {_exc375}"
             )
+        try:
+            out_days = self._seal_fix376_krakow_budget(out_days, ctx)
+        except Exception as _exc376:
+            print(
+                f"[FIX #376] Kraków budget failed "
+                f"{type(_exc376).__name__}: {_exc376}"
+            )
         return out_days
 
+
+    def _seal_fix376_krakow_budget(
+        self,
+        days: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #376: the walk budget, one parking per neighborhood, lunch on time.
+
+        The car parks once for a neighborhood. A stop whose best real parking
+        still leaves a walk over the profile cap is not scheduled. Lunch sits
+        in the current neighborhood before the day leaves it. A museum visit
+        is at least an hour. The short-day note is removed when the afternoon
+        is actually full.
+        """
+        if (
+            not days
+            or _is_locked_city_context(context)
+            or not _is_krakow_context(context)
+        ):
+            return days
+        from app.domain.models.plan import (
+            AttractionItem,
+            FreeTimeItem,
+            ParkingInfo,
+            ParkingType,
+            TicketInfo,
+            TransitItem,
+            TransitMode,
+        )
+        from app.domain.planner import krakow_parking as kp
+        from app.domain.planner import leg_physics as lp
+        from app.domain.scoring.preference_coverage import (
+            poi_covers_preference_report,
+        )
+
+        ctx = dict(context or {})
+        ctx["requested_city"] = ctx.get("requested_city") or "Kraków"
+        ctx["has_car"] = ctx.get("has_car", True)
+        hop, day_budget, lunch_by, max_before = krakow_client_limits(ctx)
+        ctx["walk_max_km"] = hop
+        group = str(
+            getattr(ctx.get("group_type"), "value", ctx.get("group_type")) or ""
+        ).lower()
+        seniors = "senior" in group
+        prefs = [str(p) for p in (ctx.get("preferences") or [])]
+        winter = str(ctx.get("season") or "").strip().lower() == "winter"
+        raw_date = ctx.get("date") or ctx.get("start_date")
+        if raw_date is not None:
+            try:
+                month = (
+                    int(raw_date.month) if hasattr(raw_date, "month")
+                    else int(str(raw_date)[5:7])
+                )
+                winter = winter or month in (11, 12, 1, 2)
+            except (TypeError, ValueError):
+                pass
+        try:
+            win_end = time_to_minutes(ctx.get("day_end") or "20:00")
+        except Exception:
+            win_end = 20 * 60
+        hub = _city_center_coords("Kraków") or lp.KRAKOW_HUB
+        hub = (float(hub[0]), float(hub[1]))
+        p0 = kp.start_parking(hub)
+        pool = ctx.get("poi_pool") or []
+        if isinstance(pool, dict):
+            pool = list(pool.values())
+        if not pool:
+            try:
+                import os
+                from app.infrastructure.repositories.load_zakopane import (
+                    load_zakopane_poi,
+                )
+                mc_path = os.path.join("data", "multi_city_attractions.xlsx")
+                if os.path.exists(mc_path):
+                    pool = load_zakopane_poi(mc_path, city_filter="Kraków")
+            except Exception:
+                pool = []
+        pool_by_fold = {}
+        for poi in pool:
+            if isinstance(poi, dict) and (poi.get("name") or poi.get("Name")):
+                pool_by_fold[_fold_place_label(str(poi.get("name") or poi.get("Name")))] = poi
+
+        def _clk(it: Any, attr: str) -> Optional[int]:
+            raw = getattr(it, attr, None)
+            if not raw:
+                return None
+            try:
+                return time_to_minutes(str(raw))
+            except Exception:
+                return None
+
+        def _wk(a: tuple, b: tuple) -> float:
+            return float(lp.leg_km(a, b, "walk", city="Kraków")[0])
+
+        def _outdoor(it: Any) -> bool:
+            nm = _fold_place_label(getattr(it, "name", "") or "")
+            return any(
+                k in nm for k in (
+                    "planty", "blonia", "bulwar", "las wolski", "bednarskiego",
+                    "jordana", "decjusza", "lotnikow", "ogrod botan", "skalk",
+                    "kopiec",
+                )
+            )
+
+        def _museum(it: Any) -> bool:
+            nm = _fold_place_label(getattr(it, "name", "") or "")
+            return "muzeum" in nm or "podziemia" in nm
+
+        def _covers(it: Any) -> bool:
+            if not prefs:
+                return True
+            folded = _fold_place_label(getattr(it, "name", "") or "")
+            poi = pool_by_fold.get(folded)
+            if not poi:
+                return True
+            for pref in prefs:
+                try:
+                    if poi_covers_preference_report(poi, pref):
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        def _meal_pin(it: Any) -> tuple:
+            for s in (getattr(it, "suggestions", None) or [])[:1]:
+                nm = getattr(s, "name", None) or (s.get("name") if isinstance(s, dict) else "")
+                lat = getattr(s, "lat", None) if not isinstance(s, dict) else s.get("lat")
+                lng = getattr(s, "lng", None) if not isinstance(s, dict) else s.get("lng")
+                if nm:
+                    if lat is not None and lng is not None:
+                        try:
+                            return str(nm), (float(lat), float(lng))
+                        except (TypeError, ValueError):
+                            return str(nm), None
+                    return str(nm), None
+            label = (getattr(it, "label", None) or "Lunch").strip()
+            return label, None
+
+        rebuilt_days: List[Any] = []
+        seen: set = set()
+        for day in days:
+            items = list(getattr(day, "items", None) or [])
+            day_start = None
+            day_end_item = None
+            lunch = None
+            dinner = None
+            attrs: List[Any] = []
+            for it in items:
+                kind = _item_type_value(it)
+                if kind == ItemType.DAY_START.value:
+                    day_start = it
+                elif kind == ItemType.DAY_END.value:
+                    day_end_item = it
+                elif kind == ItemType.LUNCH_BREAK.value and lunch is None:
+                    lunch = it
+                elif kind == ItemType.DINNER_BREAK.value and dinner is None:
+                    dinner = it
+                elif _is_timeline_attraction(it):
+                    attrs.append(it)
+            origin = _clk(day_start, "time") if day_start is not None else 9 * 60
+            if origin is None:
+                origin = 9 * 60
+            window_end = _clk(day_end_item, "time") if day_end_item is not None else win_end
+            if window_end is None:
+                window_end = win_end
+
+            kept: List[Any] = []
+            for it in attrs:
+                folded = _fold_place_label(getattr(it, "name", "") or "")
+                if not folded:
+                    continue
+                if any(
+                    folded == prev or (
+                        len(folded) >= 10 and len(prev) >= 10
+                        and (folded in prev or prev in folded)
+                    )
+                    for prev in list(seen) + [
+                        _fold_place_label(getattr(x, "name", "") or "") for x in kept
+                    ]
+                ):
+                    continue
+                if seniors and not _covers(it) and len(attrs) > 2:
+                    continue
+                pt = self._item_stop_latlng(it)
+                if not pt:
+                    continue
+                park, _d = kp.nearest_parking(pt)
+                tail = _wk(pt, (float(park["lat"]), float(park["lng"])))
+                if tail > hop:
+                    continue
+                if _museum(it):
+                    st, en = _clk(it, "start_time"), _clk(it, "end_time")
+                    dur = (en - st) if st is not None and en is not None and en > st else int(
+                        getattr(it, "duration_min", 0) or 60
+                    )
+                    if dur < 60:
+                        try:
+                            it = it.model_copy(update={"duration_min": 60})
+                        except Exception:
+                            pass
+                kept.append(it)
+            if not kept:
+                kept = attrs[:1]
+
+            groups: List[dict] = []
+            index: Dict[str, int] = {}
+            placed: List[tuple] = []
+            for it in kept:
+                pt = self._item_stop_latlng(it)
+                park, _d = kp.nearest_parking(pt)
+                join = None
+                for gi, gpt in placed:
+                    if gpt and pt and _wk(gpt, pt) <= 0.7:
+                        join = gi
+                        break
+                if join is not None:
+                    groups[join]["stops"].append(it)
+                    placed.append((join, pt))
+                    continue
+                key = str(park["name"])
+                if key in index:
+                    groups[index[key]]["stops"].append(it)
+                    placed.append((index[key], pt))
+                else:
+                    index[key] = len(groups)
+                    groups.append({"park": park, "stops": [it]})
+                    placed.append((index[key], pt))
+
+            ordered: List[tuple] = []
+            before = 0
+            seated = lunch is None
+            for group in groups:
+                for it in group["stops"]:
+                    if (
+                        not seated
+                        and before >= max_before
+                    ):
+                        ordered.append(("lunch", lunch))
+                        seated = True
+                    ordered.append(("attr", it))
+                    if not seated:
+                        before += 1
+            if lunch is not None and not seated:
+                ordered.append(("lunch", lunch))
+            if dinner is not None and window_end >= 17 * 60:
+                ordered.append(("dinner", dinner))
+
+            people_name = "Kraków"
+            people_pt = hub
+            car_name = str(p0["name"])
+            car_pt = (float(p0["lat"]), float(p0["lng"]))
+            started = False
+            t = origin
+            walk_used = 0.0
+            lunch_end = None
+            out: List[Any] = []
+            if day_start is not None:
+                out.append(day_start)
+            had_lunch = lunch is None
+
+            def _leg(
+                frm: str, a: tuple, to: str, b: tuple, mode: str, src: str,
+                *, allow_short_car: bool = False,
+            ) -> Optional[dict]:
+                if mode == "walk":
+                    km = _wk(a, b)
+                    if km > hop + 0.02:
+                        return None
+                    minutes = max(1, int(lp.leg_minutes(km, "walk", ctx))) if km >= 0.02 else 0
+                else:
+                    km = float(lp.leg_km(a, b, "car", city="Kraków")[0])
+                    if km < (0.05 if allow_short_car else 0.80):
+                        return None
+                    minutes = max(1, int(lp.leg_minutes(km, "car", ctx)))
+                path = [a, b]
+                return {
+                    "from": frm, "to": to, "mode": mode, "km": km,
+                    "min": minutes, "path": path, "src": src,
+                }
+
+            def _go(name: str, pt: tuple, *, to_door: bool, force_car: bool = False) -> Optional[tuple]:
+                nonlocal people_name, people_pt, car_name, car_pt, started
+                park, _d = kp.nearest_parking(pt)
+                plab = str(park["name"])
+                ppt = (float(park["lat"]), float(park["lng"]))
+                tail = _wk(ppt, pt)
+                legs: List[dict] = []
+                p_name, p_pt = people_name, people_pt
+                c_name, c_pt = car_name, car_pt
+                begun = started
+
+                def _push(leg: Optional[dict], kind_name: str, kind_pt: tuple, move_car: bool) -> bool:
+                    nonlocal p_name, p_pt, c_name, c_pt
+                    if leg is None:
+                        return False
+                    legs.append(leg)
+                    p_name, p_pt = kind_name, kind_pt
+                    if move_car:
+                        c_name, c_pt = kind_name, kind_pt
+                    return True
+
+                direct = hop + 1 if force_car else _wk(p_pt, pt)
+                if (
+                    direct <= hop
+                    and _wk(pt, c_pt) <= hop
+                    and not (not begun and direct > hop)
+                ):
+                    if direct >= 0.02:
+                        if not _push(
+                            _leg(p_name, p_pt, name, pt, "walk", "estimated_walk"),
+                            name, pt, False,
+                        ):
+                            return None
+                    else:
+                        p_name, p_pt = name, pt
+                    return legs, p_name, p_pt, c_name, c_pt, begun or True
+
+                if not begun and c_name != plab and _wk(p_pt, c_pt) > 0.05:
+                    drive = _leg(p_name, p_pt, plab, ppt, "car", "estimated_road")
+                    if drive is None:
+                        return None
+                    if not _push(drive, plab, ppt, True):
+                        return None
+                    begun = True
+                else:
+                    gap = _wk(p_pt, c_pt)
+                    if gap >= 0.02:
+                        if gap > hop:
+                            return None
+                        if not _push(
+                            _leg(p_name, p_pt, c_name, c_pt, "walk", "return_to_car"),
+                            c_name, c_pt, False,
+                        ):
+                            return None
+                    if c_name != plab:
+                        drive = _leg(c_name, c_pt, plab, ppt, "car", "estimated_road")
+                        if drive is not None:
+                            if not _push(drive, plab, ppt, True):
+                                return None
+                        elif (not force_car) and _wk(p_pt, pt) <= hop:
+                            if _wk(p_pt, pt) >= 0.02 and not _push(
+                                _leg(p_name, p_pt, name, pt, "walk", "estimated_walk"),
+                                name, pt, False,
+                            ):
+                                return None
+                            return legs, name, pt, c_name, c_pt, True
+
+                if (not force_car) and _wk(p_pt, pt) <= hop:
+                    if _wk(p_pt, pt) >= 0.02 and not _push(
+                        _leg(p_name, p_pt, name, pt, "walk", "estimated_walk"),
+                        name, pt, False,
+                    ):
+                        return None
+                    p_name, p_pt = name, pt
+                    return legs, p_name, p_pt, c_name, c_pt, True
+                if to_door:
+                    drive = _leg(
+                        c_name, c_pt, name, pt, "car", "estimated_road",
+                        allow_short_car=True,
+                    )
+                    if drive is None or not _push(drive, name, pt, True):
+                        return None
+                    return legs, name, pt, name, pt, True
+                return None
+
+            def _emit(legs: List[dict]) -> None:
+                nonlocal t, walk_used
+                mode_enum = {
+                    "walk": TransitMode.WALK,
+                    "car": TransitMode.CAR,
+                }
+                for lg in legs:
+                    if lg["min"] <= 0 or lg["km"] < 0.02:
+                        continue
+                    path = lg["path"]
+                    out.append(TransitItem(
+                        start_time=minutes_to_time(t),
+                        end_time=minutes_to_time(t + lg["min"]),
+                        duration_min=int(lg["min"]),
+                        mode=mode_enum[lg["mode"]],
+                        from_location=lg["from"],
+                        to_location=lg["to"],
+                        geometry=[[float(p[1]), float(p[0])] for p in path],
+                        geometry_latlng=[[float(p[0]), float(p[1])] for p in path],
+                        distance_km=round(float(lg["km"]), 3),
+                        routing_source=lg["src"],
+                    ))
+                    t += int(lg["min"])
+                    if lg["mode"] == "walk":
+                        walk_used += float(lg["km"])
+
+            def _seat_meal(it: Any, earliest: int) -> None:
+                nonlocal t, had_lunch, lunch_end, people_name, people_pt, car_name, car_pt, started
+                nm, pt = _meal_pin(it)
+                dur = int(getattr(it, "duration_min", 0) or 0)
+                st, en = _clk(it, "start_time"), _clk(it, "end_time")
+                if dur < 30 and st is not None and en is not None and en > st:
+                    dur = en - st
+                if dur < 30:
+                    dur = 45
+                if t < earliest:
+                    hole = earliest - t
+                    if hole > 90:
+                        extra = hole - 90
+                        for li in range(len(out) - 1, -1, -1):
+                            if not _is_timeline_attraction(out[li]):
+                                continue
+                            en = _clk(out[li], "end_time")
+                            if en is None or abs(en - t) > 8:
+                                continue
+                            try:
+                                out[li] = out[li].model_copy(update={
+                                    "end_time": minutes_to_time(en + extra),
+                                    "duration_min": int(getattr(out[li], "duration_min", 0) or 0) + extra,
+                                })
+                                t = en + extra
+                            except Exception:
+                                pass
+                            break
+                    gap = min(earliest - t, 60)
+                    if gap >= 15:
+                        out.append(FreeTimeItem(
+                            type=ItemType.FREE_TIME,
+                            start_time=minutes_to_time(t),
+                            end_time=minutes_to_time(t + gap),
+                            duration_min=gap,
+                            label="Przerwa przed kolejnym punktem",
+                            is_technical_buffer=gap < 30,
+                        ))
+                        t += gap
+                    if earliest - t < 45:
+                        t = earliest
+                reached = _go(nm, pt, to_door=True) if pt is not None else None
+                if reached is not None:
+                    add = sum(float(lg["km"]) for lg in reached[0] if lg["mode"] == "walk")
+                    if walk_used + add > day_budget + 0.05:
+                        driven = _go(nm, pt, to_door=True, force_car=True)
+                        if driven is not None:
+                            reached = driven
+                elif pt is not None:
+                    reached = _go(nm, pt, to_door=True, force_car=True)
+                if reached is not None:
+                    legs, people_name, people_pt, car_name, car_pt, started = reached
+                    _emit(legs)
+                elif pt is None and people_name and nm and _fold_place_label(nm) not in {
+                    "restauracja", "lunch", "kolacja", "obiad", "posilek",
+                }:
+                    out.append(TransitItem(
+                        start_time=minutes_to_time(t),
+                        end_time=minutes_to_time(t + 2),
+                        duration_min=2,
+                        mode=TransitMode.WALK,
+                        from_location=people_name,
+                        to_location=nm,
+                        distance_km=0.05,
+                        routing_source="estimated_walk",
+                    ))
+                    t += 2
+                    people_name = nm
+                try:
+                    it = it.model_copy(update={
+                        "start_time": minutes_to_time(t),
+                        "end_time": minutes_to_time(t + dur),
+                        "duration_min": dur,
+                    })
+                except Exception:
+                    pass
+                out.append(it)
+                if _item_type_value(it) == ItemType.LUNCH_BREAK.value:
+                    had_lunch = True
+                    lunch_end = t + dur
+                t += dur
+
+            pending_attr = 0
+            for kind, it in ordered:
+                if kind == "lunch":
+                    if not had_lunch:
+                        _seat_meal(it, 12 * 60)
+                    continue
+                if kind == "dinner":
+                    earliest = 17 * 60
+                    if lunch_end is not None:
+                        earliest = max(earliest, lunch_end + 180)
+                    if earliest - t > 90:
+                        # One nearby stop beats a three-hour hole.
+                        planted = None
+                        fallback = None
+                        for poi in pool:
+                            if not isinstance(poi, dict):
+                                continue
+                            pnm = str(poi.get("name") or poi.get("Name") or "").strip()
+                            folded = _fold_place_label(pnm)
+                            if not pnm or not folded or folded in seen:
+                                continue
+                            if not str(poi.get("address") or poi.get("Address") or "").strip():
+                                continue
+                            try:
+                                lat = float(poi.get("lat") or poi.get("Lat"))
+                                lng = float(poi.get("lng") or poi.get("Lng"))
+                            except (TypeError, ValueError):
+                                continue
+                            pk_try, _pd = kp.nearest_parking((lat, lng))
+                            if _wk((lat, lng), (float(pk_try["lat"]), float(pk_try["lng"]))) > hop:
+                                continue
+                            if winter and t >= 16 * 60 and any(
+                                k in folded for k in (
+                                    "planty", "blonia", "bulwar", "kopiec",
+                                    "jordana", "skalk", "las wolski",
+                                )
+                            ):
+                                continue
+                            covers = (not prefs) or any(
+                                poi_covers_preference_report(poi, pref) for pref in prefs
+                            )
+                            if not covers:
+                                if fallback is None:
+                                    fallback = (poi, pnm, folded, lat, lng)
+                                continue
+                            planted = (poi, pnm, folded, lat, lng)
+                            break
+                        if planted is None:
+                            planted = fallback
+                        if planted:
+                            poi, pnm, folded, lat, lng = planted
+                            visit = min(90, max(45, earliest - t - 20))
+                            pk, _d = kp.nearest_parking((lat, lng))
+                            per = 0
+                            try:
+                                per = int(float(poi.get("ticket_normal") or 0))
+                            except (TypeError, ValueError):
+                                per = 0
+                            vis = AttractionItem(
+                                type=ItemType.ATTRACTION,
+                                poi_id=str(poi.get("id") or poi.get("ID") or folded[:24]),
+                                name=pnm,
+                                description_short=(str(
+                                    poi.get("description_short") or pnm
+                                ).strip() or pnm)[:240],
+                                start_time=minutes_to_time(t),
+                                end_time=minutes_to_time(t + visit),
+                                duration_min=visit,
+                                lat=lat,
+                                lng=lng,
+                                address=str(poi.get("address") or poi.get("Address")),
+                                city=str(poi.get("city") or "Kraków"),
+                                cost_estimate=max(0, per),
+                                ticket_info=TicketInfo(
+                                    ticket_normal=max(0, per), ticket_reduced=0,
+                                ),
+                                parking=ParkingInfo(
+                                    name=str(pk["name"]),
+                                    address=str(pk["name"]),
+                                    parking_type=ParkingType.PAID,
+                                    cost=None,
+                                    walk_time_min=5,
+                                    lat=float(pk["lat"]),
+                                    lng=float(pk["lng"]),
+                                ),
+                                why_selected=["Pasuje do preferencji tego wyjazdu"],
+                            )
+                            reached = _go(pnm, (lat, lng), to_door=False)
+                            if reached is not None:
+                                legs, people_name, people_pt, car_name, car_pt, started = reached
+                                _emit(legs)
+                                try:
+                                    vis = vis.model_copy(update={
+                                        "start_time": minutes_to_time(t),
+                                        "end_time": minutes_to_time(t + visit),
+                                    })
+                                except Exception:
+                                    pass
+                                out.append(vis)
+                                seen.add(folded)
+                                t += visit
+                    if earliest - t > 90 and out:
+                        extra = earliest - t - 90
+                        for li in range(len(out) - 1, -1, -1):
+                            if not _is_timeline_attraction(out[li]):
+                                continue
+                            en = _clk(out[li], "end_time") or t
+                            if abs(en - t) > 8:
+                                continue
+                            try:
+                                out[li] = out[li].model_copy(update={
+                                    "end_time": minutes_to_time(en + extra),
+                                    "duration_min": int(getattr(out[li], "duration_min", 0) or 0) + extra,
+                                })
+                                t = max(t, en + extra)
+                            except Exception:
+                                pass
+                            break
+                    _seat_meal(it, earliest)
+                    continue
+                pt = self._item_stop_latlng(it)
+                if not pt:
+                    continue
+                dur = int(getattr(it, "duration_min", 0) or 0)
+                st, en = _clk(it, "start_time"), _clk(it, "end_time")
+                if (dur < 20) and st is not None and en is not None and en > st:
+                    dur = en - st
+                if _museum(it):
+                    dur = max(dur, 60)
+                if dur < 20:
+                    dur = 45
+                if winter and _outdoor(it) and t + 20 >= 16 * 60 + 30:
+                    continue
+                meal_pad = 40
+                if lunch is not None and people_pt is not None:
+                    _meal_nm, meal_pt = _meal_pin(lunch)
+                    if meal_pt is not None:
+                        away = _wk(people_pt, meal_pt)
+                        meal_pad = 20 + max(
+                            15,
+                            int(lp.leg_minutes(away, "car" if away > hop else "walk", ctx)),
+                        )
+                if (
+                    not had_lunch
+                    and pending_attr >= 1
+                    and lunch is not None
+                    and (
+                        pending_attr >= max_before
+                        or t >= lunch_by - 10
+                        or t + dur + meal_pad > lunch_by
+                    )
+                ):
+                    _seat_meal(lunch, t)
+                if t + dur > window_end + 30 and pending_attr >= 1:
+                    continue
+                reached = _go(getattr(it, "name", "") or "Atrakcja", pt, to_door=False)
+                if reached is None:
+                    continue
+                legs, n_name, n_pt, n_car, n_cpt, n_started = reached
+                add = sum(float(lg["km"]) for lg in legs if lg["mode"] == "walk")
+                if _wk(n_pt, n_cpt) > 0.02:
+                    add += _wk(n_pt, n_cpt)
+                if walk_used + add > day_budget + 0.05 and pending_attr >= 1:
+                    continue
+                people_name, people_pt = n_name, n_pt
+                car_name, car_pt = n_car, n_cpt
+                started = n_started
+                _emit(legs)
+                try:
+                    it = it.model_copy(update={
+                        "start_time": minutes_to_time(t),
+                        "end_time": minutes_to_time(t + dur),
+                        "duration_min": dur,
+                    })
+                except Exception:
+                    pass
+                out.append(it)
+                seen.add(_fold_place_label(getattr(it, "name", "") or ""))
+                t += dur
+                pending_attr += 1
+            if lunch is not None and not had_lunch:
+                _seat_meal(lunch, 12 * 60)
+            if day_end_item is not None:
+                try:
+                    day_end_item = day_end_item.model_copy(update={
+                        "time": minutes_to_time(max(t, origin)),
+                    })
+                except Exception:
+                    pass
+                out.append(day_end_item)
+            try:
+                out = self._sort_items_by_time(out)
+            except Exception:
+                pass
+            occ_ix = []
+            for i, it in enumerate(out):
+                if _item_type_value(it) not in (
+                    ItemType.ATTRACTION.value,
+                    ItemType.LUNCH_BREAK.value,
+                    ItemType.DINNER_BREAK.value,
+                ):
+                    continue
+                st, en = _clk(it, "start_time"), _clk(it, "end_time")
+                if st is None or en is None or en <= st:
+                    continue
+                occ_ix.append((i, st, en))
+            for (i1, s1, e1), (_i2, s2, _e2) in zip(occ_ix, occ_ix[1:]):
+                gap = s2 - e1
+                if gap <= 90 or not _is_timeline_attraction(out[i1]):
+                    continue
+                transit_at = s2
+                for it in out:
+                    if it is None or _item_type_value(it) != ItemType.TRANSIT.value:
+                        continue
+                    st = _clk(it, "start_time")
+                    if st is not None and e1 < st < transit_at:
+                        transit_at = st
+                new_end = min(s2 - 90, transit_at)
+                if new_end <= e1:
+                    continue
+                try:
+                    out[i1] = out[i1].model_copy(update={
+                        "end_time": minutes_to_time(new_end),
+                        "duration_min": new_end - s1,
+                    })
+                except Exception:
+                    continue
+                for j, it in enumerate(out):
+                    if it is None or _item_type_value(it) != ItemType.FREE_TIME.value:
+                        continue
+                    fs, fe = _clk(it, "start_time"), _clk(it, "end_time")
+                    if fs is None or fe is None or fe <= e1 or fs >= transit_at:
+                        continue
+                    fs = max(new_end, fs)
+                    fe = min(fe, transit_at)
+                    if fe - fs > 60:
+                        fe = fs + 60
+                    if fe - fs < 15:
+                        out[j] = None
+                        continue
+                    try:
+                        out[j] = it.model_copy(update={
+                            "start_time": minutes_to_time(fs),
+                            "end_time": minutes_to_time(fe),
+                            "duration_min": fe - fs,
+                        })
+                    except Exception:
+                        pass
+                covered = new_end
+                for it in out:
+                    if it is None:
+                        continue
+                    kind = _item_type_value(it)
+                    if kind not in (ItemType.FREE_TIME.value, ItemType.TRANSIT.value):
+                        continue
+                    fs, fe = _clk(it, "start_time"), _clk(it, "end_time")
+                    if fs is None or fe is None or fe <= new_end or fs >= s2:
+                        continue
+                    covered = max(covered, min(fe, s2))
+                hole = transit_at - covered
+                if 45 <= hole <= 60 or (hole > 60 and hole - 60 < 45):
+                    span = min(hole, 60)
+                    out.append(FreeTimeItem(
+                        type=ItemType.FREE_TIME,
+                        start_time=minutes_to_time(covered),
+                        end_time=minutes_to_time(covered + span),
+                        duration_min=span,
+                        label="Przerwa przed kolejnym punktem",
+                        is_technical_buffer=span < 30,
+                    ))
+            out = [it for it in out if it is not None]
+            clipped: List[Any] = []
+            for it in out:
+                if _item_type_value(it) != ItemType.FREE_TIME.value:
+                    clipped.append(it)
+                    continue
+                st, en = _clk(it, "start_time"), _clk(it, "end_time")
+                if st is None or en is None:
+                    continue
+                for other in out:
+                    if _item_type_value(other) not in (
+                        ItemType.ATTRACTION.value,
+                        ItemType.LUNCH_BREAK.value,
+                        ItemType.DINNER_BREAK.value,
+                    ):
+                        continue
+                    a, b = _clk(other, "start_time"), _clk(other, "end_time")
+                    if a is None or b is None or en <= a or st >= b:
+                        continue
+                    st = max(st, b)
+                if en - st < 15:
+                    continue
+                try:
+                    it = it.model_copy(update={
+                        "start_time": minutes_to_time(st),
+                        "duration_min": en - st,
+                    })
+                except Exception:
+                    pass
+                clipped.append(it)
+            out = clipped
+            note = getattr(day, "note", None)
+            badges = list(getattr(day, "quality_badges", None) or [])
+            last_attr_end = None
+            for it in out:
+                if not _is_timeline_attraction(it):
+                    continue
+                en = _clk(it, "end_time")
+                if en is not None:
+                    last_attr_end = en if last_attr_end is None else max(last_attr_end, en)
+            if last_attr_end is not None and last_attr_end >= 16 * 60:
+                text = (note or "").lower()
+                if "krótszy dzień" in text or "wolne popołudnie" in text:
+                    note = None
+                    badges = [b for b in badges if b != "pool_exhausted"]
+            try:
+                day = day.model_copy(update={
+                    "items": out,
+                    "note": note,
+                    "quality_badges": badges,
+                })
+            except Exception:
+                pass
+            rebuilt_days.append(day)
+        return rebuilt_days
 
     def _seal_fix375_krakow_shape(
         self,

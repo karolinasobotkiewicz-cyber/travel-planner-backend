@@ -13,10 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from app.application.services.plan_service import PlanService, _fold_place_label
+from app.application.services.plan_service import (
+    PlanService, _fold_place_label, krakow_client_limits,
+)
 from app.domain.models.trip_input import TripInput
 from app.domain.models.plan import ItemType
-from app.domain.planner.krakow_parking import is_parking_label
 from app.domain.planner.time_utils import time_to_minutes
 from app.domain.validators.client_invariants import audit_plan
 from app.infrastructure.repositories.poi_repository import POIRepository
@@ -75,14 +76,10 @@ def test_krakow_client_mail_defects_are_gone():
                 "car_position_mismatch",
             ):
                 hits.append(f"J{num} D{d.day} [{d.code}] {d.message}")
-        style = str(payload.get("travel_style") or "").lower()
-        group = str((payload.get("group") or {}).get("type") or "").lower()
-        if "senior" in group or style in ("relax", "relaxed", "slow"):
-            walk_cap = 1.25
-        elif style == "balanced":
-            walk_cap = 1.6
-        else:
-            walk_cap = 2.5
+        hop, day_budget, lunch_by, max_before = krakow_client_limits({
+            "travel_style": payload.get("travel_style"),
+            "group_type": (payload.get("group") or {}).get("type"),
+        })
         seen_places: list[str] = []
         for day in plan.days:
             hits.extend(collect_day_mail_hits(
@@ -130,8 +127,7 @@ def test_krakow_client_mail_defects_are_gone():
                         km = 0.0
                     frm = getattr(it, "from_location", "") or ""
                     dest = getattr(it, "to_location", "") or ""
-                    parking_leg = is_parking_label(frm) or is_parking_label(dest)
-                    if km > 2.6 or (not parking_leg and km > walk_cap):
+                    if km > hop:
                         hits.append(
                             f"J{num} D{day.day} [long_walk] {frm} → {dest} {km:.2f} km"
                         )
@@ -160,6 +156,66 @@ def test_krakow_client_mail_defects_are_gone():
                     hits.append(
                         f"J{num} D{day.day} [dead_span] {e1}->{s2} ({s2 - e1} min)"
                     )
+            walk_sum = 0.0
+            lunch_start = None
+            before_lunch = 0
+            for it in day.items or []:
+                kind = getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
+                if kind == ItemType.TRANSIT.value:
+                    mode = str(getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) or "")
+                    if "walk" in mode:
+                        try:
+                            walk_sum += float(getattr(it, "distance_km", 0) or 0)
+                        except (TypeError, ValueError):
+                            pass
+                elif kind == ItemType.LUNCH_BREAK.value:
+                    try:
+                        lunch_start = time_to_minutes(getattr(it, "start_time", None) or "")
+                    except Exception:
+                        lunch_start = None
+                elif kind == ItemType.ATTRACTION.value:
+                    nm = _fold_place_label(getattr(it, "name", "") or "")
+                    if "muzeum" in nm or "podziemia" in nm:
+                        try:
+                            dur = time_to_minutes(getattr(it, "end_time", None) or "") - time_to_minutes(
+                                getattr(it, "start_time", None) or ""
+                            )
+                        except Exception:
+                            dur = int(getattr(it, "duration_min", 0) or 0)
+                        if dur < 60:
+                            hits.append(
+                                f"J{num} D{day.day} [short_museum] "
+                                f"{getattr(it, 'name', '')} {dur} min"
+                            )
+                    if lunch_start is None:
+                        before_lunch += 1
+            if walk_sum > day_budget + 0.05:
+                hits.append(
+                    f"J{num} D{day.day} [day_walk] {walk_sum:.2f} km"
+                )
+            if lunch_start is not None and lunch_start > lunch_by:
+                hits.append(
+                    f"J{num} D{day.day} [late_lunch] {lunch_start // 60:02d}:{lunch_start % 60:02d}"
+                )
+            if before_lunch > max_before:
+                hits.append(
+                    f"J{num} D{day.day} [lunch_after] {before_lunch} atrakcji"
+                )
+            note = (getattr(day, "note", None) or "").lower()
+            if "krótszy dzień" in note or "wolne popołudnie" in note:
+                for it in day.items or []:
+                    kind = getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
+                    if kind != ItemType.ATTRACTION.value:
+                        continue
+                    try:
+                        en = time_to_minutes(getattr(it, "end_time", None) or "")
+                    except Exception:
+                        continue
+                    if en >= 16 * 60:
+                        hits.append(
+                            f"J{num} D{day.day} [false_short_day] {getattr(day, 'note', '')}"
+                        )
+                        break
 
     assert not hits, (
         "Kraków car/physics defects still in the client JSONs:\n"
