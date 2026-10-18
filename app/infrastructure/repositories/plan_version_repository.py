@@ -54,6 +54,8 @@ class PlanVersionRepository:
         Raises:
             Exception: Database operation failed
         """
+        from app.infrastructure.database.connection import refresh_session
+        refresh_session(self.db)
         try:
             # Get current latest version number
             latest = self.db.query(PlanVersion).filter(

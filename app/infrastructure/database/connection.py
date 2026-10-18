@@ -30,9 +30,34 @@ if not DATABASE_URL:
 engine = create_engine(
     DATABASE_URL,
     poolclass=NullPool,  # No connection pooling (better for serverless)
+    pool_pre_ping=True,
     echo=False,  # Set to True for SQL query logging (debug only)
     future=True,  # SQLAlchemy 2.0 style
+    connect_args={"connect_timeout": 8},
 )
+
+
+def refresh_session(db: Session) -> None:
+    """A plan can outlive Supabase's idle connection. Reopen it before save."""
+    from sqlalchemy import text
+
+    try:
+        db.execute(text("SELECT 1"))
+        return
+    except Exception:
+        pass
+    try:
+        db.rollback()
+    except Exception:
+        pass
+    try:
+        db.connection().invalidate()
+    except Exception:
+        pass
+    try:
+        db.rollback()
+    except Exception:
+        pass
 
 # Session factory
 SessionLocal = sessionmaker(

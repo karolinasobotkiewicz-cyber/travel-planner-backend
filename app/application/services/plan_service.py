@@ -47516,46 +47516,44 @@ class PlanService:
                         return it, str(sn), (lat_f, lng_f)
                     if people_pt is None:
                         return it, nm, None
-                    try:
-                        from app.infrastructure.repositories.restaurant_repository import (
-                            RestaurantRepository,
-                        )
-                        kind = (
-                            "dinner"
-                            if _item_type_value(it) == ItemType.DINNER_BREAK.value
-                            else "lunch"
-                        )
-                        repo = RestaurantRepository()
-                        rows = repo.get_nearby(
-                            people_pt[0], people_pt[1], radius_km=3.0, meal_type=kind,
-                        ) or repo.get_nearby(people_pt[0], people_pt[1], radius_km=3.0)
-                        best = None
-                        for row in rows or []:
-                            try:
-                                rpt = (float(row.lat), float(row.lng))
-                            except (TypeError, ValueError, AttributeError):
-                                continue
-                            if abs(rpt[0]) < 0.01 or abs(rpt[1]) < 0.01:
-                                continue
-                            park, _d = kp.nearest_parking(rpt)
-                            if _wk(rpt, (float(park["lat"]), float(park["lng"]))) > hop:
-                                continue
-                            dist = _wk(people_pt, rpt)
-                            if best is None or dist < best[0]:
-                                best = (dist, row, rpt)
-                        if best is not None:
-                            sug = _restaurant_dict_to_suggestion(repo.to_dict(best[1]), kind)
-                            try:
-                                it = it.model_copy(update={
-                                    "suggestions": [sug],
-                                    "label": str(sug.name),
-                                })
-                            except Exception:
-                                sug = None
-                            if sug is not None and getattr(it, "suggestions", None):
-                                return it, str(sug.name), best[2]
-                    except Exception:
-                        pass
+                    kind = (
+                        "dinner"
+                        if _item_type_value(it) == ItemType.DINNER_BREAK.value
+                        else "lunch"
+                    )
+                    # Restaurants were loaded once at the start of the plan.
+                    # A fresh database session here holds the request open until
+                    # Render cuts it and the client only sees an error.
+                    best = None
+                    for row in (context or {}).get("restaurants_available") or []:
+                        if not isinstance(row, dict):
+                            continue
+                        meal = str(row.get("meal_type") or "").lower()
+                        if meal and meal not in (kind, "both", "any"):
+                            continue
+                        try:
+                            rpt = (float(row.get("lat")), float(row.get("lng")))
+                        except (TypeError, ValueError):
+                            continue
+                        if abs(rpt[0]) < 0.01 or abs(rpt[1]) < 0.01:
+                            continue
+                        park, _d = kp.nearest_parking(rpt)
+                        if _wk(rpt, (float(park["lat"]), float(park["lng"]))) > hop:
+                            continue
+                        dist = _wk(people_pt, rpt)
+                        if best is None or dist < best[0]:
+                            best = (dist, row, rpt)
+                    if best is not None:
+                        try:
+                            sug = _restaurant_dict_to_suggestion(best[1], kind)
+                            it = it.model_copy(update={
+                                "suggestions": [sug],
+                                "label": str(sug.name),
+                            })
+                        except Exception:
+                            sug = None
+                        if sug is not None and getattr(it, "suggestions", None):
+                            return it, str(sug.name), best[2]
                 if pt is None:
                     label = (
                         "Kolacja"

@@ -63,6 +63,8 @@ class PlanPostgreSQLRepository(IPlanRepository):
         if user_id and guest_id:
             raise ValueError("Cannot provide both user_id and guest_id")
         
+        from app.infrastructure.database.connection import refresh_session
+        refresh_session(self.db)
         try:
             plan_id = plan.plan_id
             
