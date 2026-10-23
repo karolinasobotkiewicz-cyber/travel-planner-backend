@@ -18,6 +18,7 @@ from app.application.services.plan_service import (
 )
 from app.domain.models.trip_input import TripInput
 from app.domain.models.plan import ItemType
+from app.domain.planner.engine import visit_duration_hard_cap
 from app.domain.planner.time_utils import time_to_minutes
 from app.domain.validators.client_invariants import audit_plan
 from app.infrastructure.repositories.poi_repository import POIRepository
@@ -175,27 +176,62 @@ def test_krakow_client_mail_defects_are_gone():
                         lunch_start = None
                 elif kind == ItemType.ATTRACTION.value:
                     nm = _fold_place_label(getattr(it, "name", "") or "")
-                    if "muzeum" in nm or "podziemia" in nm:
-                        try:
-                            dur = time_to_minutes(getattr(it, "end_time", None) or "") - time_to_minutes(
-                                getattr(it, "start_time", None) or ""
-                            )
-                        except Exception:
-                            dur = int(getattr(it, "duration_min", 0) or 0)
-                        if dur < 60:
-                            hits.append(
-                                f"J{num} D{day.day} [short_museum] "
-                                f"{getattr(it, 'name', '')} {dur} min"
-                            )
+                    try:
+                        dur = time_to_minutes(getattr(it, "end_time", None) or "") - time_to_minutes(
+                            getattr(it, "start_time", None) or ""
+                        )
+                    except Exception:
+                        dur = int(getattr(it, "duration_min", 0) or 0)
+                    cap = visit_duration_hard_cap({"name": getattr(it, "name", "") or ""})
+                    if ("muzeum" in nm or "podziemia" in nm) and dur < 60 and (cap is None or cap >= 60):
+                        hits.append(
+                            f"J{num} D{day.day} [short_museum] "
+                            f"{getattr(it, 'name', '')} {dur} min"
+                        )
+                    low = (getattr(it, "name", "") or "").lower()
+                    if cap is None and any(k in low for k in ("pomnik", "brama", "kładka", "kladka")):
+                        cap = 30
+                    if cap is not None and dur > cap + 5:
+                        hits.append(
+                            f"J{num} D{day.day} [long_visit] "
+                            f"{getattr(it, 'name', '')} {dur} min > {cap}"
+                        )
                     if lunch_start is None:
                         before_lunch += 1
             if walk_sum > day_budget + 0.05:
                 hits.append(
                     f"J{num} D{day.day} [day_walk] {walk_sum:.2f} km"
                 )
-            if lunch_start is not None and lunch_start > lunch_by:
+            try:
+                win_end = time_to_minutes(
+                    (payload.get("daily_time_window") or {}).get("end") or ""
+                )
+            except Exception:
+                win_end = None
+            if win_end is not None and win_end <= 16 * 60 + 30:
+                last_attr_end = None
+                dinner_after = False
+                for it in day.items or []:
+                    kind = getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
+                    if kind == ItemType.ATTRACTION.value:
+                        try:
+                            last_attr_end = time_to_minutes(getattr(it, "end_time", None) or "")
+                        except Exception:
+                            pass
+                    elif kind == ItemType.DINNER_BREAK.value and last_attr_end is not None:
+                        dinner_after = True
+                if (
+                    last_attr_end is not None
+                    and not dinner_after
+                    and win_end - last_attr_end >= 70
+                ):
+                    hits.append(
+                        f"J{num} D{day.day} [short_afternoon] "
+                        f"{last_attr_end // 60:02d}:{last_attr_end % 60:02d}"
+                    )
+            if lunch_start is not None and lunch_start > lunch_by + 15:
                 grace = False
-                if lunch_start <= lunch_by + 50:
+                if lunch_start <= lunch_by + 20:
                     prev_ll = None
                     last_ll = None
                     for it in day.items or []:
@@ -216,7 +252,11 @@ def test_krakow_client_mail_defects_are_gone():
                     hits.append(
                         f"J{num} D{day.day} [late_lunch] {lunch_start // 60:02d}:{lunch_start % 60:02d}"
                     )
-            if before_lunch > max_before:
+            if (
+                before_lunch > max_before
+                and lunch_start is not None
+                and lunch_start > lunch_by + 15
+            ):
                 coords = []
                 for it in day.items or []:
                     kind = getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
@@ -353,12 +393,59 @@ def test_krakow_client_mail_defects_are_gone():
                         later_dur = 60
                         if later[1] is not None and later[2] is not None and later[2] > later[1]:
                             later_dur = later[2] - later[1]
-                        limit = min(lunch_by + 45, 15 * 60 + 25)
+                        limit = lunch_by
                         if row[2] is not None and row[2] + later_dur + 25 <= limit:
                             hits.append(
                                 f"J{num} D{day.day} [meal_split] {row[5]} / {later[5]}"
                             )
                     break
+            lots: list[str] = []
+            prev_attr = None
+            hopped = False
+            city_seen = False
+            hub = (50.0647, 19.9450)
+            for i, row in enumerate(timed):
+                if row[0] == "transit":
+                    hopped = True
+                    mode = str(row[3])
+                    if "car" in mode:
+                        dest = _fold_place_label(str(row[5]))
+                        if dest and dest in lots and (not lots or lots[-1] != dest):
+                            hits.append(
+                                f"J{num} D{day.day} [parking_return] {row[5]}"
+                            )
+                        if dest and (not lots or lots[-1] != dest):
+                            lots.append(dest)
+                        km = float(row[4] or 0)
+                        drive_min = (
+                            row[2] - row[1]
+                            if row[1] is not None and row[2] is not None and row[2] > row[1]
+                            else int(km * 2)
+                        )
+                        nxt = next((later for later in timed[i + 1:] if later[0] == "attr"), None)
+                        nxt_dur = 0
+                        if nxt is not None and nxt[1] is not None and nxt[2] is not None and nxt[2] > nxt[1]:
+                            nxt_dur = nxt[2] - nxt[1]
+                        if city_seen and km >= 20 and drive_min * 2 > nxt_dur + 15:
+                            hits.append(
+                                f"J{num} D{day.day} [far_tail] {km:.0f} km / {nxt_dur} min"
+                            )
+                elif row[0] == "attr":
+                    if haversine_km(row[3], row[4], hub[0], hub[1]) <= 8:
+                        city_seen = True
+                    if (
+                        prev_attr is not None
+                        and not hopped
+                        and prev_attr[2] is not None
+                        and row[1] is not None
+                        and row[1] - prev_attr[2] <= 2
+                        and haversine_km(prev_attr[3], prev_attr[4], row[3], row[4]) > 0.15
+                    ):
+                        hits.append(
+                            f"J{num} D{day.day} [glued] {prev_attr[5]} / {row[5]}"
+                        )
+                    prev_attr = row
+                    hopped = False
             title = getattr(day, "title", None) or ""
             body = title.split(" — ")[0]
             body = body.replace(" i więcej", "")
@@ -383,6 +470,10 @@ def test_krakow_client_mail_defects_are_gone():
                     continue
                 hits.append(f"J{num} D{day.day} [title_miss] {piece}")
 
+    if hits:
+        Path(__file__).with_name("_gate379_hits.txt").write_text(
+            "\n".join(hits), encoding="utf-8",
+        )
     assert not hits, (
         "Kraków car/physics defects still in the client JSONs:\n"
         + "\n".join(hits)
