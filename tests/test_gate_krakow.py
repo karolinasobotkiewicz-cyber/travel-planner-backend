@@ -15,7 +15,9 @@ import pytest
 
 from app.application.services.plan_service import (
     PlanService, _fold_place_label, krakow_client_limits,
+    _place_names_match, _is_wieliczka_stop_name, _is_ojcow_stop_name,
 )
+from app.domain.planner.krakow_parking import is_parking_label
 from app.domain.models.trip_input import TripInput
 from app.domain.models.plan import ItemType
 from app.domain.planner.engine import visit_duration_hard_cap
@@ -446,6 +448,133 @@ def test_krakow_client_mail_defects_are_gone():
                         )
                     prev_attr = row
                     hopped = False
+            month = None
+            raw_date = (payload.get("trip_length") or {}).get("start_date")
+            if raw_date:
+                try:
+                    month = int(str(raw_date)[5:7])
+                except (TypeError, ValueError):
+                    month = None
+            sat_kinds = set()
+            known_lots: set[str] = set()
+            attr_count = 0
+            for it in day.items or []:
+                kind = getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
+                if kind == ItemType.ATTRACTION.value:
+                    attr_count += 1
+                    nm = getattr(it, "name", "") or ""
+                    folded = _fold_place_label(nm)
+                    if month in (11, 12, 1, 2, 3) and "ogrod doswiadczen" in folded:
+                        hits.append(
+                            f"J{num} D{day.day} [out_of_season] {nm}"
+                        )
+                    if _is_wieliczka_stop_name(nm):
+                        sat_kinds.add("wieliczka")
+                    elif _is_ojcow_stop_name(nm):
+                        sat_kinds.add("ojcow")
+                elif kind == ItemType.TRANSIT.value:
+                    frm = getattr(it, "from_location", "") or ""
+                    to = getattr(it, "to_location", "") or ""
+                    src = str(getattr(it, "routing_source", "") or "").lower()
+                    mode = str(getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) or "")
+                    if is_parking_label(frm):
+                        known_lots.add(_fold_place_label(frm))
+                    if (
+                        src == "return_to_car"
+                        and is_parking_label(to)
+                        and _fold_place_label(to) not in known_lots
+                    ):
+                        hits.append(
+                            f"J{num} D{day.day} [car_spawn] {frm} → {to}"
+                        )
+                    if "car" in mode and "walk" not in mode and is_parking_label(to):
+                        known_lots.add(_fold_place_label(to))
+            if len(sat_kinds) >= 2:
+                hits.append(
+                    f"J{num} D{day.day} [second_satellite] {sorted(sat_kinds)}"
+                )
+            group = str((payload.get("group") or {}).get("type") or "").lower()
+            pref_txt = " ".join(str(p) for p in (payload.get("preferences") or []))
+            if (
+                attr_count >= 5
+                and ("kid" in group or "family" in group)
+                and ("kids" in pref_txt or "nature" in pref_txt)
+            ):
+                for it in day.items or []:
+                    kind = getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
+                    if kind != ItemType.ATTRACTION.value:
+                        continue
+                    folded = _fold_place_label(getattr(it, "name", "") or "")
+                    if "mocak" not in folded and "etnografic" not in folded:
+                        continue
+                    try:
+                        dur = time_to_minutes(getattr(it, "end_time", None) or "") - time_to_minutes(
+                            getattr(it, "start_time", None) or ""
+                        )
+                    except Exception:
+                        dur = int(getattr(it, "duration_min", 0) or 0)
+                    if dur >= 90:
+                        hits.append(
+                            f"J{num} D{day.day} [offpref_museum] "
+                            f"{getattr(it, 'name', '')} {dur} min"
+                        )
+
+            def _meal_generic(text: str) -> bool:
+                folded = _fold_place_label(text)
+                if not folded:
+                    return True
+                return any(
+                    k in folded
+                    for k in ("przerw", "lunch", "kolacj", "posil", "obiad", "centrum")
+                )
+
+            prev_name = ""
+            prev_idx = None
+            ordered_items = list(day.items or [])
+            for idx, it in enumerate(ordered_items):
+                kind = getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
+                if kind == ItemType.ATTRACTION.value:
+                    prev_name = getattr(it, "name", "") or ""
+                    prev_idx = idx
+                    continue
+                if kind not in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                    continue
+                sug = ""
+                for s in (getattr(it, "suggestions", None) or [])[:1]:
+                    sug = (
+                        s.get("name") if isinstance(s, dict)
+                        else getattr(s, "name", "")
+                    ) or ""
+                label = getattr(it, "label", "") or ""
+                loc = getattr(it, "location_context", "") or ""
+                if sug:
+                    if not _place_names_match(label, sug):
+                        hits.append(
+                            f"J{num} D{day.day} [meal_identity] {label!r} ≠ {sug!r}"
+                        )
+                    if loc and not _meal_generic(loc) and not _place_names_match(loc, sug):
+                        hits.append(
+                            f"J{num} D{day.day} [meal_identity] ctx {loc!r} ≠ {sug!r}"
+                        )
+                claimed = sug or (
+                    label if not _meal_generic(label) else ""
+                ) or (loc if not _meal_generic(loc) else "")
+                body = prev_name
+                arrived = False
+                if prev_idx is not None:
+                    for leg in ordered_items[prev_idx + 1:idx]:
+                        leg_kind = getattr(getattr(leg, "type", None), "value", getattr(leg, "type", ""))
+                        if leg_kind != ItemType.TRANSIT.value:
+                            continue
+                        dest = getattr(leg, "to_location", "") or ""
+                        if claimed and _place_names_match(dest, claimed):
+                            arrived = True
+                        if dest and not _meal_generic(dest) and not is_parking_label(dest):
+                            body = dest
+                if claimed and body and not _place_names_match(claimed, body) and not arrived:
+                    hits.append(
+                        f"J{num} D{day.day} [meal_stranded] {claimed!r} przy {body!r}"
+                    )
             title = getattr(day, "title", None) or ""
             body = title.split(" — ")[0]
             body = body.replace(" i więcej", "")
