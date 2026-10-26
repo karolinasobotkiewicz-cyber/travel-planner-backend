@@ -9,6 +9,7 @@ import contextlib
 import io
 import json
 import os
+from datetime import date as _date, timedelta as _td
 from pathlib import Path
 
 import pytest
@@ -84,6 +85,8 @@ def test_krakow_client_mail_defects_are_gone():
             "group_type": (payload.get("group") or {}).get("type"),
         })
         seen_places: list[str] = []
+        shapes: list[tuple] = []
+        seen_mine = False
         for day in plan.days:
             hits.extend(collect_day_mail_hits(
                 num=num, day=day, payload=payload, city="Kraków",
@@ -472,6 +475,46 @@ def test_krakow_client_mail_defects_are_gone():
                         sat_kinds.add("wieliczka")
                     elif _is_ojcow_stop_name(nm):
                         sat_kinds.add("ojcow")
+                    day_date = getattr(day, "date", None)
+                    weekday = None
+                    if day_date:
+                        try:
+                            weekday = _date.fromisoformat(str(day_date)[:10]).weekday()
+                        except ValueError:
+                            weekday = None
+                    if weekday is None and raw_date:
+                        try:
+                            weekday = (
+                                _date.fromisoformat(str(raw_date)[:10])
+                                + _td(days=int(day.day) - 1)
+                            ).weekday()
+                        except (TypeError, ValueError):
+                            weekday = None
+                    if weekday == 0 and any(
+                        stem in folded
+                        for stem in ("etnografic", "archeologic", "muzeum narodowe", "mocak")
+                    ):
+                        hits.append(f"J{num} D{day.day} [closed_monday] {nm}")
+                    if "armii krajowej" in folded:
+                        try:
+                            st = time_to_minutes(getattr(it, "start_time", None) or "")
+                            en = time_to_minutes(getattr(it, "end_time", None) or "")
+                        except Exception:
+                            st = en = None
+                        if st is None or en is None or st > 16 * 60 or en > 17 * 60:
+                            hits.append(
+                                f"J{num} D{day.day} [after_close] {nm} "
+                                f"{getattr(it, 'start_time', '')}-{getattr(it, 'end_time', '')}"
+                            )
+                    if "kopalnia" in folded and "rynek" not in folded:
+                        try:
+                            st = time_to_minutes(getattr(it, "start_time", None) or "")
+                        except Exception:
+                            st = None
+                        if st is not None and st >= 18 * 60:
+                            hits.append(
+                                f"J{num} D{day.day} [after_close] {nm} {getattr(it, 'start_time', '')}"
+                            )
                 elif kind == ItemType.TRANSIT.value:
                     frm = getattr(it, "from_location", "") or ""
                     to = getattr(it, "to_location", "") or ""
@@ -493,6 +536,70 @@ def test_krakow_client_mail_defects_are_gone():
                 hits.append(
                     f"J{num} D{day.day} [second_satellite] {sorted(sat_kinds)}"
                 )
+            real = False
+            only_short_rynek = True
+            has_rynek = False
+            long_drive = False
+            for it in day.items or []:
+                kind = getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
+                if kind == ItemType.ATTRACTION.value:
+                    nm = getattr(it, "name", "") or ""
+                    if _is_ojcow_stop_name(nm) or (
+                        _is_wieliczka_stop_name(nm) and "rynek" not in _fold_place_label(nm)
+                    ):
+                        real = True
+                    if _is_wieliczka_stop_name(nm):
+                        folded = _fold_place_label(nm)
+                        if "rynek" in folded:
+                            has_rynek = True
+                            try:
+                                dur = time_to_minutes(getattr(it, "end_time", None) or "") - time_to_minutes(
+                                    getattr(it, "start_time", None) or ""
+                                )
+                            except Exception:
+                                dur = 0
+                            if dur >= 55:
+                                only_short_rynek = False
+                        else:
+                            only_short_rynek = False
+                elif kind == ItemType.TRANSIT.value:
+                    mode = str(getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) or "")
+                    if "car" in mode and "walk" not in mode:
+                        try:
+                            km = float(getattr(it, "distance_km", 0) or 0)
+                        except (TypeError, ValueError):
+                            km = 0
+                        try:
+                            drive = time_to_minutes(getattr(it, "end_time", None) or "") - time_to_minutes(
+                                getattr(it, "start_time", None) or ""
+                            )
+                        except Exception:
+                            drive = 0
+                        if km >= 10 or drive >= 30:
+                            long_drive = True
+            mine_today = any(
+                _is_wieliczka_stop_name(getattr(it, "name", "") or "")
+                and "rynek" not in _fold_place_label(getattr(it, "name", "") or "")
+                for it in (day.items or [])
+                if getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
+                == ItemType.ATTRACTION.value
+            )
+            if seen_mine and has_rynek and only_short_rynek and long_drive:
+                hits.append(f"J{num} D{day.day} [short_return] Wieliczka rynek")
+            if mine_today:
+                seen_mine = True
+            shapes.append((int(day.day), real, not sat_kinds))
+            group_now = str((payload.get("group") or {}).get("type") or "").lower()
+            if "senior" in group_now:
+                for it in day.items or []:
+                    kind = getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
+                    if kind != ItemType.ATTRACTION.value:
+                        continue
+                    folded = _fold_place_label(getattr(it, "name", "") or "")
+                    if any(k in folded for k in ("bricks", "lego", "klock")):
+                        hits.append(
+                            f"J{num} D{day.day} [kids_for_seniors] {getattr(it, 'name', '')}"
+                        )
             group = str((payload.get("group") or {}).get("type") or "").lower()
             pref_txt = " ".join(str(p) for p in (payload.get("preferences") or []))
             if (
@@ -598,6 +705,8 @@ def test_krakow_client_mail_defects_are_gone():
                 ):
                     continue
                 hits.append(f"J{num} D{day.day} [title_miss] {piece}")
+        if shapes and shapes[0][1] and any(row[2] for row in shapes[1:]):
+            hits.append(f"J{num} D{shapes[0][0]} [day1_out] first day leaves Kraków")
 
     if hits:
         Path(__file__).with_name("_gate379_hits.txt").write_text(
