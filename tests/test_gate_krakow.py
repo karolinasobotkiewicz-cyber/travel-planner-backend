@@ -515,6 +515,50 @@ def test_krakow_client_mail_defects_are_gone():
                             hits.append(
                                 f"J{num} D{day.day} [after_close] {nm} {getattr(it, 'start_time', '')}"
                             )
+                    if "bohater" in folded and "getta" in folded:
+                        cost = int(getattr(it, "cost_estimate", 0) or 0)
+                        ticket = getattr(it, "ticket_info", None)
+                        normal = int(getattr(ticket, "ticket_normal", 0) or 0) if ticket else 0
+                        if cost > 0 or normal > 0:
+                            hits.append(
+                                f"J{num} D{day.day} [square_cost] {nm} {cost}/{normal} zł"
+                            )
+                        try:
+                            dur = time_to_minutes(getattr(it, "end_time", None) or "") - time_to_minutes(
+                                getattr(it, "start_time", None) or ""
+                            )
+                        except Exception:
+                            dur = int(getattr(it, "duration_min", 0) or 0)
+                        if dur > 45:
+                            hits.append(
+                                f"J{num} D{day.day} [square_long] {nm} {dur} min"
+                            )
+                        gtxt = str((payload.get("group") or {}).get("type") or "").lower()
+                        ptxt = " ".join(str(p) for p in (payload.get("preferences") or [])).lower()
+                        if ("kid" in gtxt or "family" in gtxt) and ("kid" in ptxt or "nature" in ptxt):
+                            hits.append(f"J{num} D{day.day} [offpref_square] {nm}")
+                    if "pixel" in folded:
+                        gtxt = str((payload.get("group") or {}).get("type") or "").lower()
+                        if "kid" not in gtxt and "family" not in gtxt:
+                            hits.append(f"J{num} D{day.day} [offpref_pixel] {nm}")
+                    if "podziemia rynku" in folded:
+                        try:
+                            st = time_to_minutes(getattr(it, "start_time", None) or "")
+                        except Exception:
+                            st = None
+                        if st is not None and st < 10 * 60:
+                            hits.append(
+                                f"J{num} D{day.day} [before_open] {nm} {getattr(it, 'start_time', '')}"
+                            )
+                    if "muzeum narodowe" in folded and "sukiennic" not in folded:
+                        try:
+                            en = time_to_minutes(getattr(it, "end_time", None) or "")
+                        except Exception:
+                            en = None
+                        if en is not None and en > 18 * 60:
+                            hits.append(
+                                f"J{num} D{day.day} [after_close] {nm} {getattr(it, 'end_time', '')}"
+                            )
                 elif kind == ItemType.TRANSIT.value:
                     frm = getattr(it, "from_location", "") or ""
                     to = getattr(it, "to_location", "") or ""
@@ -584,7 +628,7 @@ def test_krakow_client_mail_defects_are_gone():
                 if getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
                 == ItemType.ATTRACTION.value
             )
-            if seen_mine and has_rynek and only_short_rynek and long_drive:
+            if has_rynek and only_short_rynek and long_drive:
                 hits.append(f"J{num} D{day.day} [short_return] Wieliczka rynek")
             if mine_today:
                 seen_mine = True
@@ -682,6 +726,15 @@ def test_krakow_client_mail_defects_are_gone():
                     hits.append(
                         f"J{num} D{day.day} [meal_stranded] {claimed!r} przy {body!r}"
                     )
+                if kind == ItemType.DINNER_BREAK.value:
+                    for text in (label, loc, sug):
+                        if not text or _meal_generic(text):
+                            continue
+                        if any(_place_names_match(text, attr) for attr in names):
+                            hits.append(
+                                f"J{num} D{day.day} [dinner_as_stop] {text!r}"
+                            )
+                            break
             title = getattr(day, "title", None) or ""
             body = title.split(" — ")[0]
             body = body.replace(" i więcej", "")
@@ -707,6 +760,8 @@ def test_krakow_client_mail_defects_are_gone():
                 hits.append(f"J{num} D{day.day} [title_miss] {piece}")
         if shapes and shapes[0][1] and any(row[2] for row in shapes[1:]):
             hits.append(f"J{num} D{shapes[0][0]} [day1_out] first day leaves Kraków")
+        if len(shapes) >= 3 and shapes[1][1] and any(row[2] for row in shapes[2:]):
+            hits.append(f"J{num} D{shapes[1][0]} [day2_out] second day leaves Kraków")
 
     if hits:
         Path(__file__).with_name("_gate379_hits.txt").write_text(
