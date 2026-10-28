@@ -22,6 +22,7 @@ from app.domain.planner.krakow_parking import is_parking_label
 from app.domain.models.trip_input import TripInput
 from app.domain.models.plan import ItemType
 from app.domain.planner.engine import visit_duration_hard_cap
+from app.domain.planner.leg_physics import walk_minutes
 from app.domain.planner.time_utils import time_to_minutes
 from app.domain.validators.client_invariants import audit_plan
 from app.infrastructure.repositories.poi_repository import POIRepository
@@ -137,6 +138,22 @@ def test_krakow_client_mail_defects_are_gone():
                         hits.append(
                             f"J{num} D{day.day} [long_walk] {frm} → {dest} {km:.2f} km"
                         )
+                    if km >= 0.4:
+                        try:
+                            wst = time_to_minutes(getattr(it, "start_time", None) or "")
+                            wen = time_to_minutes(getattr(it, "end_time", None) or "")
+                            wdur = wen - wst
+                        except Exception:
+                            wdur = int(getattr(it, "duration_min", 0) or 0)
+                        honest = walk_minutes(km, {
+                            "travel_style": payload.get("travel_style"),
+                            "group_type": (payload.get("group") or {}).get("type"),
+                        })
+                        if wdur > honest + 12:
+                            hits.append(
+                                f"J{num} D{day.day} [slow_walk] {frm} → {dest} "
+                                f"{km:.2f} km / {wdur} min"
+                            )
             attrs = [row for row in occupied if row[4] == "attr"]
             for i in range(len(attrs)):
                 for j in range(i + 1, len(attrs)):
@@ -177,6 +194,12 @@ def test_krakow_client_mail_defects_are_gone():
                 elif kind == ItemType.LUNCH_BREAK.value:
                     try:
                         lunch_start = time_to_minutes(getattr(it, "start_time", None) or "")
+                        lunch_end = time_to_minutes(getattr(it, "end_time", None) or "")
+                        if lunch_end - lunch_start > 75:
+                            hits.append(
+                                f"J{num} D{day.day} [long_lunch] "
+                                f"{lunch_end - lunch_start} min"
+                            )
                     except Exception:
                         lunch_start = None
                 elif kind == ItemType.ATTRACTION.value:
@@ -515,6 +538,28 @@ def test_krakow_client_mail_defects_are_gone():
                             hits.append(
                                 f"J{num} D{day.day} [after_close] {nm} {getattr(it, 'start_time', '')}"
                             )
+                    if "wawel" in folded and "smok" not in folded:
+                        try:
+                            st = time_to_minutes(getattr(it, "start_time", None) or "")
+                            en = time_to_minutes(getattr(it, "end_time", None) or "")
+                        except Exception:
+                            st = en = None
+                        if st is None or en is None or st > 16 * 60 or en > 17 * 60:
+                            hits.append(
+                                f"J{num} D{day.day} [after_close] {nm} "
+                                f"{getattr(it, 'start_time', '')}-{getattr(it, 'end_time', '')}"
+                            )
+                    if "pieskow" in folded:
+                        try:
+                            st = time_to_minutes(getattr(it, "start_time", None) or "")
+                            en = time_to_minutes(getattr(it, "end_time", None) or "")
+                        except Exception:
+                            st = en = None
+                        if st is None or en is None or st >= 16 * 60 or en > 17 * 60:
+                            hits.append(
+                                f"J{num} D{day.day} [after_close] {nm} "
+                                f"{getattr(it, 'start_time', '')}-{getattr(it, 'end_time', '')}"
+                            )
                     if "bohater" in folded and "getta" in folded:
                         cost = int(getattr(it, "cost_estimate", 0) or 0)
                         ticket = getattr(it, "ticket_info", None)
@@ -771,3 +816,205 @@ def test_krakow_client_mail_defects_are_gone():
         "Kraków car/physics defects still in the client JSONs:\n"
         + "\n".join(hits)
     )
+
+
+def _fix383_parking():
+    from app.domain.models.plan import ParkingInfo, ParkingType
+
+    return ParkingInfo(
+        name="Parking",
+        address="Kraków",
+        parking_type=ParkingType.PAID,
+        cost=None,
+        walk_time_min=5,
+        lat=50.06,
+        lng=19.94,
+    )
+
+
+def _fix383_attr(name, start, end, lat, lng):
+    from app.domain.models.plan import AttractionItem, TicketInfo
+
+    sh, sm = (int(p) for p in start.split(":"))
+    eh, em = (int(p) for p in end.split(":"))
+    return AttractionItem(
+        type=ItemType.ATTRACTION,
+        poi_id="t",
+        name=name,
+        description_short=name,
+        start_time=start,
+        end_time=end,
+        duration_min=(eh * 60 + em) - (sh * 60 + sm),
+        lat=lat,
+        lng=lng,
+        address="Kraków",
+        city="Kraków",
+        cost_estimate=0,
+        ticket_info=TicketInfo(ticket_normal=0, ticket_reduced=0),
+        parking=_fix383_parking(),
+    )
+
+
+def _fix383_run(items, **ctx):
+    from app.domain.models.plan import DayPlan
+
+    base = {
+        "requested_city": "Kraków",
+        "day_start": "09:00",
+        "day_end": "19:00",
+        "travel_style": "balanced",
+        "group_type": "solo",
+        "date": "2026-02-20",
+        "poi_pool": [],
+        "preferences": ["history_mystery"],
+    }
+    base.update(ctx)
+    day = DayPlan(day=1, date=str(base.get("date"))[:10], items=items)
+    out = PlanService(None)._seal_fix383_krakow_client([day], base)
+    return out[0].items
+
+
+def test_fix383_repairs_mailed_shapes():
+    from app.domain.models.plan import DinnerBreakItem, LunchBreakItem, TransitItem, TransitMode
+
+    def _walk(start, end, frm, to, km):
+        sh, sm = (int(p) for p in start.split(":"))
+        eh, em = (int(p) for p in end.split(":"))
+        return TransitItem(
+            type=ItemType.TRANSIT,
+            start_time=start,
+            end_time=end,
+            duration_min=(eh * 60 + em) - (sh * 60 + sm),
+            mode=TransitMode.WALK,
+            from_location=frm,
+            to_location=to,
+            distance_km=km,
+            routing_source="estimated_walk",
+        )
+
+    def _car(start, end, frm, to, km):
+        row = _walk(start, end, frm, to, km)
+        return row.model_copy(update={"mode": TransitMode.CAR})
+
+    def _dinner(start, end, label):
+        sh, sm = (int(p) for p in start.split(":"))
+        eh, em = (int(p) for p in end.split(":"))
+        return DinnerBreakItem(
+            type=ItemType.DINNER_BREAK,
+            start_time=start,
+            end_time=end,
+            duration_min=(eh * 60 + em) - (sh * 60 + sm),
+            label=label,
+        )
+
+    morning = _fix383_run(
+        [
+            _walk("09:00", "10:00", "Parking ul. Szpitalna", "Podziemia Rynku", 0.58),
+            _fix383_attr("Podziemia Rynku", "10:00", "11:15", 50.0617, 19.9373),
+        ],
+        poi_pool=[{
+            "name": "Teatr Groteska",
+            "lat": 50.0648,
+            "lng": 19.9435,
+            "address": "Kraków",
+            "city": "Kraków",
+        }],
+    )
+    pod = next(it for it in morning if getattr(it, "name", "") == "Podziemia Rynku")
+    hop = next(
+        it for it in morning
+        if getattr(it, "to_location", "") == "Podziemia Rynku"
+    )
+    assert pod.start_time == "10:00"
+    assert hop.end_time == "10:00"
+    assert int(hop.duration_min) <= walk_minutes(0.58) + 1
+    first = time_to_minutes(morning[0].start_time)
+    assert first <= 9 * 60 + 39
+
+    lunch_items = _fix383_run([
+        _fix383_attr("Sukiennice", "10:00", "11:30", 50.0616, 19.9373),
+        LunchBreakItem(
+            type=ItemType.LUNCH_BREAK,
+            start_time="13:41",
+            end_time="17:52",
+            duration_min=251,
+            label="Lunch / przerwa regeneracyjna",
+        ),
+        _dinner("18:30", "19:30", "Kolacja"),
+    ])
+    lunch = next(it for it in lunch_items if getattr(it, "type", None) == ItemType.LUNCH_BREAK)
+    assert lunch.start_time == "13:41"
+    assert time_to_minutes(lunch.end_time) - time_to_minutes(lunch.start_time) == 60
+
+    wawel_items = _fix383_run([
+        _fix383_attr("Smok Wawelski", "14:00", "14:20", 50.0547, 19.9338),
+        _fix383_attr("Sukiennice", "15:00", "16:40", 50.0616, 19.9373),
+        _walk("16:40", "16:51", "Sukiennice", "Zamek Królewski na Wawelu", 0.7),
+        _fix383_attr("Zamek Królewski na Wawelu", "16:51", "18:37", 50.0540, 19.9354),
+        _dinner("19:00", "19:45", "Kolacja"),
+    ])
+    names = [getattr(it, "name", "") for it in wawel_items]
+    assert "Zamek Królewski na Wawelu" not in names
+    assert "Smok Wawelski" in names
+
+    castle_items = _fix383_run([
+        _fix383_attr("Sukiennice", "15:00", "16:10", 50.0616, 19.9373),
+        _car("16:10", "17:06", "Parking ul. Szpitalna", "Parking pod Zamkiem w Pieskowej Skale", 28.0),
+        _fix383_attr("Zamek w Pieskowej Skale", "17:24", "19:27", 50.2443, 19.7801),
+        _dinner("19:30", "20:00", "Kolacja"),
+    ], day_end="20:00")
+    castle_names = " ".join(getattr(it, "name", "") or "" for it in castle_items)
+    castle_hops = " ".join(
+        f"{getattr(it, 'from_location', '')} {getattr(it, 'to_location', '')}"
+        for it in castle_items
+    )
+    assert "Pieskow" not in castle_names and "pieskow" not in castle_names.lower()
+    assert "pieskow" not in _fold_place_label(castle_hops)
+    assert "Sukiennice" in castle_names
+
+    kept = _fix383_run([
+        _car("09:10", "10:06", "Parking ul. Szpitalna", "Parking pod Zamkiem w Pieskowej Skale", 28.0),
+        _fix383_attr("Zamek w Pieskowej Skale", "10:10", "12:00", 50.2443, 19.7801),
+    ])
+    assert any(getattr(it, "name", "") == "Zamek w Pieskowej Skale" for it in kept)
+
+    garden_items = _fix383_run(
+        [
+            _fix383_attr("Ogród Doświadczeń", "11:00", "12:30", 50.064, 19.94),
+            _fix383_attr("Sukiennice", "13:30", "15:00", 50.0616, 19.9373),
+        ],
+        date="2026-02-23",
+    )
+    assert not any("Doświadczeń" in (getattr(it, "name", "") or "") for it in garden_items)
+    assert any(getattr(it, "name", "") == "Sukiennice" for it in garden_items)
+
+    named = _fix383_run([
+        _fix383_attr("Sukiennice", "15:00", "16:20", 50.0616, 19.9373),
+        _dinner("18:00", "19:00", "Muzeum Narodowe w Krakowie"),
+    ])
+    dinner = next(it for it in named if getattr(it, "type", None) == ItemType.DINNER_BREAK)
+    assert dinner.label == "Kolacja"
+
+    park_items = _fix383_run(
+        [
+            _fix383_attr("Park Lotników", "14:47", "16:02", 50.0790, 19.9910),
+            _dinner("17:00", "18:00", "Kolacja"),
+        ],
+        group_type="family_kids",
+        preferences=["kids_attractions", "nature_landscape"],
+        poi_pool=[{
+            "name": "Muzeum Lotnictwa Polskiego",
+            "lat": 50.0794,
+            "lng": 19.9920,
+            "address": "Kraków",
+            "city": "Kraków",
+        }],
+    )
+    dinner = next(it for it in park_items if getattr(it, "type", None) == ItemType.DINNER_BREAK)
+    ends = [
+        time_to_minutes(it.end_time)
+        for it in park_items
+        if getattr(it, "name", None)
+    ]
+    assert any(getattr(it, "name", "") == "Park Lotników" for it in park_items)
+    assert time_to_minutes(dinner.start_time) - max(ends) <= 20
