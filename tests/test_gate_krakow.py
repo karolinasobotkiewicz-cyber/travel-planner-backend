@@ -22,7 +22,7 @@ from app.domain.planner.krakow_parking import is_parking_label
 from app.domain.models.trip_input import TripInput
 from app.domain.models.plan import ItemType
 from app.domain.planner.engine import visit_duration_hard_cap
-from app.domain.planner.leg_physics import walk_minutes
+from app.domain.planner.leg_physics import leg_km, walk_minutes
 from app.domain.planner.time_utils import time_to_minutes
 from app.domain.validators.client_invariants import audit_plan
 from app.infrastructure.repositories.poi_repository import POIRepository
@@ -621,6 +621,117 @@ def test_krakow_client_mail_defects_are_gone():
                         )
                     if "car" in mode and "walk" not in mode and is_parking_label(to):
                         known_lots.add(_fold_place_label(to))
+            gtxt384 = str((payload.get("group") or {}).get("type") or "").lower()
+            ptxt384 = " ".join(str(p) for p in (payload.get("preferences") or [])).lower()
+            family_kn = ("kid" in gtxt384 or "family" in gtxt384) and (
+                "kid" in ptxt384 or "nature" in ptxt384
+            )
+            if family_kn and attr_count > 5:
+                hits.append(
+                    f"J{num} D{day.day} [family_pace] {attr_count} attractions"
+                )
+            bricks = []
+            car_lots: list[str] = []
+            prev_attr_pt = None
+            for it in day.items or []:
+                kind = getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
+                if kind == ItemType.ATTRACTION.value:
+                    nm = getattr(it, "name", "") or ""
+                    folded = _fold_place_label(nm)
+                    if any(stem in folded for stem in ("lego", "bricks", "klock", "swiat w budowie")):
+                        bricks.append(nm)
+                    if family_kn and "etnografic" in folded:
+                        hits.append(f"J{num} D{day.day} [family_filler] {nm}")
+                    if family_kn and "smok" not in folded and any(
+                        stem in folded for stem in ("kladka", "brama", "pomnik")
+                    ):
+                        hits.append(f"J{num} D{day.day} [family_filler] {nm}")
+                    day_date = getattr(day, "date", None)
+                    weekday = None
+                    if day_date:
+                        try:
+                            weekday = _date.fromisoformat(str(day_date)[:10]).weekday()
+                        except ValueError:
+                            weekday = None
+                    if weekday is None and raw_date:
+                        try:
+                            weekday = (
+                                _date.fromisoformat(str(raw_date)[:10])
+                                + _td(days=int(day.day) - 1)
+                            ).weekday()
+                        except (TypeError, ValueError):
+                            weekday = None
+                    if "geologiczn" in folded and weekday == 6:
+                        hits.append(f"J{num} D{day.day} [closed_sunday] {nm}")
+                    if "obwarzan" in folded and weekday is not None and weekday <= 4:
+                        try:
+                            st = time_to_minutes(getattr(it, "start_time", None) or "")
+                            en = time_to_minutes(getattr(it, "end_time", None) or "")
+                            dur = en - st
+                        except Exception:
+                            st = en = dur = None
+                        if en is not None and (en > 16 * 60 or (dur is not None and dur > 65)):
+                            hits.append(
+                                f"J{num} D{day.day} [after_close] {nm} "
+                                f"{getattr(it, 'start_time', '')}-{getattr(it, 'end_time', '')}"
+                            )
+                    prev_attr_pt = (
+                        getattr(it, "lat", None),
+                        getattr(it, "lng", None),
+                        nm,
+                    )
+                elif kind == ItemType.TRANSIT.value:
+                    mode = str(getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) or "")
+                    dest = getattr(it, "to_location", "") or ""
+                    if "car" in mode and "walk" not in mode and is_parking_label(dest):
+                        folded_lot = _fold_place_label(dest)
+                        if folded_lot and folded_lot not in car_lots:
+                            car_lots.append(folded_lot)
+                    if (
+                        "walk" in mode
+                        and is_parking_label(dest)
+                        and prev_attr_pt is not None
+                    ):
+                        nxt_i = (day.items or []).index(it) + 1
+                        nxt = (day.items or [])[nxt_i] if nxt_i < len(day.items or []) else None
+                        if nxt is None:
+                            continue
+                        nxt_mode = str(
+                            getattr(getattr(nxt, "mode", None), "value", getattr(nxt, "mode", "")) or ""
+                        )
+                        if "walk" not in nxt_mode:
+                            continue
+                        if not _place_names_match(getattr(nxt, "from_location", "") or "", dest):
+                            continue
+                        right = (day.items or [])[nxt_i + 1] if nxt_i + 1 < len(day.items or []) else None
+                        right_kind = getattr(
+                            getattr(right, "type", None), "value", getattr(right, "type", ""),
+                        ) if right is not None else ""
+                        if right_kind != ItemType.ATTRACTION.value:
+                            continue
+                        if not _place_names_match(
+                            getattr(nxt, "to_location", "") or "",
+                            getattr(right, "name", "") or "",
+                        ):
+                            continue
+                        try:
+                            dist = float(leg_km(
+                                (float(prev_attr_pt[0]), float(prev_attr_pt[1])),
+                                (float(right.lat), float(right.lng)),
+                                "walk",
+                                city="Kraków",
+                            )[0])
+                        except (TypeError, ValueError):
+                            continue
+                        if 0.05 < dist <= hop:
+                            hits.append(
+                                f"J{num} D{day.day} [parking_loop] "
+                                f"{prev_attr_pt[2]} → {getattr(right, 'name', '')}"
+                            )
+            if len(bricks) >= 2:
+                hits.append(
+                    f"J{num} D{day.day} [double_bricks] {bricks}"
+                )
             if len(sat_kinds) >= 2:
                 hits.append(
                     f"J{num} D{day.day} [second_satellite] {sorted(sat_kinds)}"
@@ -1018,3 +1129,227 @@ def test_fix383_repairs_mailed_shapes():
     ]
     assert any(getattr(it, "name", "") == "Park Lotników" for it in park_items)
     assert time_to_minutes(dinner.start_time) - max(ends) <= 20
+
+
+def _fix384_run(items, **ctx):
+    from app.domain.models.plan import DayPlan
+
+    base = {
+        "requested_city": "Kraków",
+        "day_start": "09:00",
+        "day_end": "19:00",
+        "travel_style": "balanced",
+        "group_type": "solo",
+        "date": "2026-02-20",
+        "poi_pool": [],
+        "preferences": ["history_mystery"],
+        "has_car": True,
+        "fix384_keep": True,
+    }
+    base.update(ctx)
+    day = DayPlan(day=1, date=str(base.get("date"))[:10], items=items)
+    out = PlanService(None)._seal_fix384_krakow_client([day], base)
+    return out[0].items
+
+
+def test_fix384_repairs_mailed_shapes():
+    from app.domain.models.plan import DinnerBreakItem, LunchBreakItem, TransitItem, TransitMode
+
+    def _walk(start, end, frm, to, km):
+        sh, sm = (int(p) for p in start.split(":"))
+        eh, em = (int(p) for p in end.split(":"))
+        return TransitItem(
+            type=ItemType.TRANSIT,
+            start_time=start,
+            end_time=end,
+            duration_min=(eh * 60 + em) - (sh * 60 + sm),
+            mode=TransitMode.WALK,
+            from_location=frm,
+            to_location=to,
+            distance_km=km,
+            routing_source="estimated_walk",
+        )
+
+    def _car(start, end, frm, to, km):
+        row = _walk(start, end, frm, to, km)
+        return row.model_copy(update={"mode": TransitMode.CAR, "routing_source": "estimated_car"})
+
+    def _lunch(start, end):
+        sh, sm = (int(p) for p in start.split(":"))
+        eh, em = (int(p) for p in end.split(":"))
+        return LunchBreakItem(
+            type=ItemType.LUNCH_BREAK,
+            start_time=start,
+            end_time=end,
+            duration_min=(eh * 60 + em) - (sh * 60 + sm),
+            label="Lunch",
+        )
+
+    def _dinner(start, end):
+        sh, sm = (int(p) for p in start.split(":"))
+        eh, em = (int(p) for p in end.split(":"))
+        return DinnerBreakItem(
+            type=ItemType.DINNER_BREAK,
+            start_time=start,
+            end_time=end,
+            duration_min=(eh * 60 + em) - (sh * 60 + sm),
+            label="Kolacja",
+        )
+
+    def _names(items):
+        return " ".join(getattr(it, "name", "") or "" for it in items)
+
+    family = _fix384_run(
+        [
+            _fix383_attr("Smok Wawelski", "09:20", "09:35", 50.053, 19.933),
+            _fix383_attr("Bricks & Figs - muzeum klocków LEGO", "10:00", "11:30", 50.062, 19.940),
+            _fix383_attr("Świat w Budowie - Wystawa klocków LEGO", "11:40", "12:03", 50.063, 19.941),
+            _fix383_attr("Muzeum Etnograficzne im. Seweryna Udzieli", "12:20", "13:10", 50.050, 19.945),
+            _fix383_attr("Kładka Ojca Bernatka", "13:20", "13:40", 50.048, 19.950),
+            _fix383_attr("Sukiennice", "14:00", "15:00", 50.0616, 19.9373),
+            _dinner("18:00", "19:00"),
+        ],
+        group_type="family_kids",
+        preferences=["kids_attractions", "nature_landscape"],
+        travel_style="balanced",
+    )
+    folded = _fold_place_label(_names(family))
+    assert "etnografic" not in folded
+    assert "kladka" not in folded and "bernat" not in folded
+    assert "swiat w budowie" not in folded
+    assert "bricks" in folded
+    assert "smok" in folded and "sukiennic" in folded
+    assert sum(1 for it in family if getattr(it, "type", None) == ItemType.ATTRACTION) <= 5
+
+    sunday = _fix384_run(
+        [
+            _fix383_attr("Muzeum Geologiczne w Krakowie", "11:00", "12:30", 50.054, 19.935),
+            _fix383_attr("Sukiennice", "13:00", "14:30", 50.0616, 19.9373),
+            _dinner("18:00", "19:00"),
+        ],
+        date="2026-02-22",
+        poi_pool=[{
+            "name": "Muzeum Geologiczne w Krakowie",
+            "lat": 50.054,
+            "lng": 19.935,
+            "opening_hours_seasonal": [{
+                "date_from": "01-01",
+                "date_to": "12-31",
+                "mon": "10:00-15:00",
+                "tue": "10:00-15:00",
+                "wed": "10:00-15:00",
+                "thu": "10:00-15:00",
+                "fri": "10:00-15:00",
+                "sat": "10:00-14:00",
+                "sun": "closed",
+            }],
+        }],
+    )
+    assert "Geologiczne" not in _names(sunday)
+    assert "Sukiennice" in _names(sunday)
+
+    monday = _fix384_run(
+        [
+            _fix383_attr("Muzeum Obwarzanka", "14:29", "16:34", 50.062, 19.940),
+            _fix383_attr("Sukiennice", "16:45", "17:45", 50.0616, 19.9373),
+            _dinner("19:00", "19:45"),
+        ],
+        date="2026-02-23",
+        poi_pool=[{
+            "name": "Muzeum Obwarzanka",
+            "lat": 50.062,
+            "lng": 19.940,
+            "opening_hours_seasonal": [{
+                "date_from": "01-01",
+                "date_to": "12-31",
+                "mon": "09:00-16:00",
+                "tue": "09:00-16:00",
+                "wed": "09:00-16:00",
+                "thu": "09:00-16:00",
+                "fri": "09:00-16:00",
+                "sat": "10:00-17:00",
+                "sun": "10:00-17:00",
+            }],
+        }],
+    )
+    obwarzanek = next(it for it in monday if "Obwarzan" in (getattr(it, "name", "") or ""))
+    start = time_to_minutes(obwarzanek.start_time)
+    end = time_to_minutes(obwarzanek.end_time)
+    assert end <= 16 * 60
+    assert 60 <= end - start <= 65
+    assert "Sukiennice" in _names(monday)
+
+    lunch_items = _fix384_run(
+        [
+            _fix383_attr("Sukiennice", "13:00", "14:00", 50.0616, 19.9373),
+            _fix383_attr("Kładka Ojca Bernatka", "14:40", "15:05", 50.048, 19.950),
+            _lunch("15:21", "16:21"),
+            _fix383_attr("Podziemia Rynku", "16:40", "17:50", 50.0617, 19.9373),
+            _dinner("19:40", "20:20"),
+        ],
+        group_type="friends",
+        travel_style="adventure",
+        preferences=["underground", "history_mystery"],
+    )
+    lunch = next(it for it in lunch_items if getattr(it, "type", None) == ItemType.LUNCH_BREAK)
+    assert time_to_minutes(lunch.start_time) <= 15 * 60
+    assert "Sukiennice" in _names(lunch_items)
+
+    loop = _fix384_run(
+        [
+            _fix383_attr("Plac Jana Matejki", "09:20", "10:00", 50.0640, 19.9430),
+            _walk("10:00", "10:12", "Plac Jana Matejki", "Parking ul. Szpitalna", 0.4),
+            _walk("10:12", "10:24", "Parking ul. Szpitalna", "Podziemia Rynku", 0.5),
+            _fix383_attr("Podziemia Rynku", "10:24", "11:30", 50.0617, 19.9373),
+            _dinner("18:00", "19:00"),
+        ],
+        group_type="couples",
+        travel_style="balanced",
+    )
+    hops = [
+        (getattr(it, "from_location", ""), getattr(it, "to_location", ""))
+        for it in loop
+        if getattr(it, "type", None) == ItemType.TRANSIT
+    ]
+    assert not any(is_parking_label(dest) and is_parking_label(frm) is False and "Szpitalna" in dest for frm, dest in hops)
+    assert any("Matejki" in frm and "Podziemia" in dest for frm, dest in hops)
+
+    lead = _fix384_run(
+        [
+            _walk("09:10", "09:25", "Parking Czyżyny (al. Pokoju)", "Muzeum Lotnictwa Polskiego", 0.6),
+            _fix383_attr("Muzeum Lotnictwa Polskiego", "09:25", "11:00", 50.0794, 19.9920),
+            _dinner("18:00", "19:00"),
+        ],
+    )
+    cars = [
+        it for it in lead
+        if getattr(it, "type", None) == ItemType.TRANSIT
+        and "car" in str(getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) or "")
+    ]
+    assert cars and "Czyżyny" in (cars[0].to_location or "")
+    assert float(cars[0].distance_km or 0) >= 0.80
+
+    dropped = _fix384_run(
+        [
+            _car("09:30", "11:06", "Parking ul. Szpitalna", "Parking pod Zamkiem w Pieskowej Skale", 40.0),
+            _fix383_attr("Zamek Pieskowa Skała", "11:10", "12:10", 50.2443, 19.7801),
+            _car("12:10", "13:46", "Parking pod Zamkiem w Pieskowej Skale", "Parking ul. Szpitalna", 40.0),
+            _fix383_attr("Sukiennice", "14:10", "15:30", 50.0616, 19.9373),
+            _dinner("18:00", "19:00"),
+        ],
+    )
+    dropped_names = _names(dropped).lower()
+    dropped_hops = " ".join(
+        f"{getattr(it, 'from_location', '')} {getattr(it, 'to_location', '')}" for it in dropped
+    ).lower()
+    assert "pieskow" not in dropped_names and "pieskow" not in _fold_place_label(dropped_hops)
+    assert "Sukiennice" in _names(dropped)
+
+    kept = _fix384_run(
+        [
+            _car("09:10", "09:40", "Parking ul. Szpitalna", "Parking pod Zamkiem w Pieskowej Skale", 12.0),
+            _fix383_attr("Zamek Pieskowa Skała", "09:45", "11:30", 50.2443, 19.7801),
+            _dinner("18:00", "19:00"),
+        ],
+    )
+    assert any(getattr(it, "name", "") == "Zamek Pieskowa Skała" for it in kept)
