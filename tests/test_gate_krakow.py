@@ -2227,3 +2227,298 @@ def test_fix387_repairs_mailed_shapes():
         for it in stranded_kept
         if getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) == "car"
     )
+
+
+def _fix388_run(items, **ctx):
+    from app.domain.models.plan import DayPlan
+
+    base = {
+        "requested_city": "Kraków",
+        "day_start": "09:00",
+        "day_end": "20:00",
+        "travel_style": "balanced",
+        "group_type": "couples",
+        "date": "2026-02-23",
+        "poi_pool": [],
+        "preferences": ["nature_landscape", "museum_heritage"],
+        "has_car": True,
+        "fix388_keep": True,
+    }
+    base.update(ctx)
+    day = DayPlan(day=1, date=str(base.get("date"))[:10], items=items)
+    out = PlanService(None)._seal_fix388_krakow_client([day], base)
+    return out[0].items
+
+
+def test_fix388_repairs_mailed_shapes():
+    from app.domain.models.plan import DinnerBreakItem, LunchBreakItem, TransitItem, TransitMode
+    from app.domain.planner.krakow_parking import parking_point
+    from app.domain.planner.leg_physics import car_minutes
+    from app.domain.planner.time_utils import minutes_to_time
+
+    szpitalna = "Parking ul. Szpitalna"
+    zablocie = "Parking Zabłocie (ul. Przemysłowa)"
+    groblach = "Parking plac Na Groblach (pod Wawelem)"
+    sz_pt = parking_point(szpitalna)
+    zb_pt = parking_point(zablocie)
+    gro_pt = parking_point(groblach)
+
+    def _mt(minute):
+        return minutes_to_time(minute)
+
+    def _walk(start, end, frm, to, km):
+        return TransitItem(
+            type=ItemType.TRANSIT,
+            start_time=start,
+            end_time=end,
+            duration_min=time_to_minutes(end) - time_to_minutes(start),
+            mode=TransitMode.WALK,
+            from_location=frm,
+            to_location=to,
+            distance_km=round(float(km), 3),
+            routing_source="estimated_walk",
+        )
+
+    def _car(start, end, frm, to, km):
+        row = _walk(start, end, frm, to, km)
+        return row.model_copy(update={"mode": TransitMode.CAR, "routing_source": "estimated_car"})
+
+    def _leg(cursor, frm, to, a, b, car=False):
+        km = leg_km(a, b, "car" if car else "walk", city="Kraków")[0]
+        mins = car_minutes(km) if car else walk_minutes(km, {})
+        hop = (_car if car else _walk)(_mt(cursor), _mt(cursor + mins), frm, to, km)
+        return hop, cursor + mins, km
+
+    def _lunch(start, end, label, lat, lng):
+        return LunchBreakItem(
+            type=ItemType.LUNCH_BREAK,
+            start_time=start,
+            end_time=end,
+            duration_min=time_to_minutes(end) - time_to_minutes(start),
+            label=label,
+            suggestions=[{"id": "t", "name": label, "lat": lat, "lng": lng}],
+        )
+
+    def _dinner(start, end):
+        return DinnerBreakItem(
+            type=ItemType.DINNER_BREAK,
+            start_time=start,
+            end_time=end,
+            duration_min=time_to_minutes(end) - time_to_minutes(start),
+            label="Kolacja",
+        )
+
+    def _kind(it):
+        return getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
+
+    def _names(items):
+        return " ".join(getattr(it, "name", "") or "" for it in items)
+
+    def _lego_count(items):
+        stems = ("lego", "bricks", "klock", "swiat w budowie")
+        return sum(
+            1 for it in items
+            if _kind(it) == ItemType.ATTRACTION.value
+            and any(stem in _fold_place_label(getattr(it, "name", "") or "") for stem in stems)
+        )
+
+    def _cars_from(items):
+        return [
+            getattr(it, "from_location", "") or ""
+            for it in items
+            if getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) == "car"
+        ]
+
+    bricks_pt = (50.0490, 19.9620)
+    swiat_pt = (50.0670, 19.9380)
+    planty_pt = (50.0632, 19.9412)
+    assert leg_km(bricks_pt, swiat_pt, "walk", city="Kraków")[0] > 0.8
+
+    def _lego_day():
+        rows = []
+        cursor = 9 * 60 + 10
+        hop, cursor, _km = _leg(cursor, zablocie, "Bricks & Figs", zb_pt, bricks_pt)
+        rows.append(hop)
+        rows.append(_fix383_attr("Bricks & Figs", _mt(cursor), _mt(cursor + 90), *bricks_pt))
+        cursor += 90
+        hop, cursor, _km = _leg(cursor, "Bricks & Figs", zablocie, bricks_pt, zb_pt)
+        rows.append(hop)
+        hop, cursor, _km = _leg(cursor, zablocie, szpitalna, zb_pt, sz_pt, car=True)
+        rows.append(hop)
+        hop, cursor, _km = _leg(cursor, szpitalna, "Świat w Budowie", sz_pt, swiat_pt)
+        rows.append(hop)
+        rows.append(_fix383_attr("Świat w Budowie", _mt(cursor), _mt(cursor + 23), *swiat_pt))
+        cursor += 23
+        hop, cursor, _km = _leg(cursor, "Świat w Budowie", szpitalna, swiat_pt, sz_pt)
+        rows.append(hop)
+        hop, cursor, _km = _leg(cursor, szpitalna, "Planty Krakowskie", sz_pt, planty_pt)
+        rows.append(hop)
+        rows.append(_fix383_attr("Planty Krakowskie", _mt(cursor), _mt(cursor + 60), *planty_pt))
+        rows.append(_dinner("18:30", "19:30"))
+        return rows
+
+    family = {
+        "group_type": "family_kids",
+        "preferences": ["kids_attractions", "nature_landscape"],
+        "date": "2026-02-21",
+    }
+    lego = _fix388_run(_lego_day(), **family)
+    kept_show = next(it for it in lego if getattr(it, "name", "") == "Bricks & Figs")
+    assert kept_show.start_time == _lego_day()[1].start_time
+    assert kept_show.end_time == _lego_day()[1].end_time
+    assert "swiat w budowie" not in _fold_place_label(_names(lego))
+    assert _lego_count(lego) == 1
+    dinner = next(it for it in lego if _kind(it) == ItemType.DINNER_BREAK.value)
+    assert time_to_minutes(dinner.start_time) >= 17 * 60
+    assert any(zablocie in frm for frm in _cars_from(lego))
+    lego_kept = _fix388_run(_lego_day(), fix388_keep=False, **family)
+    assert _lego_count(lego_kept) == 1
+    assert "swiat w budowie" not in _fold_place_label(_names(lego_kept))
+
+    solo = _fix388_run([
+        _fix383_attr("Bricks & Figs", "10:00", "11:30", *bricks_pt),
+        _dinner("18:30", "19:30"),
+    ], **family)
+    assert next(it for it in solo if "Bricks" in (getattr(it, "name", "") or "")).start_time == "10:00"
+    assert _lego_count(solo) == 1
+
+    museum_pt = (50.0617, 19.9373)
+    castle_pt = (50.0635, 19.9390)
+    suk_pt = (50.0608, 19.9412)
+    lunch_pt = (50.0620, 19.9400)
+    lead, cursor, _km = _leg(9 * 60, szpitalna, "Muzeum Narodowe", sz_pt, museum_pt)
+    museum_start = cursor
+    museum_end = museum_start + 90
+    to_castle, cursor, _km = _leg(museum_end, "Muzeum Narodowe", "Zamek w Ojcowie", museum_pt, castle_pt)
+    castle_start = cursor
+    to_suk_km = leg_km(castle_pt, suk_pt, "walk", city="Kraków")[0]
+    to_lunch_km = leg_km(suk_pt, lunch_pt, "walk", city="Kraków")[0]
+    to_suk_min = walk_minutes(to_suk_km, {})
+    to_lunch_min = walk_minutes(to_lunch_km, {})
+    lunch_start = 16 * 60 + 12
+    suk_end = lunch_start - to_lunch_min
+    suk_start = suk_end - 90
+    castle_end = suk_start - to_suk_min
+    lunch_rows = [
+        lead,
+        _fix383_attr("Muzeum Narodowe", _mt(museum_start), _mt(museum_end), *museum_pt),
+        to_castle,
+        _fix383_attr("Zamek w Ojcowie", _mt(castle_start), _mt(castle_end), *castle_pt),
+        _walk(_mt(castle_end), _mt(castle_end + to_suk_min), "Zamek w Ojcowie", "Sukiennice", to_suk_km),
+        _fix383_attr("Sukiennice", _mt(suk_start), _mt(suk_end), *suk_pt),
+        _walk(_mt(suk_end), _mt(lunch_start), "Sukiennice", "Trattoria Mira", to_lunch_km),
+        _lunch(_mt(lunch_start), "17:12", "Trattoria Mira", *lunch_pt),
+        _dinner("17:30", "18:30"),
+    ]
+    castle_span = castle_end - castle_start
+    pulled = _fix388_run(lunch_rows)
+    castle = next(it for it in pulled if getattr(it, "name", "") == "Zamek w Ojcowie")
+    meal = next(it for it in pulled if _kind(it) == ItemType.LUNCH_BREAK.value)
+    suk = next(it for it in pulled if getattr(it, "name", "") == "Sukiennice")
+    museum = next(it for it in pulled if getattr(it, "name", "") == "Muzeum Narodowe")
+    assert _span_minutes(castle) == castle_span
+    assert time_to_minutes(meal.start_time) <= 15 * 60
+    assert meal.end_time == "17:12"
+    assert _span_minutes(suk) == 45
+    assert _span_minutes(museum) < 90
+    assert next(it for it in pulled if _kind(it) == ItemType.DINNER_BREAK.value).start_time == "17:30"
+    pulled_kept = _fix388_run(lunch_rows, fix388_keep=False)
+    assert time_to_minutes(
+        next(it for it in pulled_kept if _kind(it) == ItemType.LUNCH_BREAK.value).start_time
+    ) <= 15 * 60
+
+    wieza_pt = (50.0617, 19.9373)
+    mid_pt = (50.0640, 19.9395)
+    near_pt = (50.0630, 19.9388)
+    drop_rows = []
+    hop, cursor, _km = _leg(9 * 60, szpitalna, "Wieża Ratuszowa", sz_pt, wieza_pt)
+    drop_rows.append(hop)
+    drop_rows.append(_fix383_attr("Wieża Ratuszowa", _mt(cursor), _mt(cursor + 40), *wieza_pt))
+    cursor += 40
+    hop, cursor, _km = _leg(cursor, "Wieża Ratuszowa", "Muzeum Narodowe", wieza_pt, mid_pt)
+    drop_rows.append(hop)
+    drop_rows.append(_fix383_attr("Muzeum Narodowe", _mt(cursor), _mt(cursor + 60), *mid_pt))
+    cursor += 60
+    hop, cursor, _km = _leg(cursor, "Muzeum Narodowe", "Trattoria Mira", mid_pt, near_pt)
+    drop_rows.append(hop)
+    drop_rows.append(_lunch("16:12", "17:12", "Trattoria Mira", *near_pt))
+    drop_rows.append(_dinner("17:30", "18:30"))
+    dropped = _fix388_run(drop_rows)
+    dropped_meal = next(it for it in dropped if _kind(it) == ItemType.LUNCH_BREAK.value)
+    assert time_to_minutes(dropped_meal.start_time) <= 15 * 60
+    assert dropped_meal.end_time == "17:12"
+    assert "Muzeum Narodowe" not in _names(dropped)
+    assert "Wieża Ratuszowa" in _names(dropped)
+    assert _span_minutes(next(it for it in dropped if "Wieża" in (getattr(it, "name", "") or ""))) == 40
+
+    def _home(lunch_end, mocak_start, mocak_end, meal_at, meal_pin, dinner_at):
+        rows = []
+        cursor = 9 * 60
+        hop, cursor, _km = _leg(cursor, szpitalna, zablocie, sz_pt, zb_pt, car=True)
+        rows.append(hop)
+        hop, cursor, _km = _leg(cursor, zablocie, szpitalna, zb_pt, sz_pt, car=True)
+        rows.append(hop)
+        hop, cursor, _km = _leg(cursor, szpitalna, meal_at, sz_pt, meal_pin)
+        rows.append(hop)
+        rows.append(_lunch(_mt(cursor), _mt(lunch_end), meal_at, *meal_pin))
+        hop, _ignored, _km = _leg(lunch_end, meal_at, groblach, meal_pin, gro_pt)
+        rows.append(hop)
+        drive_start = time_to_minutes(hop.end_time)
+        hop, _ignored, _km = _leg(drive_start, groblach, zablocie, gro_pt, zb_pt, car=True)
+        rows.append(hop)
+        walk_start = time_to_minutes(hop.end_time)
+        hop, _ignored, _km = _leg(walk_start, zablocie, "Muzeum Sztuki Współczesnej MOCAK", zb_pt, (50.0492, 19.9608))
+        rows.append(hop)
+        rows.append(_fix383_attr(
+            "Muzeum Sztuki Współczesnej MOCAK", _mt(mocak_start), _mt(mocak_end), 50.0492, 19.9608,
+        ))
+        rows.append(_dinner(_mt(dinner_at), _mt(dinner_at + 60)))
+        return rows
+
+    near = (50.0630, 19.9410)
+    home = _fix388_run(_home(12 * 60, 13 * 60 + 30, 15 * 60, "Trattoria Mira", near, 18 * 60))
+    mocak = next(it for it in home if "MOCAK" in (getattr(it, "name", "") or ""))
+    assert time_to_minutes(mocak.start_time) < 13 * 60 + 30
+    assert not any("Groblach" in frm for frm in _cars_from(home))
+    assert any("Szpitalna" in frm for frm in _cars_from(home))
+    assert next(it for it in home if _kind(it) == ItemType.DINNER_BREAK.value).start_time == "18:00"
+    home_kept = _fix388_run(
+        _home(12 * 60, 13 * 60 + 30, 15 * 60, "Trattoria Mira", near, 18 * 60),
+        fix388_keep=False,
+    )
+    assert not any("Groblach" in frm for frm in _cars_from(home_kept))
+    assert "MOCAK" in _names(home_kept)
+
+    far = (50.0610, 19.9090)
+    stranded = _fix388_run(
+        _home(15 * 60 + 50, 16 * 60 + 28, 17 * 60 + 20, "Restauracja Błonia", far, 17 * 60 + 30),
+        poi_pool=[{
+            "name": "Podziemia Rynku w Krakowie",
+            "lat": 50.0620,
+            "lng": 19.9100,
+            "time_max": 90,
+        }],
+    )
+    assert next(it for it in stranded if _kind(it) == ItemType.DINNER_BREAK.value).start_time == "17:30"
+    assert not any("Groblach" in frm for frm in _cars_from(stranded))
+    assert "Podziemia" in _names(stranded)
+    assert "MOCAK" not in _names(stranded)
+    for it in stranded:
+        if _kind(it) != ItemType.TRANSIT.value:
+            continue
+        if "walk" not in str(getattr(getattr(it, "mode", None), "value", "")):
+            continue
+        if time_to_minutes(it.start_time) >= 12 * 60:
+            assert float(getattr(it, "distance_km", 0) or 0) <= 1.2
+    stranded_kept = _fix388_run(
+        _home(15 * 60 + 50, 16 * 60 + 28, 17 * 60 + 20, "Restauracja Błonia", far, 17 * 60 + 30),
+        poi_pool=[{
+            "name": "Podziemia Rynku w Krakowie",
+            "lat": 50.0620,
+            "lng": 19.9100,
+            "time_max": 90,
+        }],
+        fix388_keep=False,
+    )
+    assert "Podziemia" in _names(stranded_kept)
+    assert not any("Groblach" in frm for frm in _cars_from(stranded_kept))
