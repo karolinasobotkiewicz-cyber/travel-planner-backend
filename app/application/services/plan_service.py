@@ -47142,6 +47142,13 @@ class PlanService:
                 f"[FIX #386] Kraków client seal failed "
                 f"{type(_exc386).__name__}: {_exc386}"
             )
+        try:
+            out_days = self._seal_fix387_krakow_client(out_days, ctx)
+        except Exception as _exc387:
+            print(
+                f"[FIX #387] Kraków client seal failed "
+                f"{type(_exc387).__name__}: {_exc387}"
+            )
         return out_days
 
 
@@ -55939,6 +55946,875 @@ class PlanService:
                 items = _commit(day, items, _teleport(items))
             except Exception as exc:
                 print(f"[FIX #386] day {index + 1} skipped {type(exc).__name__}: {exc}")
+                rebuilt.append(day)
+                continue
+            if items is original or items == original:
+                rebuilt.append(day)
+                continue
+            try:
+                title = _generate_day_title(
+                    items, getattr(day, "day", index + 1) or 1,
+                ) or getattr(day, "title", None)
+            except Exception:
+                title = getattr(day, "title", None)
+            rebuilt.append(day.model_copy(update={"items": items, "title": title}))
+        return rebuilt
+
+
+    def _seal_fix387_krakow_client(
+        self,
+        days: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #387: the Kraków mail after #386.
+
+        A valley stop that leaves forty minutes empty before the next meal
+        gains one open neighbour, and dinner stays put. A long Ojców drive
+        with a single castle gains a second valley stop on that same trip
+        before the car turns back; the castle clock stays. A car that
+        leaves from a lot where it does not stand departs from the lot it
+        actually occupies, or that jump leaves the day.
+        """
+        if (
+            not days
+            or _is_locked_city_context(context)
+            or not _is_krakow_context(context)
+        ):
+            return days
+        from datetime import date as _date, timedelta as _td
+
+        from app.domain.models.plan import TransitItem, TransitMode
+        from app.domain.planner.engine import visit_duration_hard_cap
+        from app.domain.planner.krakow_parking import is_parking_label, parking_point
+        from app.domain.planner.leg_physics import car_minutes, leg_km, walk_minutes
+        from app.domain.validators.client_invariants import audit_plan
+
+        ctx = dict(context or {})
+        hop_cap, _budget, _lunch_by, _before = krakow_client_limits(ctx)
+        pool = ctx.get("poi_pool") or []
+        if isinstance(pool, dict):
+            pool = list(pool.values())
+        try:
+            day_end_min = time_to_minutes(ctx.get("day_end") or "20:00")
+        except Exception:
+            day_end_min = 20 * 60
+        group = str(
+            getattr(ctx.get("group_type"), "value", ctx.get("group_type")) or ""
+        ).lower()
+        prefs = [
+            str(getattr(p, "value", p)).lower()
+            for p in (ctx.get("preferences") or [])
+        ]
+        pref_blob = " ".join(prefs)
+        family_kn = ("kid" in group or "family" in group) and (
+            "kid" in pref_blob or "nature" in pref_blob
+        )
+        lots = (
+            "Parking Złota Góra (Ojcowski Park Narodowy)",
+            "Parking pod Zamkiem w Pieskowej Skale",
+        )
+        fallbacks = (
+            {"name": "Maczuga Herkulesa", "lat": 50.2429068, "lng": 19.7829619, "time_max": 45},
+            {"name": "Jaskinia Łokietka", "lat": 50.2018497, "lng": 19.8179365, "time_max": 60},
+            {"name": "Jaskinia Ciemna", "lat": 50.1979699, "lng": 19.8296011, "time_max": 60},
+            {"name": "Zamek Pieskowa Skała", "lat": 50.2451641, "lng": 19.7788312, "time_max": 90},
+            {"name": "Zamek w Ojcowie", "lat": 50.2117047, "lng": 19.8300564, "time_max": 90},
+        )
+        outdoor_stems = (
+            "planty", "blonia", "bulwar", "las wolski", "bednarskiego",
+            "jordana", "decjusza", "lotnikow", "ogrod botan", "skalk", "kopiec",
+        )
+
+        def _clk(it: Any, attr: str) -> Optional[int]:
+            raw = getattr(it, attr, None)
+            if not raw and attr == "start_time":
+                raw = getattr(it, "time", None)
+            if not raw:
+                return None
+            try:
+                return time_to_minutes(raw)
+            except Exception:
+                return None
+
+        def _tv(it: Any) -> str:
+            return _item_type_value(it)
+
+        def _mode(it: Any) -> str:
+            return str(
+                getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
+                or ""
+            ).lower()
+
+        def _is_walk(it: Any) -> bool:
+            return _tv(it) == ItemType.TRANSIT.value and "walk" in _mode(it)
+
+        def _is_car(it: Any) -> bool:
+            mode = _mode(it)
+            return _tv(it) == ItemType.TRANSIT.value and "car" in mode and "walk" not in mode
+
+        def _span(it: Any) -> int:
+            start = _clk(it, "start_time")
+            end = _clk(it, "end_time")
+            if start is None or end is None or end <= start:
+                return int(getattr(it, "duration_min", 0) or 0)
+            return end - start
+
+        def _content(it: Any) -> bool:
+            return _is_timeline_attraction(it) or _tv(it) in (
+                ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            )
+
+        def _move(it: Any, delta: int) -> Any:
+            if not delta:
+                return it
+            updates = {}
+            for attr in ("start_time", "end_time", "time"):
+                raw = getattr(it, attr, None)
+                if not raw:
+                    continue
+                try:
+                    current = time_to_minutes(raw)
+                except Exception:
+                    continue
+                updates[attr] = minutes_to_time(current + delta)
+            if "start_time" in updates and "end_time" in updates:
+                updates["duration_min"] = (
+                    time_to_minutes(updates["end_time"]) - time_to_minutes(updates["start_time"])
+                )
+            return it.model_copy(update=updates) if updates else it
+
+        def _day_date(day: Any, index: int):
+            raw = getattr(day, "date", None)
+            if raw:
+                try:
+                    return _date.fromisoformat(str(raw)[:10])
+                except ValueError:
+                    pass
+            start = ctx.get("start_date") or ctx.get("date")
+            if start:
+                try:
+                    return _date.fromisoformat(str(start)[:10]) + _td(days=index)
+                except ValueError:
+                    return None
+            return None
+
+        def _coords(it: Any):
+            found = self._item_stop_latlng(it)
+            if found:
+                return found
+            if _is_timeline_attraction(it):
+                lat, lng = getattr(it, "lat", None), getattr(it, "lng", None)
+                try:
+                    if lat is not None and lng is not None:
+                        return float(lat), float(lng)
+                except (TypeError, ValueError):
+                    return None
+            return None
+
+        def _walk_km(a, b) -> Optional[float]:
+            if not a or not b:
+                return None
+            try:
+                return float(leg_km(a, b, "walk", city="Kraków")[0])
+            except Exception:
+                return None
+
+        def _car_km(a, b) -> Optional[float]:
+            if not a or not b:
+                return None
+            try:
+                return float(leg_km(a, b, "car", city="Kraków")[0])
+            except Exception:
+                return None
+
+        def _hop(start: int, minutes: int, km: float, frm: str, to: str, car: bool):
+            return TransitItem(
+                type=ItemType.TRANSIT,
+                start_time=minutes_to_time(start),
+                end_time=minutes_to_time(start + minutes),
+                duration_min=minutes,
+                mode=TransitMode.CAR if car else TransitMode.WALK,
+                from_location=frm or "Kraków",
+                to_location=to or "Kraków",
+                distance_km=round(km, 3),
+                routing_source="estimated_car" if car else "estimated_walk",
+            )
+
+        def _label(it: Any) -> str:
+            if _is_timeline_attraction(it):
+                return getattr(it, "name", "") or ""
+            if _tv(it) in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                for sug in (getattr(it, "suggestions", None) or [])[:1]:
+                    nm = sug.get("name") if isinstance(sug, dict) else getattr(sug, "name", None)
+                    if nm:
+                        return str(nm)
+                return getattr(it, "label", "") or ""
+            return getattr(it, "name", "") or ""
+
+        def _worse(before_items, after_items, day) -> bool:
+            bad = {
+                "overlap", "from_mismatch", "car_teleport", "car_position_mismatch",
+                "dangling_hop", "missing_hop", "glued", "meal_stranded",
+                "late_start", "after_day_end", "dishonest_leg", "urban_car",
+                "distance_vs_coords_mismatch", "generic_car_return", "dead_span",
+                "meal_wait", "anonymous_gap",
+            }
+            probe_ctx = dict(ctx)
+            probe_ctx["audit_leg_distances"] = True
+            probe_ctx["audit_car_model"] = True
+
+            def _codes(rows):
+                probe = day.model_copy(update={"items": rows})
+                found = set()
+                for defect in audit_plan([probe], context=probe_ctx):
+                    code = getattr(defect, "code", None)
+                    if code == "anonymous_gap":
+                        meta = getattr(defect, "meta", None) or {}
+                        start = meta.get("start")
+                        end = meta.get("end")
+                        if start is None or end is None or int(end) - int(start) < 45:
+                            continue
+                    if code in bad:
+                        found.add(code)
+                return found
+
+            if ctx.get("fix387_keep"):
+                return False
+            try:
+                return bool(_codes(after_items) - _codes(before_items))
+            except Exception:
+                return True
+
+        def _commit(day, before, after):
+            if after is before:
+                return before
+            if _worse(before, after, day):
+                return before
+            return after
+
+        def _prev_content(items, start):
+            return next(
+                (k for k in range(start, -1, -1) if _content(items[k])),
+                None,
+            )
+
+        def _next_content(items, start):
+            return next(
+                (k for k in range(start, len(items)) if _content(items[k])),
+                None,
+            )
+
+        def _as_dict(poi: Any) -> Dict[str, Any]:
+            if isinstance(poi, dict):
+                return poi
+            return {
+                "name": getattr(poi, "name", "") or "",
+                "lat": getattr(poi, "lat", None),
+                "lng": getattr(poi, "lng", None),
+                "opening_hours": getattr(poi, "opening_hours", None),
+                "opening_hours_seasonal": getattr(poi, "opening_hours_seasonal", None),
+                "time_max": getattr(poi, "time_max", None),
+            }
+
+        def _pin(poi: Dict[str, Any]):
+            try:
+                lat, lng = poi.get("lat"), poi.get("lng")
+                if lat is None or lng is None:
+                    return None
+                return float(lat), float(lng)
+            except (TypeError, ValueError):
+                return None
+
+        def _used(items) -> set:
+            found = set()
+            for it in items:
+                if _is_timeline_attraction(it):
+                    found.add(_fold_place_label(getattr(it, "name", "") or ""))
+            return found
+
+        def _already(used: set, name: str) -> bool:
+            folded = _fold_place_label(name)
+            if not folded:
+                return True
+            return any(
+                folded == have or (
+                    len(folded) >= 6 and len(have) >= 6
+                    and (folded in have or have in folded)
+                )
+                for have in used
+            )
+
+        def _window(poi: Dict[str, Any], day_date):
+            if day_date is None:
+                return None
+            try:
+                return self._poi_open_window(poi, day_date)
+            except Exception:
+                return None
+
+        def _outdoor(name: str) -> bool:
+            folded = _fold_place_label(name)
+            return any(stem in folded for stem in outdoor_stems)
+
+        def _cap(name: str) -> int:
+            cap = visit_duration_hard_cap({"name": name, "city": "Kraków"})
+            return cap if cap is not None else 150
+
+        def _valley_catalog() -> List[Dict[str, Any]]:
+            rows: List[Dict[str, Any]] = []
+            seen = set()
+            for source in list(pool) + list(fallbacks):
+                poi = _as_dict(source)
+                name = str(poi.get("name") or poi.get("Name") or "")
+                if not _is_ojcow_stop_name(name):
+                    continue
+                folded = _fold_place_label(name)
+                if not folded or folded in seen or _pin(poi) is None:
+                    continue
+                seen.add(folded)
+                rows.append(poi)
+            return rows
+
+        def _ordered_valley(used: set) -> List[Dict[str, Any]]:
+            catalog = _valley_catalog()
+            picked = []
+            for stem in ("maczuga", "lokietka", "ciemna", "pieskowa", "ojcow"):
+                for poi in catalog:
+                    name = str(poi.get("name") or "")
+                    folded = _fold_place_label(name)
+                    if stem not in folded or _already(used, name):
+                        continue
+                    if stem == "ojcow" and "pieskowa" in folded:
+                        continue
+                    if stem == "ojcow" and "zamek" not in folded:
+                        continue
+                    picked.append(poi)
+                    break
+            return picked
+
+        def _fits_clock(poi, day_date, start: int, end: int) -> bool:
+            if end <= start:
+                return False
+            if (
+                day_date is not None
+                and day_date.month in (11, 12, 1, 2)
+                and _outdoor(str(poi.get("name") or ""))
+                and start >= 16 * 60 + 30
+            ):
+                return False
+            window = _window(poi, day_date)
+            if window == (0, 0):
+                return False
+            if window and (start < int(window[0]) or end > int(window[1])):
+                return False
+            return True
+
+        def _nearest_lot(pt):
+            best_name, best_km = None, None
+            for name in lots:
+                km = _walk_km(pt, parking_point(name))
+                if km is None:
+                    continue
+                if best_km is None or km < best_km:
+                    best_name, best_km = name, km
+            return best_name, best_km
+
+        def _template(items):
+            return next((it for it in items if _is_timeline_attraction(it)), None)
+
+        def _clone(template, name: str, start: int, end: int, pt) -> Any:
+            return template.model_copy(update={
+                "poi_id": "fix387",
+                "name": name,
+                "description_short": name,
+                "start_time": minutes_to_time(start),
+                "end_time": minutes_to_time(end),
+                "duration_min": end - start,
+                "lat": pt[0],
+                "lng": pt[1],
+                "city": "Kraków",
+                "address": "Kraków",
+            })
+
+        def _leg(items, start: int, step: int):
+            j = start
+            passed_meal = False
+            while 0 <= j < len(items):
+                if _is_car(items[j]):
+                    blob = _fold_place_label(
+                        f"{getattr(items[j], 'from_location', '')} {getattr(items[j], 'to_location', '')}"
+                    )
+                    valley = any(
+                        stem in blob for stem in ("ojcow", "pieskow", "maczuga", "zlota")
+                    )
+                    if not passed_meal or valley or _span(items[j]) >= 30:
+                        return j
+                    return None
+                if _content(items[j]):
+                    if _tv(items[j]) in (
+                        ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                    ) and not passed_meal:
+                        passed_meal = True
+                    else:
+                        return None
+                j += step
+            return None
+
+        def _attr_idxs(items):
+            return [
+                i for i, it in enumerate(items)
+                if _is_timeline_attraction(it) and _is_ojcow_stop_name(getattr(it, "name", "") or "")
+            ]
+
+        def _visit_sum(items) -> int:
+            return sum(_span(items[i]) for i in _attr_idxs(items))
+
+        def _drive_sum(items) -> int:
+            idxs = _attr_idxs(items)
+            if not idxs:
+                return 0
+            total = 0
+            seen = set()
+            for index in (
+                _leg(items, idxs[0] - 1, -1),
+                _leg(items, idxs[-1] + 1, 1),
+            ):
+                if index is not None and index not in seen:
+                    seen.add(index)
+                    total += _span(items[index])
+            for k in range(idxs[0], idxs[-1] + 1):
+                if _is_car(items[k]) and k not in seen:
+                    total += _span(items[k])
+            return total
+
+        def _tail_ok(tail, delta: int) -> bool:
+            for it in tail:
+                if _tv(it) in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                    continue
+                begin = _clk(it, "start_time")
+                if begin is None:
+                    continue
+                if _content(it) and begin + delta >= day_end_min:
+                    return False
+            return True
+
+        def _add_once(items, day_date, tried: set):
+            idxs = _attr_idxs(items)
+            if not idxs:
+                return items, None
+            if family_kn and sum(1 for it in items if _is_timeline_attraction(it)) >= 5:
+                return items, None
+            ret = _leg(items, idxs[-1] + 1, 1)
+            if ret is None:
+                return items, None
+            drive = _drive_sum(items)
+            visit = _visit_sum(items)
+            if drive < 40:
+                return items, None
+            if len(idxs) >= 2 and drive <= visit:
+                return items, None
+            if len(idxs) >= 3:
+                return items, None
+            lot_name = getattr(items[ret], "from_location", "") or ""
+            dest = getattr(items[ret], "to_location", "") or ""
+            if not is_parking_label(lot_name) or parking_point(lot_name) is None:
+                return items, None
+            if parking_point(dest) is None:
+                return items, None
+            prev = items[ret - 1]
+            if _is_walk(prev) and _place_names_match(getattr(prev, "to_location", "") or "", lot_name):
+                people = lot_name
+                people_pt = parking_point(lot_name)
+                ready = _clk(prev, "end_time")
+            else:
+                host = items[idxs[-1]]
+                people = getattr(host, "name", "") or ""
+                people_pt = _coords(host)
+                ready = _clk(host, "end_time")
+            old_end = _clk(items[ret], "end_time")
+            if ready is None or old_end is None or people_pt is None:
+                return items, None
+            template = _template(items)
+            if template is None:
+                return items, None
+            nonlocal_template[0] = template
+            for poi in _ordered_valley(_used(items)):
+                name = str(poi.get("name") or "")
+                if _fold_place_label(name) in tried:
+                    continue
+                cap = _cap(name)
+                for visit_len in (cap, 45, 30):
+                    if visit_len > cap:
+                        continue
+                    built = _chain_to_poi(
+                        poi, day_date, ready, people, people_pt, lot_name, visit_len,
+                    )
+                    if built is None:
+                        continue
+                    rows, cursor, leave = built
+                    if not leave or parking_point(leave) is None:
+                        continue
+                    ret_km = _car_km(parking_point(leave), parking_point(dest))
+                    if ret_km is None or ret_km < 0.80:
+                        continue
+                    ret_min = car_minutes(ret_km)
+                    new_end = cursor + ret_min
+                    delta = new_end - old_end
+                    tail = items[ret + 1:]
+                    if new_end > day_end_min or not _tail_ok(tail, delta):
+                        continue
+                    rewritten = _hop(cursor, ret_min, ret_km, leave, dest, True)
+                    shifted = [_move(it, delta) for it in tail] if delta else list(tail)
+                    return items[:ret] + rows + [rewritten] + shifted, name
+            return items, None
+
+        def _hole(items, left: int, right: int):
+            prev_end = _clk(items[left], "end_time")
+            best = None
+            for k in range(left + 1, right + 1):
+                start = _clk(items[k], "start_time")
+                if prev_end is not None and start is not None:
+                    gap = start - prev_end
+                    if best is None or gap > best[0]:
+                        best = (gap, k, prev_end)
+                finish = _clk(items[k], "end_time") or start
+                if finish is not None:
+                    prev_end = finish
+            return best
+
+        def _anchor(items, idx: int):
+            it = items[idx]
+            if _content(it):
+                return _label(it), _coords(it)
+            if _tv(it) == ItemType.TRANSIT.value:
+                dest = getattr(it, "to_location", "") or ""
+                pt = parking_point(dest) if is_parking_label(dest) else None
+                if pt is None:
+                    for earlier in items[:idx + 1]:
+                        if _content(earlier) and _place_names_match(_label(earlier), dest):
+                            pt = _coords(earlier)
+                            break
+                return dest, pt
+            return "", None
+
+        def _fill_once(items, day_date, tried: set):
+            template = _template(items)
+            if template is None:
+                return items, None
+            nonlocal_template[0] = template
+            for left in _attr_idxs(items):
+                right = _next_content(items, left + 1)
+                if right is None:
+                    continue
+                found = _hole(items, left, right)
+                if found is None or found[0] < 40:
+                    continue
+                _gap, at, ready = found
+                if not _content(items[at]):
+                    continue
+                deadline = _clk(items[at], "start_time")
+                if deadline is None:
+                    continue
+                if _tv(items[at]) in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                    deadline -= 20
+                people, people_pt = _anchor(items, at - 1)
+                if not people or people_pt is None or ready is None or deadline - ready < 40:
+                    continue
+                if family_kn and sum(1 for it in items if _is_timeline_attraction(it)) >= 5:
+                    host = items[left]
+                    grown = min(_cap(getattr(host, "name", "") or "") + (_clk(host, "start_time") or ready), deadline)
+                    old = _clk(host, "end_time")
+                    nxt = _clk(items[left + 1], "start_time") if left + 1 < len(items) else deadline
+                    if old is not None and nxt is not None and ready == old and grown - old >= 15 and grown <= nxt:
+                        updated = host.model_copy(update={
+                            "end_time": minutes_to_time(grown),
+                            "duration_min": grown - (_clk(host, "start_time") or grown),
+                        })
+                        return items[:left] + [updated] + items[left + 1:], getattr(host, "name", "")
+                    continue
+                options = _ordered_valley(_used(items))
+                for poi in list(pool):
+                    row = _as_dict(poi)
+                    name = str(row.get("name") or "")
+                    if not name or _is_ojcow_stop_name(name) or _already(_used(items), name):
+                        continue
+                    if _pin(row) is None:
+                        continue
+                    options.append(row)
+                for poi in options:
+                    name = str(poi.get("name") or "")
+                    if _fold_place_label(name) in tried or _already(_used(items), name):
+                        continue
+                    pt = _pin(poi)
+                    km = _walk_km(people_pt, pt)
+                    if km is None or not (0.05 < km <= hop_cap):
+                        continue
+                    walk_min = walk_minutes(km, ctx)
+                    room = deadline - ready - walk_min
+                    cap = _cap(name)
+                    visit_len = min(cap, room)
+                    if visit_len < 30:
+                        continue
+                    start = deadline - visit_len
+                    walk_start = start - walk_min
+                    if walk_start < ready or walk_start - ready >= 40:
+                        visit_len = min(cap, room)
+                        start = ready + walk_min
+                        if deadline - (start + visit_len) > 20 and _tv(items[at]) in (
+                            ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                        ):
+                            continue
+                    if not _fits_clock(poi, day_date, start, start + visit_len):
+                        continue
+                    if start - walk_min < ready:
+                        continue
+                    rows = [
+                        _hop(start - walk_min, walk_min, km, people, name, False),
+                        _clone(template, name, start, start + visit_len, pt),
+                    ]
+                    return items[:at] + rows + items[at:], name
+            return items, None
+
+        def _teleport_once(items, day_date, tried: set):
+            car_at = None
+            for i, it in enumerate(items):
+                if not _is_car(it):
+                    continue
+                frm = getattr(it, "from_location", "") or ""
+                to = getattr(it, "to_location", "") or ""
+                key = (i, frm, to, getattr(it, "start_time", ""))
+                if (
+                    car_at and is_parking_label(frm) and is_parking_label(car_at)
+                    and not _place_names_match(frm, car_at) and key not in tried
+                ):
+                    prev_i = _prev_content(items, i - 1)
+                    next_i = _next_content(items, i + 1)
+                    if prev_i is None or next_i is None:
+                        car_at = to if is_parking_label(to) else car_at
+                        continue
+                    origin = _coords(items[prev_i])
+                    home = parking_point(car_at)
+                    dest_pt = parking_point(to) if is_parking_label(to) else None
+                    nxt_pt = _coords(items[next_i])
+                    prev_end = _clk(items[prev_i], "end_time")
+                    next_start = _clk(items[next_i], "start_time")
+                    walk_back = _walk_km(origin, home)
+                    if (
+                        origin and home and dest_pt and nxt_pt
+                        and prev_end is not None and next_start is not None
+                        and walk_back is not None and 0.05 < walk_back <= hop_cap
+                    ):
+                        drive = _car_km(home, dest_pt)
+                        walk_on = _walk_km(dest_pt, nxt_pt)
+                        if (
+                            drive is not None and walk_on is not None
+                            and drive >= 0.80 and 0.05 < walk_on <= hop_cap
+                        ):
+                            back_min = walk_minutes(walk_back, ctx)
+                            drive_min = car_minutes(drive)
+                            on_min = walk_minutes(walk_on, ctx)
+                            chain = back_min + drive_min + on_min
+                            if prev_end + chain <= next_start:
+                                start = next_start - chain
+                                if start < prev_end:
+                                    start = prev_end
+                                if start - prev_end < 45 and next_start - (start + chain) < 45:
+                                    hops = [
+                                        _hop(start, back_min, walk_back, _label(items[prev_i]), car_at, False),
+                                        _hop(start + back_min, drive_min, drive, car_at, to, True),
+                                        _hop(start + back_min + drive_min, on_min, walk_on, to, _label(items[next_i]), False),
+                                    ]
+                                    return items[:prev_i + 1] + hops + items[next_i:], key
+                                room_end = next_start - chain
+                                if room_end - prev_end >= 40:
+                                    filled = _cover(
+                                        items, day_date, prev_i, prev_end, room_end, next_i,
+                                    )
+                                    if filled is not None:
+                                        hops = [
+                                            _hop(room_end, back_min, walk_back, filled[1], car_at, False),
+                                            _hop(room_end + back_min, drive_min, drive, car_at, to, True),
+                                            _hop(room_end + back_min + drive_min, on_min, walk_on, to, _label(items[next_i]), False),
+                                        ]
+                                        return items[:prev_i + 1] + filled[0] + hops + items[next_i:], key
+                    following = _next_content(items, next_i + 1)
+                    if following is None:
+                        car_at = to if is_parking_label(to) else car_at
+                        continue
+                    follow_start = _clk(items[following], "start_time")
+                    if prev_end is None or follow_start is None:
+                        continue
+                    limit = follow_start
+                    if _tv(items[following]) in (
+                        ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                    ):
+                        limit = follow_start - 20
+                    filled = _cover(items, day_date, prev_i, prev_end, limit, following)
+                    if filled is not None:
+                        return items[:prev_i + 1] + filled[0] + items[following:], key
+                    return items, key
+                if is_parking_label(to):
+                    car_at = to
+            return items, None
+
+        def _cover(items, day_date, prev_i: int, ready: int, deadline: int, stop_before: int):
+            if deadline - ready < 30:
+                return None
+            people, people_pt = _label(items[prev_i]), _coords(items[prev_i])
+            template = _template(items)
+            if not people or people_pt is None or template is None:
+                return None
+            rows = []
+            cursor_ready = ready
+            cursor_people, cursor_pt = people, people_pt
+            used = _used(items)
+            for _ in range(2):
+                if deadline - cursor_ready < 40:
+                    break
+                choice = None
+                for poi in list(pool):
+                    row = _as_dict(poi)
+                    name = str(row.get("name") or "")
+                    pt = _pin(row)
+                    if not name or pt is None or _already(used, name):
+                        continue
+                    km = _walk_km(cursor_pt, pt)
+                    if km is None or not (0.05 < km <= hop_cap):
+                        continue
+                    choice = (km, row, name, pt)
+                    break
+                if choice is None:
+                    return None
+                km, poi, name, pt = choice
+                walk_min = walk_minutes(km, ctx)
+                room = deadline - cursor_ready - walk_min
+                visit_len = min(_cap(name), room)
+                if visit_len < 30:
+                    return None
+                start = deadline - visit_len if _ == 1 or room - visit_len < 40 else cursor_ready + walk_min
+                if start - walk_min < cursor_ready:
+                    start = cursor_ready + walk_min
+                end = start + visit_len
+                if end > deadline or not _fits_clock(poi, day_date, start, end):
+                    return None
+                if deadline - end >= 40 and _ == 0:
+                    end = min(start + _cap(name), deadline)
+                    start = end - min(visit_len, _cap(name))
+                    if start - walk_min < cursor_ready:
+                        return None
+                rows.append(_hop(start - walk_min, walk_min, km, cursor_people, name, False))
+                rows.append(_clone(template, name, start, end, pt))
+                used.add(_fold_place_label(name))
+                cursor_ready = end
+                cursor_people, cursor_pt = name, pt
+                if deadline - end < 40:
+                    break
+            if deadline - cursor_ready >= 40:
+                return None
+            return rows, cursor_people
+
+        nonlocal_template = [None]
+
+        def _chain_to_poi(poi, day_date, ready, people, people_pt, lot_name, visit_len):
+            template = nonlocal_template[0]
+            if template is None:
+                return None
+            name = str(poi.get("name") or "")
+            pt = _pin(poi)
+            if pt is None or not people or people_pt is None:
+                return None
+            visit_len = max(30, min(int(visit_len), _cap(name)))
+            direct = _walk_km(people_pt, pt)
+            if direct is not None and 0.05 < direct <= hop_cap:
+                walk_to = walk_minutes(direct, ctx)
+                start = ready + walk_to
+                end = start + visit_len
+                if not _fits_clock(poi, day_date, start, end):
+                    return None
+                rows = [
+                    _hop(ready, walk_to, direct, people, name, False),
+                    _clone(template, name, start, end, pt),
+                ]
+                cursor = end
+                leave = None
+                back = _walk_km(pt, parking_point(lot_name)) if lot_name else None
+                if lot_name and back is not None and 0.05 < back <= hop_cap:
+                    back_min = walk_minutes(back, ctx)
+                    rows.append(_hop(cursor, back_min, back, name, lot_name, False))
+                    cursor += back_min
+                    leave = lot_name
+                return rows, cursor, leave
+            poi_lot, poi_walk = _nearest_lot(pt)
+            if (
+                not poi_lot or not lot_name or poi_walk is None
+                or not (0.05 < poi_walk <= hop_cap) or _place_names_match(poi_lot, lot_name)
+            ):
+                return None
+            preface = []
+            cursor = ready
+            if not _place_names_match(people, lot_name):
+                hop_lot = _walk_km(people_pt, parking_point(lot_name))
+                if hop_lot is None or not (0.05 < hop_lot <= hop_cap):
+                    return None
+                preface_min = walk_minutes(hop_lot, ctx)
+                preface.append(_hop(cursor, preface_min, hop_lot, people, lot_name, False))
+                cursor += preface_min
+            drive = _car_km(parking_point(lot_name), parking_point(poi_lot))
+            if drive is None or drive < 0.80:
+                return None
+            drive_min = car_minutes(drive)
+            walk_min = walk_minutes(poi_walk, ctx)
+            start = cursor + drive_min + walk_min
+            end = start + visit_len
+            if not _fits_clock(poi, day_date, start, end) or end > day_end_min:
+                return None
+            rows = preface + [
+                _hop(cursor, drive_min, drive, lot_name, poi_lot, True),
+                _hop(cursor + drive_min, walk_min, poi_walk, poi_lot, name, False),
+                _clone(template, name, start, end, pt),
+                _hop(end, walk_min, poi_walk, name, poi_lot, False),
+            ]
+            return rows, end + walk_min, poi_lot
+
+        rebuilt = []
+        for index, day in enumerate(days):
+            items = list(getattr(day, "items", None) or [])
+            day_date = _day_date(day, index)
+            original = list(items)
+            try:
+                tried: set = set()
+                for _ in range(2):
+                    nxt, name = _add_once(items, day_date, tried)
+                    if name is None or nxt is items:
+                        break
+                    committed = _commit(day, items, nxt)
+                    if committed is nxt:
+                        items = nxt
+                    else:
+                        tried.add(_fold_place_label(name))
+                tried = set()
+                for _ in range(2):
+                    nxt, name = _fill_once(items, day_date, tried)
+                    if name is None or nxt is items:
+                        break
+                    committed = _commit(day, items, nxt)
+                    if committed is nxt:
+                        items = nxt
+                    else:
+                        tried.add(_fold_place_label(name))
+                tried_cars: set = set()
+                for _ in range(3):
+                    nxt, key = _teleport_once(items, day_date, tried_cars)
+                    if key is None or nxt is items:
+                        break
+                    committed = _commit(day, items, nxt)
+                    if committed is nxt:
+                        items = nxt
+                    else:
+                        tried_cars.add(key)
+                        break
+            except Exception as exc:
+                print(f"[FIX #387] day {index + 1} skipped {type(exc).__name__}: {exc}")
                 rebuilt.append(day)
                 continue
             if items is original or items == original:

@@ -767,12 +767,15 @@ def test_krakow_client_mail_defects_are_gone():
                         hits.append(f"J{num} D{day.day} [offpref_bricks] {nm}")
             content_end = None
             content_kind = None
+            content_valley = False
             transit_min = 0
             ojcow_visit = 0
             ojcow_drive = 0
+            ojcow_stops = 0
             for it in day.items or []:
                 kind = getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
                 if kind == ItemType.ATTRACTION.value and _is_ojcow_stop_name(getattr(it, "name", "") or ""):
+                    ojcow_stops += 1
                     try:
                         ojcow_visit += (
                             time_to_minutes(getattr(it, "end_time", None) or "")
@@ -810,12 +813,29 @@ def test_krakow_client_mail_defects_are_gone():
                     hits.append(
                         f"J{num} D{day.day} [idle_gap] {content_end}->{st}"
                     )
+                if (
+                    content_valley
+                    and kind in (
+                        ItemType.ATTRACTION.value,
+                        ItemType.LUNCH_BREAK.value,
+                        ItemType.DINNER_BREAK.value,
+                    )
+                    and content_end is not None and st is not None
+                    and st - content_end - transit_min >= 40
+                ):
+                    hits.append(
+                        f"J{num} D{day.day} [valley_gap] {content_end}->{st}"
+                    )
                 if kind == ItemType.LUNCH_BREAK.value and st is not None and st > lunch_by + 30:
                     hits.append(
                         f"J{num} D{day.day} [late_group_lunch] {getattr(it, 'start_time', '')}"
                     )
                 content_end = en if en is not None else st
                 content_kind = kind
+                content_valley = (
+                    kind == ItemType.ATTRACTION.value
+                    and _is_ojcow_stop_name(getattr(it, "name", "") or "")
+                )
                 transit_min = 0
             if ojcow_visit:
                 rows = list(day.items or [])
@@ -851,6 +871,10 @@ def test_krakow_client_mail_defects_are_gone():
             if ojcow_visit and ojcow_drive > ojcow_visit:
                 hits.append(
                     f"J{num} D{day.day} [far_ojcow] drive {ojcow_drive} min / visit {ojcow_visit} min"
+                )
+            if ojcow_stops < 2 and ojcow_drive >= 40 and ojcow_drive > ojcow_visit:
+                hits.append(
+                    f"J{num} D{day.day} [thin_ojcow] drive {ojcow_drive} min / visit {ojcow_visit} min"
                 )
             if len(sat_kinds) >= 2:
                 hits.append(
@@ -1900,3 +1924,306 @@ def test_fix386_repairs_mailed_shapes():
 
 def _span_minutes(it):
     return time_to_minutes(it.end_time) - time_to_minutes(it.start_time)
+
+
+def _fix387_run(items, **ctx):
+    from app.domain.models.plan import DayPlan
+
+    base = {
+        "requested_city": "Kraków",
+        "day_start": "09:00",
+        "day_end": "20:00",
+        "travel_style": "balanced",
+        "group_type": "couples",
+        "date": "2026-02-22",
+        "poi_pool": [],
+        "preferences": ["nature_landscape", "museum_heritage"],
+        "has_car": True,
+        "fix387_keep": True,
+    }
+    base.update(ctx)
+    day = DayPlan(day=1, date=str(base.get("date"))[:10], items=items)
+    out = PlanService(None)._seal_fix387_krakow_client([day], base)
+    return out[0].items
+
+
+def test_fix387_repairs_mailed_shapes():
+    from app.domain.models.plan import DinnerBreakItem, LunchBreakItem, TransitItem, TransitMode
+
+    def _walk(start, end, frm, to, km):
+        sh, sm = (int(p) for p in start.split(":"))
+        eh, em = (int(p) for p in end.split(":"))
+        return TransitItem(
+            type=ItemType.TRANSIT,
+            start_time=start,
+            end_time=end,
+            duration_min=(eh * 60 + em) - (sh * 60 + sm),
+            mode=TransitMode.WALK,
+            from_location=frm,
+            to_location=to,
+            distance_km=km,
+            routing_source="estimated_walk",
+        )
+
+    def _car(start, end, frm, to, km):
+        row = _walk(start, end, frm, to, km)
+        return row.model_copy(update={"mode": TransitMode.CAR, "routing_source": "estimated_car"})
+
+    def _lunch(start, end, label, lat, lng):
+        sh, sm = (int(p) for p in start.split(":"))
+        eh, em = (int(p) for p in end.split(":"))
+        return LunchBreakItem(
+            type=ItemType.LUNCH_BREAK,
+            start_time=start,
+            end_time=end,
+            duration_min=(eh * 60 + em) - (sh * 60 + sm),
+            label=label,
+            suggestions=[{"id": "t", "name": label, "lat": lat, "lng": lng}],
+        )
+
+    def _dinner(start, end):
+        sh, sm = (int(p) for p in start.split(":"))
+        eh, em = (int(p) for p in end.split(":"))
+        return DinnerBreakItem(
+            type=ItemType.DINNER_BREAK,
+            start_time=start,
+            end_time=end,
+            duration_min=(eh * 60 + em) - (sh * 60 + sm),
+            label="Kolacja",
+        )
+
+    def _names(items):
+        return " ".join(getattr(it, "name", "") or "" for it in items)
+
+    def _kind(it):
+        return getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
+
+    def _valley_idle(items):
+        holes = []
+        content_end = None
+        content_valley = False
+        transit = 0
+        for it in items:
+            if _kind(it) == ItemType.TRANSIT.value:
+                transit += int(getattr(it, "duration_min", 0) or 0)
+                continue
+            if _kind(it) not in (
+                ItemType.ATTRACTION.value, ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+            ):
+                continue
+            try:
+                start = time_to_minutes(it.start_time)
+                end = time_to_minutes(it.end_time)
+            except Exception:
+                start = end = None
+            if content_valley and content_end is not None and start is not None:
+                holes.append(start - content_end - transit)
+            content_end = end if end is not None else start
+            content_valley = (
+                _kind(it) == ItemType.ATTRACTION.value
+                and _is_ojcow_stop_name(getattr(it, "name", "") or "")
+            )
+            transit = 0
+        return holes
+
+    gap = _fix387_run(
+        [
+            _fix383_attr("Zamek Pieskowa Skała", "13:00", "15:22", 50.2451641, 19.7788312),
+            _dinner("17:00", "18:00"),
+        ],
+        group_type="family_kids",
+        preferences=["kids_attractions", "nature_landscape"],
+        travel_style="balanced",
+    )
+    pieskowa = next(it for it in gap if "Pieskowa" in (getattr(it, "name", "") or ""))
+    dinner = next(it for it in gap if _kind(it) == ItemType.DINNER_BREAK.value)
+    assert pieskowa.end_time == "15:22"
+    assert dinner.start_time == "17:00"
+    assert "Maczuga" in _names(gap)
+    assert _valley_idle(gap)
+    assert max(_valley_idle(gap)) < 40
+
+    kept = _fix387_run(
+        [
+            _fix383_attr("Zamek Pieskowa Skała", "13:00", "15:22", 50.2451641, 19.7788312),
+            _dinner("17:00", "18:00"),
+        ],
+        group_type="family_kids",
+        preferences=["kids_attractions", "nature_landscape"],
+        fix387_keep=False,
+    )
+    assert "Maczuga" in _names(kept)
+    assert next(it for it in kept if "Pieskowa" in (getattr(it, "name", "") or "")).end_time == "15:22"
+
+    zlota = "Parking Złota Góra (Ojcowski Park Narodowy)"
+    castle = _fix387_run(
+        [
+            _car("09:00", "09:48", "Parking ul. Szpitalna", zlota, 22),
+            _walk("09:48", "09:56", zlota, "Zamek w Ojcowie", 0.4),
+            _fix383_attr("Zamek w Ojcowie", "09:56", "11:17", 50.2117047, 19.8300564),
+            _walk("11:17", "11:25", "Zamek w Ojcowie", zlota, 0.4),
+            _car("11:25", "12:13", zlota, "Parking ul. Szpitalna", 22),
+            _walk("12:13", "12:20", "Parking ul. Szpitalna", "Sukiennice", 0.4),
+            _fix383_attr("Sukiennice", "13:00", "14:30", 50.0617, 19.9373),
+            _dinner("18:00", "19:00"),
+        ],
+        group_type="couples",
+        preferences=["nature_landscape", "local_food_experience", "museum_heritage"],
+        date="2026-02-23",
+    )
+    host = next(it for it in castle if getattr(it, "name", "") == "Zamek w Ojcowie")
+    assert host.start_time == "09:56" and host.end_time == "11:17"
+    folded = _fold_place_label(_names(castle))
+    assert "maczuga" in folded or "lokietka" in folded or "ciemna" in folded or "pieskowa" in folded
+    valley = [
+        it for it in castle
+        if _kind(it) == ItemType.ATTRACTION.value and _is_ojcow_stop_name(getattr(it, "name", "") or "")
+    ]
+    assert len(valley) >= 2
+    valley_visit = sum(_span_minutes(it) for it in valley)
+    valley_drive = 0
+    for it in castle:
+        if getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) != "car":
+            continue
+        blob = _fold_place_label(
+            f"{getattr(it, 'from_location', '')} {getattr(it, 'to_location', '')}"
+        )
+        km = float(getattr(it, "distance_km", 0) or 0)
+        if km >= 20 or any(stem in blob for stem in ("ojcow", "pieskow", "maczuga")):
+            valley_drive += int(getattr(it, "duration_min", 0) or 0)
+    assert valley_visit > valley_drive
+    castle_kept = _fix387_run(
+        [
+            _car("09:00", "09:48", "Parking ul. Szpitalna", zlota, 22),
+            _walk("09:48", "09:56", zlota, "Zamek w Ojcowie", 0.4),
+            _fix383_attr("Zamek w Ojcowie", "09:56", "11:17", 50.2117047, 19.8300564),
+            _walk("11:17", "11:25", "Zamek w Ojcowie", zlota, 0.4),
+            _car("11:25", "12:13", zlota, "Parking ul. Szpitalna", 22),
+            _walk("12:13", "12:20", "Parking ul. Szpitalna", "Sukiennice", 0.4),
+            _fix383_attr("Sukiennice", "13:00", "14:30", 50.0617, 19.9373),
+            _dinner("18:00", "19:00"),
+        ],
+        group_type="couples",
+        preferences=["nature_landscape", "local_food_experience", "museum_heritage"],
+        date="2026-02-23",
+        fix387_keep=False,
+    )
+    host_kept = next(it for it in castle_kept if getattr(it, "name", "") == "Zamek w Ojcowie")
+    assert host_kept.start_time == "09:56" and host_kept.end_time == "11:17"
+    assert len([
+        it for it in castle_kept
+        if _kind(it) == ItemType.ATTRACTION.value and _is_ojcow_stop_name(getattr(it, "name", "") or "")
+    ]) >= 2
+
+    home = _fix387_run(
+        [
+            _car("09:00", "09:10", "Parking Galeria Krakowska (ul. Pawia 5)", "Parking ul. Szpitalna", 1.1),
+            _walk("09:10", "09:18", "Parking ul. Szpitalna", "Trattoria Mira", 0.35),
+            _lunch("11:20", "12:00", "Trattoria Mira", 50.0638, 19.9415),
+            _walk("12:00", "12:12", "Trattoria Mira", "Parking plac Na Groblach (pod Wawelem)", 1.1),
+            _car("12:12", "12:30", "Parking plac Na Groblach (pod Wawelem)", "Parking Zabłocie (ul. Przemysłowa)", 3.0),
+            _walk("12:30", "12:38", "Parking Zabłocie (ul. Przemysłowa)", "Muzeum Sztuki Współczesnej MOCAK", 0.4),
+            _fix383_attr("Muzeum Sztuki Współczesnej MOCAK", "12:40", "14:00", 50.0492, 19.9608),
+            _dinner("18:00", "19:00"),
+        ],
+        group_type="couples",
+        travel_style="balanced",
+    )
+    mocak = next(it for it in home if "MOCAK" in (getattr(it, "name", "") or ""))
+    assert mocak.start_time == "12:40"
+    departures = [
+        getattr(it, "from_location", "") or ""
+        for it in home
+        if getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) == "car"
+    ]
+    assert not any("Groblach" in frm for frm in departures)
+    assert any("Szpitalna" in frm for frm in departures)
+    home_kept = _fix387_run(
+        [
+            _car("09:00", "09:10", "Parking Galeria Krakowska (ul. Pawia 5)", "Parking ul. Szpitalna", 1.1),
+            _walk("09:10", "09:18", "Parking ul. Szpitalna", "Trattoria Mira", 0.35),
+            _lunch("11:20", "12:00", "Trattoria Mira", 50.0638, 19.9415),
+            _walk("12:00", "12:12", "Trattoria Mira", "Parking plac Na Groblach (pod Wawelem)", 1.1),
+            _car("12:12", "12:30", "Parking plac Na Groblach (pod Wawelem)", "Parking Zabłocie (ul. Przemysłowa)", 3.0),
+            _walk("12:30", "12:38", "Parking Zabłocie (ul. Przemysłowa)", "Muzeum Sztuki Współczesnej MOCAK", 0.4),
+            _fix383_attr("Muzeum Sztuki Współczesnej MOCAK", "12:40", "14:00", 50.0492, 19.9608),
+            _dinner("18:00", "19:00"),
+        ],
+        group_type="couples",
+        travel_style="balanced",
+        fix387_keep=False,
+    )
+    assert next(it for it in home_kept if "MOCAK" in (getattr(it, "name", "") or "")).start_time == "12:40"
+    assert not any(
+        "Groblach" in (getattr(it, "from_location", "") or "")
+        for it in home_kept
+        if getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) == "car"
+    )
+
+    far_lunch = (50.0610, 19.9090)
+    stranded = _fix387_run(
+        [
+            _car("09:00", "09:10", "Parking Galeria Krakowska (ul. Pawia 5)", "Parking ul. Szpitalna", 1.1),
+            _walk("09:10", "09:40", "Parking ul. Szpitalna", "Restauracja Błonia", 2.6),
+            _lunch("15:20", "15:50", "Restauracja Błonia", far_lunch[0], far_lunch[1]),
+            _walk("15:50", "16:05", "Restauracja Błonia", "Parking plac Na Groblach (pod Wawelem)", 2.4),
+            _car("16:05", "16:20", "Parking plac Na Groblach (pod Wawelem)", "Parking Zabłocie (ul. Przemysłowa)", 3.0),
+            _walk("16:20", "16:28", "Parking Zabłocie (ul. Przemysłowa)", "Muzeum Sztuki Współczesnej MOCAK", 0.4),
+            _fix383_attr("Muzeum Sztuki Współczesnej MOCAK", "16:28", "17:20", 50.0492, 19.9608),
+            _dinner("18:00", "19:00"),
+        ],
+        group_type="couples",
+        poi_pool=[{
+            "name": "Podziemia Rynku w Krakowie",
+            "lat": 50.0620,
+            "lng": 19.9100,
+            "time_max": 90,
+        }],
+    )
+    dinner_far = next(it for it in stranded if _kind(it) == ItemType.DINNER_BREAK.value)
+    assert dinner_far.start_time == "18:00"
+    far_departures = [
+        getattr(it, "from_location", "") or ""
+        for it in stranded
+        if getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) == "car"
+    ]
+    assert not any("Groblach" in frm for frm in far_departures)
+    assert "Podziemia" in _names(stranded)
+    assert "MOCAK" not in _names(stranded)
+    for it in stranded:
+        if _kind(it) != ItemType.TRANSIT.value:
+            continue
+        if "walk" not in str(getattr(getattr(it, "mode", None), "value", "")):
+            continue
+        try:
+            start = time_to_minutes(it.start_time)
+        except Exception:
+            continue
+        if start >= 12 * 60:
+            assert float(getattr(it, "distance_km", 0) or 0) <= 1.2
+    stranded_kept = _fix387_run(
+        [
+            _car("09:00", "09:10", "Parking Galeria Krakowska (ul. Pawia 5)", "Parking ul. Szpitalna", 1.1),
+            _walk("09:10", "09:40", "Parking ul. Szpitalna", "Restauracja Błonia", 2.6),
+            _lunch("15:20", "15:50", "Restauracja Błonia", far_lunch[0], far_lunch[1]),
+            _walk("15:50", "16:05", "Restauracja Błonia", "Parking plac Na Groblach (pod Wawelem)", 2.4),
+            _car("16:05", "16:20", "Parking plac Na Groblach (pod Wawelem)", "Parking Zabłocie (ul. Przemysłowa)", 3.0),
+            _walk("16:20", "16:28", "Parking Zabłocie (ul. Przemysłowa)", "Muzeum Sztuki Współczesnej MOCAK", 0.4),
+            _fix383_attr("Muzeum Sztuki Współczesnej MOCAK", "16:28", "17:20", 50.0492, 19.9608),
+            _dinner("18:00", "19:00"),
+        ],
+        group_type="couples",
+        poi_pool=[{
+            "name": "Podziemia Rynku w Krakowie",
+            "lat": 50.0620,
+            "lng": 19.9100,
+            "time_max": 90,
+        }],
+        fix387_keep=False,
+    )
+    assert "Podziemia" in _names(stranded_kept)
+    assert not any(
+        "Groblach" in (getattr(it, "from_location", "") or "")
+        for it in stranded_kept
+        if getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) == "car"
+    )
