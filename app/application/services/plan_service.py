@@ -57738,9 +57738,11 @@ class PlanService:
                 if _tv(it) == ItemType.TRANSIT.value:
                     frm = str(getattr(it, "from_location", "") or "")
                     to = str(getattr(it, "to_location", "") or "")
+                    # The day may start with a walk from the parking.  The car
+                    # is already there even though no earlier car leg exists.
+                    if car_at is None and is_parking_label(frm):
+                        car_at = frm
                     if _is_car(it):
-                        if car_at is None and is_parking_label(frm):
-                            car_at = frm
                         if is_parking_label(to):
                             car_at = to
                         people = to or people
@@ -57863,6 +57865,19 @@ class PlanService:
             shifted_next = prev_i + 1 + len(rows)
             return _shift_tail(out, shifted_next, arrival - next_start)
 
+        def _remove_segment(
+            items: List[Any],
+            prev_i: int,
+            next_i: int,
+        ) -> List[Any]:
+            """Remove a private branch and close its clock without a fake hop."""
+            prev_end = _clk(items[prev_i], "end_time")
+            next_start = _clk(items[next_i], "start_time")
+            if prev_end is None or next_start is None:
+                return list(items[:prev_i + 1]) + list(items[next_i:])
+            out = list(items[:prev_i + 1]) + list(items[next_i:])
+            return _shift_tail(out, prev_i + 1, prev_end - next_start)
+
         def _fix_long_lunch(items: List[Any]) -> List[Any]:
             out = list(items)
             for i, it in enumerate(out):
@@ -57902,7 +57917,10 @@ class PlanService:
                     continue
                 rows = _bridge(out, prev_i, next_i, allow_car=True)
                 if not rows:
-                    out.pop(drop)
+                    # Typical final-slot shape: walk to Świat w Budowie,
+                    # attraction, then a generic dinner without coordinates.
+                    # Remove the whole private branch, not only the visit.
+                    out = _remove_segment(out, prev_i, next_i)
                     continue
                 out = _replace_segment(out, prev_i, next_i, rows)
             return out
@@ -57914,9 +57932,9 @@ class PlanService:
                 if _tv(it) == ItemType.TRANSIT.value:
                     frm = str(getattr(it, "from_location", "") or "")
                     to = str(getattr(it, "to_location", "") or "")
+                    if car_at is None and is_parking_label(frm):
+                        car_at = frm
                     if _is_car(it):
-                        if car_at is None and is_parking_label(frm):
-                            car_at = frm
                         wrong_car = bool(
                             car_at and not _place_names_match(frm, car_at)
                         )

@@ -2707,6 +2707,38 @@ def test_fix389_enforces_final_krakow_postconditions():
     assert bricks == ["bricks & figs"]
     assert not any("swiat w budowie" in name for name in folded_names)
 
+    # The short LEGO is the final attraction.  Its inbound walk must leave
+    # together with the visit; a generic dinner has no coordinates to bridge.
+    terminal_lego = _fix389_run(
+        [
+            _fix383_attr(
+                "Bricks & Figs", "15:00", "16:20", 50.0490, 19.9620,
+            ),
+            _hop(
+                "16:20", "16:30", TransitMode.WALK,
+                "Bricks & Figs", "Świat w Budowie", 0.6,
+            ),
+            _fix383_attr(
+                "Świat w Budowie", "16:30", "16:53", 50.0670, 19.9380,
+            ),
+            _dinner("18:30", "19:30"),
+        ],
+        group_type="family_kids",
+        preferences=["kids_attractions", "nature_landscape"],
+        date="2026-02-21",
+    )
+    assert "Świat w Budowie" not in _names(terminal_lego)
+    assert not any(
+        "swiat w budowie" in _fold_place_label(
+            getattr(it, "to_location", "") or ""
+        )
+        for it in terminal_lego
+        if _kind(it) == ItemType.TRANSIT.value
+    )
+    assert next(
+        it for it in terminal_lego if _kind(it) == ItemType.DINNER_BREAK.value
+    ).start_time == "17:00"
+
     # The car is at Szpitalna while people are far away.  The illegal
     # Groblach departure becomes one honest public-transport connection.
     teleport_rows = [
@@ -2765,3 +2797,50 @@ def test_fix389_enforces_final_krakow_postconditions():
         })
     }
     assert not ({"car_teleport", "car_position_mismatch"} & car_codes)
+
+    # Exact missed variant: the car is known only from the day's opening walk
+    # out of Szpitalna; there is no earlier car leg to initialise the ledger.
+    parked_from_start = _fix389_run([
+        _hop(
+            "09:00", "09:10", TransitMode.WALK,
+            "Parking ul. Szpitalna", "MNK Sukiennice", 0.64,
+        ),
+        _fix383_attr("MNK Sukiennice", "09:10", "10:30", 50.0617, 19.9373),
+        _hop(
+            "10:30", "10:50", TransitMode.WALK,
+            "MNK Sukiennice", "Restauracja Błonia", 2.2,
+        ),
+        _lunch("14:50", "15:30", "Restauracja Błonia", 50.0610, 19.9090),
+        _hop(
+            "15:30", "15:45", TransitMode.WALK,
+            "Restauracja Błonia", "Parking plac Na Groblach (pod Wawelem)", 2.4,
+        ),
+        _hop(
+            "15:45", "16:03", TransitMode.CAR,
+            "Parking plac Na Groblach (pod Wawelem)",
+            "Parking Zabłocie (ul. Przemysłowa)", 3.0,
+        ),
+        _hop(
+            "16:03", "16:11", TransitMode.WALK,
+            "Parking Zabłocie (ul. Przemysłowa)",
+            "Muzeum Sztuki Współczesnej MOCAK", 0.4,
+        ),
+        _fix383_attr(
+            "Muzeum Sztuki Współczesnej MOCAK",
+            "16:11", "17:11", 50.0492, 19.9608,
+        ),
+        _dinner("18:00", "19:00"),
+    ])
+    assert not any(
+        "Groblach" in (getattr(it, "from_location", "") or "")
+        for it in parked_from_start
+        if getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
+        == "car"
+    )
+    assert any(
+        getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
+        == "public_transport"
+        and "Restauracja Błonia" in (getattr(it, "from_location", "") or "")
+        and "MOCAK" in (getattr(it, "to_location", "") or "")
+        for it in parked_from_start
+    )
