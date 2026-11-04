@@ -126,6 +126,18 @@ def test_krakow_client_mail_defects_are_gone():
                     occupied.append((st, en, None, None, "meal"))
                 elif kind == ItemType.TRANSIT.value:
                     mode = str(getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) or "")
+                    selected = [str(m).lower() for m in (payload.get("transport_modes") or [])]
+                    if (
+                        ("public" in mode or "transit" in mode)
+                        and selected
+                        and not any("public" in m or "transit" in m for m in selected)
+                    ):
+                        # FIX #391: a car-only traveller never gets a bus/tram leg.
+                        hits.append(
+                            f"J{num} D{day.day} [offmode_transport] "
+                            f"{getattr(it, 'from_location', '')} → "
+                            f"{getattr(it, 'to_location', '')}"
+                        )
                     if "walk" not in mode:
                         continue
                     try:
@@ -2659,7 +2671,7 @@ def test_fix389_enforces_final_krakow_postconditions():
         square,
         _dinner("19:00", "20:00"),
     ]
-    fixed_meal = _fix389_run(meal_rows)
+    fixed_meal = _fix389_run(meal_rows, transport_modes=["car", "public_transport"])
     lunch = next(it for it in fixed_meal if _kind(it) == ItemType.LUNCH_BREAK.value)
     assert lunch.start_time == "14:27"
     assert lunch.end_time == "15:07"
@@ -2698,6 +2710,7 @@ def test_fix389_enforces_final_krakow_postconditions():
         group_type="family_kids",
         preferences=["kids_attractions", "nature_landscape"],
         date="2026-02-21",
+        transport_modes=["car", "public_transport"],
     )
     folded_names = [_fold_place_label(name) for name in _names(fixed_lego)]
     bricks = [
@@ -2739,8 +2752,9 @@ def test_fix389_enforces_final_krakow_postconditions():
         it for it in terminal_lego if _kind(it) == ItemType.DINNER_BREAK.value
     ).start_time == "17:00"
 
-    # The car is at Szpitalna while people are far away.  The illegal
-    # Groblach departure becomes one honest public-transport connection.
+    # The car is at Szpitalna while people are far away.  With public
+    # transport selected the illegal Groblach departure becomes one transit
+    # connection; car-only plans are covered by the FIX #391 test.
     teleport_rows = [
         _hop(
             "09:00", "09:12", TransitMode.CAR,
@@ -2771,7 +2785,7 @@ def test_fix389_enforces_final_krakow_postconditions():
         ),
         _dinner("18:00", "19:00"),
     ]
-    fixed_car = _fix389_run(teleport_rows)
+    fixed_car = _fix389_run(teleport_rows, transport_modes=["car", "public_transport"])
     assert not any(
         "Groblach" in (getattr(it, "from_location", "") or "")
         for it in fixed_car
@@ -2830,7 +2844,7 @@ def test_fix389_enforces_final_krakow_postconditions():
             "16:11", "17:11", 50.0492, 19.9608,
         ),
         _dinner("18:00", "19:00"),
-    ])
+    ], transport_modes=["car", "public_transport"])
     assert not any(
         "Groblach" in (getattr(it, "from_location", "") or "")
         for it in parked_from_start
@@ -2844,3 +2858,239 @@ def test_fix389_enforces_final_krakow_postconditions():
         and "MOCAK" in (getattr(it, "to_location", "") or "")
         for it in parked_from_start
     )
+
+
+def _fix391_hop(start, end, mode, frm, to, km):
+    from app.domain.models.plan import TransitItem
+
+    return TransitItem(
+        type=ItemType.TRANSIT,
+        start_time=start,
+        end_time=end,
+        duration_min=time_to_minutes(end) - time_to_minutes(start),
+        mode=mode,
+        from_location=frm,
+        to_location=to,
+        distance_km=km,
+        routing_source=f"estimated_{getattr(mode, 'value', mode)}",
+    )
+
+
+def _fix391_dinner(start="17:00", end="18:00"):
+    from app.domain.models.plan import DinnerBreakItem
+
+    return DinnerBreakItem(
+        type=ItemType.DINNER_BREAK,
+        start_time=start,
+        end_time=end,
+        duration_min=time_to_minutes(end) - time_to_minutes(start),
+        label="Kolacja",
+    )
+
+
+def _fix391_ctx(**extra):
+    base = {
+        "requested_city": "Kraków",
+        "day_start": "09:00",
+        "day_end": "20:00",
+        "travel_style": "balanced",
+        "group_type": "couples",
+        "date": "2026-02-23",
+        "preferences": ["nature_landscape", "museum_heritage"],
+        "has_car": True,
+        "transport_modes": ["car"],
+    }
+    base.update(extra)
+    return base
+
+
+def _fix391_seal(day_items, **extra):
+    from app.domain.models.plan import DayPlan
+
+    ctx = _fix391_ctx(**extra)
+    start = _date.fromisoformat(ctx["date"])
+    days = [
+        DayPlan(day=i + 1, date=str(start + _td(days=i)), items=items)
+        for i, items in enumerate(day_items)
+    ]
+    return PlanService(None)._seal_fix389_krakow_client(days, ctx), ctx
+
+
+def _fix391_mode(it):
+    return getattr(getattr(it, "mode", None), "value", getattr(it, "mode", "")) or ""
+
+
+def _fix391_kind(it):
+    return getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
+
+
+def _fix391_names(items):
+    return [
+        getattr(it, "name", "") or ""
+        for it in items
+        if _fix391_kind(it) == ItemType.ATTRACTION.value
+    ]
+
+
+def _fix391_hard_codes(days, ctx):
+    return {
+        d.code
+        for d in audit_plan(days, context={**ctx, "audit_car_model": True})
+    } & {"car_teleport", "car_position_mismatch", "missing_hop", "from_mismatch"}
+
+
+def _fix391_valley(items):
+    """The gate's thin_ojcow numbers: (valley stops, valley drive, valley visit)."""
+    stops = visit = drive = 0
+    for it in items:
+        kind = _fix391_kind(it)
+        if kind == ItemType.ATTRACTION.value and _is_ojcow_stop_name(it.name or ""):
+            stops += 1
+            visit += _span_minutes(it)
+        if kind == ItemType.TRANSIT.value and _fix391_mode(it) == "car":
+            blob = _fold_place_label(f"{it.from_location} {it.to_location}")
+            if float(it.distance_km or 0) >= 20 or any(
+                s in blob for s in ("ojcow", "pieskow", "maczuga")
+            ):
+                drive += int(it.duration_min or 0)
+    return stops, drive, visit
+
+
+def test_fix391_car_only_never_gets_public_transport():
+    from app.domain.models.plan import TransitMode
+
+    # J8 D4: the car stands at Szpitalna, the travellers are at the Cathedral,
+    # and Plac Bohaterów Getta was reached by public transport on a car-only trip.
+    far_car = [
+        _fix391_hop("09:00", "09:12", TransitMode.WALK, "Parking ul. Szpitalna", "MNK Sukiennice", 0.64),
+        _fix383_attr("MNK Sukiennice", "09:12", "10:45", 50.0617, 19.9373),
+        _fix391_hop("10:45", "11:00", TransitMode.WALK, "MNK Sukiennice", "Katedra Wawelska", 1.0),
+        _fix383_attr("Katedra Wawelska", "11:00", "11:45", 50.0544, 19.9355),
+        _fix391_hop("11:45", "12:05", TransitMode.PUBLIC_TRANSPORT, "Katedra Wawelska", "Plac Bohaterów Getta", 2.2),
+        _fix383_attr("Plac Bohaterów Getta", "12:05", "12:35", 50.0469, 19.9547),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal([far_car])
+    items = days[0].items
+    assert not any("public" in _fix391_mode(it) for it in items)
+    assert not _fix391_hard_codes(days, ctx)
+
+    # Same leg, but the car is at Groblach under Wawel: drive instead.
+    near_car = [
+        _fix391_hop("09:00", "09:09", TransitMode.CAR, "Kraków", "Parking plac Na Groblach (pod Wawelem)", 1.931),
+        _fix391_hop("09:09", "09:15", TransitMode.WALK, "Parking plac Na Groblach (pod Wawelem)", "Katedra Wawelska", 0.384),
+        _fix383_attr("Katedra Wawelska", "09:15", "10:45", 50.0544, 19.9355),
+        _fix391_hop("10:45", "11:05", TransitMode.PUBLIC_TRANSPORT, "Katedra Wawelska", "Plac Bohaterów Getta", 2.2),
+        _fix383_attr("Plac Bohaterów Getta", "11:05", "11:35", 50.0469, 19.9547),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal([near_car])
+    items = days[0].items
+    assert not any("public" in _fix391_mode(it) for it in items)
+    assert "Plac Bohaterów Getta" in _fix391_names(items)
+    assert any(
+        _fix391_mode(it) == "car" and "Groblach" in it.from_location
+        for it in items[2:]
+    )
+    assert not _fix391_hard_codes(days, ctx)
+
+    # Public transport stays legal when the traveller selected it.
+    days, _ctx = _fix391_seal([near_car], transport_modes=["car", "public_transport"])
+    assert "Plac Bohaterów Getta" in _fix391_names(days[0].items)
+
+
+def test_fix391_no_place_repeats_across_days():
+    from app.domain.models.plan import TransitMode
+
+    def _skalki_day(start_lot_leg):
+        return [
+            start_lot_leg,
+            _fix391_hop("09:16", "09:28", TransitMode.WALK, "Parking Dębniki (ul. Tyniecka)", "Skałki Twardowskiego", 0.85),
+            _fix383_attr("Skałki Twardowskiego", "09:28", "11:34", 50.0386, 19.9095),
+            _fix391_hop("11:34", "11:46", TransitMode.WALK, "Skałki Twardowskiego", "Parking Dębniki (ul. Tyniecka)", 0.85),
+            _fix391_hop("11:46", "12:02", TransitMode.CAR, "Parking Dębniki (ul. Tyniecka)", "Parking Podgórze (ul. Na Zjeździe)", 4.742),
+            _fix391_hop("12:02", "12:04", TransitMode.WALK, "Parking Podgórze (ul. Na Zjeździe)", "Plac Bohaterów Getta", 0.128),
+            _fix383_attr("Plac Bohaterów Getta", "12:04", "12:35", 50.0469, 19.9547),
+            _fix391_dinner(),
+        ]
+
+    lead = _fix391_hop("09:00", "09:16", TransitMode.CAR, "Kraków", "Parking Dębniki (ul. Tyniecka)", 4.733)
+    day1 = [
+        lead,
+        _fix391_hop("09:16", "09:28", TransitMode.WALK, "Parking Dębniki (ul. Tyniecka)", "Skałki Twardowskiego", 0.85),
+        _fix383_attr("Skałki Twardowskiego", "09:28", "11:34", 50.0386, 19.9095),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal([day1, _fix391_dinner_only(), _skalki_day(lead)])
+    seen = []
+    for day in days:
+        for name in _fix391_names(day.items):
+            folded = _fold_place_label(name)
+            assert folded not in seen, f"D{day.day} repeats {name}"
+            seen.append(folded)
+    assert "Skałki Twardowskiego" in _fix391_names(days[0].items)
+    assert "Skałki Twardowskiego" not in _fix391_names(days[2].items)
+    assert "Plac Bohaterów Getta" in _fix391_names(days[2].items)
+    first = days[2].items[0]
+    assert _fix391_kind(first) == ItemType.TRANSIT.value
+    assert first.start_time == "09:00"
+    assert not _fix391_hard_codes([days[2]], ctx)
+
+
+def _fix391_dinner_only():
+    return [_fix391_dinner()]
+
+
+def test_fix391_thin_valley_trip_gets_a_second_stop():
+    from app.domain.models.plan import TransitMode
+
+    # J1 D3: ~55 min each way to Pieskowa Skała for the castle alone.
+    pieskowa = [
+        _fix391_hop("09:00", "09:55", TransitMode.CAR, "Kraków", "Parking pod Zamkiem w Pieskowej Skale", 32.0),
+        _fix391_hop("09:55", "09:58", TransitMode.WALK, "Parking pod Zamkiem w Pieskowej Skale", "Zamek Pieskowa Skała", 0.12),
+        _fix383_attr("Zamek Pieskowa Skała", "10:00", "11:30", 50.2451641, 19.7788312),
+        _fix391_hop("11:30", "11:33", TransitMode.WALK, "Zamek Pieskowa Skała", "Parking pod Zamkiem w Pieskowej Skale", 0.12),
+        _fix391_hop("11:33", "12:28", TransitMode.CAR, "Parking pod Zamkiem w Pieskowej Skale", "Parking przy Muzeum (al. 3 Maja)", 32.0),
+        _fix391_hop("12:28", "12:30", TransitMode.WALK, "Parking przy Muzeum (al. 3 Maja)", "Muzeum Narodowe w Krakowie", 0.099),
+        _fix383_attr("Muzeum Narodowe w Krakowie", "12:30", "14:00", 50.0604, 19.9235),
+        _fix391_dinner(),
+    ]
+    # J8 D6: ~99 min of driving for an 81-minute visit at the Ojców castle.
+    ojcow = [
+        _fix391_hop("09:00", "09:50", TransitMode.CAR, "Kraków", "Parking Złota Góra (Ojcowski Park Narodowy)", 25.0),
+        _fix391_hop("09:50", "09:58", TransitMode.WALK, "Parking Złota Góra (Ojcowski Park Narodowy)", "Zamek w Ojcowie", 0.6),
+        _fix383_attr("Zamek w Ojcowie", "10:00", "11:21", 50.2117047, 19.8300564),
+        _fix391_hop("11:21", "11:29", TransitMode.WALK, "Zamek w Ojcowie", "Parking Złota Góra (Ojcowski Park Narodowy)", 0.6),
+        _fix391_hop("11:29", "12:18", TransitMode.CAR, "Parking Złota Góra (Ojcowski Park Narodowy)", "Parking przy Muzeum (al. 3 Maja)", 25.0),
+        _fix391_hop("12:18", "12:20", TransitMode.WALK, "Parking przy Muzeum (al. 3 Maja)", "Muzeum Narodowe w Krakowie", 0.099),
+        _fix383_attr("Muzeum Narodowe w Krakowie", "12:20", "13:40", 50.0604, 19.9235),
+        _fix391_dinner(),
+    ]
+    cases = (
+        (pieskowa, {"group_type": "family_kids", "preferences": ["kids_attractions", "nature_landscape"], "date": "2026-02-22"}),
+        (ojcow, {"date": "2026-02-25"}),
+    )
+    for rows, extra in cases:
+        days, ctx = _fix391_seal([rows], **extra)
+        items = days[0].items
+        stops, drive, visit = _fix391_valley(items)
+        assert stops >= 2, _fix391_names(items)
+        assert not (drive >= 40 and drive > visit), (drive, visit)
+        maczuga = next(it for it in items if getattr(it, "name", "") == "Maczuga Herkulesa")
+        assert maczuga.cost_estimate == 0
+        assert maczuga.ticket_info.ticket_normal == 0
+        assert 30 <= _span_minutes(maczuga) <= 60
+        assert not any("public" in _fix391_mode(it) for it in items)
+        assert not _fix391_hard_codes(days, ctx), [
+            (it.start_time, _fix391_mode(it), getattr(it, "from_location", None), getattr(it, "to_location", None), getattr(it, "name", None))
+            for it in items
+        ]
+        lots = {
+            it.to_location for it in items
+            if _fix391_kind(it) == ItemType.TRANSIT.value and _fix391_mode(it) == "car"
+        }
+        assert len(lots) <= 4
+        assert len(_fix391_names(items)) <= 5
+        assert next(
+            it for it in items if _fix391_kind(it) == ItemType.DINNER_BREAK.value
+        ).start_time >= "17:00"

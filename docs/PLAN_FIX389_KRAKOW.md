@@ -7,7 +7,7 @@ Krakowa. Wrocław i Zakopane pozostają nietknięte.
   schodzi razem z prywatnymi dojazdami. Połączenie do następnego punktu jest
   liczone z rzeczywistej pozycji ludzi i auta. Gdy powrót do auta przekracza
   limit spaceru, wchodzi uczciwy transport publiczny zamiast fikcyjnego
-  przejazdu autem. Dotyczy to także ostatniej atrakcji przed kolacją: dojście
+  przejazdu autem — tylko gdy użytkownik go wybrał (FIX #391). Dotyczy to także ostatniej atrakcji przed kolacją: dojście
   do usuniętej wystawy nie może zostać samo.
 - Lunch nie może trwać dłużej niż 75 minut. Regresja #388
   `14:27–16:52` wraca do standardowych 40 minut (`14:27–15:07`), a dalsza
