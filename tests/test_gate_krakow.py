@@ -652,6 +652,24 @@ def test_krakow_client_mail_defects_are_gone():
                                 hits.append(
                                     f"J{num} D{day.day} [short_bricks] {nm} {brick_dur} min"
                                 )
+                    known_free = (
+                        "maczuga herkulesa" in folded
+                        or ("plac" in folded and "bohater" in folded and "getta" in folded)
+                    )
+                    if known_free:
+                        cost = int(getattr(it, "cost_estimate", 0) or 0)
+                        ticket = getattr(it, "ticket_info", None)
+                        normal = int(
+                            getattr(ticket, "ticket_normal", 0) or 0
+                        ) if ticket else 0
+                        reduced = int(
+                            getattr(ticket, "ticket_reduced", 0) or 0
+                        ) if ticket else 0
+                        if cost or normal or reduced:
+                            hits.append(
+                                f"J{num} D{day.day} [free_place_cost] "
+                                f"{nm} {cost}/{normal}/{reduced} zł"
+                            )
                     if family_kn and "etnografic" in folded:
                         hits.append(f"J{num} D{day.day} [family_filler] {nm}")
                     if family_kn and "smok" not in folded and any(
@@ -829,6 +847,16 @@ def test_krakow_client_mail_defects_are_gone():
                 if kind == ItemType.LUNCH_BREAK.value and st is not None and st > lunch_by + 30:
                     hits.append(
                         f"J{num} D{day.day} [late_group_lunch] {getattr(it, 'start_time', '')}"
+                    )
+                if (
+                    kind == ItemType.LUNCH_BREAK.value
+                    and st is not None and en is not None
+                    and en - st > 75
+                ):
+                    hits.append(
+                        f"J{num} D{day.day} [long_lunch] "
+                        f"{getattr(it, 'start_time', '')}-"
+                        f"{getattr(it, 'end_time', '')}"
                     )
                 content_end = en if en is not None else st
                 content_kind = kind
@@ -2522,3 +2550,218 @@ def test_fix388_repairs_mailed_shapes():
     )
     assert "Podziemia" in _names(stranded_kept)
     assert not any("Groblach" in frm for frm in _cars_from(stranded_kept))
+
+
+def _fix389_run(items, **ctx):
+    from app.domain.models.plan import DayPlan
+
+    base = {
+        "requested_city": "Kraków",
+        "day_start": "09:00",
+        "day_end": "20:00",
+        "travel_style": "balanced",
+        "group_type": "couples",
+        "date": "2026-02-23",
+        "preferences": ["nature_landscape", "museum_heritage"],
+        "has_car": True,
+    }
+    base.update(ctx)
+    day = DayPlan(day=1, date=str(base["date"])[:10], items=items)
+    return PlanService(None)._seal_fix389_krakow_client([day], base)[0].items
+
+
+def test_fix389_enforces_final_krakow_postconditions():
+    from app.domain.models.plan import (
+        DayPlan,
+        DinnerBreakItem,
+        LunchBreakItem,
+        TicketInfo,
+        TransitItem,
+        TransitMode,
+    )
+
+    def _hop(start, end, mode, frm, to, km):
+        return TransitItem(
+            type=ItemType.TRANSIT,
+            start_time=start,
+            end_time=end,
+            duration_min=time_to_minutes(end) - time_to_minutes(start),
+            mode=mode,
+            from_location=frm,
+            to_location=to,
+            distance_km=km,
+            routing_source=f"estimated_{getattr(mode, 'value', mode)}",
+        )
+
+    def _lunch(start, end, name, lat, lng):
+        return LunchBreakItem(
+            type=ItemType.LUNCH_BREAK,
+            start_time=start,
+            end_time=end,
+            duration_min=time_to_minutes(end) - time_to_minutes(start),
+            label=name,
+            suggestions=[{
+                "id": "fix389",
+                "name": name,
+                "lat": lat,
+                "lng": lng,
+            }],
+        )
+
+    def _dinner(start, end):
+        return DinnerBreakItem(
+            type=ItemType.DINNER_BREAK,
+            start_time=start,
+            end_time=end,
+            duration_min=time_to_minutes(end) - time_to_minutes(start),
+            label="Kolacja",
+        )
+
+    def _kind(it):
+        return getattr(getattr(it, "type", None), "value", getattr(it, "type", ""))
+
+    def _names(items):
+        return [
+            getattr(it, "name", "") or ""
+            for it in items
+            if _kind(it) == ItemType.ATTRACTION.value
+        ]
+
+    # The exact #388 regression: moving only the start made a 145-minute meal.
+    maczuga = _fix383_attr(
+        "Maczuga Herkulesa", "17:02", "18:02", 50.2429068, 19.7829619,
+    ).model_copy(update={
+        "cost_estimate": 44,
+        "ticket_info": TicketInfo(ticket_normal=22, ticket_reduced=11),
+    })
+    square = _fix383_attr(
+        "Plac Bohaterów Getta", "18:12", "18:42", 50.0469, 19.9547,
+    ).model_copy(update={
+        "cost_estimate": 39,
+        "ticket_info": TicketInfo(ticket_normal=19, ticket_reduced=10),
+    })
+    meal_rows = [
+        _fix383_attr("Sukiennice", "12:57", "14:17", 50.0617, 19.9373),
+        _hop(
+            "14:17", "14:27", TransitMode.WALK,
+            "Sukiennice", "Trattoria Mira", 0.55,
+        ),
+        _lunch("14:27", "16:52", "Trattoria Mira", 50.0620, 19.9400),
+        _hop(
+            "16:52", "17:02", TransitMode.PUBLIC_TRANSPORT,
+            "Trattoria Mira", "Maczuga Herkulesa", 24.0,
+        ),
+        maczuga,
+        _hop(
+            "18:02", "18:12", TransitMode.PUBLIC_TRANSPORT,
+            "Maczuga Herkulesa", "Plac Bohaterów Getta", 24.0,
+        ),
+        square,
+        _dinner("19:00", "20:00"),
+    ]
+    fixed_meal = _fix389_run(meal_rows)
+    lunch = next(it for it in fixed_meal if _kind(it) == ItemType.LUNCH_BREAK.value)
+    assert lunch.start_time == "14:27"
+    assert lunch.end_time == "15:07"
+    assert _span_minutes(lunch) == 40
+    assert next(
+        it for it in fixed_meal if getattr(it, "name", "") == "Maczuga Herkulesa"
+    ).start_time == "15:17"
+    for name in ("Maczuga Herkulesa", "Plac Bohaterów Getta"):
+        item = next(it for it in fixed_meal if getattr(it, "name", "") == name)
+        assert item.cost_estimate == 0
+        assert item.ticket_info.ticket_normal == 0
+        assert item.ticket_info.ticket_reduced == 0
+    dinner = next(it for it in fixed_meal if _kind(it) == ItemType.DINNER_BREAK.value)
+    assert time_to_minutes(dinner.start_time) >= max(
+        17 * 60, time_to_minutes(lunch.end_time) + 180,
+    )
+
+    # A second LEGO must leave even when neither neighbouring stop exposes a
+    # usable served-lot chain.
+    lego_rows = [
+        _fix383_attr("Bricks & Figs", "10:00", "11:30", 50.0490, 19.9620),
+        _hop(
+            "11:30", "12:00", TransitMode.PUBLIC_TRANSPORT,
+            "Bricks & Figs", "Świat w Budowie", 3.5,
+        ),
+        _fix383_attr("Świat w Budowie", "12:00", "12:23", 50.0670, 19.9380),
+        _hop(
+            "12:23", "12:33", TransitMode.WALK,
+            "Świat w Budowie", "Planty Krakowskie", 0.6,
+        ),
+        _fix383_attr("Planty Krakowskie", "12:33", "13:33", 50.0632, 19.9412),
+        _dinner("18:00", "19:00"),
+    ]
+    fixed_lego = _fix389_run(
+        lego_rows,
+        group_type="family_kids",
+        preferences=["kids_attractions", "nature_landscape"],
+        date="2026-02-21",
+    )
+    folded_names = [_fold_place_label(name) for name in _names(fixed_lego)]
+    bricks = [
+        name for name in folded_names
+        if any(stem in name for stem in ("lego", "bricks", "klock", "swiat w budowie"))
+    ]
+    assert bricks == ["bricks & figs"]
+    assert not any("swiat w budowie" in name for name in folded_names)
+
+    # The car is at Szpitalna while people are far away.  The illegal
+    # Groblach departure becomes one honest public-transport connection.
+    teleport_rows = [
+        _hop(
+            "09:00", "09:12", TransitMode.CAR,
+            "Kraków", "Parking ul. Szpitalna", 3.0,
+        ),
+        _hop(
+            "09:12", "09:55", TransitMode.WALK,
+            "Parking ul. Szpitalna", "Restauracja Błonia", 3.176,
+        ),
+        _lunch("14:50", "15:30", "Restauracja Błonia", 50.0610, 19.9090),
+        _hop(
+            "15:30", "15:45", TransitMode.WALK,
+            "Restauracja Błonia", "Parking plac Na Groblach (pod Wawelem)", 2.4,
+        ),
+        _hop(
+            "15:45", "16:03", TransitMode.CAR,
+            "Parking plac Na Groblach (pod Wawelem)",
+            "Parking Zabłocie (ul. Przemysłowa)", 3.0,
+        ),
+        _hop(
+            "16:03", "16:11", TransitMode.WALK,
+            "Parking Zabłocie (ul. Przemysłowa)",
+            "Muzeum Sztuki Współczesnej MOCAK", 0.4,
+        ),
+        _fix383_attr(
+            "Muzeum Sztuki Współczesnej MOCAK",
+            "16:11", "17:11", 50.0492, 19.9608,
+        ),
+        _dinner("18:00", "19:00"),
+    ]
+    fixed_car = _fix389_run(teleport_rows)
+    assert not any(
+        "Groblach" in (getattr(it, "from_location", "") or "")
+        for it in fixed_car
+        if getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
+        == "car"
+    )
+    assert any(
+        getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
+        == "public_transport"
+        and "Restauracja Błonia" in (getattr(it, "from_location", "") or "")
+        and "MOCAK" in (getattr(it, "to_location", "") or "")
+        for it in fixed_car
+    )
+    car_codes = {
+        defect.code
+        for defect in audit_plan([DayPlan(
+            day=1, date="2026-02-23", items=fixed_car,
+        )], context={
+            "requested_city": "Kraków",
+            "day_start": "09:00",
+            "day_end": "20:00",
+            "audit_car_model": True,
+        })
+    }
+    assert not ({"car_teleport", "car_position_mismatch"} & car_codes)

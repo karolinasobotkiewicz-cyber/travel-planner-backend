@@ -47156,6 +47156,13 @@ class PlanService:
                 f"[FIX #388] Kraków client seal failed "
                 f"{type(_exc388).__name__}: {_exc388}"
             )
+        try:
+            out_days = self._seal_fix389_krakow_client(out_days, ctx)
+        except Exception as _exc389:
+            print(
+                f"[FIX #389] Kraków client seal failed "
+                f"{type(_exc389).__name__}: {_exc389}"
+            )
         return out_days
 
 
@@ -57527,6 +57534,479 @@ class PlanService:
             try:
                 title = _generate_day_title(
                     items, getattr(day, "day", index + 1) or 1,
+                ) or getattr(day, "title", None)
+            except Exception:
+                title = getattr(day, "title", None)
+            rebuilt.append(day.model_copy(update={"items": items, "title": title}))
+        return rebuilt
+
+
+    def _seal_fix389_krakow_client(
+        self,
+        days: List[Any],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        """FIX #389: hard Kraków postconditions for the recurring mail shapes.
+
+        This is deliberately the last Kraków seal.  It does not depend on a
+        particular generated itinerary: one family day cannot leave with two
+        LEGO shows, a pulled lunch cannot grow into a multi-hour filler, known
+        free landmarks cannot inherit another POI's ticket, and every car leg
+        must start where both the car and the travellers actually are.
+        """
+        if (
+            not days
+            or _is_locked_city_context(context)
+            or not _is_krakow_context(context)
+        ):
+            return days
+
+        from app.domain.models.plan import TicketInfo, TransitItem, TransitMode
+        from app.domain.planner.krakow_parking import (
+            is_parking_label,
+            nearest_parking,
+            parking_point,
+        )
+        from app.domain.planner.leg_physics import (
+            car_minutes,
+            leg_km,
+            transit_minutes,
+            walk_minutes,
+        )
+
+        ctx = dict(context or {})
+        hop_cap, _budget, lunch_by, _before = krakow_client_limits(ctx)
+        group = str(
+            getattr(ctx.get("group_type"), "value", ctx.get("group_type")) or ""
+        ).lower()
+        prefs = [
+            str(getattr(p, "value", p)).lower()
+            for p in (ctx.get("preferences") or [])
+        ]
+        kids = "kid" in group or "family" in group or any("kid" in p for p in prefs)
+        lego_stems = ("lego", "bricks", "klock", "swiat w budowie")
+
+        def _tv(it: Any) -> str:
+            return _item_type_value(it)
+
+        def _clk(it: Any, attr: str) -> Optional[int]:
+            raw = getattr(it, attr, None)
+            if not raw and attr == "start_time":
+                raw = getattr(it, "time", None)
+            if not raw:
+                return None
+            try:
+                return time_to_minutes(raw)
+            except Exception:
+                return None
+
+        def _span(it: Any) -> int:
+            start = _clk(it, "start_time")
+            end = _clk(it, "end_time")
+            if start is not None and end is not None and end > start:
+                return end - start
+            return int(getattr(it, "duration_min", 0) or 0)
+
+        def _mode(it: Any) -> str:
+            return str(
+                getattr(getattr(it, "mode", None), "value", getattr(it, "mode", ""))
+                or ""
+            ).lower()
+
+        def _is_car(it: Any) -> bool:
+            return (
+                _tv(it) == ItemType.TRANSIT.value
+                and "car" in _mode(it)
+                and "walk" not in _mode(it)
+            )
+
+        def _is_walk(it: Any) -> bool:
+            return _tv(it) == ItemType.TRANSIT.value and "walk" in _mode(it)
+
+        def _content(it: Any) -> bool:
+            return _is_timeline_attraction(it) or _tv(it) in (
+                ItemType.LUNCH_BREAK.value,
+                ItemType.DINNER_BREAK.value,
+            )
+
+        def _label(it: Any) -> str:
+            if _is_timeline_attraction(it):
+                return str(getattr(it, "name", "") or "")
+            if _tv(it) in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                for suggestion in (getattr(it, "suggestions", None) or [])[:1]:
+                    if isinstance(suggestion, dict):
+                        name = suggestion.get("name")
+                    else:
+                        name = getattr(suggestion, "name", None)
+                    if name:
+                        return str(name)
+                return str(getattr(it, "label", "") or "")
+            return ""
+
+        def _coords(it: Any) -> Optional[Tuple[float, float]]:
+            point = self._item_stop_latlng(it)
+            if point:
+                return float(point[0]), float(point[1])
+            return None
+
+        def _move(it: Any, delta: int) -> Any:
+            if not delta:
+                return it
+            updates: Dict[str, Any] = {}
+            for attr in ("start_time", "end_time", "time"):
+                raw = getattr(it, attr, None)
+                if not raw:
+                    continue
+                try:
+                    updates[attr] = minutes_to_time(time_to_minutes(raw) + delta)
+                except Exception:
+                    continue
+            if "start_time" in updates and "end_time" in updates:
+                updates["duration_min"] = (
+                    time_to_minutes(updates["end_time"])
+                    - time_to_minutes(updates["start_time"])
+                )
+            return it.model_copy(update=updates) if updates else it
+
+        def _window(it: Any, start: int, end: int) -> Any:
+            return it.model_copy(update={
+                "start_time": minutes_to_time(start),
+                "end_time": minutes_to_time(end),
+                "duration_min": end - start,
+            })
+
+        def _shift_tail(items: List[Any], start_i: int, delta: int) -> List[Any]:
+            if not delta:
+                return list(items)
+            out = list(items)
+            for i in range(start_i, len(out)):
+                out[i] = _move(out[i], delta)
+
+            lunch_end = None
+            for it in out:
+                if _tv(it) == ItemType.LUNCH_BREAK.value:
+                    lunch_end = _clk(it, "end_time")
+                if _tv(it) != ItemType.DINNER_BREAK.value:
+                    continue
+                dinner_start = _clk(it, "start_time")
+                if dinner_start is None:
+                    continue
+                floor = 17 * 60
+                if lunch_end is not None:
+                    floor = max(floor, lunch_end + 180)
+                if dinner_start >= floor:
+                    continue
+                extra = floor - dinner_start
+                dinner_i = out.index(it)
+                for j in range(dinner_i, len(out)):
+                    out[j] = _move(out[j], extra)
+                break
+            return out
+
+        def _hop(
+            start: int,
+            minutes: int,
+            km: float,
+            frm: str,
+            to: str,
+            mode: TransitMode,
+        ) -> TransitItem:
+            source = {
+                TransitMode.WALK: "estimated_walk",
+                TransitMode.CAR: "estimated_car",
+                TransitMode.PUBLIC_TRANSPORT: "estimated_public_transport",
+            }[mode]
+            return TransitItem(
+                type=ItemType.TRANSIT,
+                start_time=minutes_to_time(start),
+                end_time=minutes_to_time(start + minutes),
+                duration_min=minutes,
+                mode=mode,
+                from_location=frm or "Kraków",
+                to_location=to or "Kraków",
+                distance_km=round(float(km), 3),
+                routing_source=source,
+            )
+
+        def _km(a: Tuple[float, float], b: Tuple[float, float], mode: str) -> float:
+            return float(leg_km(a, b, mode, city="Kraków")[0])
+
+        def _state_before(items: List[Any], stop: int) -> Tuple[Optional[str], Optional[str]]:
+            car_at = None
+            people = None
+            for it in items[:stop]:
+                if _tv(it) == ItemType.TRANSIT.value:
+                    frm = str(getattr(it, "from_location", "") or "")
+                    to = str(getattr(it, "to_location", "") or "")
+                    if _is_car(it):
+                        if car_at is None and is_parking_label(frm):
+                            car_at = frm
+                        if is_parking_label(to):
+                            car_at = to
+                        people = to or people
+                    elif to:
+                        people = to
+                    continue
+                if _content(it):
+                    people = _label(it) or people
+            return car_at, people
+
+        def _prev_content(items: List[Any], start: int) -> Optional[int]:
+            return next(
+                (i for i in range(start, -1, -1) if _content(items[i])),
+                None,
+            )
+
+        def _next_content(items: List[Any], start: int) -> Optional[int]:
+            return next(
+                (i for i in range(start, len(items)) if _content(items[i])),
+                None,
+            )
+
+        def _bridge(
+            items: List[Any],
+            prev_i: int,
+            next_i: int,
+            *,
+            allow_car: bool,
+        ) -> Optional[List[TransitItem]]:
+            prev = items[prev_i]
+            nxt = items[next_i]
+            prev_pt = _coords(prev)
+            next_pt = _coords(nxt)
+            ready = _clk(prev, "end_time")
+            if prev_pt is None or next_pt is None or ready is None:
+                return None
+            prev_name = _label(prev)
+            next_name = _label(nxt)
+
+            direct_walk = _km(prev_pt, next_pt, "walk")
+            if 0.05 < direct_walk <= hop_cap:
+                minutes = walk_minutes(direct_walk, ctx)
+                return [
+                    _hop(
+                        ready, minutes, direct_walk, prev_name, next_name,
+                        TransitMode.WALK,
+                    )
+                ]
+
+            car_at, _people = _state_before(items, prev_i + 1)
+            if allow_car and car_at and parking_point(car_at):
+                cursor = ready
+                rows: List[TransitItem] = []
+                here_name = prev_name
+                here_pt = prev_pt
+                if not _place_names_match(here_name, car_at):
+                    back = _km(here_pt, parking_point(car_at), "walk")
+                    if not (0.05 < back <= hop_cap):
+                        rows = []
+                    else:
+                        minutes = walk_minutes(back, ctx)
+                        rows.append(_hop(
+                            cursor, minutes, back, here_name, car_at,
+                            TransitMode.WALK,
+                        ))
+                        cursor += minutes
+                        here_name = car_at
+                        here_pt = parking_point(car_at)
+                if here_name and _place_names_match(here_name, car_at):
+                    destination = nearest_parking(next_pt)[0]
+                    dest_name = str(destination["name"])
+                    dest_pt = (float(destination["lat"]), float(destination["lng"]))
+                    if not _place_names_match(car_at, dest_name):
+                        drive = _km(here_pt, dest_pt, "car")
+                        if drive >= 0.80:
+                            minutes = car_minutes(drive)
+                            rows.append(_hop(
+                                cursor, minutes, drive, car_at, dest_name,
+                                TransitMode.CAR,
+                            ))
+                            cursor += minutes
+                            here_name = dest_name
+                            here_pt = dest_pt
+                        else:
+                            rows = []
+                    if rows or _place_names_match(car_at, dest_name):
+                        onward = _km(here_pt, next_pt, "walk")
+                        if 0.05 < onward <= hop_cap:
+                            minutes = walk_minutes(onward, ctx)
+                            rows.append(_hop(
+                                cursor, minutes, onward, here_name, next_name,
+                                TransitMode.WALK,
+                            ))
+                            return rows
+
+            # Honest fallback: people continue to the next stop without moving
+            # the parked car.  This is preferable to inventing a car departure.
+            public_km = _km(prev_pt, next_pt, "transit")
+            minutes = transit_minutes(public_km)
+            return [
+                _hop(
+                    ready, minutes, public_km, prev_name, next_name,
+                    TransitMode.PUBLIC_TRANSPORT,
+                )
+            ]
+
+        def _replace_segment(
+            items: List[Any],
+            prev_i: int,
+            next_i: int,
+            rows: List[TransitItem],
+        ) -> List[Any]:
+            next_start = _clk(items[next_i], "start_time")
+            if next_start is None or not rows:
+                return items
+            arrival = _clk(rows[-1], "end_time")
+            if arrival is None:
+                return items
+            out = list(items[:prev_i + 1]) + rows + list(items[next_i:])
+            shifted_next = prev_i + 1 + len(rows)
+            return _shift_tail(out, shifted_next, arrival - next_start)
+
+        def _fix_long_lunch(items: List[Any]) -> List[Any]:
+            out = list(items)
+            for i, it in enumerate(out):
+                if _tv(it) != ItemType.LUNCH_BREAK.value:
+                    continue
+                start = _clk(it, "start_time")
+                end = _clk(it, "end_time")
+                if start is None or end is None or end - start <= 75:
+                    continue
+                # Generated Kraków meals are 40 minutes.  #388 moved only the
+                # start and thereby changed 16:12-16:52 into 14:27-16:52.
+                fixed_end = start + 40
+                saved = end - fixed_end
+                out[i] = _window(it, start, fixed_end)
+                out = _shift_tail(out, i + 1, -saved)
+            return out
+
+        def _is_lego(it: Any) -> bool:
+            if not _is_timeline_attraction(it):
+                return False
+            folded = _fold_place_label(getattr(it, "name", "") or "")
+            return any(stem in folded for stem in lego_stems)
+
+        def _fix_lego(items: List[Any]) -> List[Any]:
+            out = list(items)
+            if not kids:
+                return out
+            for _ in range(4):
+                lego = [i for i, it in enumerate(out) if _is_lego(it)]
+                if len(lego) <= 1:
+                    break
+                drop = min(lego, key=lambda i: (_span(out[i]), -i))
+                prev_i = _prev_content(out, drop - 1)
+                next_i = _next_content(out, drop + 1)
+                if prev_i is None or next_i is None:
+                    out.pop(drop)
+                    continue
+                rows = _bridge(out, prev_i, next_i, allow_car=True)
+                if not rows:
+                    out.pop(drop)
+                    continue
+                out = _replace_segment(out, prev_i, next_i, rows)
+            return out
+
+        def _car_mismatch(items: List[Any]) -> Optional[int]:
+            car_at = None
+            people = None
+            for i, it in enumerate(items):
+                if _tv(it) == ItemType.TRANSIT.value:
+                    frm = str(getattr(it, "from_location", "") or "")
+                    to = str(getattr(it, "to_location", "") or "")
+                    if _is_car(it):
+                        if car_at is None and is_parking_label(frm):
+                            car_at = frm
+                        wrong_car = bool(
+                            car_at and not _place_names_match(frm, car_at)
+                        )
+                        wrong_people = bool(
+                            people and not _place_names_match(frm, people)
+                        )
+                        if wrong_car or wrong_people:
+                            return i
+                        if is_parking_label(to):
+                            car_at = to
+                        people = to or people
+                    elif to:
+                        people = to
+                    continue
+                if _content(it):
+                    people = _label(it) or people
+            return None
+
+        def _fix_teleports(items: List[Any]) -> List[Any]:
+            out = list(items)
+            for _ in range(10):
+                bad = _car_mismatch(out)
+                if bad is None:
+                    break
+                prev_i = _prev_content(out, bad - 1)
+                next_i = _next_content(out, bad + 1)
+                if prev_i is None:
+                    out.pop(bad)
+                    continue
+                if next_i is None:
+                    out.pop(bad)
+                    continue
+                # First try the real parked car.  If the people are too far
+                # away, _bridge returns an honest direct public-transport leg.
+                rows = _bridge(out, prev_i, next_i, allow_car=True)
+                if not rows:
+                    rows = _bridge(out, prev_i, next_i, allow_car=False)
+                if not rows:
+                    out.pop(bad)
+                    continue
+                out = _replace_segment(out, prev_i, next_i, rows)
+            return out
+
+        def _free_costs(items: List[Any]) -> List[Any]:
+            out = []
+            for it in items:
+                if not _is_timeline_attraction(it):
+                    out.append(it)
+                    continue
+                folded = _fold_place_label(getattr(it, "name", "") or "")
+                free = (
+                    "maczuga herkulesa" in folded
+                    or ("plac" in folded and "bohater" in folded and "getta" in folded)
+                )
+                if not free:
+                    out.append(it)
+                    continue
+                ticket = getattr(it, "ticket_info", None)
+                if ticket is None:
+                    ticket = TicketInfo(
+                        ticket_normal=0,
+                        ticket_reduced=0,
+                        cost_breakdown_note="Wstęp bezpłatny.",
+                    )
+                else:
+                    ticket = ticket.model_copy(update={
+                        "ticket_normal": 0,
+                        "ticket_reduced": 0,
+                        "cost_breakdown_note": "Wstęp bezpłatny.",
+                    })
+                out.append(it.model_copy(update={
+                    "cost_estimate": 0,
+                    "cost_note": "Wstęp bezpłatny",
+                    "ticket_info": ticket,
+                }))
+            return out
+
+        rebuilt = []
+        for index, day in enumerate(days):
+            original = list(getattr(day, "items", None) or [])
+            items = _fix_long_lunch(original)
+            items = _fix_lego(items)
+            items = _fix_teleports(items)
+            items = _free_costs(items)
+            if items == original:
+                rebuilt.append(day)
+                continue
+            try:
+                title = _generate_day_title(
+                    items, getattr(day, "day", index + 1) or index + 1,
                 ) or getattr(day, "title", None)
             except Exception:
                 title = getattr(day, "title", None)
