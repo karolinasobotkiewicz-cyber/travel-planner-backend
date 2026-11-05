@@ -21,3 +21,8 @@ Zakopane pozostają nietknięte.
 `test_fix392_removed_stop_never_cuts_the_day` trzyma kształty z maila: J1 D1
 po Muzeum Etnograficznym o 14:35 i J1 D2 po Parku Lotników o 16:14, a także
 samą wygenerowaną dziurę bez usunięcia punktu.
+
+Gdy ludzie i auto są na jednym parkingu, a następny odcinek rusza z innego
+(J1 D2: plac Wolnica → parking pod Kopcem Kościuszki), pieczęć wstawia
+brakujący przejazd autem i przesuwa tylko to, co by na siebie nachodziło.
+`test_fix393_drive_between_two_parkings` trzyma ten kształt.

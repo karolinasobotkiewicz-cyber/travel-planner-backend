@@ -58697,6 +58697,61 @@ class PlanService:
                 count += 1
             return count
 
+        def _fix_lot_gaps(items: List[Any]) -> List[Any]:
+            """A hop that starts at another parking needs the drive from this one.
+
+            J1 D2: people and the car are at plac Wolnica, and the next walk
+            already leaves from the lot under Kopiec Kościuszki. The car leg
+            between those two lots was lost; put it back instead of a jump.
+            """
+            out = list(items)
+            for _ in range(6):
+                car_at = None
+                people = None
+                ready = None
+                placed = False
+                for i, it in enumerate(out):
+                    if _tv(it) == ItemType.TRANSIT.value:
+                        frm = str(getattr(it, "from_location", "") or "")
+                        to = str(getattr(it, "to_location", "") or "")
+                        if (
+                            is_parking_label(frm)
+                            and car_at
+                            and people
+                            and parking_point(car_at)
+                            and parking_point(frm)
+                            and _place_names_match(people, car_at)
+                            and not _place_names_match(frm, car_at)
+                            and ready is not None
+                        ):
+                            drive = _km(parking_point(car_at), parking_point(frm), "car")
+                            if drive >= 0.80:
+                                row = _hop(
+                                    ready, car_minutes(drive), drive,
+                                    car_at, frm, TransitMode.CAR,
+                                )
+                                out = list(out[:i]) + [row] + list(out[i:])
+                                out = _push(out, i + 1)
+                                print(
+                                    f"[FIX #393] drive {car_at} → {frm}"
+                                )
+                                placed = True
+                                break
+                        if car_at is None and is_parking_label(frm):
+                            car_at = frm
+                        if _is_car(it) and is_parking_label(to):
+                            car_at = to
+                        if to:
+                            people = to
+                        ready = _clk(it, "end_time") or ready
+                        continue
+                    if _content(it):
+                        people = _label(it) or people
+                        ready = _clk(it, "end_time") or ready
+                if not placed:
+                    break
+            return out
+
         rebuilt = []
         for index, day in enumerate(days):
             original = list(getattr(day, "items", None) or [])
@@ -58730,6 +58785,7 @@ class PlanService:
             # Close those holes even when no earlier repair ran.
             items = _close_gaps(items)
             items = _fix_teleports(items)
+            items = _fix_lot_gaps(items)
             if items != original:
                 earlier = [
                     _fold_place_label(getattr(it, "name", "") or "")

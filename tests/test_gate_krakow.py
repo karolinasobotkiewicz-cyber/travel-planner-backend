@@ -3160,6 +3160,33 @@ def test_fix392_removed_stop_never_cuts_the_day():
     _fix392_tail_ok(days[0], ctx)
 
 
+def test_fix393_drive_between_two_parkings():
+    from app.domain.models.plan import TransitMode
+
+    # J1 D2: the car is at plac Wolnica and the next walk already leaves
+    # from the lot under Kopiec. The drive between the lots is missing.
+    rows = [
+        _fix391_hop("12:40", "12:50", TransitMode.CAR, "Kraków", "Parking plac Wolnica", 2.0),
+        _fix391_hop("12:50", "12:55", TransitMode.WALK, "Parking plac Wolnica", "Muzeum Etnograficzne im. Seweryna Udzieli", 0.25),
+        _fix383_attr("Muzeum Etnograficzne im. Seweryna Udzieli", "12:55", "14:35", 50.0505, 19.9437),
+        _fix391_hop("14:35", "14:39", TransitMode.WALK, "Muzeum Etnograficzne im. Seweryna Udzieli", "Parking plac Wolnica", 0.25),
+        _fix391_hop("14:39", "14:41", TransitMode.WALK, "Parking pl. Paula McCartneya (pod Kopcem)", "Kopiec Kościuszki", 0.088),
+        _fix383_attr("Kopiec Kościuszki", "14:41", "16:20", 50.0548, 19.8933),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal([rows], group_type="family_kids", preferences=["kids_attractions"], date="2026-02-21")
+    items = days[0].items
+    assert any(
+        _fix391_mode(it) == "car"
+        and "Wolnica" in (it.from_location or "")
+        and "Kopcem" in (it.to_location or "")
+        for it in items
+    ), [(it.from_location, it.to_location, _fix391_mode(it)) for it in items if _fix391_kind(it) == "transit"]
+    assert "Kopiec Kościuszki" in _fix391_names(items)
+    assert not any("public" in _fix391_mode(it) for it in items)
+    assert not _fix391_hard_codes(days, ctx)
+
+
 def test_fix391_thin_valley_trip_gets_a_second_stop():
     from app.domain.models.plan import TransitMode
 
