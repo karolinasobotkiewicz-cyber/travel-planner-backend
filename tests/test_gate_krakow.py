@@ -3041,6 +3041,125 @@ def _fix391_dinner_only():
     return [_fix391_dinner()]
 
 
+_FIX392_POOL = [
+    {"name": "Muzeum Inżynierii i Techniki", "lat": 50.0507, "lng": 19.9478, "time_max": 120, "ticket_normal": 25},
+    {"name": "Synagoga Stara", "lat": 50.0518, "lng": 19.9490, "time_max": 60, "ticket_normal": 20},
+    {"name": "Muzeum Lotnictwa Polskiego", "lat": 50.0722, "lng": 19.9905, "time_max": 120, "ticket_normal": 30},
+]
+
+
+def _fix392_tail_ok(day, ctx):
+    """No hole before dinner and the travellers end the day with their car."""
+    items = list(day.items)
+    dinner_i = next(
+        i for i, it in enumerate(items) if _fix391_kind(it) == ItemType.DINNER_BREAK.value
+    )
+    last = None
+    for it in items[:dinner_i]:
+        end = getattr(it, "end_time", None)
+        if end:
+            last = time_to_minutes(end)
+    gap = time_to_minutes(items[dinner_i].start_time) - last
+    assert gap < 45, f"D{day.day}: {gap} min hole before dinner"
+    car_at = people = None
+    for it in items[:dinner_i]:
+        kind = _fix391_kind(it)
+        if kind == ItemType.TRANSIT.value:
+            if _fix391_mode(it) == "car":
+                car_at = it.to_location
+            people = it.to_location
+            if car_at is None and is_parking_label(it.from_location or ""):
+                car_at = it.from_location
+        elif kind == ItemType.ATTRACTION.value:
+            people = it.name
+    assert car_at, f"D{day.day}: the car vanished"
+    assert not _fix391_hard_codes([day], ctx)
+    return people, car_at
+
+
+def test_fix392_removed_stop_never_cuts_the_day():
+    from app.domain.models.plan import TransitMode
+
+    family = {
+        "group_type": "family_kids",
+        "preferences": ["kids_attractions", "museum_heritage"],
+        "date": "2026-02-20",
+        "poi_pool": _FIX392_POOL,
+    }
+
+    # J1 D2: Park Lotników at 16:14, then a branch to the second LEGO show.
+    # Removing the show used to delete the walk back to the car as well.
+    day2 = [
+        _fix391_hop("13:00", "13:15", TransitMode.CAR, "Kraków", "Parking Zabłocie (ul. Przemysłowa)", 3.1),
+        _fix391_hop("13:15", "13:22", TransitMode.WALK, "Parking Zabłocie (ul. Przemysłowa)", "Bricks & Figs - muzeum klocków LEGO", 0.52),
+        _fix383_attr("Bricks & Figs - muzeum klocków LEGO", "13:22", "14:22", 50.0490, 19.9620),
+        _fix391_hop("14:22", "14:29", TransitMode.WALK, "Bricks & Figs - muzeum klocków LEGO", "Parking Zabłocie (ul. Przemysłowa)", 0.52),
+        _fix391_hop("14:29", "14:44", TransitMode.CAR, "Parking Zabłocie (ul. Przemysłowa)", "Parking Czyżyny (al. Pokoju)", 5.0),
+        _fix391_hop("14:44", "14:52", TransitMode.WALK, "Parking Czyżyny (al. Pokoju)", "Park Lotników Polskich", 0.549),
+        _fix383_attr("Park Lotników Polskich", "14:52", "16:14", 50.0712, 19.9932),
+        _fix391_hop("16:14", "16:22", TransitMode.WALK, "Park Lotników Polskich", "Parking Czyżyny (al. Pokoju)", 0.549),
+        _fix391_hop("16:22", "16:40", TransitMode.CAR, "Parking Czyżyny (al. Pokoju)", "Parking Galeria Krakowska (ul. Pawia 5)", 6.0),
+        _fix391_hop("16:40", "16:48", TransitMode.WALK, "Parking Galeria Krakowska (ul. Pawia 5)", "Świat w Budowie", 0.6),
+        _fix383_attr("Świat w Budowie", "16:48", "17:11", 50.0670, 19.9380),
+        _fix391_dinner("17:15", "18:00"),
+    ]
+    days, ctx = _fix391_seal([day2], **family)
+    names = _fix391_names(days[0].items)
+    assert "Świat w Budowie" not in names
+    assert "Park Lotników Polskich" in names
+    _fix392_tail_ok(days[0], ctx)
+
+    # J1 D1: Muzeum Etnograficzne ends 14:35; the next stop repeats an
+    # earlier day and leaves.  The afternoon must not stay empty until 17:00.
+    earlier = [
+        _fix391_hop("09:00", "09:20", TransitMode.CAR, "Kraków", "Parking pl. Paula McCartneya (pod Kopcem)", 5.0),
+        _fix391_hop("09:20", "09:22", TransitMode.WALK, "Parking pl. Paula McCartneya (pod Kopcem)", "Kopiec Kościuszki", 0.088),
+        _fix383_attr("Kopiec Kościuszki", "09:22", "11:00", 50.0548, 19.8933),
+        _fix391_hop("11:00", "11:02", TransitMode.WALK, "Kopiec Kościuszki", "Parking pl. Paula McCartneya (pod Kopcem)", 0.088),
+        _fix391_hop("11:02", "11:20", TransitMode.CAR, "Parking pl. Paula McCartneya (pod Kopcem)", "Parking przy Muzeum (al. 3 Maja)", 3.8),
+        _fix391_hop("11:20", "11:22", TransitMode.WALK, "Parking przy Muzeum (al. 3 Maja)", "Muzeum Narodowe w Krakowie", 0.099),
+        _fix383_attr("Muzeum Narodowe w Krakowie", "11:22", "16:20", 50.0604, 19.9235),
+        _fix391_dinner(),
+    ]
+    day1 = [
+        _fix391_hop("12:40", "12:50", TransitMode.CAR, "Kraków", "Parking plac Wolnica", 2.0),
+        _fix391_hop("12:50", "12:55", TransitMode.WALK, "Parking plac Wolnica", "Muzeum Etnograficzne im. Seweryna Udzieli", 0.25),
+        _fix383_attr("Muzeum Etnograficzne im. Seweryna Udzieli", "12:55", "14:35", 50.0505, 19.9437),
+        _fix391_hop("14:35", "14:39", TransitMode.WALK, "Muzeum Etnograficzne im. Seweryna Udzieli", "Parking plac Wolnica", 0.25),
+        _fix391_hop("14:39", "14:59", TransitMode.CAR, "Parking plac Wolnica", "Parking pl. Paula McCartneya (pod Kopcem)", 5.0),
+        _fix391_hop("14:59", "15:01", TransitMode.WALK, "Parking pl. Paula McCartneya (pod Kopcem)", "Kopiec Kościuszki", 0.088),
+        _fix383_attr("Kopiec Kościuszki", "15:01", "16:40", 50.0548, 19.8933),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal([earlier, day1], **{**family, "date": "2026-02-19"})
+    names = _fix391_names(days[1].items)
+    assert "Kopiec Kościuszki" not in names
+    assert "Muzeum Etnograficzne im. Seweryna Udzieli" in names
+    assert len(names) >= 2, names
+    _fix392_tail_ok(days[1], ctx)
+    filled = [it for it in days[1].items if getattr(it, "poi_id", "") == "fix392"]
+    assert filled and all(it.cost_estimate == 25 or it.cost_estimate == 20 for it in filled)
+
+    # Without any open place nearby the freed time is not handed out as a
+    # hole: the day keeps a valid shape and the car is still with the family.
+    days, ctx = _fix391_seal([day2], **{**family, "poi_pool": []})
+    assert "Świat w Budowie" not in _fix391_names(days[0].items)
+    assert not _fix391_hard_codes(days, ctx)
+
+    # The generator itself can leave the afternoon empty.  No stop is
+    # removed; the hole after 14:35 still has to be filled.
+    hollow = [
+        _fix391_hop("12:40", "12:50", TransitMode.CAR, "Kraków", "Parking plac Wolnica", 2.0),
+        _fix391_hop("12:50", "12:55", TransitMode.WALK, "Parking plac Wolnica", "Muzeum Etnograficzne im. Seweryna Udzieli", 0.25),
+        _fix383_attr("Muzeum Etnograficzne im. Seweryna Udzieli", "12:55", "14:35", 50.0505, 19.9437),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal([hollow], **family)
+    assert "Muzeum Etnograficzne im. Seweryna Udzieli" in _fix391_names(days[0].items)
+    assert len(_fix391_names(days[0].items)) >= 2, _fix391_names(days[0].items)
+    _fix392_tail_ok(days[0], ctx)
+
+
 def test_fix391_thin_valley_trip_gets_a_second_stop():
     from app.domain.models.plan import TransitMode
 
