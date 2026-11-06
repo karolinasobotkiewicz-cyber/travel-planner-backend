@@ -57565,6 +57565,7 @@ class PlanService:
 
         from app.domain.models.plan import TicketInfo, TransitItem, TransitMode
         from app.domain.planner.krakow_parking import (
+            KRAKOW_PARKINGS,
             is_parking_label,
             nearest_parking,
             parking_point,
@@ -58203,7 +58204,11 @@ class PlanService:
                 if next_has_pt:
                     rows_out = _bridge(probe, at, at + 1, allow_car=True)
                 else:
-                    rows_out = _closure_rows(probe, at, removed)
+                    # Dinner often has no address. A walk back to the parking
+                    # is then the last ride of the day, which the client reads
+                    # as a hop to nowhere. Stay at the visit; the gap fill
+                    # continues from there.
+                    rows_out = []
                 if rows_out is None:
                     continue
                 out_min = sum(_span(r) for r in rows_out)
@@ -58333,7 +58338,7 @@ class PlanService:
                     )
                     room = max(0, limit - span)
                 grow = min(idle, room)
-                if fills < 2 and idle - grow >= 20 and idle >= 45:
+                if fills < 6 and idle - grow >= 20 and idle >= 45:
                     filled = _place_visit(out, i, next_i, template)
                     if filled is not None:
                         fills += 1
@@ -58347,10 +58352,11 @@ class PlanService:
                 i += 1
             return out
 
-        def _dedupe(items: List[Any]) -> Tuple[List[Any], bool]:
+        def _dedupe(items: List[Any], earlier_names: Optional[List[str]] = None) -> Tuple[List[Any], bool]:
             out = list(items)
             changed = False
-            earlier = list(state["used"])
+            # Fillers added while repairing this day are not "already seen".
+            earlier = list(state["used"] if earlier_names is None else earlier_names)
             for _ in range(6):
                 seen: List[str] = list(earlier)
                 repeat = None
@@ -58691,70 +58697,269 @@ class PlanService:
                 if folded and any(_same_place(folded, have) for have in seen):
                     count += 1
                 seen.append(folded)
+                window = _open_window(_pool_row(getattr(it, "name", "") or "") or {})
+                end = _clk(it, "end_time")
+                start = _clk(it, "start_time")
+                if window == (0, 0) or (
+                    window and (
+                        (start is not None and start >= window[1])
+                        or (end is not None and end > window[1] + 30)
+                    )
+                ):
+                    count += 1
             if kids and lego > 1:
                 count += 1
             if kids and attractions > 5:
                 count += 1
             return count
 
-        def _fix_lot_gaps(items: List[Any]) -> List[Any]:
-            """A hop that starts at another parking needs the drive from this one.
+        def _meal_waits(rows: List[Any]) -> int:
+            """More than 20 min between a place and the next meal, after rides."""
+            waits = 0
+            prev_end = None
+            travel = 0
+            for it in rows:
+                if _tv(it) == ItemType.TRANSIT.value:
+                    start = _clk(it, "start_time")
+                    if prev_end is not None and start is not None and start >= prev_end:
+                        travel += _span(it)
+                    continue
+                if not (
+                    _is_timeline_attraction(it)
+                    or _tv(it) in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value)
+                ):
+                    continue
+                start = _clk(it, "start_time")
+                if (
+                    _tv(it) in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value)
+                    and prev_end is not None
+                    and start is not None
+                    and start - prev_end - travel > 20
+                ):
+                    waits += 1
+                end = _clk(it, "end_time")
+                if end is not None:
+                    prev_end = end
+                    travel = 0
+            return waits
 
-            J1 D2: people and the car are at plac Wolnica, and the next walk
-            already leaves from the lot under Kopiec Kościuszki. The car leg
-            between those two lots was lost; put it back instead of a jump.
+        def _lot_of(label: str) -> Optional[Tuple[str, Tuple[float, float]]]:
+            """A real Kraków lot, even when the plan uses a shortened name."""
+            if not label:
+                return None
+            point = parking_point(label)
+            if point is not None:
+                for lot in KRAKOW_PARKINGS:
+                    if parking_point(str(lot["name"])) == point:
+                        return str(lot["name"]), point
+                return label, point
+            folded = _fold_place_label(label)
+            if "parking" not in folded and "kopiec" not in folded and "wolnica" not in folded:
+                return None
+            tokens = [
+                token for token in folded.replace("(", " ").replace(")", " ").split()
+                if len(token) >= 5 and token not in ("parking", "parkingu")
+            ]
+            for lot in KRAKOW_PARKINGS:
+                name = str(lot["name"])
+                folded_lot = _fold_place_label(name)
+                if any(token in folded_lot for token in tokens):
+                    return name, (float(lot["lat"]), float(lot["lng"]))
+            return None
+
+        def _fix_lot_gaps(items: List[Any]) -> List[Any]:
+            """Insert the missing drive when the next hop leaves another lot.
+
+            A shortened name ("Parking pod Kopcem Kościuszki") counts. A stretch
+            that already has a car ride is left as the generator wrote it.
             """
             out = list(items)
-            for _ in range(6):
-                car_at = None
-                people = None
-                ready = None
-                placed = False
+            for _ in range(4):
+                car_name = None
+                car_pt = None
+                changed = False
                 for i, it in enumerate(out):
-                    if _tv(it) == ItemType.TRANSIT.value:
-                        frm = str(getattr(it, "from_location", "") or "")
-                        to = str(getattr(it, "to_location", "") or "")
-                        if (
-                            is_parking_label(frm)
-                            and car_at
-                            and people
-                            and parking_point(car_at)
-                            and parking_point(frm)
-                            and _place_names_match(people, car_at)
-                            and not _place_names_match(frm, car_at)
-                            and ready is not None
-                        ):
-                            drive = _km(parking_point(car_at), parking_point(frm), "car")
-                            if drive >= 0.80:
-                                row = _hop(
-                                    ready, car_minutes(drive), drive,
-                                    car_at, frm, TransitMode.CAR,
-                                )
-                                out = list(out[:i]) + [row] + list(out[i:])
-                                out = _push(out, i + 1)
-                                print(
-                                    f"[FIX #393] drive {car_at} → {frm}"
-                                )
-                                placed = True
-                                break
-                        if car_at is None and is_parking_label(frm):
-                            car_at = frm
-                        if _is_car(it) and is_parking_label(to):
-                            car_at = to
-                        if to:
-                            people = to
-                        ready = _clk(it, "end_time") or ready
+                    if _tv(it) != ItemType.TRANSIT.value:
                         continue
-                    if _content(it):
-                        people = _label(it) or people
-                        ready = _clk(it, "end_time") or ready
-                if not placed:
+                    origin = _lot_of(str(getattr(it, "from_location", "") or ""))
+                    dest = _lot_of(str(getattr(it, "to_location", "") or ""))
+                    if origin and car_name and car_pt and not _place_names_match(origin[0], car_name):
+                        prev_i = _prev_content(out, i - 1)
+                        next_i = _next_content(out, i)
+                        has_car = (
+                            prev_i is not None
+                            and next_i is not None
+                            and any(_is_car(hop) for hop in out[prev_i + 1:next_i])
+                        )
+                        if has_car or prev_i is None or next_i is None:
+                            car_name, car_pt = origin
+                            continue
+                        ready = _clk(out[i - 1], "end_time") if i else None
+                        _car_here, people = _state_before(out, i)
+                        rows: List[Any] = []
+                        cursor = ready
+                        if cursor is not None and not _place_names_match(people or "", car_name):
+                            here = out[prev_i]
+                            here_pt = _coords(here)
+                            back = _km(here_pt, car_pt, "walk") if here_pt else None
+                            if back is None or not (0.05 < back <= hop_cap):
+                                if _is_timeline_attraction(out[next_i]):
+                                    dropped = _drop_stop(out, next_i, refill=False)
+                                    if dropped is not out:
+                                        print(
+                                            "[FIX #394] dropped "
+                                            f"{getattr(out[next_i], 'name', '')}: "
+                                            "the car is out of walking range"
+                                        )
+                                        out = dropped
+                                        changed = True
+                                break
+                            minutes = walk_minutes(back, ctx)
+                            rows.append(_hop(
+                                cursor, minutes, back, _label(here), car_name,
+                                TransitMode.WALK,
+                            ))
+                            cursor += minutes
+                        drive = _km(car_pt, origin[1], "car")
+                        if cursor is None or drive < 0.80:
+                            car_name, car_pt = origin
+                            continue
+                        rows.append(_hop(
+                            cursor, car_minutes(drive), drive,
+                            car_name, origin[0], TransitMode.CAR,
+                        ))
+                        out = list(out[:i]) + rows + list(out[i:])
+                        follow = i + len(rows)
+                        same = _lot_of(str(getattr(out[follow], "from_location", "") or ""))
+                        if same and _place_names_match(same[0], origin[0]):
+                            out[follow] = out[follow].model_copy(update={
+                                "from_location": origin[0],
+                            })
+                        out = _push(out, follow)
+                        print(f"[FIX #394] drive {car_name} → {origin[0]}")
+                        changed = True
+                        break
+                    if car_name is None and origin:
+                        car_name, car_pt = origin
+                    if _is_car(it) and dest:
+                        car_name, car_pt = dest
+                if not changed:
                     break
+            return out
+
+        def _audit_counts(rows: List[Any]) -> Dict[str, int]:
+            from app.domain.validators.client_invariants import audit_plan
+
+            watched = ("dangling_hop", "missing_hop", "from_mismatch")
+            probe = dict(ctx)
+            probe["audit_car_model"] = True
+            counts = {code: 0 for code in watched}
+            try:
+                found = audit_plan(
+                    [state["day"].model_copy(update={"items": rows})],
+                    context=probe,
+                )
+            except Exception:
+                return {code: 99 for code in watched}
+            for defect in found:
+                code = getattr(defect, "code", None)
+                if code in counts:
+                    counts[code] += 1
+            return counts
+
+        def _excise_stop(items: List[Any], idx: int) -> List[Any]:
+            """Remove one visit and its hops, and close the clock. No parking walk."""
+            prev_i = _prev_content(items, idx - 1)
+            next_i = _next_content(items, idx + 1)
+            if prev_i is None or next_i is None:
+                return _drop_stop(items, idx, refill=False)
+            base = list(items[:prev_i + 1]) + list(items[next_i:])
+            return _remove_segment(base, prev_i, prev_i + 1)
+
+        def _fix_closed(items: List[Any], score) -> List[Any]:
+            """A visit keeps its full length inside the day's open window, or it goes.
+
+            The replacement stays only when the day is no worse: a drop that
+            leaves a hole or a ride to a parking is put back.
+            """
+            out = list(items)
+            for _ in range(4):
+                bad = None
+                for i, it in enumerate(out):
+                    if not _is_timeline_attraction(it):
+                        continue
+                    row = _pool_row(getattr(it, "name", "") or "")
+                    if not row:
+                        continue
+                    window = _open_window(row)
+                    if window is None:
+                        continue
+                    start = _clk(it, "start_time")
+                    end = _clk(it, "end_time")
+                    if window != (0, 0) and start is not None and end is not None:
+                        # Only a visit that runs past closing. Starting a few
+                        # minutes early is not moved onto the closing edge.
+                        if start < window[1] and end <= window[1] + 30:
+                            continue
+                        span = end - start
+                        prev_end = 0
+                        if i:
+                            prev_end = _clk(out[i - 1], "end_time") or 0
+                        new_end = window[1]
+                        new_start = new_end - span
+                        moved = new_start - start
+                        hop_ok = True
+                        if i and _tv(out[i - 1]) == ItemType.TRANSIT.value:
+                            hop_start = (_clk(out[i - 1], "start_time") or 0) + moved
+                            pred_end = _clk(out[i - 2], "end_time") if i >= 2 else 0
+                            hop_ok = hop_start >= (pred_end or 0)
+                        if new_start >= window[0] and new_start >= prev_end and hop_ok:
+                            moved_rows = list(out)
+                            moved_rows[i] = _window(it, new_start, new_end)
+                            if i and _tv(moved_rows[i - 1]) == ItemType.TRANSIT.value:
+                                moved_rows[i - 1] = _move(moved_rows[i - 1], moved)
+                            if score(moved_rows) <= score(out):
+                                out = moved_rows
+                                print(
+                                    f"[FIX #394] moved {getattr(it, 'name', '')} "
+                                    f"inside {minutes_to_time(window[0])}-"
+                                    f"{minutes_to_time(window[1])}"
+                                )
+                                bad = "moved"
+                                break
+                    bad = i
+                    break
+                if bad is None or bad == "moved":
+                    if bad is None:
+                        break
+                    continue
+                name = getattr(out[bad], "name", "")
+                snap = list(state["used"])
+                candidate = _excise_stop(out, bad)
+                if candidate is not out:
+                    candidate = _close_gaps(candidate)
+                before_codes = _audit_counts(out)
+                after_codes = _audit_counts(candidate)
+                introduced = any(
+                    after_codes[code] > before_codes[code] for code in before_codes
+                )
+                if (
+                    candidate is not out
+                    and score(candidate) <= score(out)
+                    and not introduced
+                    and _meal_waits(candidate) <= _meal_waits(out)
+                ):
+                    print(f"[FIX #394] dropped {name}: outside opening hours")
+                    out = candidate
+                    continue
+                state["used"] = snap
+                break
             return out
 
         rebuilt = []
         for index, day in enumerate(days):
             original = list(getattr(day, "items", None) or [])
+            state["day"] = day
             state["date"] = _day_date(day, index)
             # Earlier days are final; later days still count as taken so a
             # filler cannot pick something the traveller sees again later.
@@ -58765,8 +58970,9 @@ class PlanService:
                 if _is_timeline_attraction(it)
             ]
             items = _fix_long_lunch(original)
+            prior_names = list(state["used"])
             items = _fix_lego(items)
-            items, deduped = _dedupe(items)
+            items, deduped = _dedupe(items, prior_names)
             state["used"] += [
                 _fold_place_label(getattr(it, "name", "") or "")
                 for later in days[index + 1:]
@@ -58781,19 +58987,35 @@ class PlanService:
             items = _fix_teleports(items)
             items = _strip_offmode(items)
             items = _fix_family_pace(items)
-            # Generated days can already end two hours before dinner.
-            # Close those holes even when no earlier repair ran.
-            items = _close_gaps(items)
-            items = _fix_teleports(items)
-            items = _fix_lot_gaps(items)
+            earlier = [
+                _fold_place_label(getattr(it, "name", "") or "")
+                for other in rebuilt
+                for it in (getattr(other, "items", None) or [])
+                if _is_timeline_attraction(it)
+            ]
+
+            def _score(rows: List[Any]) -> int:
+                return _problems(rows, day, earlier)
+
+            def _try(current: List[Any], fn) -> List[Any]:
+                snap = list(state["used"])
+                proposed = fn(current)
+                if proposed is current or _score(proposed) > _score(current):
+                    state["used"] = snap
+                    return current
+                return proposed
+
+            # Hours first, while the closed visit is still the thing being
+            # judged. A later fill must not be allowed to make that drop
+            # look worse and bring the closed visit back.
+            items = _try(items, _fix_teleports)
+            items = _try(items, _fix_lot_gaps)
+            items = _try(items, lambda rows: _fix_closed(rows, _score))
+            items = _try(items, _close_gaps)
+            items = _try(items, _fix_lot_gaps)
+            items = _try(items, _fix_teleports)
             if items != original:
-                earlier = [
-                    _fold_place_label(getattr(it, "name", "") or "")
-                    for other in rebuilt
-                    for it in (getattr(other, "items", None) or [])
-                    if _is_timeline_attraction(it)
-                ]
-                if _problems(items, day, earlier) > _problems(original, day, earlier):
+                if _score(items) > _score(original):
                     print(
                         f"[FIX #392] Day {getattr(day, 'day', index + 1)}: "
                         "repair would add defects, keeping the generated day"
