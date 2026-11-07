@@ -58157,6 +58157,10 @@ class PlanService:
                 {"name": "Muzeum Armii Krajowej w Krakowie", "lat": 50.0756, "lng": 19.9318, "time_max": 90, "ticket_normal": 25},
                 {"name": "Muzeum Narodowe w Krakowie", "lat": 50.0604, "lng": 19.9235, "time_max": 90, "ticket_normal": 0},
                 {"name": "Synagoga Stara", "lat": 50.0518, "lng": 19.9490, "time_max": 60, "ticket_normal": 20},
+                # Old-town indoors, so a gap after a central museum can still
+                # be walked shut when the car's next lot is out of hop range.
+                {"name": "Pałac Krzysztofory", "lat": 50.0619, "lng": 19.9364, "time_max": 75, "ticket_normal": 25},
+                {"name": "Kościół Mariacki", "lat": 50.0617, "lng": 19.9394, "time_max": 50, "ticket_normal": 15},
             )
             candidates = []
             for poi in list(pool) + list(fallbacks):
@@ -58212,8 +58216,17 @@ class PlanService:
                 if rows_out is None:
                     continue
                 out_min = sum(_span(r) for r in rows_out)
-                visit = min(_stay_cap(name, row), deadline - out_min - start)
-                if visit < 30 or _dark_outdoor(name, start + visit):
+                room = deadline - out_min - start
+                visit = min(_stay_cap(name, row), room)
+                # The last short slot before a meal still counts; a 24-minute
+                # visit is better than leaving a wait the client reads as a hole.
+                minimum = 20 if room <= 45 else 30
+                folded_name = _fold_place_label(name)
+                # The mail gate treats a museum under an hour as a broken visit.
+                museum = "muzeum" in folded_name or "podziemia" in folded_name
+                if museum and visit < 60 and (_cap(name) >= 60):
+                    continue
+                if visit < minimum or _dark_outdoor(name, start + visit):
                     continue
                 window = _open_window(row)
                 if window == (0, 0) or (
@@ -58606,7 +58619,20 @@ class PlanService:
                     out.append(it)
                     continue
                 folded = _fold_place_label(getattr(it, "name", "") or "")
-                free = (
+                row = _pool_row(getattr(it, "name", "") or "") or {}
+                try:
+                    listed = float(
+                        row.get("ticket_normal")
+                        if row.get("ticket_normal") is not None
+                        else row.get("ticket_price")
+                        if row.get("ticket_price") is not None
+                        else row.get("Price")
+                        if row.get("Price") is not None
+                        else -1
+                    )
+                except (TypeError, ValueError):
+                    listed = -1
+                free = listed == 0 or (
                     "maczuga herkulesa" in folded
                     or ("plac" in folded and "bohater" in folded and "getta" in folded)
                 )
@@ -58702,7 +58728,8 @@ class PlanService:
                 start = _clk(it, "start_time")
                 if window == (0, 0) or (
                     window and (
-                        (start is not None and start >= window[1])
+                        (start is not None and start < window[0] - 10)
+                        or (start is not None and start >= window[1])
                         or (end is not None and end > window[1] + 30)
                     )
                 ):
@@ -58850,7 +58877,10 @@ class PlanService:
         def _audit_counts(rows: List[Any]) -> Dict[str, int]:
             from app.domain.validators.client_invariants import audit_plan
 
-            watched = ("dangling_hop", "missing_hop", "from_mismatch")
+            watched = (
+                "dangling_hop", "missing_hop", "from_mismatch",
+                "car_position_mismatch", "car_teleport",
+            )
             probe = dict(ctx)
             probe["audit_car_model"] = True
             counts = {code: 0 for code in watched}
@@ -58867,14 +58897,475 @@ class PlanService:
                     counts[code] += 1
             return counts
 
+        def _day_over(rows: List[Any]) -> bool:
+            last = None
+            for it in rows:
+                if _tv(it) in (ItemType.DAY_START.value, ItemType.DAY_END.value):
+                    continue
+                end = _clk(it, "end_time")
+                if end is not None:
+                    last = end if last is None else max(last, end)
+            return last is not None and last > day_end_limit
+
+        def _fix_early_open(items: List[Any]) -> List[Any]:
+            """A visit that starts before opening moves forward to opening.
+
+            The full length stays. It is not pinned to the closing edge.
+            """
+            out = list(items)
+            for _ in range(6):
+                moved = False
+                for i, it in enumerate(out):
+                    if not _is_timeline_attraction(it):
+                        continue
+                    row = _pool_row(getattr(it, "name", "") or "")
+                    if not row:
+                        continue
+                    window = _open_window(row)
+                    if not window or window == (0, 0):
+                        continue
+                    start = _clk(it, "start_time")
+                    end = _clk(it, "end_time")
+                    if start is None or end is None or start >= window[0]:
+                        continue
+                    span = end - start
+                    new_start = window[0]
+                    new_end = new_start + span
+                    if new_end > window[1]:
+                        continue
+                    delta = new_start - start
+                    before = list(out)
+                    later = [
+                        (k, _clk(out[k], "start_time"))
+                        for k in range(i + 1, len(out))
+                        if _content(out[k])
+                    ]
+                    k = i - 1
+                    while k >= 0 and _tv(out[k]) == ItemType.TRANSIT.value:
+                        out[k] = _move(out[k], delta)
+                        k -= 1
+                    if k >= 0:
+                        pred_end = _clk(out[k], "end_time") or 0
+                        hop_start = _clk(out[k + 1], "start_time") if k + 1 < i else new_start
+                        if (hop_start or 0) < pred_end:
+                            out = before
+                            continue
+                    out[i] = _window(it, new_start, new_end)
+                    out = _push(out, i + 1)
+                    # A packed morning has no slack. Pushing lunch to 14:00 is
+                    # worse than a visit that starts a little early.
+                    pushed = _day_over(out) or any(
+                        (_clk(out[k], "start_time") or 0) > (old or 0)
+                        for k, old in later
+                        if k < len(out)
+                    )
+                    if pushed:
+                        out = before
+                        continue
+                    print(
+                        f"[FIX #395] moved {getattr(it, 'name', '')} "
+                        f"to open at {minutes_to_time(window[0])}"
+                    )
+                    moved = True
+                    break
+                if not moved:
+                    break
+            return out
+
+        def _floor_dinner(items: List[Any]) -> List[Any]:
+            """Dinner does not start before 17:00."""
+            out = list(items)
+            for i, it in enumerate(out):
+                if _tv(it) != ItemType.DINNER_BREAK.value:
+                    continue
+                start = _clk(it, "start_time")
+                if start is None or start >= 17 * 60:
+                    continue
+                out[i] = _move(it, 17 * 60 - start)
+                out = _push(out, i + 1)
+                if _day_over(out):
+                    return items
+                print(f"[FIX #395] dinner {minutes_to_time(start)} → 17:00")
+                break
+            return out
+
+        def _fix_early_lunch(items: List[Any]) -> List[Any]:
+            """Lunch before noon moves to 12:00 when that does not open a wait.
+
+            The previous visit grows into the gap, up to its own cap. A move
+            that would leave more than 20 minutes of sitting stays put.
+            """
+            out = list(items)
+            for i, it in enumerate(out):
+                if _tv(it) != ItemType.LUNCH_BREAK.value:
+                    continue
+                start = _clk(it, "start_time")
+                if start is None or start >= 12 * 60:
+                    continue
+                target = 12 * 60
+                prev_i = _prev_content(out, i - 1)
+                prev_end = _clk(out[prev_i], "end_time") if prev_i is not None else None
+                hops = [
+                    k for k in range((prev_i or -1) + 1, i)
+                    if _tv(out[k]) == ItemType.TRANSIT.value
+                ] if prev_i is not None else []
+                travel = sum(_span(out[k]) for k in hops)
+                idle = target - (prev_end if prev_end is not None else target) - travel
+                if idle > 20:
+                    if prev_i is None or not _is_timeline_attraction(out[prev_i]):
+                        break
+                    prev = out[prev_i]
+                    prev_start = _clk(prev, "start_time")
+                    if prev_start is None or prev_end is None:
+                        break
+                    need = idle - 20
+                    room = max(0, _cap(getattr(prev, "name", "") or "") - (prev_end - prev_start))
+                    window = _open_window(_pool_row(getattr(prev, "name", "") or "") or {})
+                    if room < need or (window and prev_end + need > window[1]):
+                        break
+                    out[prev_i] = _window(prev, prev_start, prev_end + need)
+                    for k in hops:
+                        out[k] = _move(out[k], need)
+                out[i] = _move(it, target - start)
+                out = _push(out, i + 1)
+                if _day_over(out):
+                    return items
+                print(f"[FIX #395] lunch {minutes_to_time(start)} → 12:00")
+                break
+            return out
+
+        def _fix_car_jump(items: List[Any]) -> List[Any]:
+            """A car hop leaves from the lot where the car stands, not from the attraction."""
+            out = list(items)
+            for _ in range(4):
+                car_name = None
+                car_pt = None
+                changed = False
+                for i, it in enumerate(out):
+                    if _tv(it) != ItemType.TRANSIT.value:
+                        continue
+                    origin = _lot_of(str(getattr(it, "from_location", "") or ""))
+                    dest_label = str(getattr(it, "to_location", "") or "")
+                    dest_pt = parking_point(dest_label)
+                    if _is_car(it) and car_name and car_pt and not (
+                        origin and _place_names_match(origin[0], car_name)
+                    ):
+                        prev_i = _prev_content(out, i - 1)
+                        if prev_i is None or dest_pt is None:
+                            car_name = origin[0] if origin else car_name
+                            car_pt = origin[1] if origin else car_pt
+                            continue
+                        here = out[prev_i]
+                        cursor = _clk(here, "end_time")
+                        _car_here, people = _state_before(out, i)
+                        rows: List[Any] = []
+                        if cursor is not None and not _place_names_match(people or "", car_name):
+                            here_pt = _coords(here)
+                            back = _km(here_pt, car_pt, "walk") if here_pt else None
+                            if back is None or not (0.05 < back <= hop_cap):
+                                break
+                            minutes = walk_minutes(back, ctx)
+                            rows.append(_hop(
+                                cursor, minutes, back, _label(here), car_name,
+                                TransitMode.WALK,
+                            ))
+                            cursor += minutes
+                        drive = _km(car_pt, dest_pt, "car")
+                        if cursor is None or drive < 0.80:
+                            break
+                        rows.append(_hop(
+                            cursor, car_minutes(drive), drive,
+                            car_name, dest_label, TransitMode.CAR,
+                        ))
+                        proposed = _push(list(out[:i]) + rows + list(out[i + 1:]), i + len(rows))
+                        if _day_over(proposed):
+                            break
+                        before_codes = _audit_counts(out)
+                        after_codes = _audit_counts(proposed)
+                        if any(after_codes[code] > before_codes[code] for code in before_codes):
+                            break
+                        out = proposed
+                        print(f"[FIX #395] drive {car_name} → {dest_label}")
+                        changed = True
+                        break
+                    if car_name is None and origin:
+                        car_name, car_pt = origin
+                    if _is_car(it) and dest_pt is not None:
+                        lot = _lot_of(dest_label)
+                        car_name = lot[0] if lot else dest_label
+                        car_pt = dest_pt
+                if not changed:
+                    break
+            return out
+
+        def _meal_point(it: Any) -> Optional[Tuple[str, Tuple[float, float]]]:
+            for suggestion in (getattr(it, "suggestions", None) or [])[:1]:
+                if isinstance(suggestion, dict):
+                    name = suggestion.get("name") or ""
+                    lat, lng = suggestion.get("lat"), suggestion.get("lng")
+                else:
+                    name = getattr(suggestion, "name", "") or ""
+                    lat, lng = getattr(suggestion, "lat", None), getattr(suggestion, "lng", None)
+                try:
+                    if name and lat is not None and abs(float(lat)) > 0.01:
+                        return str(name), (float(lat), float(lng))
+                except (TypeError, ValueError):
+                    return None
+            return None
+
+        def _fix_bare_meals(items: List[Any]) -> List[Any]:
+            """A meal with no restaurant gets the nearest real one and the route to it."""
+            places = []
+            for raw in ctx.get("restaurants_available") or []:
+                if not isinstance(raw, dict):
+                    continue
+                name = str(raw.get("name") or "")
+                try:
+                    pt = (float(raw.get("lat")), float(raw.get("lng")))
+                except (TypeError, ValueError):
+                    continue
+                if not name or abs(pt[0]) < 0.01:
+                    continue
+                places.append((name, pt, raw))
+            if not places:
+                return items
+            out = list(items)
+            used = {
+                _fold_place_label(found[0])
+                for it in out
+                if (found := _meal_point(it))
+            }
+            for _pass in range(4):
+                placed_any = False
+                for i, it in enumerate(list(out)):
+                    if _tv(it) not in (
+                        ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value,
+                    ):
+                        continue
+                    if _meal_point(it):
+                        continue
+                    prev_i = _prev_content(out, i - 1)
+                    if prev_i is None:
+                        continue
+                    between = out[prev_i + 1:i]
+                    if any(
+                        _tv(hop) == ItemType.TRANSIT.value
+                        and not is_parking_label(str(getattr(hop, "to_location", "") or ""))
+                        and _fold_place_label(str(getattr(hop, "to_location", "") or ""))
+                        not in ("", "krakow")
+                        for hop in between
+                    ):
+                        continue
+                    here = out[prev_i]
+                    here_pt = _coords(here)
+                    ready = _clk(here, "end_time")
+                    if here_pt is None or ready is None:
+                        continue
+                    ranked = sorted(places, key=lambda row: _km(here_pt, row[1], "walk"))
+                    placed = False
+                    for name, pt, raw in ranked:
+                        if _fold_place_label(name) in used:
+                            continue
+                        meal_kind = (
+                            "lunch" if _tv(it) == ItemType.LUNCH_BREAK.value else "dinner"
+                        )
+                        suggestion = _restaurant_dict_to_suggestion(raw, meal_kind)
+                        walk = _km(here_pt, pt, "walk")
+                        rows: List[Any] = []
+                        cursor = ready
+                        if walk <= hop_cap:
+                            minutes = walk_minutes(max(walk, 0.06), ctx)
+                            rows.append(_hop(
+                                cursor, minutes, max(walk, 0.06), _label(here), name,
+                                TransitMode.WALK,
+                            ))
+                            cursor += minutes
+                        else:
+                            _car_here, people = _state_before(out, i)
+                            car = _lot_of(_car_here or "")
+                            if car is None:
+                                continue
+                            if not _place_names_match(people or "", car[0]):
+                                back = _km(here_pt, car[1], "walk")
+                                if not (0.05 < back <= hop_cap):
+                                    continue
+                                back_min = walk_minutes(back, ctx)
+                                rows.append(_hop(
+                                    cursor, back_min, back, _label(here), car[0],
+                                    TransitMode.WALK,
+                                ))
+                                cursor += back_min
+                            lot, lot_km = nearest_parking(pt)
+                            lot_pt = (float(lot["lat"]), float(lot["lng"]))
+                            drive = _km(car[1], lot_pt, "car")
+                            if drive < 0.80:
+                                # Same lot the car is already in. Walk across it
+                                # instead of opening a new parking.
+                                onward = _km(car[1], pt, "walk")
+                                if onward > hop_cap:
+                                    continue
+                                onward_min = walk_minutes(max(onward, 0.06), ctx)
+                                rows.append(_hop(
+                                    cursor, onward_min, max(onward, 0.06),
+                                    car[0], name, TransitMode.WALK,
+                                ))
+                                cursor += onward_min
+                            else:
+                                if kids:
+                                    driven = []
+                                    for hop in out:
+                                        if not _is_car(hop):
+                                            continue
+                                        folded_lot = _fold_place_label(
+                                            str(getattr(hop, "to_location", "") or "")
+                                        )
+                                        if folded_lot and folded_lot not in driven:
+                                            driven.append(folded_lot)
+                                    dest_fold = _fold_place_label(str(lot["name"]))
+                                    # A fifth lot breaks the family cap. A lot
+                                    # already used earlier is a return the gate rejects.
+                                    if dest_fold in driven or len(driven) >= 4:
+                                        continue
+                                drive_min = car_minutes(drive)
+                                rows.append(_hop(
+                                    cursor, drive_min, drive, car[0], str(lot["name"]),
+                                    TransitMode.CAR,
+                                ))
+                                cursor += drive_min
+                                onward = _km(lot_pt, pt, "walk")
+                                if onward > hop_cap:
+                                    continue
+                                onward_min = walk_minutes(max(onward, 0.06), ctx)
+                                rows.append(_hop(
+                                    cursor, onward_min, max(onward, 0.06),
+                                    str(lot["name"]), name, TransitMode.WALK,
+                                ))
+                                cursor += onward_min
+                        meal = it.model_copy(update={
+                            "label": name,
+                            "location_context": name,
+                            "suggestions": [suggestion],
+                        })
+                        meal_start = _clk(meal, "start_time") or cursor
+                        if cursor > meal_start:
+                            meal = _move(meal, cursor - meal_start)
+                        # The hop after a glued meal still leaves from the
+                        # attraction. Walk back there so that hop stays true.
+                        back_rows: List[Any] = []
+                        after = out[i + 1] if i + 1 < len(out) else None
+                        if (
+                            after is not None
+                            and _tv(after) == ItemType.TRANSIT.value
+                            and _place_names_match(
+                                str(getattr(after, "from_location", "") or ""),
+                                _label(here),
+                            )
+                        ):
+                            back = _km(pt, here_pt, "walk")
+                            if not (0.05 < back <= hop_cap):
+                                continue
+                            back_at = _clk(meal, "end_time") or cursor
+                            back_rows.append(_hop(
+                                back_at, walk_minutes(back, ctx), back,
+                                name, _label(here), TransitMode.WALK,
+                            ))
+                        before = list(out)
+                        before_codes = _audit_counts(before)
+                        out = (
+                            list(out[:prev_i + 1]) + rows + [meal]
+                            + back_rows + list(out[i + 1:])
+                        )
+                        out = _push(out, prev_i + 1 + len(rows))
+                        after_codes = _audit_counts(out)
+                        if _day_over(out) or any(
+                            after_codes[code] > before_codes[code] for code in before_codes
+                        ):
+                            out = before
+                            continue
+                        used.add(_fold_place_label(name))
+                        print(f"[FIX #395] meal at {name}")
+                        placed = True
+                        placed_any = True
+                        break
+                    if placed:
+                        break
+                if not placed_any:
+                    break
+            return out
+
+        def _fix_thin_tail(items: List[Any]) -> List[Any]:
+            """A day does not end on a long drive for a stop shorter than the drive."""
+            attrs = [i for i, it in enumerate(items) if _is_timeline_attraction(it)]
+            if not attrs:
+                return items
+            last = attrs[-1]
+            visit = _span(items[last])
+            if visit <= 0 or visit > 30:
+                return items
+            prev = attrs[-2] if len(attrs) > 1 else None
+            begin = prev + 1 if prev is not None else 0
+            drive = 0
+            saw_car = False
+            for hop in items[begin:last]:
+                if _is_car(hop):
+                    saw_car = True
+                    drive += _span(hop)
+            if not saw_car or drive < 40 or drive <= visit:
+                return items
+            nxt = _next_content(items, last + 1)
+            if nxt is None:
+                return items
+            print(
+                f"[FIX #395] dropped short tail {getattr(items[last], 'name', '')} "
+                f"after a {drive} min drive"
+            )
+            return _close_gaps(_excise_stop(items, last))
+
         def _excise_stop(items: List[Any], idx: int) -> List[Any]:
-            """Remove one visit and its hops, and close the clock. No parking walk."""
+            """Remove one visit and its private hops. Leave the rest of the clock.
+
+            Pulling the next meal up to the previous stop is what glued a
+            dinner to an attraction and dragged lunch back before noon.
+            """
             prev_i = _prev_content(items, idx - 1)
             next_i = _next_content(items, idx + 1)
             if prev_i is None or next_i is None:
                 return _drop_stop(items, idx, refill=False)
-            base = list(items[:prev_i + 1]) + list(items[next_i:])
-            return _remove_segment(base, prev_i, prev_i + 1)
+            return list(items[:prev_i + 1]) + list(items[next_i:])
+
+        def _snug_meals(rows: List[Any]) -> List[Any]:
+            """Pull a meal forward when only a short wait is left after a drop.
+
+            A 25-minute sit is what makes a legal hours drop look worse than
+            keeping a closed attraction. More than 40 minutes stays a hole.
+            """
+            out = list(rows)
+            for i, it in enumerate(out):
+                kind = _tv(it)
+                if kind not in (ItemType.LUNCH_BREAK.value, ItemType.DINNER_BREAK.value):
+                    continue
+                prev_i = _prev_content(out, i - 1)
+                if prev_i is None:
+                    continue
+                prev_end = _clk(out[prev_i], "end_time")
+                start = _clk(it, "start_time")
+                if prev_end is None or start is None:
+                    continue
+                travel = sum(
+                    _span(out[k])
+                    for k in range(prev_i + 1, i)
+                    if _tv(out[k]) == ItemType.TRANSIT.value
+                    and (_clk(out[k], "start_time") or 0) >= prev_end
+                )
+                gap = start - prev_end - travel
+                if gap <= 20 or gap > 40:
+                    continue
+                floor = 17 * 60 if kind == ItemType.DINNER_BREAK.value else 12 * 60
+                new_start = max(floor, prev_end + travel + 10)
+                if new_start >= start:
+                    continue
+                out[i] = _move(it, new_start - start)
+            return out
 
         def _fix_closed(items: List[Any], score) -> List[Any]:
             """A visit keeps its full length inside the day's open window, or it goes.
@@ -58937,7 +59428,7 @@ class PlanService:
                 snap = list(state["used"])
                 candidate = _excise_stop(out, bad)
                 if candidate is not out:
-                    candidate = _close_gaps(candidate)
+                    candidate = _snug_meals(_close_gaps(candidate))
                 before_codes = _audit_counts(out)
                 after_codes = _audit_counts(candidate)
                 introduced = any(
@@ -59010,9 +59501,16 @@ class PlanService:
             # look worse and bring the closed visit back.
             items = _try(items, _fix_teleports)
             items = _try(items, _fix_lot_gaps)
+            items = _try(items, _fix_car_jump)
+            items = _try(items, _fix_early_open)
             items = _try(items, lambda rows: _fix_closed(rows, _score))
+            items = _try(items, _fix_thin_tail)
             items = _try(items, _close_gaps)
             items = _try(items, _fix_lot_gaps)
+            items = _try(items, _fix_car_jump)
+            items = _try(items, _fix_bare_meals)
+            items = _try(items, _fix_early_lunch)
+            items = _try(items, _floor_dinner)
             items = _try(items, _fix_teleports)
             if items != original:
                 if _score(items) > _score(original):

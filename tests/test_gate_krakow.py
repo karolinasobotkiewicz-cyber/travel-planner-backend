@@ -3297,3 +3297,132 @@ def test_fix391_thin_valley_trip_gets_a_second_stop():
         assert next(
             it for it in items if _fix391_kind(it) == ItemType.DINNER_BREAK.value
         ).start_time >= "17:00"
+
+
+def test_fix395_opening_lunch_car_meal_and_thin_tail():
+    from app.domain.models.plan import LunchBreakItem, TransitMode
+
+    hours = {day: "10:00-22:00" for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}
+    early = [
+        _fix391_hop("08:55", "09:05", TransitMode.WALK, "Parking ul. Szpitalna", "Lustrzany Labirynt", 0.4),
+        _fix383_attr("Lustrzany Labirynt", "09:05", "10:20", 50.064, 19.936),
+        _fix391_dinner("17:00", "17:45"),
+    ]
+    days, _ctx = _fix391_seal([early], poi_pool=[{
+        "name": "Lustrzany Labirynt",
+        "lat": 50.064,
+        "lng": 19.936,
+        "opening_hours": hours,
+        "ticket_normal": 37,
+    }], date="2026-02-22")
+    visit = next(it for it in days[0].items if getattr(it, "name", "") == "Lustrzany Labirynt")
+    assert visit.start_time >= "10:00"
+    assert visit.end_time <= "12:00"
+    assert _span_minutes(visit) == 75
+
+    lunch_rows = [
+        _fix391_hop("09:00", "09:10", TransitMode.WALK, "Parking ul. Szpitalna", "Pałac Krzysztofory", 0.4),
+        _fix383_attr("Pałac Krzysztofory", "09:45", "11:45", 50.063, 19.937),
+        LunchBreakItem(
+            type=ItemType.LUNCH_BREAK,
+            start_time="11:50",
+            end_time="12:30",
+            duration_min=40,
+            label="Lunch",
+        ),
+        _fix383_attr("MNK Sukiennice", "12:45", "13:55", 50.061, 19.937),
+        _fix391_dinner(),
+    ]
+    days, _ctx = _fix391_seal([lunch_rows], date="2026-02-21")
+    lunch = next(it for it in days[0].items if _fix391_kind(it) == ItemType.LUNCH_BREAK.value)
+    assert lunch.start_time >= "12:00"
+    assert "MNK Sukiennice" in _fix391_names(days[0].items)
+
+    jump = [
+        _fix391_hop("12:40", "12:50", TransitMode.CAR, "Kraków", "Parking plac Wolnica", 2.0),
+        _fix391_hop("12:50", "12:55", TransitMode.WALK, "Parking plac Wolnica", "Muzeum Etnograficzne im. Seweryna Udzieli", 0.25),
+        _fix383_attr("Muzeum Etnograficzne im. Seweryna Udzieli", "12:55", "14:35", 50.0505, 19.9437),
+        _fix391_hop(
+            "14:35", "15:20", TransitMode.CAR,
+            "Muzeum Etnograficzne im. Seweryna Udzieli",
+            "Parking pod Zamkiem w Pieskowej Skale", 32.0,
+        ),
+        _fix391_hop("15:20", "15:25", TransitMode.WALK, "Parking pod Zamkiem w Pieskowej Skale", "Zamek Pieskowa Skała", 0.2),
+        _fix383_attr("Zamek Pieskowa Skała", "15:25", "16:40", 50.2452, 19.7788),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal(
+        [jump], group_type="family_kids", preferences=["kids_attractions"], date="2026-02-22",
+    )
+    items = days[0].items
+    assert any(
+        _fix391_mode(it) == "walk"
+        and "Etnograficzne" in (it.from_location or "")
+        and "Wolnica" in (it.to_location or "")
+        for it in items
+    )
+    assert any(
+        _fix391_mode(it) == "car"
+        and "Wolnica" in (it.from_location or "")
+        and "Pieskowej" in (it.to_location or "")
+        for it in items
+    )
+    assert "Zamek Pieskowa Skała" in _fix391_names(items)
+    assert not _fix391_hard_codes(days, ctx)
+
+    restaurant = {
+        "id": "r-sukiennice",
+        "name": "Restauracja Sukiennice",
+        "lat": 50.0614,
+        "lng": 19.9372,
+        "address": "Rynek Główny",
+        "city": "Kraków",
+        "meal_type": "dinner",
+        "cuisine_type": "polska",
+    }
+    bare = [
+        _fix391_hop("15:00", "15:10", TransitMode.WALK, "Parking ul. Szpitalna", "Pałac Krzysztofory", 0.4),
+        _fix383_attr("Pałac Krzysztofory", "15:10", "16:40", 50.0636, 19.9365),
+        _fix391_dinner("17:00", "17:45"),
+    ]
+    days, _ctx = _fix391_seal(
+        [bare], restaurants_available=[restaurant], date="2026-02-21",
+    )
+    dinner = next(it for it in days[0].items if _fix391_kind(it) == ItemType.DINNER_BREAK.value)
+    assert dinner.suggestions and dinner.suggestions[0].name == "Restauracja Sukiennice"
+    assert any(
+        _fix391_mode(it) == "walk" and "Sukiennice" in (it.to_location or "")
+        for it in days[0].items
+    )
+
+    billed = [
+        _fix391_hop("09:10", "09:18", TransitMode.WALK, "Parking Czyżyny (al. Pokoju)", "Park Lotników Polskich", 0.5),
+        _fix383_attr("Park Lotników Polskich", "09:18", "10:20", 50.0712, 19.9932).model_copy(
+            update={"cost_estimate": 21}
+        ),
+        _fix391_dinner(),
+    ]
+    days, _ctx = _fix391_seal([billed], poi_pool=[{
+        "name": "Park Lotników Polskich",
+        "lat": 50.0712,
+        "lng": 19.9932,
+        "ticket_normal": 0,
+        "opening_hours": {day: "00:00-23:59" for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")},
+    }], date="2026-02-21")
+    park = next(it for it in days[0].items if getattr(it, "name", "") == "Park Lotników Polskich")
+    assert park.cost_estimate == 0
+
+    thin = [
+        _fix391_hop("09:00", "09:15", TransitMode.CAR, "Kraków", "Parking plac Na Groblach (pod Wawelem)", 2.0),
+        _fix391_hop("09:15", "09:20", TransitMode.WALK, "Parking plac Na Groblach (pod Wawelem)", "Zamek Królewski na Wawelu", 0.3),
+        _fix383_attr("Zamek Królewski na Wawelu", "09:20", "12:20", 50.054, 19.935),
+        _fix391_hop("12:20", "13:01", TransitMode.CAR, "Parking plac Na Groblach (pod Wawelem)", "Parking miejski Rynek Górny", 18.0),
+        _fix391_hop("13:01", "13:06", TransitMode.WALK, "Parking miejski Rynek Górny", "Tężnia solankowa w Wieliczce", 0.3),
+        _fix383_attr("Tężnia solankowa w Wieliczce", "13:06", "13:31", 49.983, 20.055),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal([thin], date="2026-02-21")
+    assert "Tężnia solankowa w Wieliczce" not in _fix391_names(days[0].items)
+    assert "Zamek Królewski na Wawelu" in _fix391_names(days[0].items)
+    assert not any("public" in _fix391_mode(it) for it in days[0].items)
+    assert not _fix391_hard_codes(days, ctx)
