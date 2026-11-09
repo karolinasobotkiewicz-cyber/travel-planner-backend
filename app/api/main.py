@@ -1,6 +1,8 @@
 """
 FastAPI application main entry point.
 """
+print("[boot] importing API", flush=True)
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

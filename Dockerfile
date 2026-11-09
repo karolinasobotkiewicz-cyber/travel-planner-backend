@@ -58,10 +58,11 @@ COPY app/ ./app/
 COPY data/ ./data/
 COPY static/ ./static/
 
-ENV PORT=8000
+# Render injects PORT (default 10000) and scans 0.0.0.0:$PORT.
+# An image-level PORT=8000 makes the process listen where the scan is not looking.
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\", \"8000\")}/health')"
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT', '10000'))"
 
-CMD ["sh", "-c", "uvicorn app.api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "echo \"[boot] uvicorn 0.0.0.0:${PORT:-10000}\" && exec uvicorn app.api.main:app --host 0.0.0.0 --port ${PORT:-10000}"]
