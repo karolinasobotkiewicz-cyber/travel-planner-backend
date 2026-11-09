@@ -3134,7 +3134,9 @@ def test_fix392_removed_stop_never_cuts_the_day():
     days, ctx = _fix391_seal([earlier, day1], **{**family, "date": "2026-02-19"})
     names = _fix391_names(days[1].items)
     assert "Kopiec Kościuszki" not in names
-    assert "Muzeum Etnograficzne im. Seweryna Udzieli" in names
+    # A family with a child does not keep the ethnographic museum.
+    # The afternoon is still filled, and the repeated kopiec is gone.
+    assert "Muzeum Etnograficzne im. Seweryna Udzieli" not in names
     assert len(names) >= 2, names
     _fix392_tail_ok(days[1], ctx)
     filled = [it for it in days[1].items if getattr(it, "poi_id", "") == "fix392"]
@@ -3155,8 +3157,9 @@ def test_fix392_removed_stop_never_cuts_the_day():
         _fix391_dinner(),
     ]
     days, ctx = _fix391_seal([hollow], **family)
-    assert "Muzeum Etnograficzne im. Seweryna Udzieli" in _fix391_names(days[0].items)
-    assert len(_fix391_names(days[0].items)) >= 2, _fix391_names(days[0].items)
+    hollow_names = _fix391_names(days[0].items)
+    assert "Muzeum Etnograficzne im. Seweryna Udzieli" not in hollow_names
+    assert len(hollow_names) >= 2, hollow_names
     _fix392_tail_ok(days[0], ctx)
 
 
@@ -3210,7 +3213,7 @@ def test_fix394_lot_drive_and_opening_hours():
         _fix391_dinner(),
     ]
     days, ctx = _fix391_seal(
-        [named], group_type="family_kids", preferences=["kids_attractions"], date="2026-02-21",
+        [named], group_type="couples", preferences=["museum_heritage"], date="2026-02-21",
     )
     items = days[0].items
     assert any(
@@ -3321,7 +3324,7 @@ def test_fix395_opening_lunch_car_meal_and_thin_tail():
     assert _span_minutes(visit) == 75
 
     lunch_rows = [
-        _fix391_hop("09:00", "09:10", TransitMode.WALK, "Parking ul. Szpitalna", "Pałac Krzysztofory", 0.4),
+        _fix391_hop("09:35", "09:45", TransitMode.WALK, "Parking ul. Szpitalna", "Pałac Krzysztofory", 0.4),
         _fix383_attr("Pałac Krzysztofory", "09:45", "11:45", 50.063, 19.937),
         LunchBreakItem(
             type=ItemType.LUNCH_BREAK,
@@ -3352,7 +3355,7 @@ def test_fix395_opening_lunch_car_meal_and_thin_tail():
         _fix391_dinner(),
     ]
     days, ctx = _fix391_seal(
-        [jump], group_type="family_kids", preferences=["kids_attractions"], date="2026-02-22",
+        [jump], group_type="couples", preferences=["museum_heritage"], date="2026-02-22",
     )
     items = days[0].items
     assert any(
@@ -3425,4 +3428,220 @@ def test_fix395_opening_lunch_car_meal_and_thin_tail():
     assert "Tężnia solankowa w Wieliczce" not in _fix391_names(days[0].items)
     assert "Zamek Królewski na Wawelu" in _fix391_names(days[0].items)
     assert not any("public" in _fix391_mode(it) for it in days[0].items)
+    assert not _fix391_hard_codes(days, ctx)
+
+
+def _fix396_lunch(start, end, name, lat, lng):
+    from app.domain.models.plan import LunchBreakItem, RestaurantSuggestion
+
+    return LunchBreakItem(
+        type=ItemType.LUNCH_BREAK,
+        start_time=start,
+        end_time=end,
+        duration_min=time_to_minutes(end) - time_to_minutes(start),
+        label=name,
+        suggestions=[RestaurantSuggestion(
+            id="r-396",
+            name=name,
+            lat=lat,
+            lng=lng,
+            address="Kraków",
+            meal_type="lunch",
+        )],
+    )
+
+
+def _fix396_gap_before(items, kind):
+    target = next(i for i, it in enumerate(items) if _fix391_kind(it) == kind)
+    last = None
+    for it in items[:target]:
+        end = getattr(it, "end_time", None)
+        if end:
+            last = time_to_minutes(end)
+    return time_to_minutes(items[target].start_time) - last
+
+
+def test_fix396_family_meals_cost_loop_nature_and_wait():
+    from app.domain.models.plan import TicketInfo, TransitMode
+
+    hours = {day: "08:00-18:00" for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}
+    family_pool = [
+        {"name": "Park Zabłocie", "lat": 50.0482, "lng": 19.9612, "time_max": 75, "ticket_normal": 0, "opening_hours": hours},
+        {"name": "Park Wolnica", "lat": 50.0507, "lng": 19.9440, "time_max": 75, "ticket_normal": 0, "opening_hours": hours},
+        {"name": "Planty nad Wisłą", "lat": 50.0518, "lng": 19.9458, "time_max": 75, "ticket_normal": 0, "opening_hours": hours},
+    ]
+    family = [
+        _fix391_hop("09:00", "09:12", TransitMode.CAR, "Kraków", "Parking Zabłocie (ul. Przemysłowa)", 3.0),
+        _fix391_hop("09:12", "09:18", TransitMode.WALK, "Parking Zabłocie (ul. Przemysłowa)", "MOCAK", 0.3),
+        _fix383_attr("MOCAK", "09:18", "10:18", 50.0480, 19.9610),
+        _fix391_hop("10:18", "10:28", TransitMode.WALK, "MOCAK", "Muzeum Etnograficzne im. Seweryna Udzieli", 0.4),
+        _fix383_attr("Muzeum Etnograficzne im. Seweryna Udzieli", "10:28", "11:20", 50.0505, 19.9437),
+        _fix391_hop("11:20", "11:28", TransitMode.WALK, "Muzeum Etnograficzne im. Seweryna Udzieli", "Kazimierz", 0.3),
+        _fix383_attr("Kazimierz", "11:28", "13:28", 50.0516, 19.9456),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal(
+        [family],
+        group_type="family_kids",
+        preferences=["kids_attractions"],
+        poi_pool=family_pool,
+        date="2026-02-21",
+    )
+    names = _fix391_names(days[0].items)
+    assert not any("MOCAK" in name or "Etnograficzne" in name or name == "Kazimierz" for name in names), names
+    assert any("Park" in name or "Planty" in name for name in names), names
+    assert not _fix391_hard_codes(days, ctx)
+
+    restaurant = {
+        "id": "r-szpitalna",
+        "name": "Restauracja Szpitalna",
+        "lat": 50.0640,
+        "lng": 19.9420,
+        "address": "ul. Szpitalna",
+        "city": "Kraków",
+        "meal_type": "dinner",
+    }
+    maczuga = [
+        _fix391_hop("14:00", "14:50", TransitMode.CAR, "Kraków", "Parking pod Zamkiem w Pieskowej Skale", 32.0),
+        _fix391_hop("14:50", "14:56", TransitMode.WALK, "Parking pod Zamkiem w Pieskowej Skale", "Maczuga Herkulesa", 0.25),
+        _fix383_attr("Maczuga Herkulesa", "14:56", "15:40", 50.2429068, 19.7829619),
+        _fix391_dinner(),
+    ]
+    days, _ctx = _fix391_seal(
+        [maczuga],
+        restaurants_available=[restaurant],
+        group_type="family_kids",
+        preferences=["kids_attractions", "nature_landscape"],
+        date="2026-02-22",
+    )
+    dinner = next(it for it in days[0].items if _fix391_kind(it) == ItemType.DINNER_BREAK.value)
+    assert dinner.suggestions and dinner.suggestions[0].name == "Restauracja Szpitalna"
+    assert any(
+        _fix391_mode(it) == "car" and "Pieskowej" in (it.from_location or "")
+        for it in days[0].items
+    )
+    assert any(
+        _fix391_mode(it) == "walk" and "Szpitalna" in (it.to_location or "")
+        for it in days[0].items
+    )
+
+    from app.domain.models.plan import LunchBreakItem
+
+    forest = [
+        _fix391_hop("11:00", "11:20", TransitMode.CAR, "Kraków", "Parking al. Kasy Oszczędności Miasta Krakowa", 8.0),
+        _fix391_hop("11:20", "11:38", TransitMode.WALK, "Parking al. Kasy Oszczędności Miasta Krakowa", "Las Wolski", 0.9),
+        _fix383_attr("Las Wolski", "11:38", "12:40", 50.06355, 19.8542673),
+        LunchBreakItem(
+            type=ItemType.LUNCH_BREAK,
+            start_time="13:00",
+            end_time="13:40",
+            duration_min=40,
+            label="Lunch / przerwa regeneracyjna",
+        ),
+        _fix391_dinner(),
+    ]
+    days, _ctx = _fix391_seal(
+        [forest],
+        restaurants_available=[restaurant],
+        group_type="family_kids",
+        preferences=["kids_attractions"],
+        date="2026-02-21",
+    )
+    lunch = next(it for it in days[0].items if _fix391_kind(it) == ItemType.LUNCH_BREAK.value)
+    assert lunch.suggestions and lunch.suggestions[0].name == "Restauracja Szpitalna"
+    assert any(_fix391_mode(it) == "walk" and "Wolski" in (it.from_location or "") for it in days[0].items)
+    assert any(_fix391_mode(it) == "car" for it in days[0].items)
+
+    billed = [
+        _fix383_attr("Pałac Krzysztofory", "10:00", "11:15", 50.0619, 19.9364).model_copy(update={
+            "cost_estimate": 126,
+            "ticket_info": TicketInfo(ticket_normal=34, ticket_reduced=20),
+        }),
+        _fix391_dinner(),
+    ]
+    days, _ctx = _fix391_seal(
+        [billed], group_type="solo", group_size=1, date="2026-02-20",
+    )
+    palace = next(it for it in days[0].items if getattr(it, "name", "") == "Pałac Krzysztofory")
+    assert palace.cost_estimate == 34
+    assert palace.ticket_info.ticket_normal == 34
+
+    hole = [
+        _fix391_hop("09:20", "09:30", TransitMode.WALK, "Parking ul. Szpitalna", "MNK Sukiennice", 0.4),
+        _fix383_attr("MNK Sukiennice", "09:30", "11:30", 50.0617, 19.9373),
+        _fix396_lunch("14:11", "14:51", "Restauracja Wierzynek", 50.0620, 19.9378),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal([hole], date="2026-02-21")
+    assert _fix396_gap_before(days[0].items, ItemType.DINNER_BREAK.value) < 45
+    assert len(_fix391_names(days[0].items)) >= 2
+    assert not _fix391_hard_codes(days, ctx)
+
+    loop = [
+        _fix391_hop("12:00", "12:10", TransitMode.CAR, "Kraków", "Parking plac Na Groblach (pod Wawelem)", 2.0),
+        _fix391_hop("12:10", "12:20", TransitMode.WALK, "Parking plac Na Groblach (pod Wawelem)", "Restauracja Szara", 0.7),
+        _fix396_lunch("12:20", "13:00", "Restauracja Szara", 50.0625, 19.9385),
+        _fix391_hop("13:00", "13:12", TransitMode.WALK, "Restauracja Szara", "Parking plac Na Groblach (pod Wawelem)", 0.8),
+        _fix391_hop("13:12", "13:20", TransitMode.CAR, "Parking plac Na Groblach (pod Wawelem)", "Parking ul. Szpitalna", 1.2),
+        _fix391_hop("13:20", "13:28", TransitMode.WALK, "Parking ul. Szpitalna", "MNK Sukiennice", 0.4),
+        _fix383_attr("MNK Sukiennice", "13:30", "15:00", 50.0617, 19.9373),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal([loop], date="2026-02-21")
+    between = []
+    seen_lunch = False
+    for it in days[0].items:
+        if _fix391_kind(it) == ItemType.LUNCH_BREAK.value:
+            seen_lunch = True
+            continue
+        if not seen_lunch:
+            continue
+        if getattr(it, "name", "") == "MNK Sukiennice":
+            break
+        between.append(it)
+    assert between and all(_fix391_mode(it) == "walk" for it in between), [
+        (_fix391_mode(it), getattr(it, "from_location", None), getattr(it, "to_location", None))
+        for it in between
+    ]
+    assert not _fix391_hard_codes(days, ctx)
+
+    arrived = [
+        _fix391_hop("16:20", "16:29", TransitMode.WALK, "Parking ul. Szpitalna", "Kazimierz", 0.4),
+        _fix383_attr("Kazimierz", "17:05", "18:20", 50.0516, 19.9456),
+        _fix391_dinner("19:00", "19:45"),
+    ]
+    days, _ctx = _fix391_seal([arrived], group_type="couples", date="2026-02-25")
+    kazimierz = next(it for it in days[0].items if getattr(it, "name", "") == "Kazimierz")
+    assert kazimierz.start_time == "16:29"
+
+    nature_pool = [
+        {"name": "Planty Krakowskie", "lat": 50.0615, "lng": 19.9110, "time_max": 75, "ticket_normal": 0, "opening_hours": hours},
+        {"name": "Park Decjusza", "lat": 50.0620, "lng": 19.9120, "time_max": 75, "ticket_normal": 0, "opening_hours": hours},
+        {"name": "Bulwary Wiślane", "lat": 50.0625, "lng": 19.9130, "time_max": 60, "ticket_normal": 0, "opening_hours": hours},
+        {"name": "Zakrzówek", "lat": 50.0630, "lng": 19.9140, "time_max": 60, "ticket_normal": 0, "opening_hours": hours},
+        {"name": "Kopiec Kraka", "lat": 50.0634, "lng": 19.9150, "time_max": 60, "ticket_normal": 0, "opening_hours": hours},
+    ]
+    mine = [
+        _fix391_hop("09:00", "09:15", TransitMode.CAR, "Kraków", "Parking al. 3 Maja (Błonia)", 3.0),
+        _fix391_hop("09:15", "09:20", TransitMode.WALK, "Parking al. 3 Maja (Błonia)", "Błonia", 0.3),
+        _fix383_attr("Błonia", "09:20", "10:20", 50.0610, 19.9100),
+        _fix391_hop("10:20", "11:10", TransitMode.CAR, "Parking al. 3 Maja (Błonia)", "Parking miejski Rynek Górny", 18.0),
+        _fix391_hop("11:10", "11:18", TransitMode.WALK, "Parking miejski Rynek Górny", "Kopalnia Soli Wieliczka", 0.3),
+        _fix383_attr("Kopalnia Soli Wieliczka", "11:18", "13:48", 49.9830, 20.0550),
+        _fix391_hop("13:48", "13:56", TransitMode.WALK, "Kopalnia Soli Wieliczka", "Parking miejski Rynek Górny", 0.3),
+        _fix391_hop("13:56", "14:40", TransitMode.CAR, "Parking miejski Rynek Górny", "Parking al. 3 Maja (Błonia)", 18.0),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal(
+        [mine],
+        preferences=["nature_landscape", "relaxation"],
+        poi_pool=nature_pool,
+        date="2026-02-22",
+        travel_style="relax",
+    )
+    assert "Kopalnia Soli Wieliczka" not in _fix391_names(days[0].items)
+    assert not any(
+        _is_wieliczka_stop_name(name) for name in _fix391_names(days[0].items)
+    )
+    assert _fix396_gap_before(days[0].items, ItemType.DINNER_BREAK.value) < 45
     assert not _fix391_hard_codes(days, ctx)
