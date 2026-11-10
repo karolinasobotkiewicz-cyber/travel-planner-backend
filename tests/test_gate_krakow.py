@@ -3645,3 +3645,202 @@ def test_fix396_family_meals_cost_loop_nature_and_wait():
     )
     assert _fix396_gap_before(days[0].items, ItemType.DINNER_BREAK.value) < 45
     assert not _fix391_hard_codes(days, ctx)
+
+
+def _fix398_meal(kind, start, end, name, lat, lng):
+    from app.domain.models.plan import DinnerBreakItem, LunchBreakItem, RestaurantSuggestion
+
+    suggestion = RestaurantSuggestion(
+        id="r-398",
+        name=name,
+        lat=lat,
+        lng=lng,
+        address="Kraków",
+        city="Kraków",
+        meal_type="lunch" if kind == "lunch" else "dinner",
+    )
+    cls = LunchBreakItem if kind == "lunch" else DinnerBreakItem
+    return cls(
+        type=ItemType.LUNCH_BREAK if kind == "lunch" else ItemType.DINNER_BREAK,
+        start_time=start,
+        end_time=end,
+        duration_min=time_to_minutes(end) - time_to_minutes(start),
+        label=name,
+        suggestions=[suggestion],
+    )
+
+
+def test_fix398_krakow_mail_shapes():
+    from app.domain.models.plan import LunchBreakItem, TransitMode
+
+    hours = {day: "08:00-18:00" for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}
+    matejko_hours = {day: "10:00-18:00" for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")}
+
+    # Wednesday opening is 10:00. A 09:22 start slides to opening with the morning.
+    early = [
+        _fix391_hop("09:12", "09:22", TransitMode.WALK, "Parking ul. Szpitalna", "Dom Jana Matejki", 0.4),
+        _fix383_attr("Dom Jana Matejki", "09:22", "10:07", 50.0645, 19.9390),
+        _fix391_hop("11:00", "11:12", TransitMode.WALK, "Dom Jana Matejki", "MNK Sukiennice", 0.4),
+        _fix383_attr("MNK Sukiennice", "11:12", "12:20", 50.0617, 19.9373),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal([early], poi_pool=[{
+        "name": "Dom Jana Matejki",
+        "lat": 50.0645,
+        "lng": 19.9390,
+        "opening_hours": matejko_hours,
+        "time_max": 45,
+    }], date="2026-02-25")
+    visit = next(it for it in days[0].items if getattr(it, "name", "") == "Dom Jana Matejki")
+    assert visit.start_time >= "10:00", visit.start_time
+    assert _span_minutes(visit) == 45
+    assert not _fix391_hard_codes(days, ctx)
+
+    # Las Wolski at 159 min and winter Skałki over two hours get the look-around cap.
+    forest = [
+        _fix391_hop("09:00", "09:10", TransitMode.WALK, "Parking al. Kasy Oszczędności Miasta Krakowa", "Las Wolski", 0.9),
+        _fix383_attr("Las Wolski", "09:10", "11:49", 50.06355, 19.85427),
+        _fix391_hop("11:49", "12:00", TransitMode.WALK, "Las Wolski", "Parking al. Kasy Oszczędności Miasta Krakowa", 0.9),
+    ]
+    days, ctx = _fix391_seal([forest], date="2026-02-21")
+    woods = next(it for it in days[0].items if getattr(it, "name", "") == "Las Wolski")
+    assert _span_minutes(woods) <= 75, _span_minutes(woods)
+    assert not _fix391_hard_codes(days, ctx)
+
+    rocks = [
+        _fix391_hop("10:00", "10:12", TransitMode.WALK, "Parking przy Rynku Podgórskim", "Skałki Twardowskiego", 0.6),
+        _fix383_attr("Skałki Twardowskiego", "10:12", "12:18", 50.0400, 19.9000),
+    ]
+    days, ctx = _fix391_seal([rocks], date="2026-02-22")
+    block = next(it for it in days[0].items if "Twardowskiego" in getattr(it, "name", ""))
+    assert _span_minutes(block) <= 75, _span_minutes(block)
+    assert not _fix391_hard_codes(days, ctx)
+
+    # Royal Curry is on the card at 17:00 with no walk from the Galeria lot.
+    curry = [
+        _fix391_hop("16:40", "16:52", TransitMode.CAR, "Kraków", "Parking Galeria Krakowska (ul. Pawia 5)", 2.0),
+        _fix398_meal("dinner", "17:00", "17:45", "Royal Curry", 50.0670, 19.9455),
+    ]
+    days, ctx = _fix391_seal([curry], date="2026-02-24")
+    assert any(
+        _fix391_mode(it) == "walk" and "Royal Curry" in (it.to_location or "")
+        for it in days[0].items
+    )
+    dinner = next(it for it in days[0].items if _fix391_kind(it) == ItemType.DINNER_BREAK.value)
+    assert dinner.suggestions and dinner.suggestions[0].name == "Royal Curry"
+    assert not _fix391_hard_codes(days, ctx)
+
+    # Lunch at the mound is anonymous, and the next hop still leaves from the mound.
+    restaurant = {
+        "id": "r-podgorze",
+        "name": "Restauracja Podgórska",
+        "lat": 50.0484,
+        "lng": 19.9600,
+        "address": "Zabłocie",
+        "city": "Kraków",
+        "meal_type": "lunch",
+    }
+    mound = [
+        _fix391_hop("12:00", "12:10", TransitMode.CAR, "Kraków", "Parking pl. Paula McCartneya (pod Kopcem)", 4.0),
+        _fix391_hop("12:10", "12:12", TransitMode.WALK, "Parking pl. Paula McCartneya (pod Kopcem)", "Kopiec Kościuszki", 0.09),
+        _fix383_attr("Kopiec Kościuszki", "12:12", "13:45", 50.0548, 19.8933),
+        LunchBreakItem(
+            type=ItemType.LUNCH_BREAK,
+            start_time="13:45",
+            end_time="14:25",
+            duration_min=40,
+            label="Lunch / przerwa regeneracyjna",
+        ),
+        _fix391_hop("14:25", "14:27", TransitMode.WALK, "Kopiec Kościuszki", "Parking pl. Paula McCartneya (pod Kopcem)", 0.09),
+        _fix391_hop("14:27", "14:46", TransitMode.CAR, "Parking pl. Paula McCartneya (pod Kopcem)", "Parking przy Rynku Podgórskim", 4.0),
+        _fix391_hop("14:46", "14:50", TransitMode.WALK, "Parking przy Rynku Podgórskim", "Park Bednarskiego", 0.3),
+        _fix383_attr("Park Bednarskiego", "14:50", "15:40", 50.0420, 19.9600),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal(
+        [mound], restaurants_available=[restaurant], date="2026-02-24",
+    )
+    lunch = next(it for it in days[0].items if _fix391_kind(it) == ItemType.LUNCH_BREAK.value)
+    assert lunch.suggestions and lunch.suggestions[0].name == "Restauracja Podgórska"
+    assert any(
+        _fix391_mode(it) == "walk" and "Podgórska" in (it.to_location or "")
+        for it in days[0].items
+    )
+    assert any(
+        _fix391_mode(it) == "car" and "McCartneya" in (it.from_location or "")
+        for it in days[0].items
+    )
+    assert not _fix391_hard_codes(days, ctx), [
+        (getattr(it, "start_time", None), _fix391_mode(it), getattr(it, "from_location", None), getattr(it, "to_location", None), getattr(it, "name", None))
+        for it in days[0].items
+    ]
+
+    # A five-year-old's kids day does not keep the National Museum.
+    kid_pool = [{
+        "name": "Park Jordana",
+        "lat": 50.0612,
+        "lng": 19.9245,
+        "opening_hours": hours,
+        "time_max": 75,
+        "ticket_normal": 0,
+    }]
+    child = [
+        _fix391_hop("10:00", "10:12", TransitMode.CAR, "Kraków", "Parking przy Muzeum (al. 3 Maja)", 2.0),
+        _fix391_hop("10:12", "10:15", TransitMode.WALK, "Parking przy Muzeum (al. 3 Maja)", "Muzeum Narodowe w Krakowie", 0.15),
+        _fix383_attr("Muzeum Narodowe w Krakowie", "10:30", "12:00", 50.0604, 19.9235),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal(
+        [child],
+        group_type="family_kids",
+        preferences=["kids_attractions"],
+        children_age=5,
+        poi_pool=kid_pool,
+        date="2026-02-21",
+    )
+    names = _fix391_names(days[0].items)
+    assert not any("Narodowe" in name for name in names), names
+    assert any("Jordana" in name for name in names), names
+    assert not _fix391_hard_codes(days, ctx)
+
+    # Underground was asked for and never appeared.
+    under = [
+        _fix391_hop("10:40", "10:50", TransitMode.WALK, "Parking ul. Szpitalna", "MNK Sukiennice", 0.4),
+        _fix383_attr("MNK Sukiennice", "11:00", "12:20", 50.0617, 19.9373),
+        _fix391_dinner(),
+    ]
+    days, ctx = _fix391_seal(
+        [under],
+        group_type="friends",
+        preferences=["underground", "history_mystery"],
+        poi_pool=[{
+            "name": "Podziemia Rynku w Krakowie",
+            "lat": 50.0616,
+            "lng": 19.9378,
+            "opening_hours": hours,
+            "time_max": 75,
+            "ticket_normal": 25,
+        }],
+        date="2026-02-20",
+    )
+    assert any("Podziemia" in name for name in _fix391_names(days[0].items))
+    assert not _fix391_hard_codes(days, ctx)
+
+    # A meal walk that pushes the afternoon still lets the museum close at 18:00.
+    late = [
+        _fix391_hop("16:16", "16:35", TransitMode.WALK, "Zamek Królewski na Wawelu", "Muzeum Narodowe w Krakowie", 1.1),
+        _fix383_attr("Muzeum Narodowe w Krakowie", "16:35", "18:10", 50.0604, 19.9235),
+        _fix391_hop("18:10", "18:19", TransitMode.WALK, "Muzeum Narodowe w Krakowie", "MIŁA bar mleczny 7", 0.4),
+        _fix398_meal("dinner", "18:19", "19:04", "MIŁA bar mleczny 7", 50.0610, 19.9380),
+    ]
+    days, ctx = _fix391_seal([late], date="2026-02-20")
+    museum = next(it for it in days[0].items if "Narodowe" in (getattr(it, "name", "") or ""))
+    assert museum.end_time <= "18:00", museum.end_time
+    assert _span_minutes(museum) >= 60
+    assert any(
+        _fix391_mode(it) == "walk" and "Narodowe" in (it.from_location or "")
+        for it in days[0].items
+    )
+    dinner = next(it for it in days[0].items if _fix391_kind(it) == ItemType.DINNER_BREAK.value)
+    assert dinner.suggestions and dinner.suggestions[0].name == "MIŁA bar mleczny 7"
+    assert not _fix391_hard_codes(days, ctx)
