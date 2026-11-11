@@ -39350,7 +39350,12 @@ class PlanService:
             if named:
                 out.append(it)
                 continue
-            pick = ranked[0] if ranked else fallback
+            # The Katowice standby is 280 km from Poznań. An empty local
+            # list leaves the dinner unnamed instead of inventing that hop.
+            pick = ranked[0] if ranked else (fallback if _is_katowice_context(ctx) else None)
+            if pick is None:
+                out.append(it)
+                continue
             try:
                 fresh = _restaurant_dict_to_suggestion(pick, "dinner")
                 rest_nm = (pick.get("name") or "Śląska Prohibicja").strip()
